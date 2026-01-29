@@ -1,0 +1,3318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI复判中心</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #fff;
+      --border: #e5e7eb;
+      --text: #0f172a;
+      --muted: #6b7280;
+      --primary: #2563eb;
+      --success: #16a34a;
+      --danger: #ef4444;
+      --radius: 14px;
+      --shadow: 0 12px 36px rgba(15, 23, 42, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "DM Sans","Segoe UI",sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 18px;
+    }
+    .topbar{
+      max-width:1400px;
+      margin:0 auto 12px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:12px;
+    }
+    .breadcrumb{color:var(--muted);font-size:13px;}
+    .btn-light{
+      padding:10px 12px;
+      border-radius:10px;
+      border:1px solid var(--border);
+      background:#fff;
+      font-weight:700;
+      cursor:pointer;
+      color:var(--text);
+    }
+    h1,h2,h3 { margin: 0; }
+    .page { max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: 1fr 520px; gap: 16px; }
+    .page.single-pane { grid-template-columns: 1fr; }
+    .page.single-pane .task-panel { display: none; }
+    .page.single-pane .detail { max-width: 1100px; margin: 0 auto; }
+    @media (max-width: 1100px) { .page { grid-template-columns: 1fr; } }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 14px;
+    }
+    .left-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .title { font-size: 18px; font-weight: 700; }
+    .search { position: relative; flex: 1; margin-left: 10px; }
+    .search input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font-size: 13px;
+    }
+    .tabs { display: flex; gap: 12px; padding: 0 2px 10px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+    .tab { padding: 9px 12px; border-radius: 999px; font-weight: 700; cursor: pointer; color: var(--muted); }
+    .tab.active { background: #e7efff; color: var(--primary); }
+    .list { display: flex; flex-direction: column; gap: 10px; max-height: 72vh; overflow: auto; padding-right: 4px; }
+    .task { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: #fff; display: grid; gap: 6px; cursor: pointer; transition: all .15s ease; }
+    .task:hover { border-color: var(--primary); box-shadow: var(--shadow); }
+    .task.active { box-shadow: var(--shadow); border-color: var(--primary); }
+    .task-top { display: flex; justify-content: space-between; align-items: center; }
+    .badge { padding: 6px 10px; border-radius: 10px; font-weight: 700; font-size: 12px; }
+    .badge.blue { background: #e7efff; color: var(--primary); border: 1px solid #cbdcff; }
+    .badge.green { background: #ecfdf3; color: var(--success); border: 1px solid #bbf7d0; }
+    .badge.red { background: #fef2f2; color: var(--danger); border: 1px solid #fecdd3; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .progress { width: 100%; height: 8px; background: #e5e7eb; border-radius: 6px; overflow: hidden; }
+    .bar { height: 100%; background: linear-gradient(90deg,#3b82f6,#2563eb); width: 0%; }
+    .detail { display: grid; gap: 12px; }
+    .section { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; background: #f8fafc; }
+    .head-row { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+    .media-wrap { display: grid; gap: 8px; }
+    .media { border-radius: 12px; overflow: hidden; border: 1px solid var(--border); background: #0b1221; height: 240px; display:flex; align-items:center; justify-content:center; }
+    .media img { width: 100%; height: 100%; display: block; object-fit: contain; background:#000; }
+    .media video { width: 100%; height: 100%; display: block; object-fit: contain; background:#000; }
+    .media-gallery { position: relative; width: 100%; height: 100%; }
+    .media-gallery img { width: 100%; height: 100%; display:block; object-fit: contain; background:#000; }
+    .media-nav { position: absolute; top: 50%; transform: translateY(-50%); border: 0; background: rgba(15,23,42,0.65); color: #fff; width: 34px; height: 34px; border-radius: 999px; cursor: pointer; font-size: 20px; line-height: 1; display:flex; align-items:center; justify-content:center; }
+    .media-nav.prev { left: 8px; }
+    .media-nav.next { right: 8px; }
+    .media-nav:disabled { opacity: 0.4; cursor: not-allowed; }
+    .media-toolbar { display:flex; justify-content:flex-end; }
+    .media-counter { font-size: 12px; color: var(--muted); }
+    .media-thumbs { display: none; gap: 6px; overflow-x: auto; padding: 2px; }
+    .media-thumb { width: 58px; height: 40px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background:#0b1221; cursor: pointer; padding: 0; }
+    .media-thumb img { width: 100%; height: 100%; display:block; object-fit: cover; }
+    .media-thumb.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(37,99,235,0.18); }
+    .form { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); }
+    textarea, input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      font-family: inherit;
+      font-size: 14px;
+      background: #fff;
+    }
+    textarea { min-height: 140px; resize: vertical; }
+    .upload { border: 1px dashed #cbd5e1; background: #f8fafc; border-radius: 12px; padding: 14px; text-align: center; cursor: pointer; }
+    .actions { display: flex; justify-content: flex-end; gap: 10px; align-items: center; }
+    .btn { border: none; cursor: pointer; padding: 11px 16px; border-radius: 10px; font-weight: 700; }
+    .btn.secondary { background: #f3f4f6; color: var(--text); border: 1px solid var(--border); }
+    .btn.primary { background: linear-gradient(135deg,#2563eb,#1d4ed8); color: #fff; box-shadow: 0 10px 24px rgba(37,99,235,0.25); }
+    .pill { display: inline-flex; gap: 6px; align-items: center; padding: 8px 10px; border-radius: 10px; background: #eff6ff; border: 1px solid #dbeafe; color: #1d4ed8; font-weight: 700; }
+    .preview { margin-top: 8px; display: none; border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: #fff; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+
+    .history { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; max-height: 42vh; overflow: auto; padding-right: 4px; }
+    .history-item {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      background: #fff;
+      display: grid;
+      gap: 8px;
+      cursor: pointer;
+      transition: all .15s ease;
+    }
+    .history-item:hover { border-color: var(--primary); box-shadow: var(--shadow); }
+    .history-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .history-title { font-weight: 700; font-size: 13px; }
+    .history-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+	    .history-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+	    .btn.tiny { padding: 6px 10px; border-radius: 10px; font-size: 12px; }
+	    .badge.gray { background: #f3f4f6; color: #111827; border: 1px solid #e5e7eb; }
+
+	    /* Pager (pagination) */
+	    .pager { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+	    .pager input, .pager select {
+	      height: 32px;
+	      padding: 6px 8px;
+	      border-radius: 10px;
+	      border: 1px solid var(--border);
+	      background: #fff;
+	      font-size: 12px;
+	    }
+	    .pager input { width: 84px; }
+	    .pager select { cursor: pointer; }
+
+	    /* Tasks table (match screenshot style) */
+	    .task-panel .title { font-size: 16px; }
+	    .kpi-grid { display: grid; grid-template-columns: minmax(320px, 380px) 1fr; gap: 12px; margin-bottom: 12px; }
+		    .kpi-stack { display: grid; gap: 12px; }
+	    .kpi-card {
+	      border: 1px solid var(--border);
+	      border-radius: 12px;
+      padding: 12px;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 86px;
+    }
+    .kpi-card.big { min-height: 184px; }
+    .kpi-meta { display: grid; gap: 6px; }
+    .kpi-label { font-size: 13px; font-weight: 800; color: #111827; }
+    .kpi-value { font-size: 28px; font-weight: 900; line-height: 1; }
+    .kpi-sub { font-size: 12px; color: var(--muted); }
+    .kpi-iconbox {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      user-select: none;
+    }
+    .kpi-card.alarm .kpi-iconbox { background: #fef2f2; color: var(--danger); border: 1px solid #fecaca; }
+    .kpi-card.handled .kpi-iconbox { background: #ecfdf3; color: var(--success); border: 1px solid #bbf7d0; }
+	    .kpi-card.false .kpi-iconbox { background: #f3f4f6; color: #374151; border: 1px solid #e5e7eb; }
+	    .kpi-card.daily .kpi-iconbox { background: #e0f2fe; color: var(--primary); border: 1px solid #bae6fd; }
+
+	    .kpi-card.tasks { display: block; }
+	    .kpi-card.tasks .kpi-iconbox { display: none; }
+	    .kpi-breakdown { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+	    .kpi-breakdown-title { font-size: 12px; font-weight: 900; color: var(--muted); }
+	    .kpi-breakdown-list { display: grid; gap: 6px; margin-top: 8px; max-height: 140px; overflow: auto; padding-right: 4px; }
+	    .kpi-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }
+	    .kpi-row-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	    .kpi-row-count { font-weight: 900; color: #111827; }
+
+	    @media (max-width: 980px) {
+	      .kpi-grid { grid-template-columns: 1fr; }
+	    }
+
+	    .filter-bar {
+	      border: 1px solid var(--border);
+	      border-radius: 12px;
+	      padding: 12px;
+      background: #fff;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .filter-panel { display: none; }
+    .filter-panel.show { display: block; }
+    .filter-bar select, .filter-bar input {
+      height: 38px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font-size: 13px;
+    }
+    .filter-spacer { flex: 1; }
+    .filter-link {
+      border: none;
+      background: transparent;
+      color: var(--primary);
+      font-weight: 800;
+      cursor: pointer;
+      padding: 6px 8px;
+    }
+    .bulk-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .bulk-bar select { height: 38px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: #fff; font-size: 13px; }
+
+    .table-wrap { border: 1px solid var(--border); border-radius: 12px; overflow: auto; background: #fff; }
+    .task-table { width: 100%; min-width: 1120px; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+    .task-table thead th {
+      position: sticky;
+      top: 0;
+      background: #f8fafc;
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      font-weight: 900;
+      color: #111827;
+      white-space: nowrap;
+    }
+    .task-table tbody td {
+      padding: 18px 14px;
+      border-bottom: 1px solid #f1f5f9;
+      vertical-align: top;
+      white-space: nowrap;
+      line-height: 1.6;
+    }
+    .task-table tbody td.cell-summary { white-space: normal; min-width: 420px; }
+    .task-table tbody td.cell-summary .task-link { display: block; white-space: pre-wrap; word-break: break-word; }
+    .task-table tbody tr { cursor: pointer; }
+    .task-table thead th:not(:last-child), .task-table tbody td:not(:last-child) { border-right: 1px solid #f1f5f9; }
+    .task-table tbody tr:hover { background: #f8fafc; }
+    .task-table tbody tr.active { background: #e7efff; }
+    .task-link { color: var(--primary); font-weight: 800; text-decoration: none; }
+    .task-link:hover { text-decoration: underline; }
+    .media-link {
+      display: inline-block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid #cbdcff;
+      background: #e7efff;
+      color: var(--primary);
+      font-weight: 900;
+      font-size: 12px;
+      text-decoration: none;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .media-link:hover { text-decoration: underline; }
+    .task-name-cell { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+    .task-thumb {
+      width: 120px;
+      height: 90px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #0b1221;
+      overflow: hidden;
+      flex: 0 0 auto;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #94a3b8;
+      font-weight: 900;
+      font-size: 12px;
+      cursor: zoom-in;
+    }
+    .task-thumb img, .task-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+    .task-thumb-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      flex: 0 0 auto;
+      max-width: 260px;
+    }
+    .task-thumb-item {
+      width: 70px;
+      height: 52px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0b1221;
+      overflow: hidden;
+      padding: 0;
+      cursor: zoom-in;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .task-thumb-item img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+    .task-thumb .play {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      background: rgba(0,0,0,0.18);
+      font-size: 12px;
+      font-weight: 900;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+      pointer-events: none;
+    }
+    .task-name-text { display: grid; gap: 2px; min-width: 0; }
+    .task-sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-weight: 900;
+      font-size: 12px;
+      border: 1px solid;
+    }
+    .status-chip .dot { width: 7px; height: 7px; border-radius: 999px; background: currentColor; }
+    .status-chip.green { background: #ecfdf3; color: var(--success); border-color: #bbf7d0; }
+    .status-chip.gray { background: #f3f4f6; color: #374151; border-color: #e5e7eb; }
+    .status-chip.red { background: #fef2f2; color: var(--danger); border-color: #fecaca; }
+    .action-cell { text-align: right; }
+    .action-btn {
+      border: 1px solid var(--border);
+      background: #fff;
+      padding: 6px 10px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 900;
+      font-size: 12px;
+      color: #111827;
+    }
+    .action-btn:hover { border-color: var(--primary); }
+
+    /* Key/value list */
+    .kv-row {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px dashed #e5e7eb;
+      align-items: start;
+    }
+    .kv-key { color: var(--muted); font-weight: 800; font-size: 12px; }
+    .kv-val {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #111827;
+    }
+    .kv-empty { color: var(--muted); font-size: 13px; }
+
+    /* Topbar actions */
+    .top-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    .btn-light.on { border-color: #fecaca; background: #fef2f2; }
+    .btn-light.off { opacity: 0.75; }
+
+    /* Alarm toast (new records) */
+    .alarm-toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      width: min(420px, calc(100vw - 36px));
+      background: #fff;
+      border: 1px solid var(--border);
+      border-left: 6px solid var(--danger);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 12px;
+      z-index: 9999;
+      display: none;
+    }
+    .alarm-toast.show { display: block; animation: alarmIn .18s ease-out; }
+    @keyframes alarmIn { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    .alarm-toast-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .alarm-toast-title { font-weight: 900; font-size: 14px; }
+    .alarm-toast-close {
+      border: 1px solid var(--border);
+      background: #fff;
+      border-radius: 10px;
+      width: 34px;
+      height: 34px;
+      cursor: pointer;
+      font-weight: 900;
+      color: #111827;
+    }
+    .alarm-toast-close:hover { border-color: var(--primary); }
+    .alarm-toast-body { margin-top: 8px; display: grid; gap: 6px; }
+    .alarm-toast-msg { font-size: 13px; font-weight: 800; color: #111827; white-space: pre-wrap; word-break: break-word; }
+    .alarm-toast-meta { font-size: 12px; color: var(--muted); }
+    .alarm-toast-actions { margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px; }
+
+    /* Media modal (thumbnail zoom) */
+    .media-modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      z-index: 9999;
+    }
+    .media-modal.show { display: flex; }
+    .media-modal-backdrop { position: absolute; inset: 0; background: rgba(15,23,42,0.72); }
+    .media-modal-panel {
+      position: relative;
+      width: min(1100px, 96vw);
+      max-height: 92vh;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #fff;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .media-modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      background: #f8fafc;
+    }
+    .media-modal-title { font-weight: 900; color: #0f172a; }
+    .media-modal-actions { display:flex; gap:8px; align-items:center; }
+    .media-modal-body {
+      background: #0b1221;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+    }
+    .media-modal-body img,
+    .media-modal-body video {
+      max-width: 100%;
+      max-height: 80vh;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      display: block;
+      background: #000;
+      border-radius: 10px;
+      border: 1px solid rgba(148,163,184,0.25);
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <h2 style="margin-top:4px;">AI复判中心</h2>
+    </div>
+	    <div class="top-actions">
+	      <button class="btn-light on" id="alarmToggleBtn" title="新记录自动弹窗提醒">告警弹窗：开</button>
+	      <button class="btn-light" id="alarmNotifyBtn" title="页面隐藏/最小化时使用系统通知弹窗">系统通知：开</button>
+	      <button class="btn-light" id="alarmSoundTestBtn" title="测试告警提示音">测试声音</button>
+	      <button class="btn-light" id="screenBtn" title="打开复判大屏">大屏</button>
+	      <button class="btn-light" id="reportBtn" title="打开每日复判报告">日报</button>
+	      <button class="btn-light" id="singlePaneBtn" title="只显示右侧详情（隐藏左侧列表）">单页模式：关</button>
+	      <button class="btn-light" id="newTaskBtn">+ 新增任务</button>
+	    </div>
+	  </div>
+  <div class="page">
+    <aside class="panel task-panel">
+	      <div class="head-row" style="margin-bottom:10px;">
+		        <div class="title">AI复判记录</div>
+		        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end;">
+		          <div class="muted" style="font-weight:700;" id="loadStatus">点击行查看详情 · 加载中…</div>
+		          <div class="pager" id="pager">
+		            <button type="button" class="btn secondary tiny" id="pagePrevBtn">上一页</button>
+		            <span class="muted" style="font-weight:700;" id="pageInfo">第 1/1 页</span>
+		            <button type="button" class="btn secondary tiny" id="pageNextBtn">下一页</button>
+		            <span class="muted" style="font-weight:700;">跳转</span>
+		            <input id="pageJumpInput" type="number" min="1" step="1" value="1" inputmode="numeric">
+		            <button type="button" class="btn secondary tiny" id="pageJumpBtn">Go</button>
+		            <select id="pageSizeSelect" title="每页数量">
+		              <option value="50">50/页</option>
+		              <option value="100">100/页</option>
+		              <option value="200">200/页</option>
+		            </select>
+		          </div>
+		          <button type="button" class="btn secondary tiny" id="filterToggleBtn">筛选 ▾</button>
+		        </div>
+		      </div>
+
+	      <div class="kpi-grid">
+	        <div class="kpi-card daily">
+	          <div class="kpi-meta">
+	            <div class="kpi-label">每日复判总结</div>
+	            <div class="kpi-value" id="kpiDailyTotal">-</div>
+	            <div class="kpi-sub" id="kpiDailyRange">今日 00:00 - 现在</div>
+	            <div class="kpi-sub" id="kpiDailySub">异常 - · 待处理 - · 失败 -</div>
+	            <div class="kpi-sub" id="kpiDailyMeta">处理完成 - · 成功率 - · 平均耗时 -</div>
+	          </div>
+	          <div class="kpi-iconbox">Σ</div>
+	        </div>
+	        <div class="kpi-card big tasks">
+	          <div class="kpi-meta">
+	            <div class="kpi-label">今日告警任务统计</div>
+	          </div>
+	          <div class="kpi-breakdown">
+	            <div>
+	              <div class="kpi-breakdown-title">任务类别</div>
+	              <div class="kpi-breakdown-list" id="kpiTaskCats"><span class="muted">-</span></div>
+	            </div>
+	            <div>
+	              <div class="kpi-breakdown-title">具体类别</div>
+	              <div class="kpi-breakdown-list" id="kpiTaskItems"><span class="muted">-</span></div>
+	            </div>
+	          </div>
+	        </div>
+	      </div>
+
+      <div class="filter-panel" id="filterPanel">
+        <div class="filter-bar">
+          <select id="filterField">
+            <option value="record_time">记录时间</option>
+            <option value="review_time">复判时间</option>
+          </select>
+          <select id="filterOp">
+            <option value="between">范围</option>
+            <option value="gt">&gt;</option>
+            <option value="lt">&lt;</option>
+          </select>
+          <input id="filterStart" type="datetime-local">
+          <span class="muted">—</span>
+          <input id="filterEnd" type="datetime-local">
+
+	          <select id="statusFilter">
+	            <option value="all">全部状态</option>
+	            <option value="running">待处理</option>
+	            <option value="done">已处理</option>
+	          </select>
+	          <select id="illegalFilter">
+	            <option value="yes">异常：是</option>
+	            <option value="no">异常：否</option>
+	            <option value="all">异常：全部</option>
+	          </select>
+	          <select id="sourceFilter">
+	            <option value="">全部来源</option>
+	            <option value="边缘网关">边缘网关</option>
+	            <option value="平台">平台</option>
+	          </select>
+	          <input id="taskFilter" placeholder="任务名称" style="min-width:160px;">
+	          <input id="search" placeholder="搜索内容" style="min-width:200px;">
+
+          <button type="button" class="btn secondary tiny" id="resetFilters">重置</button>
+          <button type="button" class="btn secondary tiny" id="saveFilters">保存</button>
+          <button type="button" class="btn primary tiny" id="applyFilters">搜索 ▾</button>
+          <button type="button" class="filter-link" id="moreFilters">更多筛选</button>
+        </div>
+
+        <div class="bulk-bar">
+          <select id="bulkAction">
+            <option value="">批量操作</option>
+            <option value="mark_done">标记为已处理</option>
+            <option value="export">导出</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="task-table">
+          <thead>
+            <tr>
+              <th>记录时间</th>
+              <th>来源</th>
+              <th>任务名称</th>
+              <th>复判状态</th>
+              <th>是否异常</th>
+              <th>图片链接</th>
+              <th>视频链接</th>
+              <th>复判结果</th>
+              <th>复判时间</th>
+              <th class="action-cell">操作</th>
+            </tr>
+          </thead>
+          <tbody id="taskList"></tbody>
+        </table>
+      </div>
+    </aside>
+
+    <section class="detail">
+      <div class="panel">
+        <div class="head-row">
+          <div>
+            <h3 id="taskTitle">-</h3>
+            <div class="muted" id="taskDesc">选择左侧任务</div>
+          </div>
+          <span class="badge blue" id="taskStatus">-</span>
+        </div>
+        <div class="muted" id="recordIdRow" style="display:none;">记录ID <strong id="progressText">-</strong></div>
+        <div class="progress" style="display:none;"><div class="bar" id="progressBar"></div></div>
+        <div class="head-row" style="margin-top:8px;">
+          <div class="muted">复判时间 <strong id="finishTime">-</strong></div>
+          <span class="badge red" id="taskRisk">-</span>
+        </div>
+        <div class="media-wrap">
+          <div class="media" id="mediaSlot"><img src="https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=1600&q=80" alt=""></div>
+          <div class="media-toolbar"><div class="media-counter" id="mediaCounter"></div></div>
+          <div class="media-thumbs" id="mediaThumbs"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="head-row">
+          <h3>复判请求</h3>
+          <span class="pill" id="endpointPill">POST /api/v1/agents/review_cloud/chat/json</span>
+        </div>
+        <form id="form" class="detail" style="padding:0;">
+          <div class="panel" style="padding:10px; border:1px solid var(--border); box-shadow:none; background:#f8fafc;">
+            <label style="font-weight:700; display:block; margin-bottom:6px;">接口地址</label>
+            <div class="form" style="grid-template-columns: repeat(auto-fit,minmax(220px,1fr));">
+              <div>
+                <input id="baseUrl" placeholder="默认使用当前域名" style="margin-bottom:6px;">
+                <div class="muted">默认尝试当前 host 的 8005 端口；空则用当前域名。</div>
+              </div>
+              <div>
+                <input id="agentId" placeholder="智能体ID（默认 review_cloud）" style="margin-bottom:6px;">
+                <div class="muted">路径：<span class="mono">/api/v1/agents/{agentId}/chat/json</span></div>
+                <div class="muted">提示：左侧列表展示全部记录，不按 agentId 过滤（筛选区可手动筛选）。</div>
+              </div>
+              <div>
+                <input id="taskName" placeholder="任务名称（task，可选）如 非法停车" style="margin-bottom:6px;">
+                <div class="muted">请求字段：<span class="mono">context.task</span>（用于列表展示/筛选/告警）</div>
+              </div>
+            </div>
+            <div class="muted" style="margin-top:8px;">请求地址：<span class="mono" id="endpointText"></span></div>
+          </div>
+          <div class="form">
+            <div>
+              <label>用户输入</label>
+              <textarea id="message">请总结当前告警事件的关键信息，并输出 JSON 字段包含“结论”“建议”“风险等级”。</textarea>
+            </div>
+            <div>
+              <label>生成的字段（JSON Schema 自动输出）</label>
+              <div class="panel" style="padding:10px; border:1px solid var(--border); box-shadow:none; background:#f8fafc;">
+                <div style="display:grid; gap:8px;">
+                  <input id="fieldName" placeholder="字段名 如 summary">
+                  <select id="fieldType">
+                    <option value="string">string</option>
+                    <option value="number">number</option>
+                    <option value="boolean">boolean</option>
+                    <option value="array">array(string)</option>
+                  </select>
+                  <input id="fieldDesc" placeholder="描述 (可选)">
+                  <label style="display:flex; gap:6px; align-items:center; font-weight:600;">
+                    <input type="checkbox" id="fieldReq"> 必填
+                  </label>
+                  <div class="actions" style="justify-content:flex-start; padding:0;">
+                    <button type="button" class="btn secondary" id="addField">新增字段</button>
+                    <button type="button" class="btn secondary" id="buildSchema">生成 Schema</button>
+                    <button type="button" class="btn secondary" id="resetFields">重置字段</button>
+                  </div>
+                  <div id="fieldTags" style="display:flex; flex-wrap:wrap; gap:6px;"></div>
+                  <div id="fieldHint" class="muted" style="font-size:12px;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="panel" style="padding:10px; border:1px solid var(--border); box-shadow:none; background:#f8fafc;">
+            <pre id="schemaBox" style="margin:0; background:#0f172a; color:#e5e7eb; border-radius:10px; padding:10px; overflow:auto;">{
+  "type": "object",
+  "properties": {
+    "summary": {"type": "string"},
+    "risk_level": {"type": "string", "enum": ["高","中","低"]},
+    "actions": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["summary"]
+}</pre>
+          </div>
+          <div class="form">
+            <div>
+              <label>附件（图片/视频）</label>
+              <div class="upload" id="uploadArea">
+                <strong>点击或拖拽文件</strong>
+                <div class="muted">支持 image/*, video/*；远程调用请使用 URL。</div>
+                <input id="fileInput" type="file" accept="image/*,video/*" style="display:none;">
+              </div>
+              <div class="preview" id="preview">
+                <div class="muted" id="fileInfo"></div>
+                <div id="previewSlot" style="margin-top:6px;"></div>
+              </div>
+            </div>
+            <div>
+              <label>或填写文件 URL</label>
+              <input id="fileUrl" placeholder="https://example.com/video.mp4">
+              <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:8px;">
+                <div>
+                  <label style="font-size:13px; font-weight:700;">文件类型</label>
+                  <select id="fileType">
+                    <option value="image">image</option>
+                    <option value="video">video</option>
+                    <option value="doc">doc</option>
+                    <option value="text">text</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="font-size:13px; font-weight:700;">快捷示例</label>
+                  <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+                    <button type="button" class="btn secondary" id="sampleText">文本</button>
+                    <button type="button" class="btn secondary" id="sampleImg">图片</button>
+                    <button type="button" class="btn secondary" id="sampleVideo">视频</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="actions">
+            <button type="button" class="btn secondary" id="copyBody">复制请求体</button>
+            <button type="submit" class="btn primary">上传/发送请求</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <div class="head-row">
+          <h3>响应</h3>
+          <div class="muted">HTTP <strong id="httpStatus">-</strong> · 耗时 <strong id="cost">-</strong></div>
+        </div>
+        <details class="section" id="reqDetails">
+          <summary class="muted" style="cursor:pointer; user-select:none;">请求体（默认折叠）</summary>
+          <pre id="reqBox" style="margin:10px 0 0; background:#0f172a; color:#e5e7eb; border-radius:10px; padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word;">{}</pre>
+        </details>
+        <div class="section">
+          <div class="muted" style="margin-bottom:6px;">返回值（key/value）</div>
+          <div id="resKv" style="display:grid; gap:8px;"></div>
+          <details style="margin-top:10px;">
+            <summary class="muted" style="cursor:pointer; user-select:none;">查看原始响应</summary>
+            <pre id="resBox" style="margin:10px 0 0; background:#0f172a; color:#e5e7eb; border-radius:10px; padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word;">等待中…</pre>
+          </details>
+        </div>
+      </div>
+    </section>
+  </div>
+
+	  <div id="alarmToast" class="alarm-toast" aria-live="polite" aria-atomic="true">
+	    <div class="alarm-toast-head">
+	      <div class="alarm-toast-title" id="alarmToastTitle">新复判记录</div>
+	      <button type="button" class="alarm-toast-close" id="alarmToastClose" aria-label="关闭">×</button>
+	    </div>
+	    <div class="alarm-toast-body">
+	      <div class="alarm-toast-msg" id="alarmToastMsg">-</div>
+	      <div class="alarm-toast-meta" id="alarmToastMeta">-</div>
+	    </div>
+	    <div class="alarm-toast-actions">
+	      <button type="button" class="btn secondary tiny" id="alarmToastIgnore">忽略</button>
+	      <button type="button" class="btn primary tiny" id="alarmToastView">查看</button>
+	    </div>
+	  </div>
+
+	  <div id="mediaModal" class="media-modal" aria-hidden="true">
+	    <div id="mediaModalBackdrop" class="media-modal-backdrop"></div>
+	    <div class="media-modal-panel" role="dialog" aria-modal="true">
+	      <div class="media-modal-head">
+	        <div class="media-modal-title" id="mediaModalTitle">媒体预览</div>
+	        <div class="media-modal-actions">
+	          <a class="btn secondary tiny" id="mediaModalOpen" href="#" target="_blank" rel="noopener noreferrer">新窗口打开</a>
+	          <button type="button" class="btn secondary tiny" id="mediaModalClose">关闭</button>
+	        </div>
+	      </div>
+	      <div class="media-modal-body" id="mediaModalBody"></div>
+	    </div>
+	  </div>
+
+	  <script>
+		    let activeRecord = null;
+		    let fields = [
+	      { name:"人数", type:"number", desc:"检测到的人数", required:true },
+      { name:"描述", type:"string", desc:"详细描述", required:true }
+	    ];
+	    let selectedFileData = null; // 保存本地文件的 data URI，用于 JSON 传输
+	    let activeMediaList = [];
+	    let activeMediaIndex = 0;
+	    const MAX_INLINE_MB = 5; // 超过则仅预览不内嵌 base64
+	    const HISTORY_PAGE_SIZE = 50;
+	    const DAILY_PAGE_SIZE = 200;
+	    const DAILY_MAX_RECORDS = 2000;
+	    const DAILY_REFRESH_MS = 60000;
+
+    const taskList = document.getElementById("taskList");
+    const taskTitle = document.getElementById("taskTitle");
+    const taskDesc = document.getElementById("taskDesc");
+    const progressText = document.getElementById("progressText");
+    const progressBar = document.getElementById("progressBar");
+    const taskStatus = document.getElementById("taskStatus");
+    const taskRisk = document.getElementById("taskRisk");
+	    const finishTime = document.getElementById("finishTime");
+	    const mediaSlot = document.getElementById("mediaSlot");
+	    const mediaThumbs = document.getElementById("mediaThumbs");
+	    const mediaCounter = document.getElementById("mediaCounter");
+	    const pageEl = document.querySelector(".page");
+	    const baseInput = document.getElementById("baseUrl");
+	    const agentIdInput = document.getElementById("agentId");
+	    const taskNameInput = document.getElementById("taskName");
+		    const agentIdCrumb = document.getElementById("agentIdCrumb");
+		    const endpointPill = document.getElementById("endpointPill");
+		    const endpointText = document.getElementById("endpointText");
+		    const loadStatusEl = document.getElementById("loadStatus");
+		    const pagePrevBtn = document.getElementById("pagePrevBtn");
+		    const pageNextBtn = document.getElementById("pageNextBtn");
+		    const pageInfoEl = document.getElementById("pageInfo");
+		    const pageJumpInput = document.getElementById("pageJumpInput");
+		    const pageJumpBtn = document.getElementById("pageJumpBtn");
+		    const pageSizeSelect = document.getElementById("pageSizeSelect");
+		    const kpiDailyTotalEl = document.getElementById("kpiDailyTotal");
+		    const kpiDailyRangeEl = document.getElementById("kpiDailyRange");
+		    const kpiDailySubEl = document.getElementById("kpiDailySub");
+		    const kpiDailyMetaEl = document.getElementById("kpiDailyMeta");
+		    const kpiTaskCatsEl = document.getElementById("kpiTaskCats");
+		    const kpiTaskItemsEl = document.getElementById("kpiTaskItems");
+    const filterFieldEl = document.getElementById("filterField");
+    const filterOpEl = document.getElementById("filterOp");
+    const filterStartEl = document.getElementById("filterStart");
+	    const filterEndEl = document.getElementById("filterEnd");
+		    const statusFilterEl = document.getElementById("statusFilter");
+		    const illegalFilterEl = document.getElementById("illegalFilter");
+		    const sourceFilterEl = document.getElementById("sourceFilter");
+		    const taskFilterEl = document.getElementById("taskFilter");
+		    if (illegalFilterEl) {
+		      illegalFilterEl.style.display = "";
+		      illegalFilterEl.disabled = false;
+		    }
+	    const resetFiltersBtn = document.getElementById("resetFilters");
+	    const saveFiltersBtn = document.getElementById("saveFilters");
+	    const applyFiltersBtn = document.getElementById("applyFilters");
+	    const moreFiltersBtn = document.getElementById("moreFilters");
+	    const bulkActionEl = document.getElementById("bulkAction");
+	    const filterPanelEl = document.getElementById("filterPanel");
+	    const filterToggleBtn = document.getElementById("filterToggleBtn");
+	    const alarmToggleBtn = document.getElementById("alarmToggleBtn");
+	    const alarmToastEl = document.getElementById("alarmToast");
+	    const alarmToastTitleEl = document.getElementById("alarmToastTitle");
+	    const alarmToastMsgEl = document.getElementById("alarmToastMsg");
+		    const alarmToastMetaEl = document.getElementById("alarmToastMeta");
+		    const alarmToastCloseBtn = document.getElementById("alarmToastClose");
+		    const alarmToastIgnoreBtn = document.getElementById("alarmToastIgnore");
+		    const alarmToastViewBtn = document.getElementById("alarmToastView");
+		    const alarmNotifyBtn = document.getElementById("alarmNotifyBtn");
+		    const alarmSoundTestBtn = document.getElementById("alarmSoundTestBtn");
+		    const screenBtn = document.getElementById("screenBtn");
+		    const reportBtn = document.getElementById("reportBtn");
+		    const singlePaneBtn = document.getElementById("singlePaneBtn");
+		    const mediaModalEl = document.getElementById("mediaModal");
+		    const mediaModalBackdropEl = document.getElementById("mediaModalBackdrop");
+		    const mediaModalBodyEl = document.getElementById("mediaModalBody");
+		    const mediaModalTitleEl = document.getElementById("mediaModalTitle");
+		    const mediaModalOpenEl = document.getElementById("mediaModalOpen");
+		    const mediaModalCloseBtn = document.getElementById("mediaModalClose");
+		    const guessApiBase = () => {
+	      const { protocol, hostname, port } = window.location;
+	      if (port === "4173" || port === "4311") return `${protocol}//${hostname}:8005`;
+	      return `${protocol}//${hostname}${port ? `:${port}` : ""}`;
+    };
+
+	    const SETTINGS_KEY = "jetlinks_review_settings_v1";
+    const TASK_FILTERS_KEY = "jetlinks_review_task_filters_v1";
+    const MAX_STORE_CHARS = 200000;
+
+    const loadSettings = () => {
+      try {
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        if (!raw) return {};
+        const data = JSON.parse(raw);
+        return data && typeof data === "object" ? data : {};
+      } catch {
+        return {};
+      }
+	    };
+
+		    const saveSettings = (data) => {
+		      try {
+		        const prev = loadSettings();
+		        localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...prev, ...(data || {}) }));
+		      } catch {
+		        // ignore
+		      }
+		    };
+
+		    const setUrlParams = (patch) => {
+		      try {
+		        const u = new URL(window.location.href);
+		        for (const [k, v] of Object.entries(patch || {})) {
+		          if (v == null || v === "") u.searchParams.delete(k);
+		          else u.searchParams.set(k, String(v));
+		        }
+		        const qs = u.searchParams.toString();
+		        history.replaceState(null, "", u.pathname + (qs ? `?${qs}` : "") + u.hash);
+		      } catch {
+		        // ignore
+		      }
+		    };
+
+		    const getUrlParam = (key) => {
+		      try { return new URLSearchParams(window.location.search).get(key); } catch { return null; }
+		    };
+
+	    const getAgentId = () => (agentIdInput?.value || "").trim() || "review_cloud";
+
+	    const normalizeBaseUrl = (raw) => {
+	      const s = String(raw ?? "").trim();
+	      if (!s) return window.location.origin;
+
+	      let candidate = s;
+	      const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(candidate);
+	      if (!hasScheme) {
+	        if (candidate.startsWith("/")) candidate = `${window.location.origin}${candidate}`;
+	        else candidate = `${window.location.protocol}//${candidate}`;
+	      }
+
+	      try {
+	        const u = new URL(candidate);
+	        const rawHost = u.hostname;
+	        const hostname = (rawHost === "0.0.0.0" || rawHost === "127.0.0.1" || rawHost === "localhost")
+	          ? window.location.hostname
+	          : rawHost;
+	        const port = u.port ? `:${u.port}` : "";
+	        return `${u.protocol}//${hostname}${port}`;
+	      } catch {
+	        return window.location.origin;
+	      }
+	    };
+
+	    const buildEndpoint = () => {
+	      const base = normalizeBaseUrl(baseInput.value);
+	      const agentId = getAgentId();
+	      const path = `/api/v1/agents/${encodeURIComponent(agentId)}/chat/json`;
+	      return { base, agentId, path, url: `${base}${path}` };
+	    };
+
+	    const buildScreenUrl = () => {
+	      try {
+	        const url = new URL("review-screen.html", window.location.href);
+	        const { base } = buildEndpoint();
+	        if (base) url.searchParams.set("base", base);
+	        return url.toString();
+	      } catch {
+	        const { base } = buildEndpoint();
+	        return `review-screen.html${base ? `?base=${encodeURIComponent(base)}` : ""}`;
+	      }
+	    };
+
+	    const updateScreenLink = () => {
+	      if (!screenBtn) return;
+	      screenBtn.dataset.url = buildScreenUrl();
+	    };
+
+	    const buildReportUrl = () => {
+	      const pad = (n) => String(n).padStart(2, "0");
+	      const d = new Date();
+	      const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+	      try {
+	        const url = new URL("review-report.html", window.location.href);
+	        const { base } = buildEndpoint();
+	        if (base) url.searchParams.set("base", base);
+	        url.searchParams.set("date", dateStr);
+	        return url.toString();
+	      } catch {
+	        const { base } = buildEndpoint();
+	        const qs = [`date=${encodeURIComponent(dateStr)}`];
+	        if (base) qs.push(`base=${encodeURIComponent(base)}`);
+	        return `review-report.html${qs.length ? `?${qs.join("&")}` : ""}`;
+	      }
+	    };
+
+	    const updateReportLink = () => {
+	      if (!reportBtn) return;
+	      reportBtn.dataset.url = buildReportUrl();
+	    };
+
+    const updateEndpointUI = () => {
+      const { base, agentId, path, url } = buildEndpoint();
+      if (agentIdCrumb) agentIdCrumb.textContent = agentId;
+      if (endpointPill) endpointPill.textContent = `POST ${path}`;
+      if (endpointText) endpointText.textContent = url;
+      saveSettings({ baseUrl: base, agentId });
+      updateScreenLink();
+      updateReportLink();
+    };
+
+    const truncateText = (text, maxChars) => {
+      if (typeof text !== "string") return "";
+      if (text.length <= maxChars) return text;
+      return text.slice(0, maxChars) + `\n…(已截断，原始长度 ${text.length})`;
+    };
+
+    const tryParseJson = (text) => {
+      try { return JSON.parse(text); } catch { return null; }
+    };
+
+	    const BEIJING_TZ = "Asia/Shanghai";
+	    const formatBeijingTs = (value) => {
+	      const d = new Date(value);
+	      if (Number.isNaN(d.getTime())) return null;
+	      try {
+	        const parts = new Intl.DateTimeFormat("zh-CN", {
+	          timeZone: BEIJING_TZ,
+	          year: "numeric",
+	          month: "2-digit",
+	          day: "2-digit",
+	          hour: "2-digit",
+	          minute: "2-digit",
+	          second: "2-digit",
+	          hour12: false,
+	        }).formatToParts(d);
+	        const map = {};
+	        parts.forEach((p) => {
+	          if (p.type !== "literal") map[p.type] = p.value;
+	        });
+	        return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
+	      } catch {
+	        return d.toLocaleString();
+	      }
+	    };
+
+	    const formatBeijingHm = (value) => {
+	      const d = new Date(value);
+	      if (Number.isNaN(d.getTime())) return null;
+	      try {
+	        const parts = new Intl.DateTimeFormat("zh-CN", {
+	          timeZone: BEIJING_TZ,
+	          hour: "2-digit",
+	          minute: "2-digit",
+	          hour12: false,
+	        }).formatToParts(d);
+	        const map = {};
+	        parts.forEach((p) => {
+	          if (p.type !== "literal") map[p.type] = p.value;
+	        });
+	        return `${map.hour}:${map.minute}`;
+	      } catch {
+	        return d.toLocaleTimeString();
+	      }
+	    };
+
+	    const formatTs = (ts) => {
+	      const formatted = formatBeijingTs(ts);
+	      return formatted != null ? formatted : String(ts);
+	    };
+
+	    const formatNumber = (value) => {
+	      const n = Number(value);
+	      if (!Number.isFinite(n)) return "-";
+	      return new Intl.NumberFormat("zh-CN").format(n);
+	    };
+
+	    const formatPercent = (value) => {
+	      if (!Number.isFinite(value)) return "-";
+	      return `${(value * 100).toFixed(1)}%`;
+	    };
+
+	    const formatMs = (value) => {
+	      const n = Number(value);
+	      if (!Number.isFinite(n) || n <= 0) return "-";
+	      if (n >= 1000) return `${(n / 1000).toFixed(2)}s`;
+	      return `${Math.round(n)}ms`;
+	    };
+
+		    let alarmToastEnabled = true;
+		    let alarmToastTimer = null;
+		    let lastAlarmRecordId = null;
+		    let alarmAudioCtx = null;
+		    let alarmSoundHinted = false;
+		    let alarmSystemNotifyEnabled = true;
+		    let alarmSystemNotifyHinted = false;
+		    let singlePaneEnabled = false;
+
+	    const getAlarmAudioCtx = () => {
+	      const Ctx = window.AudioContext || window.webkitAudioContext;
+	      if (!Ctx) return null;
+	      if (!alarmAudioCtx) alarmAudioCtx = new Ctx();
+	      return alarmAudioCtx;
+	    };
+
+	    const primeAlarmAudio = async () => {
+	      const ctx = getAlarmAudioCtx();
+	      if (!ctx) return false;
+	      try {
+	        if (ctx.state === "suspended") await ctx.resume();
+	        return ctx.state === "running";
+	      } catch {
+	        return false;
+	      }
+	    };
+
+	    const playAlarmSound = async () => {
+	      const ctx = getAlarmAudioCtx();
+	      if (!ctx) return false;
+	      try {
+	        if (ctx.state === "suspended") await ctx.resume();
+	      } catch {
+	        return false;
+	      }
+	      if (ctx.state !== "running") return false;
+
+	      try {
+	        const t0 = ctx.currentTime;
+	        const osc = ctx.createOscillator();
+	        const gain = ctx.createGain();
+	        // 提示音（更响、更明显）
+	        const peak = 0.65;
+	        osc.type = "square";
+	        osc.frequency.setValueAtTime(880, t0);
+	        osc.frequency.setValueAtTime(660, t0 + 0.18);
+
+	        // Two short beeps
+	        gain.gain.setValueAtTime(0.0001, t0);
+	        gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.01);
+	        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.14);
+	        gain.gain.setValueAtTime(0.0001, t0 + 0.18);
+	        gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.19);
+	        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.34);
+
+	        osc.connect(gain);
+	        gain.connect(ctx.destination);
+	        osc.start(t0);
+	        osc.stop(t0 + 0.36);
+	        osc.onended = () => {
+	          try { osc.disconnect(); gain.disconnect(); } catch { /* ignore */ }
+	        };
+	        return true;
+	      } catch {
+	        return false;
+	      }
+	    };
+
+		    const updateAlarmToggleUI = () => {
+		      if (!alarmToggleBtn) return;
+		      alarmToggleBtn.textContent = alarmToastEnabled ? "告警弹窗：开" : "告警弹窗：关";
+		      alarmToggleBtn.classList.toggle("on", !!alarmToastEnabled);
+		      alarmToggleBtn.classList.toggle("off", !alarmToastEnabled);
+		    };
+
+		    const updateSinglePaneUI = () => {
+		      if (pageEl) pageEl.classList.toggle("single-pane", !!singlePaneEnabled);
+		      if (!singlePaneBtn) return;
+		      singlePaneBtn.textContent = singlePaneEnabled ? "单页模式：开" : "单页模式：关";
+		      singlePaneBtn.classList.toggle("on", !!singlePaneEnabled);
+		      singlePaneBtn.classList.toggle("off", !singlePaneEnabled);
+		    };
+
+		    const canUseNotification = () => typeof window !== "undefined" && "Notification" in window;
+		    // NOTE: Browsers may still block Notification/ServiceWorker in non-secure contexts (http on non-localhost).
+		    // Here we only gate by API availability so users can still try on intranet/http setups.
+		    const canUseNotificationInContext = () => canUseNotification();
+
+		    let notifySwReg = null;
+		    let notifySwRegPromise = null;
+
+		    const canUseServiceWorker = () => typeof navigator !== "undefined" && "serviceWorker" in navigator;
+
+		    const ensureNotifyServiceWorker = async () => {
+		      if (!canUseNotificationInContext()) return null;
+		      if (!canUseServiceWorker()) return null;
+		      if (notifySwReg) return notifySwReg;
+		      if (notifySwRegPromise) return notifySwRegPromise;
+
+		      const swUrl = "./review-notify-sw.js";
+		      notifySwRegPromise = navigator.serviceWorker
+		        .register(swUrl)
+		        .then((reg) => {
+		          notifySwReg = reg;
+		          return reg;
+		        })
+		        .catch((e) => {
+		          console.warn("通知 Service Worker 注册失败：", e);
+		          return null;
+		        })
+		        .finally(() => {
+		          notifySwRegPromise = null;
+		        });
+
+		      return notifySwRegPromise;
+		    };
+
+		    const buildRecordUrl = (recordId) => {
+		      try {
+		        const u = new URL(window.location.href);
+		        const { base } = buildEndpoint();
+		        if (base) u.searchParams.set("base", base);
+		        if (recordId) u.searchParams.set("recordId", String(recordId));
+		        else u.searchParams.delete("recordId");
+		        return u.toString();
+		      } catch {
+		        const { base } = buildEndpoint();
+		        const qs = recordId
+		          ? `?${base ? `base=${encodeURIComponent(base)}&` : ""}recordId=${encodeURIComponent(String(recordId))}`
+		          : (base ? `?base=${encodeURIComponent(base)}` : "");
+		        return `${window.location.origin}/review.html${qs}`;
+		      }
+		    };
+
+		    const updateAlarmNotifyUI = () => {
+		      if (!alarmNotifyBtn) return;
+		      if (!canUseNotification()) {
+		        alarmNotifyBtn.textContent = "系统通知：不可用";
+		        alarmNotifyBtn.classList.remove("on");
+		        alarmNotifyBtn.classList.add("off");
+		        alarmNotifyBtn.disabled = true;
+		        return;
+		      }
+		      alarmNotifyBtn.disabled = false;
+
+		      const perm = Notification.permission;
+		      if (!alarmSystemNotifyEnabled) {
+		        alarmNotifyBtn.textContent = "系统通知：关";
+		      } else if (perm === "granted") {
+		        alarmNotifyBtn.textContent = "系统通知：开";
+		      } else if (perm === "denied") {
+		        alarmNotifyBtn.textContent = "系统通知：被拒绝";
+		      } else {
+		        alarmNotifyBtn.textContent = "系统通知：需授权";
+		      }
+
+		      alarmNotifyBtn.classList.toggle("on", alarmSystemNotifyEnabled && perm !== "denied");
+		      alarmNotifyBtn.classList.toggle("off", !alarmSystemNotifyEnabled || perm === "denied");
+		    };
+
+		    const primeSystemNotification = async () => {
+		      if (!canUseNotificationInContext()) return false;
+		      try {
+		        if (Notification.permission === "granted") {
+		          void ensureNotifyServiceWorker();
+		          return true;
+		        }
+		        if (Notification.permission === "denied") return false;
+		        const perm = await Notification.requestPermission();
+		        if (perm === "granted") void ensureNotifyServiceWorker();
+		        return perm === "granted";
+		      } catch {
+		        return false;
+		      }
+		    };
+
+		    const showSystemNotification = async (records) => {
+		      if (!alarmSystemNotifyEnabled) return;
+		      if (!Array.isArray(records) || !records.length) return;
+		      if (!canUseNotificationInContext()) return;
+
+		      try {
+		        if (Notification.permission !== "granted") {
+		          if (!alarmSystemNotifyHinted) {
+		            alarmSystemNotifyHinted = true;
+		            console.warn("系统通知未授权：点击“系统通知：开”并允许权限后，隐藏时才能弹窗。");
+		          }
+		          return;
+		        }
+		        const latest = records[0] || null;
+		        const count = records.length;
+		        const title = count > 1 ? `AI复判告警（${count}条，异常=是）` : "AI复判告警（异常=是）";
+		        const bodyParts = [];
+		        if (latest?.task) bodyParts.push(`任务：${String(latest.task)}`);
+		        if (latest?.summary) bodyParts.push(String(latest.summary));
+		        const body = bodyParts.filter(Boolean).join("\n").slice(0, 260);
+
+		        const clickUrl = buildRecordUrl(latest?.id || "");
+
+		        // Prefer Service Worker notifications when available (keeps SW-style logic).
+		        const swReg = await ensureNotifyServiceWorker();
+		        if (swReg && typeof swReg.showNotification === "function") {
+		          try {
+		            await swReg.showNotification(title, {
+		              body,
+		              tag: latest?.id ? `review-${String(latest.id)}` : `review-${Date.now()}`,
+		              renotify: true,
+		              requireInteraction: true,
+		              timestamp: Date.now(),
+		              data: { url: clickUrl, recordId: latest?.id || null },
+		            });
+		            return;
+		          } catch (e) {
+		            console.warn("SW 通知发送失败，回退到页面通知：", e);
+		          }
+		        }
+
+		        // Fallback: page Notification (keeps current-page logic).
+		        const n = new Notification(title, { body });
+		        n.onclick = () => {
+		          try { window.focus(); } catch { /* ignore */ }
+		          const record = latest?.id ? serverHistory.find((r) => r.id === latest.id) : null;
+		          if (record) {
+		            activeRecord = record;
+		            renderTasks();
+		            showHistoryRecord(record);
+		          } else if (clickUrl) {
+		            try { window.location.href = clickUrl; } catch { /* ignore */ }
+		          }
+		          try { n.close(); } catch { /* ignore */ }
+		        };
+		      } catch {
+		        // ignore
+		      }
+		    };
+
+	    const hideAlarmToast = () => {
+	      if (alarmToastTimer) {
+	        clearTimeout(alarmToastTimer);
+	        alarmToastTimer = null;
+	      }
+	      lastAlarmRecordId = null;
+	      if (alarmToastEl) alarmToastEl.classList.remove("show");
+	    };
+
+		    const triggerAlarmSound = () => {
+		      if (!alarmToastEnabled) return;
+			      void playAlarmSound().then((ok) => {
+			        if (ok) return;
+			        if (alarmSoundHinted) return;
+			        alarmSoundHinted = true;
+			        if (!document.hidden && alarmToastMetaEl && alarmToastMetaEl.textContent) {
+			          alarmToastMetaEl.textContent = `${alarmToastMetaEl.textContent} · 点击页面/测试声音启用`;
+			        }
+			      });
+		    };
+
+		    const handleAlarmRecords = (records) => {
+		      if (!Array.isArray(records) || !records.length) return;
+
+		      // 即使页面被最小化/隐藏，也尝试播放提示音（弹窗 UI 则仅在可见时展示）
+		      triggerAlarmSound();
+
+		      if (document.hidden) {
+		        void showSystemNotification(records);
+		        return;
+		      }
+		      showAlarmToast(records);
+		    };
+
+		    const showAlarmToast = (records) => {
+		      if (!alarmToastEnabled) return;
+		      if (!Array.isArray(records) || !records.length) return;
+		      if (document.hidden) return;
+
+		      const latest = records[0] || null;
+		      const count = records.length;
+		      lastAlarmRecordId = latest?.id || null;
+
+			      if (!alarmToastEl || !alarmToastTitleEl || !alarmToastMsgEl || !alarmToastMetaEl) return;
+
+		      alarmToastTitleEl.textContent = count > 1 ? `新增 ${count} 条复判记录` : "新增复判记录";
+		      alarmToastMsgEl.textContent = truncateText(String(latest?.summary || "（无摘要）"), 160);
+
+		      const metaParts = [];
+		      if (latest?.agent_id) metaParts.push(`agent ${latest.agent_id}`);
+		      if (latest?.task) metaParts.push(`任务 ${String(latest.task)}`);
+		      if (latest?.source) metaParts.push(String(latest.source));
+		      metaParts.push(formatTs(latest?.at || Date.now()));
+		      alarmToastMetaEl.textContent = metaParts.filter(Boolean).join(" · ");
+
+		      alarmToastEl.classList.add("show");
+		      if (alarmToastTimer) clearTimeout(alarmToastTimer);
+		      alarmToastTimer = setTimeout(() => hideAlarmToast(), 10000);
+		    };
+
+	    if (alarmToastCloseBtn) alarmToastCloseBtn.onclick = () => hideAlarmToast();
+	    if (alarmToastIgnoreBtn) alarmToastIgnoreBtn.onclick = () => hideAlarmToast();
+	    if (alarmToastViewBtn) alarmToastViewBtn.onclick = () => {
+	      const recordId = lastAlarmRecordId;
+	      if (recordId) {
+	        const record = serverHistory.find((r) => r.id === recordId) || {
+	          id: recordId,
+	          at: Date.now(),
+	          detail_url: `/api/v1/review-records/${recordId}`,
+	          _source: "server",
+	        };
+	        activeRecord = record;
+	        renderTasks();
+	        showHistoryRecord(record);
+	      }
+	      hideAlarmToast();
+	    };
+
+		    let lastHistoryBase = null;
+		    let lastHistoryRecordIds = new Set();
+			    let historyLoadedOnce = false;
+			    let historyRefreshing = false;
+			    let latestPolling = false;
+			    let serverHistoryLoadError = "";
+			    let serverHistoryLoadErrorUrl = "";
+			    let lastHistoryRefreshedAt = 0;
+			    let serverHistoryTotal = 0;
+			    let historyPageSize = HISTORY_PAGE_SIZE;
+			    let historyPageIndex = 0;
+
+			    let serverHistory = [];
+			    let serverHistoryAll = [];
+			    let serverHistoryFiltered = [];
+			    let serverHistoryFilterKey = "";
+			    let serverHistoryFilterBase = "";
+			    let serverHistoryFilterLoadedAt = 0;
+			    let pendingSelectRecordId = null;
+			    let dailySummaryBase = null;
+			    let dailySummaryLastFetchAt = 0;
+			    let dailySummaryRefreshing = false;
+			    let dailySummaryError = "";
+			    let dailyRecords = [];
+
+	    const buildAbsoluteUrl = (maybeRelativeUrl) => {
+	      if (!maybeRelativeUrl || typeof maybeRelativeUrl !== "string") return "";
+	      const s = maybeRelativeUrl.trim();
+	      if (!s) return "";
+	      // Any scheme (http/https/rtsp/rtmp/blob/data/...) should be treated as absolute.
+	      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s)) return s;
+	      const { base } = buildEndpoint();
+	      return `${base}${s.startsWith("/") ? "" : "/"}${s}`;
+	    };
+
+			    const fetchJson = async (url, { timeoutMs = 6000 } = {}) => {
+			      const controller = new AbortController();
+			      const timer = setTimeout(() => controller.abort(), timeoutMs);
+			      try {
+			        const res = await fetch(url, { headers: { "Accept": "application/json" }, signal: controller.signal });
+		        const txt = await res.text();
+		        try { return { ok: res.ok, status: res.status, json: JSON.parse(txt), raw: txt }; }
+		        catch { return { ok: res.ok, status: res.status, json: null, raw: txt }; }
+		      } catch (e) {
+		        const msg = e?.name === "AbortError" ? `timeout ${timeoutMs}ms` : (e?.message ? String(e.message) : String(e));
+		        return { ok: false, status: 0, json: null, raw: msg };
+			      } finally {
+			        clearTimeout(timer);
+			      }
+			    };
+
+			    const mapReviewRecordListItems = (items) => {
+			      if (!Array.isArray(items)) return [];
+			      return items.map((item) => {
+			        const createdAtMsRaw = item?.created_at_ms ?? item?.created_atMs ?? item?.createdAtMs ?? 0;
+			        const createdAtMs = Number(createdAtMsRaw);
+			        const atMs = Number.isFinite(createdAtMs) && createdAtMs > 0 ? createdAtMs : Date.now();
+			        const recordId = item?.record_id;
+			        return {
+			          id: recordId,
+			          created_at: item?.created_at,
+			          at: atMs,
+			          agent_id: item?.agent_id,
+			          task: item?.task,
+			          source: item?.source,
+			          record_time: item?.record_time,
+			          review_status: item?.review_status,
+			          illegal: item?.illegal,
+			          image_url: item?.image_url,
+			          video_url: item?.video_url,
+			          http_status: item?.http_status ?? 200,
+			          cost_ms: item?.cost_ms,
+			          ok: item?.success,
+			          summary: item?.summary,
+			          thumbnail: item?.thumbnail,
+			          video: item?.video,
+			          detail_url: recordId ? `/api/v1/review-records/${recordId}` : "",
+			          _source: "server",
+			        };
+			      });
+			    };
+
+			    const clampInt = (value, min, max) => {
+			      const n = Number(value);
+			      if (!Number.isFinite(n)) return min;
+			      return Math.min(max, Math.max(min, Math.trunc(n)));
+			    };
+
+			    const normalizePageSize = (value) => {
+			      const n = Number(value);
+			      if (n === 100 || n === 200) return n;
+			      return 50;
+			    };
+
+			    const getTotalPages = () => {
+			      const total = Number(serverHistoryTotal || 0);
+			      const size = Number(historyPageSize || HISTORY_PAGE_SIZE) || HISTORY_PAGE_SIZE;
+			      if (total > 0 && size > 0) return Math.max(1, Math.ceil(total / size));
+			      return 1;
+			    };
+
+			    const updatePagerUI = () => {
+			      const totalPages = getTotalPages();
+			      historyPageIndex = clampInt(historyPageIndex, 0, Math.max(0, totalPages - 1));
+
+			      if (pageInfoEl) pageInfoEl.textContent = `第 ${historyPageIndex + 1}/${totalPages} 页`;
+			      if (pageJumpInput && document.activeElement !== pageJumpInput) {
+			        pageJumpInput.value = String(historyPageIndex + 1);
+			      }
+			      if (pagePrevBtn) pagePrevBtn.disabled = !!historyRefreshing || historyPageIndex <= 0;
+			      if (pageNextBtn) pageNextBtn.disabled = !!historyRefreshing || historyPageIndex >= totalPages - 1;
+			      if (pageJumpBtn) pageJumpBtn.disabled = !!historyRefreshing;
+			      if (pageSizeSelect) pageSizeSelect.value = String(historyPageSize || HISTORY_PAGE_SIZE);
+			    };
+
+			    const fetchReviewRecordListPage = async ({ pageIndex = 0, pageSize = HISTORY_PAGE_SIZE } = {}) => {
+			      const { base } = buildEndpoint();
+			      const candidateBases = Array.from(new Set([
+			        base,
+			        guessApiBase(),
+			        window.location.origin,
+			      ].map((s) => String(s || "").replace(/\/$/, "")).filter(Boolean)));
+			      let lastErr = null;
+			      for (const b of candidateBases) {
+			        const listUrl = `${b}/api/v1/review-records?pageIndex=${pageIndex}&pageSize=${pageSize}`;
+			        serverHistoryLoadErrorUrl = listUrl;
+			        try {
+			          const { ok, json, raw, status } = await fetchJson(listUrl, { timeoutMs: 6000 });
+			          if (!ok || !json || json.status !== 200) {
+			            let msg = "";
+			            if (json && typeof json.message === "string" && json.message.trim()) msg = json.message.trim();
+			            else if (raw) msg = String(raw);
+			            else msg = `HTTP ${status || 0}`;
+			            msg = truncateText(msg, 200).replace(/\n/g, " ");
+			            throw new Error(msg);
+			          }
+			          const items = json.result?.data || [];
+			          const total = Number(json.result?.total || 0);
+			          return { items, total, loadedFrom: b };
+			        } catch (e) {
+			          lastErr = e;
+			          continue;
+			        }
+			      }
+			      throw lastErr || new Error("服务器记录加载失败");
+			    };
+
+			    const fetchReviewRecordListPageFromBase = async (base, { pageIndex = 0, pageSize = HISTORY_PAGE_SIZE } = {}) => {
+			      const listUrl = `${base}/api/v1/review-records?pageIndex=${pageIndex}&pageSize=${pageSize}`;
+			      serverHistoryLoadErrorUrl = listUrl;
+			      const { ok, json, raw, status } = await fetchJson(listUrl, { timeoutMs: 12000 });
+			      if (!ok || !json || json.status !== 200) {
+			        let msg = "";
+			        if (json && typeof json.message === "string" && json.message.trim()) msg = json.message.trim();
+			        else if (raw) msg = String(raw);
+			        else msg = `HTTP ${status || 0}`;
+			        msg = truncateText(msg, 200).replace(/\\n/g, " ");
+			        throw new Error(msg);
+			      }
+			      const items = json.result?.data || [];
+			      const total = Number(json.result?.total || 0);
+			      return { items, total };
+			    };
+
+			    const fetchReviewRecordListAll = async ({ pageSize = 200, maxPages = 200 } = {}) => {
+			      const size = Math.max(1, Math.min(200, Number(pageSize) || 200));
+			      const first = await fetchReviewRecordListPage({ pageIndex: 0, pageSize: size });
+			      const base = first.loadedFrom || buildEndpoint().base;
+			      let allItems = Array.isArray(first.items) ? first.items.slice() : [];
+			      const total = Number(first.total || 0);
+			      if (!allItems.length) return { items: allItems, total, loadedFrom: base };
+
+			      const totalPages = total > 0 ? Math.ceil(total / size) : maxPages;
+			      const pageLimit = Math.max(1, Math.min(totalPages, maxPages));
+			      for (let pageIndex = 1; pageIndex < pageLimit; pageIndex += 1) {
+			        const page = await fetchReviewRecordListPageFromBase(base, { pageIndex, pageSize: size });
+			        if (!page.items || !page.items.length) break;
+			        allItems = allItems.concat(page.items);
+			        if (total && allItems.length >= total) break;
+			      }
+			      return { items: allItems, total: total || allItems.length, loadedFrom: base };
+			    };
+
+			    const isFilterActive = (filters) => {
+			      const f = filters || {};
+			      if ((f.illegal || "all") !== "all") return true;
+			      if ((f.status || "all") !== "all") return true;
+			      if ((f.source || "").trim()) return true;
+			      if ((f.task || "").trim()) return true;
+			      if ((f.kw || "").trim()) return true;
+			      if ((f.start || "").trim()) return true;
+			      if ((f.end || "").trim()) return true;
+			      if ((f.field || "record_time") !== "record_time") return true;
+			      if ((f.op || "between") !== "between") return true;
+			      return false;
+			    };
+
+			    const buildFilterKey = (filters) => {
+			      const f = filters || {};
+			      return JSON.stringify({
+			        field: f.field || "record_time",
+			        op: f.op || "between",
+			        start: f.start || "",
+			        end: f.end || "",
+			        status: f.status || "all",
+			        illegal: f.illegal || "all",
+			        source: f.source || "",
+			        task: f.task || "",
+			        kw: f.kw || "",
+			      });
+			    };
+
+			    const fetchDailyRecords = async () => {
+			      const startMs = getTodayStartMs();
+			      const maxPages = Math.max(1, Math.ceil(DAILY_MAX_RECORDS / DAILY_PAGE_SIZE));
+			      let pageIndex = 0;
+			      let all = [];
+			      let total = 0;
+
+			      while (pageIndex < maxPages) {
+			        const { items, total: totalCount } = await fetchReviewRecordListPage({
+			          pageIndex,
+			          pageSize: DAILY_PAGE_SIZE,
+			        });
+			        total = totalCount || total;
+			        const mapped = mapReviewRecordListItems(items);
+			        if (!mapped.length) break;
+			        all = all.concat(mapped);
+
+			        const oldest = mapped[mapped.length - 1];
+			        const oldestAt = Number(oldest?.at || 0);
+			        if (Number.isFinite(oldestAt) && oldestAt < startMs) break;
+			        if (totalCount && all.length >= totalCount) break;
+			        pageIndex += 1;
+			      }
+
+			      const todayRecords = all.filter((r) => getRecordTimeMs(r) >= startMs);
+			      return { records: todayRecords, total };
+			    };
+
+			    const renderDailySummary = (records) => {
+			      if (!kpiDailyTotalEl || !kpiDailyRangeEl || !kpiDailySubEl || !kpiDailyMetaEl) return;
+			      if (!Array.isArray(records)) {
+			        kpiDailyTotalEl.textContent = "-";
+			        kpiDailyRangeEl.textContent = "今日 00:00 - 现在 · 加载失败";
+			        kpiDailySubEl.textContent = "异常 - · 待处理 - · 失败 -";
+			        kpiDailyMetaEl.textContent = "处理完成 - · 成功率 - · 平均耗时 -";
+			        renderCountRows(kpiTaskCatsEl, []);
+			        renderCountRows(kpiTaskItemsEl, []);
+			        return;
+			      }
+
+			      dailyRecords = records;
+			      const total = records.length;
+			      const alarms = records.filter((r) => r?.illegal === true);
+			      const pending = records.filter((r) => computeReviewStatus(r) === "pending");
+			      const error = records.filter((r) => computeReviewStatus(r) === "error");
+			      const done = records.filter((r) => computeReviewStatus(r) === "done");
+			      const successCount = records.filter((r) => r.ok !== false).length;
+			      const avgCost = total
+			        ? records.reduce((sum, r) => sum + (Number(r.cost_ms) || 0), 0) / total
+			        : 0;
+
+			      kpiDailyTotalEl.textContent = formatNumber(total);
+			      const now = Date.now();
+			      const updated = dailySummaryLastFetchAt ? ` · 更新 ${formatLocalHm(dailySummaryLastFetchAt)}` : "";
+			      kpiDailyRangeEl.textContent = `今日 00:00 - ${formatLocalHm(now)}${updated}`;
+			      kpiDailySubEl.textContent = `异常 ${formatNumber(alarms.length)} · 待处理 ${formatNumber(pending.length)} · 失败 ${formatNumber(error.length)}`;
+			      const successRate = total ? successCount / total : 0;
+			      kpiDailyMetaEl.textContent = `处理完成 ${formatNumber(done.length)} · 成功率 ${formatPercent(successRate)} · 平均耗时 ${formatMs(avgCost)}`;
+
+			      const categoryCounts = new Map();
+			      const taskCounts = new Map();
+			      for (const r of alarms) {
+			        const task = normalizeTaskName(r?.task);
+			        taskCounts.set(task, (taskCounts.get(task) || 0) + 1);
+			        const cat = deriveTaskCategory(task);
+			        categoryCounts.set(cat, (categoryCounts.get(cat) || 0) + 1);
+			      }
+
+			      renderCountRows(kpiTaskCatsEl, sortCountEntries(Array.from(categoryCounts.entries())));
+			      renderCountRows(kpiTaskItemsEl, sortCountEntries(Array.from(taskCounts.entries())));
+			    };
+
+			    const refreshDailySummary = async ({ force = false } = {}) => {
+			      const { base } = buildEndpoint();
+			      if (dailySummaryBase !== base) {
+			        dailySummaryBase = base;
+			        dailySummaryLastFetchAt = 0;
+			      }
+			      const now = Date.now();
+			      if (!force && now - dailySummaryLastFetchAt < DAILY_REFRESH_MS) return;
+			      if (dailySummaryRefreshing) return;
+			      dailySummaryRefreshing = true;
+			      dailySummaryError = "";
+			      if (kpiDailyRangeEl) kpiDailyRangeEl.textContent = "今日 00:00 - 现在 · 加载中…";
+			      try {
+			        const { records } = await fetchDailyRecords();
+			        dailySummaryLastFetchAt = Date.now();
+			        renderDailySummary(records);
+			      } catch (e) {
+			        dailySummaryError = e?.message ? String(e.message) : String(e);
+			        renderDailySummary(null);
+			      } finally {
+			        dailySummaryRefreshing = false;
+			      }
+			    };
+
+				    const resetServerHistoryState = (base) => {
+				      lastHistoryBase = base;
+				      lastHistoryRecordIds = new Set();
+				      historyLoadedOnce = false;
+				      serverHistoryLoadError = "";
+				      serverHistoryLoadErrorUrl = "";
+				      lastHistoryRefreshedAt = 0;
+				      serverHistoryTotal = 0;
+				      historyPageIndex = 0;
+				      serverHistory = [];
+				      serverHistoryAll = [];
+				      serverHistoryFiltered = [];
+				      serverHistoryFilterKey = "";
+				      serverHistoryFilterBase = base || "";
+				      serverHistoryFilterLoadedAt = 0;
+				    };
+
+				    const refreshServerHistory = async ({ notifyNew = false, pageIndex = null, pageSize = null } = {}) => {
+				      const { base } = buildEndpoint();
+				      if (lastHistoryBase !== base) resetServerHistoryState(base);
+
+				      if (pageSize != null) {
+				        const nextSize = normalizePageSize(pageSize);
+				        if (nextSize !== historyPageSize) {
+				          historyPageSize = nextSize;
+				          historyPageIndex = 0;
+				        }
+				      }
+				      if (pageIndex != null) historyPageIndex = Math.max(0, Number(pageIndex || 0));
+
+				      const filters = readTaskFiltersFromUI();
+				      const filterActive = isFilterActive(filters);
+				      const filterKey = buildFilterKey(filters);
+				      if (filterActive && filterKey !== serverHistoryFilterKey) {
+				        historyPageIndex = 0;
+				      }
+
+				      if (historyRefreshing) return;
+				      historyRefreshing = true;
+				      updatePagerUI();
+				      try {
+				        if (loadStatusEl) loadStatusEl.textContent = "点击行查看详情 · 加载中…";
+
+				        if (filterActive) {
+				          const now = Date.now();
+				          const shouldReload = !serverHistoryAll.length
+				            || serverHistoryFilterKey !== filterKey
+				            || serverHistoryFilterBase !== base;
+				          const allowAutoReload = notifyNew && (now - serverHistoryFilterLoadedAt > 60000);
+
+				          if (shouldReload || allowAutoReload) {
+				            const { items, loadedFrom } = await fetchReviewRecordListAll({ pageSize: 200 });
+				            serverHistoryAll = mapReviewRecordListItems(items).sort((a, b) => Number(b.at || 0) - Number(a.at || 0));
+				            serverHistoryFilterKey = filterKey;
+				            serverHistoryFilterBase = base;
+				            serverHistoryFilterLoadedAt = now;
+				            serverHistoryLoadError = "";
+				            serverHistoryLoadErrorUrl = "";
+				            if (loadedFrom && loadedFrom !== base) {
+				              console.warn("review-records 加载已回退到：", loadedFrom, "（原 baseUrl：", base, "）");
+				            }
+				          }
+
+				          const filtered = getFilteredRecords(serverHistoryAll);
+				          serverHistoryFiltered = filtered;
+				          serverHistoryTotal = filtered.length;
+				          lastHistoryRefreshedAt = Date.now();
+
+				          const totalPages = getTotalPages();
+				          if (historyPageIndex > totalPages - 1) {
+				            historyPageIndex = Math.max(0, totalPages - 1);
+				          }
+				          const start = historyPageIndex * historyPageSize;
+				          serverHistory = filtered.slice(start, start + historyPageSize);
+
+				          renderTasks();
+				          updatePagerUI();
+
+				          if (pendingSelectRecordId) {
+				            const rid = pendingSelectRecordId;
+				            pendingSelectRecordId = null;
+				            const found = filtered.find((r) => r.id === rid) || {
+				              id: rid,
+				              at: Date.now(),
+				              detail_url: `/api/v1/review-records/${rid}`,
+				              _source: "server",
+				            };
+				            activeRecord = found;
+				            renderTasks();
+				            showHistoryRecord(found);
+				          } else if (!activeRecord) {
+				            const visible = getFilteredRecords();
+				            if (visible.length) {
+				              activeRecord = visible[0];
+				              renderTasks();
+				              showHistoryRecord(activeRecord);
+				            }
+				          }
+				          return;
+				        }
+
+				        const { items, total, loadedFrom } = await fetchReviewRecordListPage({
+				          pageIndex: historyPageIndex,
+				          pageSize: historyPageSize || HISTORY_PAGE_SIZE,
+				        });
+
+				        serverHistoryLoadError = "";
+				        lastHistoryRefreshedAt = Date.now();
+				        if (loadedFrom && loadedFrom !== base) {
+				          console.warn("review-records 加载已回退到：", loadedFrom, "（原 baseUrl：", base, "）");
+				        }
+
+				        const mapped = mapReviewRecordListItems(items).sort((a, b) => Number(b.at || 0) - Number(a.at || 0));
+				        serverHistory = mapped;
+				        serverHistoryTotal = Number.isFinite(total) && total > 0 ? total : mapped.length;
+
+				        // Clamp out-of-range pages (e.g. after retention cleanup)
+				        const totalPages = getTotalPages();
+				        if (historyPageIndex > totalPages - 1) {
+				          const maxIndex = Math.max(0, totalPages - 1);
+				          if (maxIndex !== historyPageIndex) {
+				            historyPageIndex = maxIndex;
+				            historyRefreshing = false;
+				            updatePagerUI();
+				            await refreshServerHistory({ notifyNew, pageIndex: maxIndex });
+				            return;
+				          }
+				        }
+
+				        let newRecords = [];
+				        if (historyPageIndex === 0) {
+				          const prevIds = lastHistoryRecordIds;
+				          newRecords = historyLoadedOnce
+				            ? mapped
+				                .filter((r) => r.id && !prevIds.has(r.id))
+				                .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))
+				            : [];
+				          lastHistoryRecordIds = new Set(mapped.map((r) => r.id).filter(Boolean));
+				          if (!historyLoadedOnce) historyLoadedOnce = true;
+				        }
+
+				        renderTasks();
+				        updatePagerUI();
+
+				        if (pendingSelectRecordId) {
+				          const rid = pendingSelectRecordId;
+				          pendingSelectRecordId = null;
+				          const found = serverHistory.find((r) => r.id === rid) || {
+				            id: rid,
+				            at: Date.now(),
+				            detail_url: `/api/v1/review-records/${rid}`,
+				            _source: "server",
+				          };
+				          activeRecord = found;
+				          renderTasks();
+				          showHistoryRecord(found);
+				        } else if (!activeRecord) {
+				          const visible = getFilteredRecords();
+				          if (visible.length) {
+				            activeRecord = visible[0];
+				            renderTasks();
+				            showHistoryRecord(activeRecord);
+				          }
+				        }
+
+				        const notifyRecords = newRecords.filter((r) => r.illegal === true);
+				        if (notifyNew && notifyRecords.length) handleAlarmRecords(notifyRecords);
+				      } catch (e) {
+				        serverHistoryLoadError = e?.message ? String(e.message) : String(e);
+				        console.warn("服务器记录加载失败：", e);
+				        if (!serverHistory.length) renderTasks();
+				      } finally {
+				        historyRefreshing = false;
+				        updatePagerUI();
+				      }
+				    };
+
+				    const pollLatestServerHistory = async ({ notifyNew = true } = {}) => {
+				      if (isFilterActive(readTaskFiltersFromUI())) return;
+				      if (historyPageIndex === 0) {
+				        await refreshServerHistory({ notifyNew: !!notifyNew });
+				        return;
+				      }
+				      if (latestPolling) return;
+				      latestPolling = true;
+				      try {
+				        const { base } = buildEndpoint();
+				        if (lastHistoryBase !== base) {
+				          resetServerHistoryState(base);
+				          return;
+				        }
+				        const pollSize = 50;
+				        const { items, total } = await fetchReviewRecordListPage({ pageIndex: 0, pageSize: pollSize });
+				        if (Number.isFinite(total) && total > 0) serverHistoryTotal = total;
+
+				        const mapped = mapReviewRecordListItems(items).sort((a, b) => Number(b.at || 0) - Number(a.at || 0));
+				        const prevIds = lastHistoryRecordIds;
+				        const newRecords = historyLoadedOnce
+				          ? mapped
+				              .filter((r) => r.id && !prevIds.has(r.id))
+				              .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))
+				          : [];
+				        lastHistoryRecordIds = new Set(mapped.map((r) => r.id).filter(Boolean));
+				        if (!historyLoadedOnce) historyLoadedOnce = true;
+
+				        updatePagerUI();
+				        const notifyRecords = newRecords.filter((r) => r.illegal === true);
+				        if (notifyNew && notifyRecords.length) handleAlarmRecords(notifyRecords);
+				      } catch {
+				        // ignore
+				      } finally {
+				        latestPolling = false;
+				      }
+				    };
+
+	    const extractSummary = (jsonData) => {
+	      if (!jsonData || typeof jsonData !== "object") return "";
+	      if (jsonData.success === true) {
+        if (jsonData.summary_sentence) return String(jsonData.summary_sentence);
+        if (jsonData.data && typeof jsonData.data === "object") {
+          const fallbackKeys = ["summary", "结论", "conclusion", "result"];
+          for (const key of fallbackKeys) {
+            if (key in jsonData.data && jsonData.data[key]) return String(jsonData.data[key]);
+          }
+        }
+        return "请求成功";
+      }
+      if (jsonData.error) return String(jsonData.error);
+	      return "";
+	    };
+
+	    const resetMediaExtras = () => {
+	      activeMediaList = [];
+	      activeMediaIndex = 0;
+	      if (mediaThumbs) {
+	        mediaThumbs.innerHTML = "";
+	        mediaThumbs.style.display = "none";
+	      }
+	      if (mediaCounter) {
+	        mediaCounter.textContent = "";
+	        mediaCounter.style.display = "none";
+	      }
+	    };
+
+	    const setActiveMediaIndex = (nextIndex) => {
+	      if (!activeMediaList.length) return;
+	      const len = activeMediaList.length;
+	      const normalized = ((nextIndex % len) + len) % len;
+	      activeMediaIndex = normalized;
+	      updateMediaGallery();
+	    };
+
+	    const updateMediaGallery = () => {
+	      if (!activeMediaList.length) {
+	        resetMediaExtras();
+	        return;
+	      }
+	      const currentUrl = buildAbsoluteUrl(activeMediaList[activeMediaIndex]);
+	      mediaSlot.innerHTML = `
+	        <div class="media-gallery">
+	          <button type="button" class="media-nav prev" aria-label="上一张">‹</button>
+	          <img src="${currentUrl}" alt="">
+	          <button type="button" class="media-nav next" aria-label="下一张">›</button>
+	        </div>
+	      `;
+	      const prevBtn = mediaSlot.querySelector(".media-nav.prev");
+	      const nextBtn = mediaSlot.querySelector(".media-nav.next");
+	      const disabled = activeMediaList.length <= 1;
+	      if (prevBtn) {
+	        prevBtn.disabled = disabled;
+	        prevBtn.onclick = () => setActiveMediaIndex(activeMediaIndex - 1);
+	      }
+	      if (nextBtn) {
+	        nextBtn.disabled = disabled;
+	        nextBtn.onclick = () => setActiveMediaIndex(activeMediaIndex + 1);
+	      }
+
+	      if (mediaCounter) {
+	        mediaCounter.textContent = `${activeMediaIndex + 1}/${activeMediaList.length}`;
+	        mediaCounter.style.display = activeMediaList.length > 1 ? "block" : "none";
+	      }
+
+	      if (mediaThumbs) {
+	        if (activeMediaList.length > 1) {
+	          mediaThumbs.style.display = "flex";
+	          mediaThumbs.innerHTML = activeMediaList.map((url, idx) => {
+	            const abs = buildAbsoluteUrl(url);
+	            return `<button type="button" class="media-thumb${idx === activeMediaIndex ? " active" : ""}" data-index="${idx}" title="第 ${idx + 1} 张"><img src="${abs}" alt=""></button>`;
+	          }).join("");
+	          mediaThumbs.querySelectorAll(".media-thumb").forEach((btn) => {
+	            btn.onclick = () => setActiveMediaIndex(Number(btn.dataset.index || 0));
+	          });
+	        } else {
+	          mediaThumbs.innerHTML = "";
+	          mediaThumbs.style.display = "none";
+	        }
+	      }
+	    };
+
+	    const renderImageGallery = (imageUrls) => {
+	      activeMediaList = imageUrls.slice();
+	      activeMediaIndex = 0;
+	      updateMediaGallery();
+	    };
+
+	    const collectRecordImageUrls = (record, detailRecord) => {
+	      const imageUrls = [];
+	      const seen = new Set();
+	      const pushImage = (rawUrl) => {
+	        const u = String(rawUrl || "").trim();
+	        if (!u || u.startsWith("data:") || seen.has(u)) return;
+	        seen.add(u);
+	        imageUrls.push(u);
+	      };
+
+	      const detail = detailRecord || record?._detail || null;
+	      if (detail) {
+	        const imageMeta = detail.image || {};
+	        const imageStaticUrl = (typeof imageMeta.static_url === "string" && imageMeta.static_url.trim())
+	          ? imageMeta.static_url.trim()
+	          : "";
+	        const imageUrl = (typeof imageMeta.url === "string" && imageMeta.url.trim())
+	          ? imageMeta.url.trim()
+	          : "";
+	        if (imageStaticUrl) pushImage(imageStaticUrl);
+	        else if (imageUrl) pushImage(imageUrl);
+
+	        const files = Array.isArray(detail?.request?.context?.files) ? detail.request.context.files : [];
+	        files.forEach((f) => {
+	          const mt = String(f?.media_type || f?.mediaType || "").toLowerCase();
+	          const u = String(f?.url || "").trim();
+	          if (mt === "image" && u) pushImage(u);
+	        });
+	      }
+
+	      if (record) {
+	        if (record.image_url) pushImage(record.image_url);
+	        const thumb = record.thumbnail;
+	        const thumbType = String(thumb?.type || "").toLowerCase();
+	        const thumbUrl = typeof thumb?.url === "string" ? thumb.url : "";
+	        if (thumbType === "image" && thumbUrl) pushImage(thumbUrl);
+	      }
+
+	      return imageUrls;
+	    };
+
+	    const renderRecordMedia = (detailRecord) => {
+	      if (!detailRecord) return;
+	      const video = detailRecord.video || {};
+	      const imageMeta = detailRecord.image || {};
+	      const req = detailRecord.request || {};
+	      const ctx = req.context || {};
+	      const files = Array.isArray(ctx.files) ? ctx.files : [];
+
+	      resetMediaExtras();
+
+	      // Prefer recorded mp4 if ready
+	      if (video.status === "done" && video.static_url) {
+	        const mp4 = buildAbsoluteUrl(video.static_url);
+	        mediaSlot.innerHTML = `<video src="${mp4}" controls></video>`;
+	        return;
+	      }
+
+	      const imageStaticUrl = (typeof imageMeta.static_url === "string" && imageMeta.static_url.trim())
+	        ? imageMeta.static_url.trim()
+	        : "";
+	      const imageUrls = [];
+	      const seenImages = new Set();
+	      const pushImage = (rawUrl) => {
+	        const u = String(rawUrl || "").trim();
+	        if (!u || u.startsWith("data:") || seenImages.has(u)) return;
+	        seenImages.add(u);
+	        imageUrls.push(u);
+	      };
+	      if (imageStaticUrl) pushImage(imageStaticUrl);
+	      files.forEach((f) => {
+	        const mt = String(f?.media_type || f?.mediaType || "").toLowerCase();
+	        const u = String(f?.url || "").trim();
+	        if (mt === "image" && u) pushImage(u);
+	      });
+	      if (imageUrls.length) {
+	        renderImageGallery(imageUrls);
+	        return;
+	      }
+
+	      if (video.status && video.status !== "not_requested") {
+	        mediaSlot.innerHTML = `<div style="padding:14px; color:#e5e7eb;">视频状态：${video.status}${video.error ? `<div style="margin-top:6px; color:#fecaca;">${video.error}</div>` : ""}</div>`;
+	        return;
+	      }
+	      mediaSlot.innerHTML = `<div style="padding:14px; color:#e5e7eb;">暂无可预览媒体</div>`;
+	    };
+
+	    const loadServerRecordDetail = async (record) => {
+	      const detailPath = record?.detail_url || (record?.id ? `/api/v1/review-records/${record.id}` : "");
+	      if (!detailPath) return null;
+	      const isAbsolute = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(detailPath);
+	      if (isAbsolute) {
+	        const { ok, json } = await fetchJson(detailPath);
+	        if (ok && json && json.status === 200) return json.result || null;
+	        return null;
+	      }
+
+	      const { base } = buildEndpoint();
+	      const candidateBases = Array.from(new Set([
+	        base,
+	        guessApiBase(),
+	        window.location.origin,
+	      ].map((s) => String(s || "").replace(/\/$/, "")).filter(Boolean)));
+
+	      for (const b of candidateBases) {
+	        const url = `${b}${detailPath.startsWith("/") ? "" : "/"}${detailPath}`;
+	        const { ok, json } = await fetchJson(url);
+	        if (ok && json && json.status === 200) return json.result || null;
+	      }
+	      return null;
+	    };
+
+		    const showHistoryRecord = async (record) => {
+		      if (!record) return;
+		      activeRecord = record;
+		      const { base } = buildEndpoint();
+		      setUrlParams({ recordId: record?.id || null, base: base || null });
+		      if ((!record.request_preview || !record.response_preview) && record._source === "server") {
+		        const detail = record._detail || await loadServerRecordDetail(record);
+	        if (detail) {
+	          record._detail = detail;
+	          record.request_preview = JSON.stringify(detail.request || {}, null, 2);
+	          record.response_preview = JSON.stringify(detail.response || {}, null, 2);
+	          if (!record.image_url) {
+	            const imgStatic = detail.image?.static_url;
+	            if (typeof imgStatic === "string" && imgStatic.trim()) record.image_url = imgStatic.trim();
+	          }
+	          const ctx = detail.request?.context;
+	          if ((record.task == null || record.task === "") && ctx && typeof ctx.task === "string") record.task = ctx.task;
+	          if (ctx && Array.isArray(ctx.files)) {
+	            const files = ctx.files;
+	            if (!record.image_url) {
+	              const img = files.find((f) => {
+	                const mt = String(f?.media_type || f?.mediaType || "").toLowerCase();
+	                const u = String(f?.url || "");
+	                return mt === "image" && u && !u.startsWith("data:");
+	              });
+	              if (img?.url) record.image_url = img.url;
+	            }
+	            if (!record.video_url) {
+	              const vid = files.find((f) => {
+	                const mt = String(f?.media_type || f?.mediaType || "").toLowerCase();
+	                const u = String(f?.url || "");
+	                return mt === "video" && u && !u.startsWith("data:");
+	              });
+	              if (vid?.url) record.video_url = vid.url;
+	            }
+	          }
+	          const v = detail.video || {};
+	          record.video = record.video || v;
+	          renderRecordMedia(detail);
+	          record._image_urls = collectRecordImageUrls(record, detail);
+	        }
+	      }
+	      renderTasks();
+	      const reqBox = document.getElementById("reqBox");
+	      const resBox = document.getElementById("resBox");
+	      const resKv = document.getElementById("resKv");
+	      if (reqBox) reqBox.textContent = record.request_preview || "{}";
+	      if (resBox) resBox.textContent = record.response_preview || "(空响应)";
+	      document.getElementById("httpStatus").textContent = record.http_status ?? "-";
+	      document.getElementById("cost").textContent = record.cost_ms != null ? `${record.cost_ms} ms` : "-";
+
+	      // Right-side header
+	      const detail = record._detail;
+	      const req = detail?.request || {};
+	      const resp = detail?.response || {};
+	      const chip = typeof getReviewStatusChip === "function" ? getReviewStatusChip(record) : { text: "-", cls: "gray" };
+	      taskTitle.textContent = record.summary || "-";
+	      const taskName = (typeof record.task === "string" && record.task.trim())
+	        ? record.task.trim()
+	        : (typeof req?.context?.task === "string" ? req.context.task.trim() : "");
+	      taskDesc.textContent = taskName
+	        ? `任务：${taskName}`
+	        : (record.agent_id ? `agent ${record.agent_id}` : "选择左侧记录");
+	      progressText.textContent = record.id ? record.id.slice(0, 12) : "-";
+	      finishTime.textContent = formatTs(record.at || Date.now());
+	      taskStatus.textContent = chip.text;
+	      taskStatus.className = `badge ${chip.cls === "green" ? "green" : chip.cls === "red" ? "red" : "gray"}`;
+	      const videoStatus = detail?.video?.status;
+	      if (taskRisk) {
+	        const respData = (resp && typeof resp === "object" && resp.data && typeof resp.data === "object") ? resp.data : null;
+	        const illegalVal = (typeof record.illegal === "boolean")
+	          ? record.illegal
+	          : (respData && typeof respData.illegal === "boolean" ? respData.illegal : null);
+	        if (illegalVal === true || illegalVal === false) {
+	          taskRisk.textContent = `是否异常：${formatYesNo(illegalVal)}`;
+	          taskRisk.className = `badge ${illegalVal ? "red" : "green"}`;
+	        } else {
+	          const label = videoStatus && videoStatus !== "not_requested"
+	            ? `video ${videoStatus}`
+	            : (record.video?.status && record.video.status !== "not_requested" ? `video ${record.video.status}` : "—");
+	          taskRisk.textContent = label;
+	          taskRisk.className = `badge ${videoStatus === "done" ? "green" : videoStatus === "failed" ? "red" : "gray"}`;
+	        }
+	      }
+
+	      // Key/value response rendering (prefer response.data)
+	      if (resKv) {
+	        const data = (resp && typeof resp === "object" && resp.data && typeof resp.data === "object") ? resp.data : resp;
+	        renderKeyValueList(resKv, data);
+	      }
+	    };
+
+	    const applyHistoryRecord = async (record) => {
+	      if (!record) return;
+
+	      if (record.form) {
+	        const form = record.form;
+	        if (baseInput && form.baseUrl) baseInput.value = form.baseUrl;
+	        if (agentIdInput && form.agentId) agentIdInput.value = form.agentId;
+	        if (typeof form.message === "string") document.getElementById("message").value = form.message;
+	        if (typeof form.schemaText === "string") document.getElementById("schemaBox").textContent = form.schemaText;
+	        if (typeof form.fileUrl === "string") document.getElementById("fileUrl").value = form.fileUrl;
+	        if (typeof form.fileType === "string") document.getElementById("fileType").value = form.fileType;
+	        selectedFileData = null;
+	        const preview = document.getElementById("preview");
+	        if (preview) preview.style.display = "none";
+	        updateEndpointUI();
+	        updateReqPreview();
+	        showHistoryRecord(record);
+	        return;
+	      }
+
+	      // Server record: fetch detail then fill
+	      const detail = record._detail || await loadServerRecordDetail(record);
+	      if (!detail) return;
+	      record._detail = detail;
+	      const req = detail.request || {};
+	      const ctx = req.context || {};
+	      if (detail.agent_id) agentIdInput.value = detail.agent_id;
+	      if (taskNameInput && typeof ctx.task === "string") taskNameInput.value = ctx.task;
+	      if (typeof req.message === "string") document.getElementById("message").value = req.message;
+	      if (ctx.json_schema) document.getElementById("schemaBox").textContent = JSON.stringify(ctx.json_schema, null, 2);
+	      const firstFile = Array.isArray(ctx.files) ? ctx.files[0] : null;
+	      if (firstFile?.url) document.getElementById("fileUrl").value = firstFile.url;
+	      if (firstFile?.media_type) document.getElementById("fileType").value = firstFile.media_type;
+	      selectedFileData = null;
+	      const preview = document.getElementById("preview");
+	      if (preview) preview.style.display = "none";
+	      updateEndpointUI();
+	      updateReqPreview();
+	      showHistoryRecord(record);
+	    };
+
+	    const settings = loadSettings();
+	    const savedBase = typeof settings.baseUrl === "string" ? settings.baseUrl.trim() : "";
+	    let normalizedSavedBase = savedBase ? normalizeBaseUrl(savedBase) : "";
+	    const normalizedOrigin = normalizeBaseUrl(window.location.origin);
+	    const urlBase = (getUrlParam("base") || getUrlParam("baseUrl") || "").trim();
+	    const urlRecordId = (getUrlParam("recordId") || "").trim();
+	    const defaultBase = guessApiBase();
+	    if (!urlBase && window.location.port === "6502") {
+	      const looksLegacyAuto = normalizedSavedBase && normalizedSavedBase.endsWith(":8005");
+	      if (looksLegacyAuto) normalizedSavedBase = "";
+	    }
+	    if (urlBase) {
+	      baseInput.value = normalizeBaseUrl(urlBase);
+	    } else if (urlRecordId) {
+	      baseInput.value = defaultBase;
+	    } else {
+	      baseInput.value = normalizedSavedBase && normalizedSavedBase !== normalizedOrigin
+	        ? normalizedSavedBase
+	        : defaultBase;
+	    }
+	    agentIdInput.value = settings.agentId || "review_cloud";
+		    if (taskNameInput) taskNameInput.value = settings.task || "";
+		    if (urlRecordId) pendingSelectRecordId = urlRecordId;
+		    const urlSingleRaw = getUrlParam("single");
+		    if (urlSingleRaw != null) {
+		      const v = String(urlSingleRaw).trim().toLowerCase();
+		      singlePaneEnabled = ["1", "true", "yes", "y", "on"].includes(v);
+		    } else {
+		      singlePaneEnabled = settings.singlePaneEnabled === true;
+		    }
+		    updateSinglePaneUI();
+		    if (singlePaneBtn) {
+		      singlePaneBtn.onclick = () => {
+		        singlePaneEnabled = !singlePaneEnabled;
+		        saveSettings({ singlePaneEnabled });
+		        setUrlParams({ single: singlePaneEnabled ? "1" : null });
+		        updateSinglePaneUI();
+		      };
+		    }
+		    let filtersCollapsed = settings.filtersCollapsed !== false; // 默认隐藏筛选区
+		    const updateFilterPanelUI = () => {
+		      if (!filterPanelEl || !filterToggleBtn) return;
+		      filterPanelEl.classList.toggle("show", !filtersCollapsed);
+	      filterToggleBtn.textContent = filtersCollapsed ? "筛选 ▾" : "收起筛选 ▴";
+	    };
+		    updateFilterPanelUI();
+		    if (filterToggleBtn) {
+		      filterToggleBtn.onclick = () => {
+		        filtersCollapsed = !filtersCollapsed;
+		        saveSettings({ filtersCollapsed });
+		        updateFilterPanelUI();
+		      };
+		    }
+		    historyPageSize = normalizePageSize(settings.historyPageSize || HISTORY_PAGE_SIZE);
+		    updatePagerUI();
+		    const jumpToPage = () => {
+		      const totalPages = getTotalPages();
+		      const raw = pageJumpInput ? Number(pageJumpInput.value || 1) : 1;
+		      const idx = clampInt(raw - 1, 0, Math.max(0, totalPages - 1));
+		      void refreshServerHistory({ pageIndex: idx });
+		    };
+		    if (pagePrevBtn) pagePrevBtn.onclick = () => {
+		      if (historyPageIndex <= 0) return;
+		      void refreshServerHistory({ pageIndex: historyPageIndex - 1 });
+		    };
+		    if (pageNextBtn) pageNextBtn.onclick = () => {
+		      const totalPages = getTotalPages();
+		      if (historyPageIndex >= totalPages - 1) return;
+		      void refreshServerHistory({ pageIndex: historyPageIndex + 1 });
+		    };
+		    if (pageJumpBtn) pageJumpBtn.onclick = () => jumpToPage();
+		    if (pageJumpInput) pageJumpInput.onkeydown = (e) => { if (e.key === "Enter") jumpToPage(); };
+		    if (pageSizeSelect) pageSizeSelect.onchange = () => {
+		      const size = normalizePageSize(pageSizeSelect.value || HISTORY_PAGE_SIZE);
+		      saveSettings({ historyPageSize: size });
+		      void refreshServerHistory({ pageSize: size, pageIndex: 0 });
+		    };
+		    alarmToastEnabled = settings.alarmToastEnabled !== false;
+		    alarmSystemNotifyEnabled = settings.alarmSystemNotifyEnabled !== false;
+		    updateAlarmToggleUI();
+		    updateAlarmNotifyUI();
+		    if (alarmToggleBtn) {
+		      alarmToggleBtn.onclick = () => {
+		        alarmToastEnabled = !alarmToastEnabled;
+		        saveSettings({ alarmToastEnabled });
+		        updateAlarmToggleUI();
+		        if (!alarmToastEnabled) hideAlarmToast();
+		        if (alarmToastEnabled) void primeAlarmAudio();
+		      };
+		    }
+		    if (alarmNotifyBtn) {
+		      alarmNotifyBtn.onclick = async () => {
+		        if (!canUseNotificationInContext()) return;
+
+		        // 已开启但未授权：点击时优先触发授权，而不是直接切到“关”
+		        if (alarmSystemNotifyEnabled && Notification.permission !== "granted") {
+		          const ok = await primeSystemNotification();
+		          if (!ok) {
+		            alarmSystemNotifyEnabled = false;
+		            saveSettings({ alarmSystemNotifyEnabled: false });
+		            updateAlarmNotifyUI();
+		            setHint("系统通知权限未授权/被拒绝或非安全域（隐藏时无法弹窗）", "muted");
+		            return;
+		          }
+		          alarmSystemNotifyEnabled = true;
+		          saveSettings({ alarmSystemNotifyEnabled: true });
+		          updateAlarmNotifyUI();
+		          return;
+		        }
+
+		        const next = !alarmSystemNotifyEnabled;
+		        if (next) {
+		          const ok = await primeSystemNotification();
+		          if (!ok) {
+		            alarmSystemNotifyEnabled = false;
+		            saveSettings({ alarmSystemNotifyEnabled: false });
+		            updateAlarmNotifyUI();
+		            setHint("系统通知权限未授权/被拒绝或非安全域（隐藏时无法弹窗）", "muted");
+		            return;
+		          }
+		        }
+		        alarmSystemNotifyEnabled = next;
+		        saveSettings({ alarmSystemNotifyEnabled });
+		        updateAlarmNotifyUI();
+		      };
+		    }
+	    // 浏览器一般要求用户交互后才能播放声音：首次点击/按键后预热 AudioContext
+	    const primeAudioOnce = () => { void primeAlarmAudio(); };
+	    document.addEventListener("click", primeAudioOnce, { once: true, passive: true });
+	    document.addEventListener("keydown", primeAudioOnce, { once: true });
+	    if (alarmSoundTestBtn) {
+	      alarmSoundTestBtn.onclick = async () => {
+	        const prev = alarmSoundTestBtn.textContent;
+	        alarmSoundTestBtn.textContent = "播放中…";
+	        await primeAlarmAudio();
+	        const ok = await playAlarmSound();
+	        alarmSoundTestBtn.textContent = ok ? "已播放" : "被浏览器拦截";
+	        setTimeout(() => { alarmSoundTestBtn.textContent = prev; }, 1200);
+	      };
+	    }
+	    if (screenBtn) {
+	      screenBtn.onclick = () => {
+	        const url = screenBtn.dataset.url || buildScreenUrl();
+	        if (url) window.open(url, "_blank", "noopener");
+	      };
+	    }
+	    if (reportBtn) {
+	      reportBtn.onclick = () => {
+	        const url = reportBtn.dataset.url || buildReportUrl();
+	        if (url) window.open(url, "_blank", "noopener");
+	      };
+	    }
+    updateEndpointUI();
+	    baseInput.addEventListener("input", () => {
+	      updateEndpointUI();
+	      refreshServerHistory();
+	    });
+	    baseInput.addEventListener("change", () => {
+	      refreshDailySummary({ force: true });
+	    });
+	    agentIdInput.addEventListener("input", () => {
+	      updateEndpointUI();
+	      refreshServerHistory();
+	    });
+	    if (taskNameInput) {
+	      taskNameInput.addEventListener("input", () => {
+	        saveSettings({ task: (taskNameInput.value || "").trim() });
+	        updateReqPreview();
+	      });
+	    }
+
+	    document.getElementById("fieldName").value = "人数";
+    document.getElementById("fieldDesc").value = "检测到的人数";
+    document.getElementById("fieldReq").checked = true;
+
+    const setHint = (msg, tone="muted") => {
+      const h = document.getElementById("fieldHint");
+      if (!h) return;
+      h.textContent = msg || "";
+      h.style.color = tone === "error" ? "#ef4444" : "#6b7280";
+    };
+
+	    const escapeHtml = (value) => {
+	      const s = String(value ?? "");
+	      return s.replace(/[&<>"']/g, (ch) => {
+	        switch (ch) {
+	          case "&": return "&amp;";
+	          case "<": return "&lt;";
+	          case ">": return "&gt;";
+	          case "\"": return "&quot;";
+	          case "'": return "&#39;";
+	          default: return ch;
+	        }
+	      });
+	    };
+
+	    const closeMediaModal = () => {
+	      if (!mediaModalEl) return;
+	      mediaModalEl.classList.remove("show");
+	      mediaModalEl.setAttribute("aria-hidden", "true");
+	      if (mediaModalBodyEl) mediaModalBodyEl.innerHTML = "";
+	    };
+
+	    const openMediaModal = ({ url, type, title }) => {
+	      if (!mediaModalEl || !mediaModalBodyEl) return;
+	      if (!url) return;
+
+	      const safeTitle = (typeof title === "string" && title.trim()) ? title.trim() : "媒体预览";
+	      if (mediaModalTitleEl) mediaModalTitleEl.textContent = safeTitle;
+	      if (mediaModalOpenEl) mediaModalOpenEl.href = url;
+
+	      mediaModalBodyEl.innerHTML = "";
+
+	      const canEmbed = (u) => /^https?:/i.test(u) || /^blob:/i.test(u) || /^data:/i.test(u);
+	      const addFallbackLink = (label) => {
+	        mediaModalBodyEl.innerHTML = `<div style="color:#e5e7eb; padding:14px; text-align:center;">${escapeHtml(label)}<div style="margin-top:10px;"><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="media-link">打开链接</a></div></div>`;
+	      };
+
+	      if (type === "video") {
+	        if (!canEmbed(url)) {
+	          addFallbackLink("该视频地址浏览器可能无法直接播放");
+	        } else {
+	          const v = document.createElement("video");
+	          v.src = url;
+	          v.controls = true;
+	          v.playsInline = true;
+	          mediaModalBodyEl.appendChild(v);
+	        }
+	      } else {
+	        if (!canEmbed(url)) {
+	          addFallbackLink("该图片地址浏览器可能无法直接预览");
+	        } else {
+	          const img = document.createElement("img");
+	          img.src = url;
+	          img.alt = safeTitle;
+	          mediaModalBodyEl.appendChild(img);
+	        }
+	      }
+
+	      mediaModalEl.classList.add("show");
+	      mediaModalEl.setAttribute("aria-hidden", "false");
+	    };
+
+	    if (mediaModalBackdropEl) mediaModalBackdropEl.onclick = closeMediaModal;
+	    if (mediaModalCloseBtn) mediaModalCloseBtn.onclick = closeMediaModal;
+	    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMediaModal(); });
+
+	    const formatKvValue = (value) => {
+	      if (value == null) return "null";
+	      if (typeof value === "string") return value;
+	      if (typeof value === "number" || typeof value === "boolean") return String(value);
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    };
+
+    const formatYesNo = (value) => {
+      if (value === true) return "是";
+      if (value === false) return "否";
+      return "-";
+    };
+
+    function flattenKeyValue(value, prefix = "", out = [], depth = 0) {
+      const MAX_DEPTH = 6;
+      const MAX_ROWS = 200;
+      if (out.length >= MAX_ROWS) return out;
+
+      if (value && typeof value === "object" && !Array.isArray(value) && depth < MAX_DEPTH) {
+        for (const [k, v] of Object.entries(value)) {
+          if (out.length >= MAX_ROWS) break;
+          const key = prefix ? `${prefix}.${k}` : k;
+          if (v && typeof v === "object" && !Array.isArray(v)) {
+            flattenKeyValue(v, key, out, depth + 1);
+          } else {
+            out.push([key, v]);
+          }
+        }
+        return out;
+      }
+
+      out.push([prefix || "value", value]);
+      return out;
+    }
+
+    function renderKeyValueList(container, data) {
+      if (!container) return;
+      container.innerHTML = "";
+      if (data == null) {
+        container.innerHTML = `<div class="kv-empty">-</div>`;
+        return;
+      }
+
+      const rows = Array.isArray(data)
+        ? [["value", data]]
+        : flattenKeyValue(data);
+
+      if (!rows.length) {
+        container.innerHTML = `<div class="kv-empty">-</div>`;
+        return;
+      }
+
+      for (const [k, v] of rows) {
+        const row = document.createElement("div");
+        row.className = "kv-row";
+        row.innerHTML = `
+          <div class="kv-key">${escapeHtml(k)}</div>
+          <div class="kv-val">${escapeHtml(formatKvValue(v))}</div>
+        `;
+        container.appendChild(row);
+      }
+    }
+
+    const parseTimeMs = (value) => {
+      if (value == null || value === "") return null;
+      const toEpochMs = (n) => (n < 1e12 ? Math.round(n * 1000) : Math.round(n));
+      if (typeof value === "number") {
+        return Number.isFinite(value) ? toEpochMs(value) : null;
+      }
+      const s = String(value).trim();
+      if (!s) return null;
+      if (/^\d+$/.test(s)) {
+        const n = Number(s);
+        return Number.isFinite(n) ? toEpochMs(n) : null;
+      }
+      const hasTz = /[zZ]|[+-]\d{2}:?\d{2}$/;
+      const noTzDate = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/;
+      if (noTzDate.test(s) && !hasTz.test(s)) {
+        const iso = s.replace(" ", "T");
+        const dLocal = new Date(`${iso}+08:00`);
+        if (!Number.isNaN(dLocal.getTime())) return dLocal.getTime();
+      }
+      const d1 = new Date(s);
+      if (!Number.isNaN(d1.getTime())) return d1.getTime();
+      const iso = s.replace(" ", "T");
+      const d2 = new Date(iso);
+      if (!Number.isNaN(d2.getTime())) return d2.getTime();
+      return null;
+    };
+
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const formatLocalTs = (ms) => {
+      const formatted = formatBeijingTs(ms);
+      return formatted != null ? formatted : "-";
+    };
+
+    const formatLocalHm = (ms) => {
+      const formatted = formatBeijingHm(ms);
+      return formatted != null ? formatted : "-";
+    };
+
+    const getTodayStartMs = () => {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      return d.getTime();
+    };
+
+    const getRecordTimeMs = (record) => {
+      const ts = parseTimeMs(record?.record_time);
+      if (ts != null) return ts;
+      const at = Number(record?.at || record?.created_at_ms || 0);
+      return Number.isFinite(at) && at > 0 ? at : Date.now();
+    };
+
+    const computeReviewStatus = (record) => {
+      if (!record) return "pending";
+      const status = String(record.review_status || "").trim();
+      if (status) return status;
+      const videoStatus = String(record.video?.status || "").trim();
+      if (videoStatus === "queued" || videoStatus === "recording") return "pending";
+      if (record.ok === false) return "error";
+      return "done";
+    };
+
+    const getReviewStatusChip = (record) => {
+      const st = computeReviewStatus(record);
+      if (st === "done") return { text: "已处理", cls: "green" };
+      if (st === "error") return { text: "异常", cls: "red" };
+      return { text: "待处理", cls: "gray" };
+    };
+
+    const formatRecordTime = (value, fallbackMs) => {
+      if (value == null || value === "") return formatTs(fallbackMs);
+      if (typeof value === "number") return formatTs(value);
+      const ms = parseTimeMs(value);
+      if (ms != null) return formatTs(ms);
+      return String(value);
+    };
+
+	    const defaultTaskFilters = () => ({
+	      field: "record_time",
+	      op: "between",
+	      start: "",
+	      end: "",
+	      status: "all",
+	      illegal: "all",
+	      source: "",
+	      task: "",
+	      kw: "",
+	    });
+
+    const loadTaskFilters = () => {
+      try {
+        const raw = localStorage.getItem(TASK_FILTERS_KEY);
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        if (!data || typeof data !== "object") return null;
+
+        // Migration: old versions forced illegal=yes (filter hidden). Default to "all" once.
+        const migrated = data.__migrated_illegal_default === true;
+        if (!migrated) {
+          const illegal = String(data.illegal ?? "").trim().toLowerCase();
+          if (!illegal || illegal === "yes") data.illegal = "all";
+          data.__migrated_illegal_default = true;
+          try {
+            localStorage.setItem(TASK_FILTERS_KEY, JSON.stringify(data));
+          } catch {
+            // ignore
+          }
+        }
+        return data;
+      } catch {
+        return null;
+      }
+    };
+
+    const saveTaskFilters = (filters) => {
+      try { localStorage.setItem(TASK_FILTERS_KEY, JSON.stringify(filters || {})); } catch { /* ignore */ }
+    };
+
+	    const readTaskFiltersFromUI = () => ({
+	      field: filterFieldEl?.value || "record_time",
+	      op: filterOpEl?.value || "between",
+	      start: filterStartEl?.value || "",
+	      end: filterEndEl?.value || "",
+	      status: statusFilterEl?.value || "all",
+	      illegal: illegalFilterEl?.value || "all",
+	      source: sourceFilterEl?.value || "",
+	      task: (taskFilterEl?.value || "").trim(),
+	      kw: (document.getElementById("search")?.value || "").trim(),
+	    });
+
+	    const applyTaskFiltersToUI = (filters) => {
+	      const f = { ...defaultTaskFilters(), ...(filters || {}) };
+	      if (filterFieldEl) filterFieldEl.value = f.field || "record_time";
+	      if (filterOpEl) filterOpEl.value = f.op || "between";
+	      if (filterStartEl) filterStartEl.value = f.start || "";
+	      if (filterEndEl) filterEndEl.value = f.end || "";
+	      if (statusFilterEl) statusFilterEl.value = f.status || "all";
+	      if (illegalFilterEl) illegalFilterEl.value = f.illegal || "all";
+	      if (sourceFilterEl) sourceFilterEl.value = f.source || "";
+	      if (taskFilterEl) taskFilterEl.value = f.task || "";
+	      const searchEl = document.getElementById("search");
+	      if (searchEl) searchEl.value = f.kw || "";
+	    };
+
+	    const getFilteredRecords = (records = serverHistory) => {
+	      const filters = readTaskFiltersFromUI();
+	      const taskNeedle = (filters.task || "").toLowerCase();
+	      const kw = (filters.kw || "").toLowerCase();
+
+      const fieldKey = filters.field === "review_time" ? "review_time" : "record_time";
+      const startMs = parseTimeMs(filters.start);
+      const endMs = parseTimeMs(filters.end);
+
+	      return (records || []).filter((r) => {
+	        if (filters.illegal === "yes" && r.illegal !== true) return false;
+	        if (filters.illegal === "no" && r.illegal !== false) return false;
+
+        const reviewStatus = computeReviewStatus(r);
+        if (filters.status === "running" && reviewStatus !== "pending") return false;
+        if (filters.status === "done" && reviewStatus !== "done") return false;
+
+	        const source = String(r.source || "").trim() || "-";
+	        if (filters.source && source !== filters.source) return false;
+
+	        const taskValue = String(r.task || "").trim();
+	        if (taskNeedle && !taskValue.toLowerCase().includes(taskNeedle)) return false;
+
+	        const hay = `${r.summary || ""} ${r.task || ""} ${r.agent_id || ""} ${r.id || ""}`.toLowerCase();
+	        if (kw && !hay.includes(kw)) return false;
+
+        const tsRaw = fieldKey === "review_time" ? r.at : (r.record_time ?? r.at);
+        const tsMs = parseTimeMs(tsRaw);
+        if (tsMs == null) return true;
+        if (filters.op === "gt") return startMs == null ? true : tsMs > startMs;
+        if (filters.op === "lt") return startMs == null ? true : tsMs < startMs;
+
+        // between
+        if (startMs != null && tsMs < startMs) return false;
+        if (endMs != null && tsMs > endMs) return false;
+        return true;
+      });
+    };
+
+	    const normalizeTaskName = (value) => {
+	      const s = String(value ?? "").trim();
+	      return s || "（未填写）";
+	    };
+
+	    const deriveTaskCategory = (taskName) => {
+	      const s = String(taskName ?? "").trim();
+	      if (!s) return "（未填写）";
+	      if (s.includes("://")) return s;
+		      const m = s.match(/^(.+?)\s*[-—–｜|\/／>›»:\uff1a]\s*(.+)$/);
+	      if (m && m[1] && m[2]) return String(m[1]).trim() || s;
+	      return s;
+	    };
+
+	    const sortCountEntries = (entries) =>
+	      entries
+	        .filter(([, c]) => Number(c) > 0)
+	        .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0])));
+
+	    const renderCountRows = (el, entries) => {
+	      if (!el) return;
+	      const list = Array.isArray(entries) ? entries : [];
+	      if (!list.length) {
+	        el.innerHTML = `<span class="muted">-</span>`;
+	        return;
+	      }
+	      el.innerHTML = list
+	        .map(([name, count]) => {
+	          const safeName = escapeHtml(String(name ?? "").trim() || "（未填写）");
+	          const c = Number(count) || 0;
+	          return `<div class="kpi-row"><span class="kpi-row-name" title="${safeName}">${safeName}</span><span class="kpi-row-count">${c}</span></div>`;
+	        })
+	        .join("");
+	    };
+
+	    function renderTasks() {
+	      taskList.innerHTML = "";
+
+		      const list = getFilteredRecords();
+		      if (loadStatusEl) {
+		        if (!serverHistory.length && serverHistoryLoadError) {
+		          loadStatusEl.textContent = "点击行查看详情 · 记录加载失败";
+		        } else {
+		          const stamp = lastHistoryRefreshedAt ? new Date(lastHistoryRefreshedAt).toLocaleTimeString() : "";
+		          const total = Number(serverHistoryTotal || 0);
+		          const pageSize = Number(historyPageSize || HISTORY_PAGE_SIZE) || HISTORY_PAGE_SIZE;
+		          const totalPages = total > 0 && pageSize > 0 ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+		          const pageLabel = `第 ${historyPageIndex + 1}/${totalPages} 页`;
+		          const totalLabel = total > 0 ? `共 ${total} 条` : `共 ${serverHistory.length} 条`;
+		          const extra = serverHistory.length && !list.length ? " · 筛选后为空" : "";
+		          loadStatusEl.textContent = `点击行查看详情 · ${pageLabel} · ${totalLabel} · 当前页 ${serverHistory.length} 条，展示 ${list.length} 条${extra}${stamp ? ` · ${stamp}` : ""}`;
+		        }
+		      }
+
+        if (!list.length) {
+	        const tr = document.createElement("tr");
+	        if (!serverHistory.length && serverHistoryLoadError) {
+          const baseHint = (baseInput?.value || "").trim() ? `当前 baseUrl: ${escapeHtml((baseInput.value || '').trim())}` : "当前 baseUrl 为空（使用当前域名）";
+          const urlHint = serverHistoryLoadErrorUrl ? `<div class="muted" style="margin-top:6px; font-size:12px;">请求：<span class="mono">${escapeHtml(serverHistoryLoadErrorUrl)}</span></div>` : "";
+          tr.innerHTML = `<td colspan="10" class="muted" style="padding:16px; text-align:center;">
+            记录加载失败：${escapeHtml(serverHistoryLoadError)}
+            <div class="muted" style="margin-top:6px; font-size:12px;">${baseHint}</div>
+            ${urlHint}
+            <div class="muted" style="margin-top:6px; font-size:12px;">可尝试：把右侧“接口地址”填 <span class="mono">http://localhost:8005</span>（不要带路径）→ 点“搜索”或刷新。</div>
+          </td>`;
+        } else if (serverHistory.length) {
+          tr.innerHTML = `<td colspan="10" class="muted" style="padding:16px; text-align:center;">无匹配记录，点右上角“筛选”修改/重置</td>`;
+        } else {
+          tr.innerHTML = `<td colspan="10" class="muted" style="padding:16px; text-align:center;">暂无记录</td>`;
+        }
+        taskList.appendChild(tr);
+        return;
+      }
+
+	      for (const r of list) {
+	        const chip = getReviewStatusChip(r);
+	        const recordTime = formatRecordTime(r.record_time, r.at);
+	        const reviewTime = formatTs(r.at);
+	        const source = String(r.source || "").trim() || "-";
+	        const thumb = r.thumbnail && typeof r.thumbnail === "object" ? r.thumbnail : null;
+	        let thumbType = String(thumb?.type || "").toLowerCase();
+	        let thumbUrlRaw = typeof thumb?.url === "string" ? thumb.url : "";
+	        let thumbHtml = `<div class="task-thumb">-</div>`;
+	        const recordImageUrls = r._image_urls || collectRecordImageUrls(r, r._detail);
+	        if (recordImageUrls.length > 1) {
+	          thumbHtml = `<div class="task-thumb-list">${recordImageUrls.map((url, idx) => {
+	            const abs = buildAbsoluteUrl(url);
+	            const safeUrl = escapeHtml(abs);
+	            return `<button type="button" class="task-thumb-item" data-url="${safeUrl}" title="第 ${idx + 1} 张"><img src="${safeUrl}" loading="lazy" decoding="async" alt=""></button>`;
+	          }).join("")}</div>`;
+	        } else if (recordImageUrls.length === 1) {
+	          const abs = buildAbsoluteUrl(recordImageUrls[0]);
+	          const safeUrl = escapeHtml(abs);
+	          thumbType = "image";
+	          thumbUrlRaw = recordImageUrls[0];
+	          thumbHtml = `<div class="task-thumb"><img src="${safeUrl}" loading="lazy" decoding="async" alt=""></div>`;
+	        } else if (thumbUrlRaw) {
+	          const abs = buildAbsoluteUrl(thumbUrlRaw);
+	          const safeUrl = escapeHtml(abs);
+	          const isMp4 = /\.mp4(\?|$)/i.test(abs);
+	          if (thumbType === "video") {
+	            if (isMp4) {
+	              thumbHtml = `<div class="task-thumb"><video src="${safeUrl}" muted playsinline preload="metadata"></video><div class="play">▶</div></div>`;
+	            } else {
+	              thumbHtml = `<div class="task-thumb"><img src="${safeUrl}" loading="lazy" decoding="async" alt=""><div class="play">▶</div></div>`;
+	            }
+	          } else {
+	            thumbHtml = `<div class="task-thumb"><img src="${safeUrl}" loading="lazy" decoding="async" alt=""></div>`;
+	          }
+	        }
+	        const subParts = [];
+	        if (r.id) subParts.push(`#${String(r.id).slice(0, 12)}`);
+	        if (r.agent_id) subParts.push(`agent ${r.agent_id}`);
+	        const vStatus = r.video?.status;
+	        if (vStatus && vStatus !== "not_requested") subParts.push(`video ${vStatus}`);
+	        const subLine = subParts.join(" · ");
+	        const illegalText = formatYesNo(r.illegal);
+	        const illegalCell = (illegalText === "是")
+	          ? `<span class="badge red" style="padding:6px 10px; border-radius:999px; font-size:12px;">${illegalText}</span>`
+	          : (illegalText === "否")
+	            ? `<span class="badge green" style="padding:6px 10px; border-radius:999px; font-size:12px;">${illegalText}</span>`
+	            : `<span class="badge gray" style="padding:6px 10px; border-radius:999px; font-size:12px;">${illegalText}</span>`;
+
+	        const imageUrl = (typeof r.image_url === "string" && r.image_url.trim())
+	          ? r.image_url.trim()
+	          : (r.thumbnail && typeof r.thumbnail === "object" && String(r.thumbnail.type || "").toLowerCase() === "image" && typeof r.thumbnail.url === "string" ? r.thumbnail.url : "");
+	        const videoClipUrl = (r.video && typeof r.video === "object" && typeof r.video.static_url === "string" && r.video.static_url.trim()) ? r.video.static_url.trim() : "";
+	        const videoSourceUrl = (typeof r.video_url === "string" && r.video_url.trim())
+	          ? r.video_url.trim()
+	          : (r.video && typeof r.video === "object" && typeof r.video.source_url === "string" ? r.video.source_url : "");
+
+	        const imageLinkHtml = imageUrl
+	          ? `<a class="media-link" href="${escapeHtml(buildAbsoluteUrl(imageUrl))}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(imageUrl)}">打开</a>`
+	          : `<span class="muted">-</span>`;
+	        const videoLinks = [];
+	        if (videoClipUrl) videoLinks.push(`<a class="media-link" href="${escapeHtml(buildAbsoluteUrl(videoClipUrl))}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(videoClipUrl)}">回放</a>`);
+	        if (videoSourceUrl && videoSourceUrl !== videoClipUrl) videoLinks.push(`<a class="media-link" href="${escapeHtml(buildAbsoluteUrl(videoSourceUrl))}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(videoSourceUrl)}">源</a>`);
+	        const videoLinkHtml = videoLinks.length ? videoLinks.join(" ") : `<span class="muted">-</span>`;
+
+	        const tr = document.createElement("tr");
+	        tr.className = activeRecord?.id === r.id ? "active" : "";
+	        tr.innerHTML = `
+	          <td>${escapeHtml(recordTime)}</td>
+	          <td>${escapeHtml(source)}</td>
+	          <td>${escapeHtml(r.task || "-")}</td>
+	          <td>
+	            <span class="status-chip ${chip.cls}">
+	              <span class="dot"></span>${escapeHtml(chip.text)}
+	            </span>
+	          </td>
+	          <td>${illegalCell}</td>
+	          <td>${imageLinkHtml}</td>
+	          <td>${videoLinkHtml}</td>
+	          <td class="cell-summary">
+	            <div class="task-name-cell">
+	              ${thumbHtml}
+	              <div class="task-name-text">
+	                <a class="task-link" href="javascript:void(0)">${escapeHtml(r.summary || "-")}</a>
+	                <div class="task-sub">${escapeHtml(subLine || "")}</div>
+	              </div>
+	            </div>
+	          </td>
+	          <td>${escapeHtml(reviewTime)}</td>
+	          <td class="action-cell"><button type="button" class="action-btn">处理 ▾</button></td>
+	        `;
+
+	        // Thumbnail click -> open modal preview
+	        const thumbEl = tr.querySelector(".task-thumb");
+	        if (thumbEl) {
+	          thumbEl.title = "点击放大";
+	          thumbEl.onclick = (e) => {
+	            const title = (typeof r.summary === "string" && r.summary.trim()) ? r.summary.trim() : (r.task || "媒体预览");
+	            let preview = null;
+	            if (thumbType === "video") {
+	              if (videoClipUrl) preview = { type: "video", url: buildAbsoluteUrl(videoClipUrl), title };
+	              else if (videoSourceUrl) preview = { type: "video", url: buildAbsoluteUrl(videoSourceUrl), title };
+	            }
+	            if (!preview) {
+	              if (imageUrl) preview = { type: "image", url: buildAbsoluteUrl(imageUrl), title };
+	              else if (thumbUrlRaw) {
+	                const abs = buildAbsoluteUrl(thumbUrlRaw);
+	                preview = { type: /\.mp4(\?|$)/i.test(abs) ? "video" : "image", url: abs, title };
+	              }
+	            }
+		            if (!preview) return;
+		            e.preventDefault();
+		            e.stopPropagation();
+		            activeRecord = r;
+		            renderTasks();
+		            showHistoryRecord(r);
+		            openMediaModal(preview);
+		          };
+		        }
+	        const thumbListEl = tr.querySelector(".task-thumb-list");
+	        if (thumbListEl) {
+	          thumbListEl.querySelectorAll(".task-thumb-item").forEach((btn) => {
+	            btn.onclick = (e) => {
+	              const url = btn.dataset.url || "";
+	              if (!url) return;
+	              const title = (typeof r.summary === "string" && r.summary.trim()) ? r.summary.trim() : (r.task || "媒体预览");
+	              e.preventDefault();
+	              e.stopPropagation();
+	              activeRecord = r;
+	              renderTasks();
+	              showHistoryRecord(r);
+	              openMediaModal({ type: "image", url, title });
+	            };
+	          });
+	        }
+
+	        tr.onclick = () => {
+	          activeRecord = r;
+	          renderTasks();
+	          showHistoryRecord(r);
+	        };
+
+        const link = tr.querySelector(".task-link");
+        if (link) {
+          link.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            activeRecord = r;
+            renderTasks();
+            showHistoryRecord(r);
+          };
+        }
+
+        const btn = tr.querySelector(".action-btn");
+        if (btn) {
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            activeRecord = r;
+            renderTasks();
+            applyHistoryRecord(r);
+          };
+        }
+
+        tr.querySelectorAll(".media-link").forEach((a) => {
+          a.onclick = (e) => e.stopPropagation();
+        });
+
+        taskList.appendChild(tr);
+      }
+    }
+
+    const initFilters = () => {
+      const saved = loadTaskFilters();
+      applyTaskFiltersToUI(saved);
+    };
+    initFilters();
+
+    const persistCurrentFilters = () => saveTaskFilters(readTaskFiltersFromUI());
+
+	    const searchEl = document.getElementById("search");
+	    if (searchEl) searchEl.oninput = () => renderTasks();
+	    if (taskFilterEl) taskFilterEl.oninput = () => renderTasks();
+	    if (statusFilterEl) statusFilterEl.onchange = () => { persistCurrentFilters(); refreshServerHistory({ pageIndex: 0 }); };
+	    if (illegalFilterEl) illegalFilterEl.onchange = () => { persistCurrentFilters(); refreshServerHistory({ pageIndex: 0 }); };
+	    if (sourceFilterEl) sourceFilterEl.onchange = () => { persistCurrentFilters(); refreshServerHistory({ pageIndex: 0 }); };
+
+    if (applyFiltersBtn) applyFiltersBtn.onclick = () => { persistCurrentFilters(); refreshServerHistory({ pageIndex: 0 }); };
+    if (resetFiltersBtn) resetFiltersBtn.onclick = () => {
+      applyTaskFiltersToUI(defaultTaskFilters());
+      persistCurrentFilters();
+      refreshServerHistory({ pageIndex: 0 });
+    };
+    if (saveFiltersBtn) saveFiltersBtn.onclick = () => { persistCurrentFilters(); saveFiltersBtn.textContent = "已保存"; setTimeout(() => (saveFiltersBtn.textContent = "保存"), 1200); };
+    if (moreFiltersBtn) moreFiltersBtn.onclick = () => alert("更多筛选：可按实际业务扩展字段（示例页未实现）");
+
+    if (bulkActionEl) {
+      bulkActionEl.onchange = () => {
+        const action = bulkActionEl.value;
+        bulkActionEl.value = "";
+        const list = getFilteredRecords();
+
+        if (action === "mark_done") {
+          alert("调用记录为只读日志，不支持批量标记。");
+          return;
+        }
+
+        if (action === "export") {
+          const blob = new Blob([JSON.stringify(list, null, 2)], { type: "application/json;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `review_records_${Date.now()}.json`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        }
+      };
+    }
+
+    function renderFields() {
+      const box = document.getElementById("fieldTags");
+      box.innerHTML = "";
+      fields.forEach((f, idx) => {
+        const tag = document.createElement("span");
+        tag.className = "pill";
+        tag.textContent = `${f.name} · ${f.type}${f.required?" · 必填":""}${f.desc?` · ${f.desc}`:""}`;
+        tag.style.position = "relative";
+        const removeBtn = document.createElement("button");
+        removeBtn.textContent = "×";
+        removeBtn.style.border="none";
+        removeBtn.style.background="transparent";
+        removeBtn.style.cursor="pointer";
+        removeBtn.style.fontWeight="900";
+        removeBtn.onclick = (e) => {
+          e.stopPropagation();
+          fields.splice(idx,1);
+          setHint(`已移除字段：${f.name}`);
+          renderFields();
+          rebuildSchema();
+        };
+        tag.appendChild(removeBtn);
+        box.appendChild(tag);
+      });
+    }
+
+    function rebuildSchema(showMessage=true) {
+      try {
+        const props = {};
+        const reqs = [];
+        fields.forEach(f => {
+          const p = { type: f.type };
+          if (f.type === "array") p.items = { type: "string" };
+          if (f.enum) p.enum = f.enum;
+          if (f.desc) p.description = f.desc;
+          props[f.name] = p;
+          if (f.required) reqs.push(f.name);
+        });
+        const schema = { type:"object", properties: props };
+        if (reqs.length) schema.required = reqs;
+        document.getElementById("schemaBox").textContent = JSON.stringify(schema,null,2);
+        if (showMessage) setHint(`已生成 Schema，字段数：${fields.length}`);
+      } catch (err) {
+        setHint(`生成 Schema 失败：${err.message}`, "error");
+      }
+      updateReqPreview();
+    }
+
+    function addFieldFromInputs() {
+      const name = document.getElementById("fieldName").value.trim();
+      if (!name) { setHint("请先填写字段名", "error"); return false; }
+      const type = document.getElementById("fieldType").value;
+      const desc = document.getElementById("fieldDesc").value.trim();
+      const required = document.getElementById("fieldReq").checked;
+      const idx = fields.findIndex(f => f.name === name);
+      const newField = { name, type, desc, required };
+      if (idx >= 0) { fields[idx] = newField; setHint(`已更新字段：${name}`); }
+      else { fields.push(newField); setHint(`已新增字段：${name}`); }
+      document.getElementById("fieldName").value = "";
+      document.getElementById("fieldDesc").value = "";
+      document.getElementById("fieldReq").checked = false;
+      document.getElementById("fieldType").value = "string";
+      return true;
+    }
+
+    function applyPendingFieldInputs() {
+      const name = document.getElementById("fieldName").value.trim();
+      if (!name) return false;
+      const added = addFieldFromInputs();
+      if (added) { renderFields(); rebuildSchema(false); }
+      return added;
+    }
+
+    document.getElementById("addField").onclick = () => {
+      if (addFieldFromInputs()) { renderFields(); rebuildSchema(); }
+    };
+    document.getElementById("buildSchema").onclick = () => {
+      // 兼容只填表单直接生成的用法
+      const added = addFieldFromInputs();
+      if (added) renderFields();
+      rebuildSchema();
+    };
+    document.getElementById("resetFields").onclick = () => {
+      fields = [{ name:"人数", type:"number", desc:"检测到的人数", required:true },
+                   { name:"描述", type:"string", desc:"详细描述", required:true }];
+      document.getElementById("fieldName").value = "人数";
+      document.getElementById("fieldDesc").value = "检测到的人数";
+      document.getElementById("fieldReq").checked = true;
+      document.getElementById("fieldType").value = "number";
+      setHint("已重置字段为默认：人数、描述");
+      renderFields(); rebuildSchema();
+    };
+
+    document.getElementById("fieldName").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); document.getElementById("addField").click(); } });
+
+    const fileInput = document.getElementById("fileInput");
+    const uploadArea = document.getElementById("uploadArea");
+    const preview = document.getElementById("preview");
+    const previewSlot = document.getElementById("previewSlot");
+    const fileInfo = document.getElementById("fileInfo");
+
+    uploadArea.onclick = () => fileInput.click();
+    uploadArea.ondragover = e => { e.preventDefault(); uploadArea.style.borderColor = "#2563eb"; };
+    uploadArea.ondragleave = () => uploadArea.style.borderColor = "#cbd5e1";
+    uploadArea.ondrop = e => { e.preventDefault(); uploadArea.style.borderColor = "#cbd5e1"; handleFile(e.dataTransfer.files?.[0]); };
+    fileInput.onchange = e => handleFile(e.target.files?.[0]);
+
+    function handleFile(file) {
+      if (!file) { selectedFileData = null; return; }
+      const url = URL.createObjectURL(file);
+      document.getElementById("fileUrl").value = ""; // 优先使用本地 data uri
+      document.getElementById("fileType").value = file.type.startsWith("video") ? "video" : "image";
+      fileInfo.textContent = `${file.name} · ${(file.size/1024/1024).toFixed(2)} MB（将以 data_uri 方式随 JSON 发送，仅适合小文件）`;
+      previewSlot.innerHTML = "";
+      if (file.type.startsWith("image")) {
+        const img = document.createElement("img");
+        img.src = url; img.style.maxWidth = "100%"; previewSlot.appendChild(img);
+      } else if (file.type.startsWith("video")) {
+        const v = document.createElement("video"); v.src = url; v.controls = true; v.style.maxWidth="100%"; previewSlot.appendChild(v);
+      } else {
+        previewSlot.textContent = "已选择文件";
+      }
+      preview.style.display = "block";
+      if (file.size > MAX_INLINE_MB * 1024 * 1024) {
+        setHint(`文件大于 ${MAX_INLINE_MB}MB，将仅用于预览，不内嵌 base64，可改用远程 URL`, "error");
+        selectedFileData = null;
+        updateReqPreview();
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        selectedFileData = {
+          name: file.name,
+          type: file.type || document.getElementById("fileType").value,
+          size: file.size,
+          dataUri: reader.result
+        };
+        updateReqPreview();
+      };
+      reader.readAsDataURL(file);
+    }
+
+    document.getElementById("sampleText").onclick = () => { selectedFileData=null; document.getElementById("fileUrl").value = ""; document.getElementById("fileType").value="text"; document.getElementById("message").value="消防室看是否有人值守"; preview.style.display="none"; updateReqPreview(); };
+    document.getElementById("sampleImg").onclick = () => { selectedFileData=null; document.getElementById("fileUrl").value = "https://images.unsplash.com/photo-1503602642458-232111445657?w=1200"; document.getElementById("fileType").value="image"; preview.style.display="none"; updateReqPreview(); };
+    document.getElementById("sampleVideo").onclick = () => { selectedFileData=null; document.getElementById("fileUrl").value = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"; document.getElementById("fileType").value="video"; preview.style.display="none"; updateReqPreview(); };
+
+    function buildPayload({ maskData=false } = {}) {
+      const payload = { message: document.getElementById("message").value.trim(), context: {} };
+      payload.context.parameters = {};
+      payload.context.output_format = "json";
+      const taskName = (taskNameInput?.value || "").trim();
+      if (taskName) payload.context.task = taskName;
+      try {
+        const schema = JSON.parse(document.getElementById("schemaBox").textContent);
+        payload.context.json_schema = schema;
+      } catch (err) {
+        setHint(`Schema 解析失败：${err.message}`, "error");
+        throw err;
+      }
+      const files = [];
+      const url = document.getElementById("fileUrl").value.trim();
+      const mediaType = document.getElementById("fileType").value || "text";
+      if (url) files.push({ url, media_type: mediaType });
+      if (selectedFileData?.dataUri) {
+        const dataUrl = maskData ? `<data_uri: ${selectedFileData.size} bytes>` : selectedFileData.dataUri;
+        files.push({
+          url: dataUrl,
+          media_type: mediaType || selectedFileData.type || "image",
+          name: selectedFileData.name,
+          size: selectedFileData.size,
+          _data_uri: !maskData
+        });
+      }
+      if (files.length) payload.context.files = files;
+      return payload;
+    }
+
+    function updateReqPreview() {
+      try {
+        const body = buildPayload({ maskData:true });
+        document.getElementById("reqBox").textContent = JSON.stringify(body, null, 2);
+      } catch (err) {
+        document.getElementById("reqBox").textContent = `构建请求体失败：${err.message}`;
+      }
+    }
+
+    document.getElementById("copyBody").onclick = () => {
+      applyPendingFieldInputs();
+      rebuildSchema(false);
+      navigator.clipboard.writeText(document.getElementById("reqBox").textContent);
+    };
+
+    document.getElementById("form").onsubmit = async (e) => {
+      e.preventDefault();
+      applyPendingFieldInputs();
+      rebuildSchema(false);
+      const body = buildPayload();
+      updateReqPreview();
+      const { base, url, agentId } = buildEndpoint();
+      const start = performance.now();
+      document.getElementById("resBox").textContent = "请求发送中...";
+      const resKvEl = document.getElementById("resKv");
+      try {
+        const res = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) });
+        const txt = await res.text();
+        document.getElementById("httpStatus").textContent = res.status;
+        document.getElementById("cost").textContent = `${(performance.now()-start).toFixed(1)} ms`;
+        const parsed = tryParseJson(txt);
+        const prettyRes = parsed ? JSON.stringify(parsed, null, 2) : (txt || "(空响应)");
+        document.getElementById("resBox").textContent = prettyRes;
+        if (resKvEl) {
+          const data = parsed && typeof parsed === "object" && parsed.data && typeof parsed.data === "object" ? parsed.data : parsed;
+          renderKeyValueList(resKvEl, data);
+        }
+
+        const summary = extractSummary(parsed) || (res.ok ? "请求成功" : "请求失败");
+        const reviewRecordId = parsed?.meta?.review_record_id;
+        if (reviewRecordId) {
+          pendingSelectRecordId = reviewRecordId;
+          const taskName = (taskNameInput?.value || "").trim();
+          const illegalVal = parsed && typeof parsed === "object" && parsed.data && typeof parsed.data === "object" ? parsed.data.illegal : undefined;
+          const tmp = {
+            id: reviewRecordId,
+            at: parsed?.meta?.timestamp || Date.now(),
+            agent_id: agentId,
+            task: taskName || undefined,
+            illegal: typeof illegalVal === "boolean" ? illegalVal : undefined,
+            http_status: res.status,
+            cost_ms: Number((performance.now() - start).toFixed(1)),
+            ok: res.ok,
+            summary,
+            detail_url: `/api/v1/review-records/${reviewRecordId}`,
+            _source: "server",
+          };
+          activeRecord = tmp;
+          showHistoryRecord(tmp);
+          await refreshServerHistory({ pageIndex: 0 });
+        } else {
+          await refreshServerHistory();
+        }
+      } catch(err) {
+        document.getElementById("httpStatus").textContent = "ERR";
+        document.getElementById("resBox").textContent = err.message;
+        if (resKvEl) renderKeyValueList(resKvEl, { error: err.message || "请求失败" });
+
+        // network error: can't guarantee record exists server-side
+      }
+    };
+
+    renderTasks();
+	    renderFields();
+	    rebuildSchema();
+	    updateReqPreview();
+	    refreshServerHistory();
+	    refreshDailySummary({ force: true });
+
+		    const AUTO_REFRESH_MS = 5000;
+		    setInterval(() => {
+		      pollLatestServerHistory({ notifyNew: true });
+		      refreshDailySummary();
+		    }, AUTO_REFRESH_MS);
+
+	    document.addEventListener("visibilitychange", () => {
+	      if (!document.hidden) pollLatestServerHistory({ notifyNew: true });
+	    });
+	  </script>
+</body>
+</html>

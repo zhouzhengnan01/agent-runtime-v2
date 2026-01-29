@@ -1,0 +1,2697 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>每日复判报告</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f4f7fb;
+      --panel: rgba(255, 255, 255, 0.92);
+      --border: rgba(148, 163, 184, 0.25);
+      --text: #0b1220;
+      --muted: #5c6b82;
+      --primary: #1d4ed8;
+      --accent: #0ea5e9;
+      --accent-2: #14b8a6;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --success: #16a34a;
+      --shadow: 0 20px 60px rgba(15, 23, 42, 0.14);
+      --radius: 18px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Manrope", "Noto Sans SC", sans-serif;
+      color: var(--text);
+      background: radial-gradient(1100px 520px at 5% -10%, #dbeafe 0%, rgba(219, 234, 254, 0) 60%),
+        radial-gradient(980px 520px at 95% 0%, #cffafe 0%, rgba(207, 250, 254, 0) 60%),
+        radial-gradient(980px 600px at 20% 100%, #fef3c7 0%, rgba(254, 243, 199, 0) 60%),
+        linear-gradient(180deg, #f8fafc 0%, #edf2fb 100%);
+      min-height: 100vh;
+      position: relative;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+        radial-gradient(circle at 85% 20%, rgba(14, 165, 233, 0.16), transparent 55%);
+      background-size: 120px 120px, 120px 120px, 100% 100%;
+      pointer-events: none;
+      opacity: 0.6;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(800px 300px at 18% 0%, rgba(14, 165, 233, 0.12), transparent 60%),
+        radial-gradient(800px 320px at 80% 100%, rgba(20, 184, 166, 0.12), transparent 60%);
+      pointer-events: none;
+      opacity: 0.7;
+      mix-blend-mode: multiply;
+    }
+    .page {
+      max-width: 1750px;
+      margin: 0 auto;
+      padding: 20px 26px 32px;
+      position: relative;
+      z-index: 1;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      flex-wrap: wrap;
+      padding: 18px 20px;
+      border-radius: 22px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.84);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 18px;
+    }
+    .topbar::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0));
+      pointer-events: none;
+      opacity: 0.7;
+    }
+    .topbar > * { position: relative; z-index: 1; }
+    .brand { display: grid; gap: 8px; }
+    .brand-title {
+      font-size: 30px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
+      font-family: "Space Grotesk", "Manrope", "Noto Sans SC", sans-serif;
+    }
+    .brand-sub {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.3px;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid rgba(14, 165, 233, 0.25);
+      background: rgba(14, 165, 233, 0.12);
+      color: var(--primary);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+    }
+    .status-pill.error {
+      border-color: rgba(239, 68, 68, 0.3);
+      background: rgba(239, 68, 68, 0.12);
+      color: #b91c1c;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 rgba(14, 165, 233, 0.6);
+      animation: pulse 2.2s infinite;
+    }
+    .status-pill.error .status-dot {
+      background: var(--danger);
+      box-shadow: 0 0 0 rgba(239, 68, 68, 0.5);
+      animation: none;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 8px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(10px);
+    }
+    .control {
+      display: grid;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--muted);
+      min-width: 160px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .control input,
+    .control select {
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      border-radius: 12px;
+      padding: 8px 12px;
+      font-size: 13px;
+      background: #f8fafc;
+      color: var(--text);
+      min-width: 160px;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .control input:focus,
+    .control select:focus {
+      outline: none;
+      border-color: rgba(14, 165, 233, 0.6);
+      box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
+    }
+    .btn {
+      border: none;
+      border-radius: 12px;
+      padding: 10px 16px;
+      font-weight: 700;
+      cursor: pointer;
+      background: linear-gradient(135deg, #1d4ed8, #0ea5e9);
+      color: #fff;
+      box-shadow: 0 14px 28px rgba(29, 78, 216, 0.25);
+      letter-spacing: 0.2px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .report-layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) minmax(0, 2.2fr);
+      gap: 16px;
+    }
+    .panel {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.88));
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.1);
+      backdrop-filter: blur(12px);
+      position: relative;
+      overflow: hidden;
+    }
+    .panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: linear-gradient(140deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0));
+      opacity: 0.8;
+      pointer-events: none;
+    }
+    .panel > * { position: relative; z-index: 1; }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .panel-title {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
+    }
+    .panel-sub {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+    }
+    .panel-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .list-filters {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .list-filters input,
+    .list-filters select {
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      border-radius: 12px;
+      padding: 8px 12px;
+      font-size: 13px;
+      background: #f8fafc;
+      color: var(--text);
+      min-width: 160px;
+    }
+    .report-list {
+      display: grid;
+      gap: 10px;
+      max-height: calc(100vh - 300px);
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .report-item {
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: rgba(255, 255, 255, 0.92);
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+    .report-item:hover {
+      transform: translateY(-2px);
+      border-color: rgba(29, 78, 216, 0.45);
+      box-shadow: 0 12px 24px rgba(37, 99, 235, 0.18);
+    }
+    .report-item.active {
+      border-color: rgba(29, 78, 216, 0.7);
+      box-shadow: 0 16px 30px rgba(37, 99, 235, 0.2);
+    }
+    .report-item h4 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 800;
+    }
+    .report-item .meta {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .report-item .chips {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .chip {
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(15, 23, 42, 0.06);
+      color: var(--muted);
+    }
+    .viewer-controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .viewer-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      margin: 8px 0 14px;
+    }
+    .stats-card {
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+    .stats-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 9px;
+      background: rgba(29, 78, 216, 0.12);
+      display: grid;
+      place-items: center;
+      color: #1d4ed8;
+    }
+    .stats-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+    .stats-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .stats-value {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--text);
+    }
+    .media-section {
+      margin-bottom: 16px;
+    }
+    .media-title {
+      font-weight: 700;
+      margin-bottom: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .media-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+    }
+    .media-card {
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 14px;
+      overflow: hidden;
+      background: #fff;
+      text-decoration: none;
+      color: inherit;
+      position: relative;
+    }
+    .media-thumb {
+      position: relative;
+      height: 120px;
+      overflow: hidden;
+    }
+    .media-thumb img,
+    .media-thumb video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .media-label {
+      font-size: 11px;
+      color: var(--muted);
+      padding: 6px 10px;
+      background: rgba(248, 250, 252, 0.9);
+    }
+    .media-play {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: rgba(15, 23, 42, 0.7);
+      color: #fff;
+      border-radius: 999px;
+      font-size: 10px;
+      padding: 4px 6px;
+    }
+    .empty-state {
+      padding: 18px;
+      text-align: center;
+      color: var(--muted);
+      border: 1px dashed rgba(148, 163, 184, 0.4);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.7);
+    }
+    @media (max-width: 1100px) {
+      .report-layout {
+        grid-template-columns: 1fr;
+      }
+      .report-list {
+        max-height: none;
+      }
+    }
+    .card {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.86));
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.1);
+      backdrop-filter: blur(12px);
+      position: relative;
+      overflow: hidden;
+    }
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: linear-gradient(140deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0));
+      opacity: 0.8;
+      pointer-events: none;
+    }
+    .card::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 4px;
+      background: linear-gradient(90deg, rgba(14, 165, 233, 0.65), rgba(20, 184, 166, 0.35), transparent);
+      opacity: 0.9;
+      pointer-events: none;
+    }
+    .card > * { position: relative; z-index: 1; }
+    .card.reveal {
+      opacity: 0;
+      transform: translateY(14px) scale(0.985);
+      animation: floatIn 0.75s ease forwards;
+      animation-delay: var(--delay, 0s);
+    }
+    .kpi {
+      grid-column: span 3;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 12px;
+      min-height: 120px;
+      --kpi-accent: rgba(29, 78, 216, 0.22);
+    }
+    .kpi::after {
+      content: "";
+      position: absolute;
+      right: -20px;
+      top: -30px;
+      width: 140px;
+      height: 140px;
+      background: radial-gradient(circle, var(--kpi-accent), rgba(255, 255, 255, 0));
+      pointer-events: none;
+    }
+    .kpi .label {
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .kpi .value {
+      font-size: 36px;
+      font-weight: 800;
+      margin-top: 6px;
+      font-family: "Space Grotesk", "Manrope", "Noto Sans SC", sans-serif;
+      letter-spacing: -0.5px;
+      font-variant-numeric: tabular-nums;
+    }
+    .kpi .unit {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+      margin-top: 4px;
+    }
+    .kpi .icon {
+      width: 50px;
+      height: 50px;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 18px;
+      color: #fff;
+      box-shadow: 0 10px 20px rgba(15, 23, 42, 0.2);
+    }
+    .kpi.total { --kpi-accent: rgba(29, 78, 216, 0.22); }
+    .kpi.alarm { --kpi-accent: rgba(239, 68, 68, 0.28); }
+    .kpi.pending { --kpi-accent: rgba(245, 158, 11, 0.28); }
+    .kpi.done { --kpi-accent: rgba(22, 163, 74, 0.25); }
+    .kpi.total .icon { background: linear-gradient(140deg, #1d4ed8, #38bdf8); }
+    .kpi.alarm .icon { background: linear-gradient(140deg, #ef4444, #f97316); }
+    .kpi.pending .icon { background: linear-gradient(140deg, #f59e0b, #facc15); color: #111827; }
+    .kpi.done .icon { background: linear-gradient(140deg, #16a34a, #22c55e); }
+
+    .wide { grid-column: span 8; min-height: 320px; }
+    .narrow { grid-column: span 4; min-height: 320px; }
+    .triple { grid-column: span 4; min-height: 260px; }
+    .full { grid-column: span 12; }
+
+    .card-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0.4px;
+      margin-bottom: 12px;
+    }
+    .card-sub {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .chart-wrap {
+      position: relative;
+      height: 210px;
+      padding: 8px;
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(255, 255, 255, 0.65);
+    }
+    canvas { width: 100%; height: 100%; }
+
+    .legend {
+      display: flex;
+      gap: 12px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .legend i {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      display: inline-block;
+      background: var(--accent);
+    }
+    .legend .alarm i { background: var(--danger); }
+
+    .report-controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .report-controls .control {
+      min-width: 170px;
+    }
+    .report-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .btn.secondary {
+      background: #fff;
+      color: var(--primary);
+      border: 1px solid rgba(29, 78, 216, 0.25);
+      box-shadow: none;
+    }
+    .btn.secondary:hover {
+      border-color: rgba(14, 165, 233, 0.6);
+    }
+    .report-doc {
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(255, 255, 255, 0.92);
+      border-radius: 14px;
+      padding: 14px;
+      min-height: 200px;
+      font-size: 14px;
+      line-height: 1.7;
+      word-break: break-word;
+    }
+    .report-section {
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: rgba(248, 250, 252, 0.85);
+      margin-bottom: 12px;
+      position: relative;
+    }
+    .report-section::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      pointer-events: none;
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .section-icon {
+      width: 30px;
+      height: 30px;
+      border-radius: 10px;
+      background: rgba(29, 78, 216, 0.12);
+      display: grid;
+      place-items: center;
+      color: #1d4ed8;
+    }
+    .section-title {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
+    }
+    .section-body {
+      color: #0f172a;
+    }
+    .section-body p {
+      margin: 6px 0;
+    }
+    .section-body ul,
+    .section-body ol {
+      padding-left: 18px;
+      margin: 6px 0;
+    }
+    .section-body li {
+      margin: 4px 0;
+    }
+    .evidence-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .evidence-card {
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #fff;
+      text-decoration: none;
+      color: inherit;
+    }
+    .evidence-thumb {
+      height: 110px;
+      position: relative;
+      overflow: hidden;
+    }
+    .evidence-thumb img,
+    .evidence-thumb video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .evidence-label {
+      padding: 6px 8px;
+      font-size: 11px;
+      color: var(--muted);
+      background: rgba(248, 250, 252, 0.9);
+    }
+    .evidence-tag {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      background: rgba(15, 23, 42, 0.7);
+      color: #fff;
+      border-radius: 999px;
+      padding: 2px 6px;
+      font-size: 10px;
+    }
+    .status-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .status-card {
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+    .status-card .label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .status-card .value {
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--text);
+    }
+    .report-doc h1 {
+      font-size: 20px;
+      margin: 0 0 8px;
+    }
+    .report-doc h2 {
+      font-size: 16px;
+      margin: 14px 0 6px;
+    }
+    .report-doc h3 {
+      font-size: 14px;
+      margin: 12px 0 4px;
+    }
+    .report-doc p {
+      margin: 6px 0;
+    }
+    .report-doc ul,
+    .report-doc ol {
+      padding-left: 18px;
+      margin: 6px 0;
+    }
+    .report-doc li {
+      margin: 4px 0;
+    }
+    .report-doc code {
+      font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px;
+      background: rgba(15, 23, 42, 0.06);
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+    .report-meta {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .report-raw {
+      margin-top: 10px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 320px;
+      overflow: auto;
+    }
+
+    .insights {
+      display: grid;
+      gap: 10px;
+    }
+    .insight-item {
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      background: rgba(255, 255, 255, 0.92);
+      padding: 10px 12px;
+      display: grid;
+      gap: 6px;
+    }
+    .insight-label {
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .insight-value {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .status-list { display: grid; gap: 12px; }
+    .status-item { display: grid; gap: 6px; }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .status-bar {
+      height: 9px;
+      background: rgba(148, 163, 184, 0.2);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .status-bar > div {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2563eb, #38bdf8);
+    }
+    .status-bar.success > div { background: linear-gradient(90deg, #16a34a, #4ade80); }
+    .status-bar.warn > div { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .status-bar.error > div { background: linear-gradient(90deg, #ef4444, #f97316); }
+    .metric-row {
+      margin-top: 10px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .metric-pill {
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
+    }
+
+    .bar-list { display: grid; gap: 10px; }
+    .bar-item { display: grid; gap: 6px; }
+    .bar-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; }
+    .bar-track { height: 9px; background: rgba(148, 163, 184, 0.2); border-radius: 999px; overflow: hidden; }
+    .bar-track > div { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2563eb, #93c5fd); }
+
+    .table-tools {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      flex-wrap: wrap;
+    }
+    .filter-chip {
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(255, 255, 255, 0.9);
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+      color: #111827;
+    }
+    .filter-chip.active {
+      border-color: rgba(14, 165, 233, 0.5);
+      color: var(--primary);
+      background: rgba(14, 165, 233, 0.1);
+    }
+    .table-wrap {
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 14px;
+      overflow: auto;
+      background: rgba(255, 255, 255, 0.95);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      min-width: 980px;
+    }
+    thead th {
+      text-align: left;
+      padding: 12px 14px;
+      background: rgba(248, 250, 252, 0.95);
+      border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+      font-weight: 800;
+      color: #111827;
+      white-space: nowrap;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    tbody td {
+      padding: 14px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    tbody tr:hover { background: rgba(241, 245, 249, 0.8); }
+    .cell-summary { white-space: normal; min-width: 320px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 11px;
+      border: 1px solid;
+    }
+    .badge.red { background: #fef2f2; color: var(--danger); border-color: #fecaca; }
+    .badge.green { background: #ecfdf3; color: var(--success); border-color: #bbf7d0; }
+    .badge.gray { background: #f3f4f6; color: #374151; border-color: #e5e7eb; }
+    .badge.yellow { background: #fef3c7; color: #b45309; border-color: #fde68a; }
+
+    .empty {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 12px 0;
+    }
+
+    @keyframes floatIn {
+      from { opacity: 0; transform: translateY(14px) scale(0.985); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.45); }
+      70% { box-shadow: 0 0 0 10px rgba(14, 165, 233, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0); }
+    }
+
+    @media (max-width: 1200px) {
+      .grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+      .kpi { grid-column: span 3; }
+      .wide, .narrow { grid-column: span 6; }
+      .triple { grid-column: span 3; }
+      .full { grid-column: span 6; }
+    }
+    @media (max-width: 880px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .kpi, .wide, .narrow, .triple, .full { grid-column: span 2; }
+      .controls { width: 100%; }
+      .control { flex: 1 1 160px; }
+      .topbar { padding: 14px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .status-dot { animation: none; }
+      .card.reveal { animation: none; opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-title">每日复判报告</div>
+        <div class="brand-sub">
+          日期：<span id="dateLabel">-</span> · 范围：<span id="rangeLabel">-</span> · 数据源：<span id="baseLabel">-</span> · 更新：<span id="updatedAt">-</span>
+        </div>
+        <div class="status-pill" id="statusPill"><span class="status-dot"></span><span id="statusText">等待刷新</span></div>
+      </div>
+      <div class="controls">
+        <label class="control">
+          API Base
+          <input id="baseUrl" placeholder="http://localhost:8005" spellcheck="false" />
+        </label>
+        <label class="control">
+          选择日期
+          <input id="dateInput" type="date" />
+        </label>
+        <label class="control">
+          自动刷新
+          <select id="refreshSelect">
+            <option value="0">关闭</option>
+            <option value="30000">30 秒</option>
+            <option value="60000" selected>60 秒</option>
+            <option value="300000">5 分钟</option>
+          </select>
+        </label>
+        <button class="btn" id="refreshBtn">刷新报告</button>
+      </div>
+    </header>
+
+    <main class="report-layout">
+      <section class="panel list-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">日报列表</div>
+            <div class="panel-sub" id="listMeta">-</div>
+          </div>
+          <div class="panel-actions">
+            <button class="btn secondary" id="listRefreshBtn">刷新列表</button>
+            <button class="btn secondary" id="listTodayBtn">今天</button>
+          </div>
+        </div>
+        <div class="list-filters">
+          <input id="listSearch" placeholder="搜索日期 / agent / 关键词" spellcheck="false" />
+          <select id="listSort">
+            <option value="desc" selected>最新优先</option>
+            <option value="asc">最早优先</option>
+          </select>
+        </div>
+        <div class="report-list" id="reportList">
+          <div class="empty-state">暂无日报</div>
+        </div>
+      </section>
+
+      <section class="panel viewer-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title" id="viewerTitle">日报详情</div>
+            <div class="panel-sub" id="viewerSub">请选择左侧日报</div>
+          </div>
+          <div class="status-pill" id="reportStatus"><span class="status-dot"></span><span>未生成</span></div>
+        </div>
+        <div class="viewer-controls">
+          <label class="control">
+            报告 Agent ID
+            <input id="reportAgentId" placeholder="review_cloud" spellcheck="false" />
+          </label>
+          <label class="control">
+            样例条数
+            <select id="reportSampleSize">
+              <option value="4">4</option>
+              <option value="6" selected>6</option>
+              <option value="10">10</option>
+              <option value="15">15</option>
+            </select>
+          </label>
+          <label class="control">
+            自动生成
+            <select id="reportAuto">
+              <option value="1" selected>开</option>
+              <option value="0">关</option>
+            </select>
+          </label>
+        </div>
+        <div class="viewer-actions">
+          <button class="btn" id="reportGenerateBtn">生成报告</button>
+          <button class="btn secondary" id="reportCopyBtn">复制 Markdown</button>
+          <button class="btn secondary" id="reportExportPdfBtn">导出 PDF</button>
+          <button class="btn secondary" id="reportExportDocBtn">导出 Word</button>
+          <button class="btn secondary" id="reportClearBtn">清除本地缓存</button>
+        </div>
+        <div class="report-meta" id="reportMeta">-</div>
+        <div class="stats-grid" id="reportStats"></div>
+        <div class="status-strip" id="statusStrip"></div>
+        <div class="media-section">
+          <div class="media-title">图文样例</div>
+          <div class="media-grid" id="mediaGrid"></div>
+          <div class="empty-state" id="mediaEmpty" style="display:none;">暂无可用图片/视频</div>
+        </div>
+        <div class="report-doc" id="reportDoc">等待生成日报。</div>
+        <details style="margin-top:10px;">
+          <summary class="card-sub" style="cursor:pointer;">查看原始 JSON</summary>
+          <pre class="report-raw" id="reportRaw">-</pre>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const SETTINGS_KEY = "jetlinks_review_daily_report_v1";
+    const REPORT_CACHE_KEY = "jetlinks_review_daily_report_cache_v1";
+    const MAX_RECORDS = 5000;
+    const PAGE_SIZE = 200;
+    const REPORT_MAX_CHARS = 8500;
+    const DEFAULT_REPORT_AGENT = "review_cloud";
+
+    const baseInput = document.getElementById("baseUrl");
+    const dateInput = document.getElementById("dateInput");
+    const refreshSelect = document.getElementById("refreshSelect");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const listMeta = document.getElementById("listMeta");
+    const reportListEl = document.getElementById("reportList");
+    const listSearchInput = document.getElementById("listSearch");
+    const listSortSelect = document.getElementById("listSort");
+    const listRefreshBtn = document.getElementById("listRefreshBtn");
+    const listTodayBtn = document.getElementById("listTodayBtn");
+
+    const reportAgentInput = document.getElementById("reportAgentId");
+    const reportSampleSelect = document.getElementById("reportSampleSize");
+    const reportAutoSelect = document.getElementById("reportAuto");
+    const reportGenerateBtn = document.getElementById("reportGenerateBtn");
+    const reportCopyBtn = document.getElementById("reportCopyBtn");
+    const reportExportPdfBtn = document.getElementById("reportExportPdfBtn");
+    const reportExportDocBtn = document.getElementById("reportExportDocBtn");
+    const reportClearBtn = document.getElementById("reportClearBtn");
+    const reportHistorySelect = null;
+
+    const reportStatus = document.getElementById("reportStatus");
+    const reportDoc = document.getElementById("reportDoc");
+    const reportMeta = document.getElementById("reportMeta");
+    const reportRaw = document.getElementById("reportRaw");
+    const reportStats = document.getElementById("reportStats");
+    const statusStrip = document.getElementById("statusStrip");
+    const mediaGrid = document.getElementById("mediaGrid");
+    const mediaEmpty = document.getElementById("mediaEmpty");
+    const viewerTitle = document.getElementById("viewerTitle");
+    const viewerSub = document.getElementById("viewerSub");
+    const dateLabel = document.getElementById("dateLabel");
+    const rangeLabel = document.getElementById("rangeLabel");
+    const baseLabel = document.getElementById("baseLabel");
+    const updatedAt = document.getElementById("updatedAt");
+    const statusPill = document.getElementById("statusPill");
+    const statusText = document.getElementById("statusText");
+
+    let refreshTimer = null;
+    let reportGenerating = false;
+    let currentReport = null;
+    let reportListData = [];
+    let activeReportDate = "";
+    const state = {
+      records: [],
+      mediaItems: [],
+      reportMarkdown: "",
+    };
+
+    const guessApiBase = () => {
+      const { protocol, hostname, port } = window.location;
+      if (port === "4173" || port === "4311") return `${protocol}//${hostname}:8005`;
+      return `${protocol}//${hostname}${port ? `:${port}` : ""}`;
+    };
+
+    const getUrlParam = (key) => {
+      try { return new URLSearchParams(window.location.search).get(key); } catch { return null; }
+    };
+
+    const setUrlParams = (patch) => {
+      try {
+        const u = new URL(window.location.href);
+        for (const [k, v] of Object.entries(patch || {})) {
+          if (v == null || v === "") u.searchParams.delete(k);
+          else u.searchParams.set(k, String(v));
+        }
+        const qs = u.searchParams.toString();
+        history.replaceState(null, "", u.pathname + (qs ? `?${qs}` : "") + u.hash);
+      } catch {
+        // ignore
+      }
+    };
+
+    const normalizeBaseUrl = (raw) => {
+      const s = String(raw ?? "").trim();
+      if (!s) return guessApiBase();
+
+      let candidate = s;
+      const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(candidate);
+      if (!hasScheme) {
+        candidate = candidate.startsWith("/")
+          ? `${window.location.origin}${candidate}`
+          : `${window.location.protocol}//${candidate}`;
+      }
+
+      try {
+        const u = new URL(candidate);
+        const rawHost = u.hostname;
+        const hostname = (rawHost === "0.0.0.0" || rawHost === "127.0.0.1" || rawHost === "localhost")
+          ? window.location.hostname
+          : rawHost;
+        const port = u.port ? `:${u.port}` : "";
+        return `${u.protocol}//${hostname}${port}`;
+      } catch {
+        return guessApiBase();
+      }
+    };
+
+    const buildAbsoluteUrl = (maybeRelativeUrl) => {
+      if (!maybeRelativeUrl || typeof maybeRelativeUrl !== "string") return "";
+      const s = maybeRelativeUrl.trim();
+      if (!s) return "";
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s)) return s;
+      const base = normalizeBaseUrl(baseInput?.value || "");
+      return `${base}${s.startsWith("/") ? "" : "/"}${s}`;
+    };
+
+    const saveSettings = (patch) => {
+      try {
+        const prev = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {};
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...prev, ...(patch || {}) }));
+      } catch {
+        // ignore
+      }
+    };
+
+    const loadSettings = () => {
+      try {
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        return raw ? JSON.parse(raw) : {};
+      } catch {
+        return {};
+      }
+    };
+
+    const formatNumber = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "-";
+      return new Intl.NumberFormat("zh-CN").format(n);
+    };
+
+    const formatPercent = (value) => {
+      if (!Number.isFinite(value)) return "-";
+      return `${(value * 100).toFixed(1)}%`;
+    };
+
+    const formatMs = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) return "-";
+      if (n >= 1000) return `${(n / 1000).toFixed(2)}s`;
+      return `${Math.round(n)}ms`;
+    };
+
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const toDateInputValue = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+    const formatLocalDateTime = (ms) => {
+      const d = new Date(ms);
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    };
+    const formatLocalTime = (ms) => {
+      const d = new Date(ms);
+      return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    };
+
+    const parseTimeMs = (value) => {
+      if (value == null || value === "") return null;
+      const toEpochMs = (n) => (n < 1e12 ? Math.round(n * 1000) : Math.round(n));
+      if (typeof value === "number") {
+        return Number.isFinite(value) ? toEpochMs(value) : null;
+      }
+      const s = String(value).trim();
+      if (!s) return null;
+      if (/^\d+$/.test(s)) {
+        const n = Number(s);
+        return Number.isFinite(n) ? toEpochMs(n) : null;
+      }
+      const hasTz = /[zZ]|[+-]\d{2}:?\d{2}$/;
+      const noTzDate = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/;
+      if (noTzDate.test(s) && !hasTz.test(s)) {
+        const iso = s.replace(" ", "T");
+        const dLocal = new Date(`${iso}+08:00`);
+        if (!Number.isNaN(dLocal.getTime())) return dLocal.getTime();
+      }
+      const d1 = new Date(s);
+      if (!Number.isNaN(d1.getTime())) return d1.getTime();
+      const d2 = new Date(s.replace(" ", "T"));
+      if (!Number.isNaN(d2.getTime())) return d2.getTime();
+      return null;
+    };
+
+    const parseDateInput = (value) => {
+      const s = String(value || "").trim();
+      if (!s) return new Date();
+      const parts = s.split("-");
+      if (parts.length === 3) {
+        const year = Number(parts[0]);
+        const month = Number(parts[1]);
+        const day = Number(parts[2]);
+        if (Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)) {
+          return new Date(year, month - 1, day);
+        }
+      }
+      const fallback = new Date(s);
+      return Number.isNaN(fallback.getTime()) ? new Date() : fallback;
+    };
+
+    const getRecordTimeMs = (record) => {
+      const parsed = parseTimeMs(record?.record_time);
+      if (parsed != null) return parsed;
+      const created = Number(record?.created_at_ms || record?.at || 0);
+      return Number.isFinite(created) && created > 0 ? created : Date.now();
+    };
+
+    const getDayRange = (date) => {
+      const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      const startMs = d.getTime();
+      const endMs = startMs + 24 * 60 * 60 * 1000 - 1;
+      return { startMs, endMs };
+    };
+
+    const escapeHtml = (value) => {
+      const s = String(value ?? "");
+      return s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    };
+
+    const formatInlineMarkdown = (value) => {
+      const parts = String(value ?? "").split("`");
+      return parts.map((part, idx) => {
+        const escaped = escapeHtml(part);
+        if (idx % 2 === 1) return `<code>${escaped}</code>`;
+        return escaped.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      }).join("");
+    };
+
+    const renderMarkdownToHtml = (markdown, { allowEmpty = false } = {}) => {
+      const lines = String(markdown ?? "").replace(/\r\n/g, "\n").split("\n");
+      let html = "";
+      let listType = null;
+      let paragraph = [];
+
+      const flushParagraph = () => {
+        if (!paragraph.length) return;
+        html += `<p>${formatInlineMarkdown(paragraph.join(" "))}</p>`;
+        paragraph = [];
+      };
+
+      const closeList = () => {
+        if (!listType) return;
+        html += listType === "ol" ? "</ol>" : "</ul>";
+        listType = null;
+      };
+
+      lines.forEach((rawLine) => {
+        const line = String(rawLine ?? "");
+        const trimmed = line.trim();
+        if (!trimmed) {
+          flushParagraph();
+          closeList();
+          return;
+        }
+
+        const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
+        if (headingMatch) {
+          flushParagraph();
+          closeList();
+          const level = Math.min(3, headingMatch[1].length);
+          html += `<h${level}>${formatInlineMarkdown(headingMatch[2])}</h${level}>`;
+          return;
+        }
+
+        const unorderedMatch = trimmed.match(/^[-*+]\s+(.*)$/);
+        if (unorderedMatch) {
+          flushParagraph();
+          if (listType !== "ul") {
+            closeList();
+            html += "<ul>";
+            listType = "ul";
+          }
+          html += `<li>${formatInlineMarkdown(unorderedMatch[1])}</li>`;
+          return;
+        }
+
+        const orderedMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+        if (orderedMatch) {
+          flushParagraph();
+          if (listType !== "ol") {
+            closeList();
+            html += "<ol>";
+            listType = "ol";
+          }
+          html += `<li>${formatInlineMarkdown(orderedMatch[1])}</li>`;
+          return;
+        }
+
+        closeList();
+        paragraph.push(trimmed);
+      });
+
+      flushParagraph();
+      closeList();
+      if (html) return html;
+      return allowEmpty ? "" : "<p>（空报告）</p>";
+    };
+
+    const getSectionIcon = (title) => {
+      const t = String(title || "");
+      if (t.includes("概览") || t.includes("总览")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9h10M7 13h6"/></svg>';
+      }
+      if (t.includes("趋势") || t.includes("变化")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 16l5-5 4 3 6-7"/><path d="M4 20h16"/></svg>';
+      }
+      if (t.includes("风险") || t.includes("问题")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 9v4"/><circle cx="12" cy="17" r="1"/><path d="M4.5 19h15L12 5 4.5 19z"/></svg>';
+      }
+      if (t.includes("建议") || t.includes("优化")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v10"/><path d="M8 7l4-4 4 4"/><rect x="4" y="13" width="16" height="8" rx="3"/></svg>';
+      }
+      if (t.includes("样例") || t.includes("证据")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="14" rx="3"/><path d="M8 14l3-3 4 4 3-3"/><circle cx="8" cy="8" r="1.5"/></svg>';
+      }
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/></svg>';
+    };
+
+    const buildEvidenceHtml = (items, label) => {
+      if (!items.length) return "";
+      const title = label || "证据";
+      const cards = items.map((item) => {
+        const safeUrl = escapeHtml(String(item.url || ""));
+        const safeLink = escapeHtml(String(item.link || item.url || ""));
+        const safeTitle = escapeHtml(String(item.title || ""));
+        const isVideo = item.type === "video" || isVideoUrl(item.url || "");
+        const thumb = isVideo
+          ? `<video src="${safeUrl}" muted playsinline preload="metadata"></video><span class="evidence-tag">video</span>`
+          : `<img src="${safeUrl}" alt="${safeTitle}" loading="lazy" decoding="async"><span class="evidence-tag">image</span>`;
+        return `
+          <a class="evidence-card" href="${safeLink}" target="_blank" rel="noopener noreferrer">
+            <div class="evidence-thumb">${thumb}</div>
+            <div class="evidence-label">${safeTitle || "样例证据"}</div>
+          </a>
+        `;
+      }).join("");
+      return `
+        <div class="evidence-strip" aria-label="${escapeHtml(title)}">
+          ${cards}
+        </div>
+      `;
+    };
+
+    const renderMarkdownRich = (markdown, mediaItems) => {
+      const lines = String(markdown ?? "").replace(/\r\n/g, "\n").split("\n");
+      const sections = [];
+      let current = { title: "", level: 2, lines: [] };
+
+      const pushSection = () => {
+        if (!current.title && current.lines.length === 0) return;
+        sections.push({ ...current });
+      };
+
+      lines.forEach((rawLine) => {
+        const line = String(rawLine ?? "");
+        const trimmed = line.trim();
+        const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/);
+        if (headingMatch) {
+          pushSection();
+          current = { title: headingMatch[2].trim(), level: headingMatch[1].length, lines: [] };
+        } else {
+          current.lines.push(line);
+        }
+      });
+      pushSection();
+
+      if (!sections.length) {
+        return renderMarkdownToHtml(markdown);
+      }
+
+      const evidence = Array.isArray(mediaItems) ? mediaItems.slice() : [];
+      let evidenceIndex = 0;
+      const takeEvidence = (count) => {
+        if (!evidence.length) return [];
+        const slice = evidence.slice(evidenceIndex, evidenceIndex + count);
+        evidenceIndex += slice.length;
+        return slice;
+      };
+
+      return sections.map((section, idx) => {
+        const title = section.title || `分段 ${idx + 1}`;
+        const bodyHtml = renderMarkdownToHtml(section.lines.join("\n"), { allowEmpty: true }) || "<p>（无内容）</p>";
+        const needsEvidence = /样例|证据|图片|视频|截图/.test(title) || idx % 2 === 1;
+        const evidenceHtml = needsEvidence ? buildEvidenceHtml(takeEvidence(3), "证据样例") : "";
+        return `
+          <div class="report-section">
+            <div class="section-head">
+              <div class="section-icon">${getSectionIcon(title)}</div>
+              <div class="section-title">${escapeHtml(title)}</div>
+            </div>
+            <div class="section-body">${bodyHtml}</div>
+            ${evidenceHtml}
+          </div>
+        `;
+      }).join("");
+    };
+
+    const truncateText = (value, maxChars) => {
+      if (typeof value !== "string") return "";
+      const s = value.trim();
+      if (s.length <= maxChars) return s;
+      return s.slice(0, maxChars) + "…";
+    };
+
+    const isVideoUrl = (url) => /\.(mp4|webm|ogg)(\?|$)/i.test(String(url || ""));
+    const isImageUrl = (url) => /\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(String(url || ""));
+
+    const loadReportCache = () => {
+      try {
+        const raw = localStorage.getItem(REPORT_CACHE_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const saveReportCache = (data) => {
+      try {
+        localStorage.setItem(REPORT_CACHE_KEY, JSON.stringify(data || {}));
+      } catch {
+        // ignore
+      }
+    };
+
+    const clearReportCache = () => {
+      try {
+        localStorage.removeItem(REPORT_CACHE_KEY);
+      } catch {
+        // ignore
+      }
+    };
+
+    const setReportStatus = (text, isError) => {
+      if (!reportStatus) return;
+      const label = reportStatus.querySelector("span:last-child") || reportStatus;
+      label.textContent = text;
+      reportStatus.classList.toggle("error", !!isError);
+    };
+
+    const updateReportMeta = (metaText) => {
+      if (!reportMeta) return;
+      reportMeta.textContent = metaText || "-";
+    };
+
+    const computeReviewStatus = (record) => {
+      if (!record) return "pending";
+      const status = String(record.review_status || "").trim();
+      if (status) return status;
+      const videoStatus = String(record.video?.status || "").trim();
+      if (videoStatus === "queued" || videoStatus === "recording") return "pending";
+      if (record.ok === false) return "error";
+      return "done";
+    };
+
+    const normalizeTaskName = (value) => {
+      const s = String(value ?? "").trim();
+      return s || "（未填写）";
+    };
+
+    const deriveTaskCategory = (taskName) => {
+      const s = String(taskName ?? "").trim();
+      if (!s) return "（未填写）";
+      if (s.includes("://")) return s;
+      const m = s.match(/^(.+?)\s*[-—–｜|\/／>›»:\uff1a]\s*(.+)$/);
+      if (m && m[1] && m[2]) return String(m[1]).trim() || s;
+      return s;
+    };
+
+    const percentile = (arr, p) => {
+      if (!arr.length) return 0;
+      const sorted = arr.slice().sort((a, b) => a - b);
+      const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * p)));
+      return sorted[idx];
+    };
+
+    const fetchJson = async (url, { timeoutMs = 8000 } = {}) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal });
+        const txt = await res.text();
+        try { return { ok: res.ok, status: res.status, json: JSON.parse(txt), raw: txt }; }
+        catch { return { ok: res.ok, status: res.status, json: null, raw: txt }; }
+      } catch (e) {
+        const msg = e?.name === "AbortError" ? `timeout ${timeoutMs}ms` : (e?.message ? String(e.message) : String(e));
+        return { ok: false, status: 0, json: null, raw: msg };
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    const setReportActionsEnabled = (enabled) => {
+      if (reportExportPdfBtn) reportExportPdfBtn.disabled = !enabled;
+      if (reportExportDocBtn) reportExportDocBtn.disabled = !enabled;
+    };
+
+    const renderReportFromRecord = (report, { statusLabel } = {}) => {
+      if (!report) return;
+      const markdown = String(report.report_markdown || "").trim();
+      const createdMs = Number(report.created_at_ms || Date.now());
+      const reportDate = report.date || dateInput?.value || "-";
+      const agentLabel = report.agent_id || (reportAgentInput?.value || DEFAULT_REPORT_AGENT);
+      const meta = report.meta || {};
+      const metaParts = [
+        reportDate,
+        `生成于 ${formatLocalDateTime(createdMs)}`,
+        `agent ${agentLabel}`,
+      ];
+      if (meta.record_count != null) metaParts.push(`记录 ${formatNumber(meta.record_count)} 条`);
+      if (viewerTitle) viewerTitle.textContent = `日报 · ${reportDate}`;
+      if (viewerSub) viewerSub.textContent = `agent ${agentLabel}`;
+      renderReport(markdown || "（空报告）", metaParts.join(" · "), report.raw_data || report.payload);
+      setReportStatus(statusLabel || "已生成");
+      renderReportStats(report);
+      currentReport = report;
+      setReportActionsEnabled(true);
+    };
+
+    const renderReportStats = (report) => {
+      if (!reportStats) return;
+      const stats = report?.stats || {};
+      const meta = report?.meta || {};
+      const total = Number(stats.total ?? meta.record_count ?? 0);
+      const alarm = Number(stats.alarm_count ?? stats.alarmCount ?? 0);
+      const pending = Number(stats.pending_count ?? stats.pendingCount ?? 0);
+      const done = Number(stats.done_count ?? stats.doneCount ?? 0);
+      const error = Number(stats.error_count ?? stats.errorCount ?? 0);
+      const alarmRate = Number.isFinite(stats.alarm_rate) ? stats.alarm_rate : (total ? alarm / total : 0);
+      const doneRate = Number.isFinite(stats.done_rate) ? stats.done_rate : (total ? done / total : 0);
+      const avgCost = Number(stats.avg_cost_ms ?? stats.avgCostMs ?? 0);
+      const p90Cost = Number(stats.p90_cost_ms ?? stats.p90CostMs ?? 0);
+      const items = [
+        { label: "总量", value: formatNumber(total) },
+        { label: "告警", value: `${formatNumber(alarm)} (${formatPercent(alarmRate)})` },
+        { label: "待处理", value: formatNumber(pending) },
+        { label: "完成率", value: formatPercent(doneRate) },
+        { label: "异常", value: formatNumber(error) },
+        { label: "平均耗时", value: avgCost ? `${formatMs(avgCost)}` : "-" },
+        { label: "P90", value: p90Cost ? `${formatMs(p90Cost)}` : "-" },
+      ];
+      reportStats.innerHTML = items.map((item) => `
+        <div class="stats-card">
+          <div class="stats-icon">${getStatIcon(item.label)}</div>
+          <div>
+            <div class="stats-label">${escapeHtml(item.label)}</div>
+            <div class="stats-value">${escapeHtml(String(item.value))}</div>
+          </div>
+        </div>
+      `).join("");
+
+      if (statusStrip) {
+        const statusItems = [
+          { label: "已处理", value: formatNumber(done), color: "var(--success)" },
+          { label: "待处理", value: formatNumber(pending), color: "var(--warning)" },
+          { label: "异常", value: formatNumber(error), color: "var(--danger)" },
+        ];
+        statusStrip.innerHTML = statusItems.map((item) => `
+          <div class="status-card">
+            <div class="label">${escapeHtml(item.label)}</div>
+            <div class="value" style="color:${item.color}">${escapeHtml(String(item.value))}</div>
+          </div>
+        `).join("");
+      }
+    };
+
+    const getStatIcon = (label) => {
+      const key = String(label || "");
+      if (key.includes("总")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9h10M7 13h6"/></svg>';
+      }
+      if (key.includes("告警")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 9v4"/><circle cx="12" cy="17" r="1"/><path d="M4.5 19h15L12 5 4.5 19z"/></svg>';
+      }
+      if (key.includes("待处理")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 8v5l3 2"/></svg>';
+      }
+      if (key.includes("完成")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 12l4 4L19 6"/></svg>';
+      }
+      if (key.includes("异常")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg>';
+      }
+      if (key.includes("平均") || key.includes("P90")) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 14l4-4 4 4 6-6"/><path d="M5 19h14"/></svg>';
+      }
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/></svg>';
+    };
+
+    const clearReportView = (message, statusLabel, isError) => {
+      currentReport = null;
+      state.reportMarkdown = "";
+      state.mediaItems = [];
+      setReportActionsEnabled(false);
+      if (reportDoc) reportDoc.innerHTML = renderMarkdownToHtml(message || "等待生成日报。");
+      if (reportRaw) reportRaw.textContent = "-";
+      updateReportMeta("-");
+      if (reportStats) reportStats.innerHTML = "";
+      if (mediaGrid) mediaGrid.innerHTML = "";
+      if (mediaEmpty) mediaEmpty.style.display = "block";
+      if (viewerTitle) viewerTitle.textContent = "日报详情";
+      if (viewerSub) viewerSub.textContent = "请选择左侧日报";
+      setReportStatus(statusLabel || "未生成", !!isError);
+    };
+
+    const fetchReport = async ({ base, date }) => {
+      const candidateBases = Array.from(new Set([
+        base,
+        guessApiBase(),
+        window.location.origin,
+      ].map((s) => String(s || "").replace(/\/$/, "")).filter(Boolean)));
+      for (const b of candidateBases) {
+        const url = `${b}/api/v1/review-reports/${encodeURIComponent(date)}`;
+        const { ok, json, status } = await fetchJson(url, { timeoutMs: 8000 });
+        if (ok && json && json.status === 200 && json.result) {
+          return { report: json.result, base: b };
+        }
+        if (status === 404) {
+          continue;
+        }
+      }
+      return null;
+    };
+
+    const fetchReportHistory = async ({ base, pageSize }) => {
+      const candidateBases = Array.from(new Set([
+        base,
+        guessApiBase(),
+        window.location.origin,
+      ].map((s) => String(s || "").replace(/\/$/, "")).filter(Boolean)));
+      for (const b of candidateBases) {
+        const url = `${b}/api/v1/review-reports?pageIndex=0&pageSize=${pageSize}`;
+        const { ok, json } = await fetchJson(url, { timeoutMs: 8000 });
+        if (ok && json && json.status === 200 && json.result) {
+          return { items: json.result.data || [], base: b };
+        }
+      }
+      return { items: [], base: base };
+    };
+
+    const mapReviewRecordListItems = (items) => {
+      if (!Array.isArray(items)) return [];
+      return items.map((item) => {
+        const createdAtMsRaw = item?.created_at_ms ?? item?.created_atMs ?? item?.createdAtMs ?? 0;
+        const createdAtMs = Number(createdAtMsRaw);
+        const atMs = Number.isFinite(createdAtMs) && createdAtMs > 0 ? createdAtMs : Date.now();
+        const recordId = item?.record_id;
+          return {
+            id: recordId,
+            created_at_ms: createdAtMs,
+            at: atMs,
+            agent_id: item?.agent_id,
+            task: item?.task,
+            source: item?.source,
+            record_time: item?.record_time,
+            review_status: item?.review_status,
+            illegal: item?.illegal,
+            http_status: item?.http_status ?? 200,
+            cost_ms: item?.cost_ms,
+            ok: item?.success,
+            summary: item?.summary,
+            image_url: item?.image_url,
+            thumbnail: item?.thumbnail,
+            video_url: item?.video_url,
+            video: item?.video,
+          };
+        });
+      };
+
+    const fetchReviewRecordListPage = async ({ base, pageIndex, pageSize }) => {
+      const candidateBases = Array.from(new Set([
+        base,
+        guessApiBase(),
+        window.location.origin,
+      ].map((s) => String(s || "").replace(/\/$/, "")).filter(Boolean)));
+      let lastErr = null;
+      for (const b of candidateBases) {
+        const listUrl = `${b}/api/v1/review-records?pageIndex=${pageIndex}&pageSize=${pageSize}`;
+        try {
+          const { ok, json, raw, status } = await fetchJson(listUrl, { timeoutMs: 8000 });
+          if (!ok || !json || json.status !== 200) {
+            let msg = "";
+            if (json && typeof json.message === "string" && json.message.trim()) msg = json.message.trim();
+            else if (raw) msg = String(raw);
+            else msg = `HTTP ${status || 0}`;
+            throw new Error(msg);
+          }
+          const items = json.result?.data || [];
+          const total = Number(json.result?.total || 0);
+          return { items, total, loadedFrom: b };
+        } catch (e) {
+          lastErr = e;
+          continue;
+        }
+      }
+      throw lastErr || new Error("服务器记录加载失败");
+    };
+
+    const fetchDayRecords = async ({ base, startMs, endMs, maxRecords }) => {
+      let pageIndex = 0;
+      let total = 0;
+      let all = [];
+
+      while (all.length < maxRecords) {
+        const { items, total: totalCount } = await fetchReviewRecordListPage({ base, pageIndex, pageSize: PAGE_SIZE });
+        total = totalCount || total;
+        const mapped = mapReviewRecordListItems(items);
+        if (!mapped.length) break;
+        all = all.concat(mapped);
+
+        const oldest = mapped[mapped.length - 1];
+        const oldestMs = getRecordTimeMs(oldest);
+        if (oldestMs < startMs) break;
+        if (totalCount && all.length >= totalCount) break;
+        pageIndex += 1;
+      }
+
+      const dayRecords = all.filter((r) => {
+        const ts = getRecordTimeMs(r);
+        return ts >= startMs && ts <= endMs;
+      });
+      dayRecords.sort((a, b) => getRecordTimeMs(b) - getRecordTimeMs(a));
+      return { records: dayRecords, total };
+    };
+
+    const buildHourlyBuckets = (records, startMs) => {
+      const buckets = Array.from({ length: 24 }, (_, hour) => ({
+        hour,
+        total: 0,
+        alarm: 0,
+      }));
+      records.forEach((record) => {
+        const ts = getRecordTimeMs(record);
+        const idx = Math.min(23, Math.max(0, new Date(ts).getHours()));
+        buckets[idx].total += 1;
+        if (record?.illegal === true) buckets[idx].alarm += 1;
+      });
+      return buckets;
+    };
+
+    const drawTrendChart = (canvas, buckets) => {
+      const ctx = canvas.getContext("2d");
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      if (!width || !height) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const padding = { left: 36, right: 16, top: 16, bottom: 28 };
+      const innerW = width - padding.left - padding.right;
+      const innerH = height - padding.top - padding.bottom;
+
+      const maxVal = Math.max(1, ...buckets.map((b) => Math.max(b.total, b.alarm)));
+
+      ctx.strokeStyle = "rgba(148,163,184,0.25)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i += 1) {
+        const y = padding.top + innerH * (i / 4);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(width - padding.right, y);
+        ctx.stroke();
+      }
+
+      const drawArea = (values, color, alpha) => {
+        ctx.beginPath();
+        values.forEach((val, idx) => {
+          const x = padding.left + (innerW * idx) / (values.length - 1);
+          const y = padding.top + innerH - (val / maxVal) * innerH;
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.lineTo(padding.left + innerW, padding.top + innerH);
+        ctx.lineTo(padding.left, padding.top + innerH);
+        ctx.closePath();
+        ctx.fillStyle = alpha;
+        ctx.fill();
+
+        ctx.beginPath();
+        values.forEach((val, idx) => {
+          const x = padding.left + (innerW * idx) / (values.length - 1);
+          const y = padding.top + innerH - (val / maxVal) * innerH;
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      };
+
+      drawArea(buckets.map((b) => b.total), "#2563eb", "rgba(37, 99, 235, 0.12)");
+      drawArea(buckets.map((b) => b.alarm), "#ef4444", "rgba(239, 68, 68, 0.12)");
+
+      ctx.fillStyle = "#64748b";
+      ctx.font = "11px 'Manrope', sans-serif";
+      ctx.fillText(String(maxVal), 4, padding.top + 8);
+      ctx.fillText("0", 8, padding.top + innerH + 16);
+
+      const labels = [0, 6, 12, 18, 23];
+      labels.forEach((h) => {
+        const x = padding.left + (innerW * h) / 23;
+        const label = `${pad2(h)}:00`;
+        ctx.fillText(label, x - 12, height - 8);
+      });
+    };
+
+    const renderBarList = (container, entries, color) => {
+      if (!container) return;
+      const list = entries.slice(0, 6);
+      if (!list.length) {
+        container.innerHTML = '<div class="empty">暂无数据</div>';
+        return;
+      }
+      const max = Math.max(...list.map(([, count]) => count));
+      container.innerHTML = list.map(([name, count]) => {
+        const ratio = max ? (count / max) * 100 : 0;
+        return `
+          <div class="bar-item">
+            <div class="bar-head"><span>${escapeHtml(name)}</span><span>${formatNumber(count)}</span></div>
+            <div class="bar-track"><div style="width:${ratio}%; background:${color};"></div></div>
+          </div>
+        `;
+      }).join("");
+    };
+
+    const formatStatusBadge = (status) => {
+      if (status === "done") return '<span class="badge green">已处理</span>';
+      if (status === "error") return '<span class="badge red">异常</span>';
+      return '<span class="badge gray">待处理</span>';
+    };
+
+    const formatIllegalBadge = (illegal) => {
+      if (illegal === true) return '<span class="badge red">是</span>';
+      if (illegal === false) return '<span class="badge green">否</span>';
+      return '<span class="badge gray">-</span>';
+    };
+
+    const renderTable = () => {
+      if (!tableBody) return;
+      tableBody.innerHTML = "";
+      const records = state.records || [];
+      let list = records;
+      if (state.tableFilter === "alarm") list = records.filter((r) => r.illegal === true);
+      if (state.tableFilter === "pending") list = records.filter((r) => computeReviewStatus(r) === "pending");
+      const showList = list.slice(0, 20);
+      tableInfo.textContent = `共 ${formatNumber(records.length)} 条 · 展示 ${formatNumber(showList.length)} 条`;
+
+      if (!showList.length) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td colspan="8" class="empty">暂无匹配记录</td>`;
+        tableBody.appendChild(tr);
+        return;
+      }
+
+      showList.forEach((r) => {
+        const tr = document.createElement("tr");
+        const ts = getRecordTimeMs(r);
+        const status = computeReviewStatus(r);
+        const task = normalizeTaskName(r.task);
+        tr.innerHTML = `
+          <td>${escapeHtml(formatLocalDateTime(ts))}</td>
+          <td>${escapeHtml(String(r.source || "-"))}</td>
+          <td>${escapeHtml(task)}</td>
+          <td>${formatStatusBadge(status)}</td>
+          <td>${formatIllegalBadge(r.illegal)}</td>
+          <td class="cell-summary">${escapeHtml(String(r.summary || "-"))}</td>
+          <td>${escapeHtml(formatMs(r.cost_ms))}</td>
+          <td>${escapeHtml(String(r.http_status || "-"))}</td>
+        `;
+        tableBody.appendChild(tr);
+      });
+    };
+
+    const renderStatus = (records) => {
+      const total = records.length || 1;
+      const done = records.filter((r) => computeReviewStatus(r) === "done").length;
+      const pending = records.filter((r) => computeReviewStatus(r) === "pending").length;
+      const error = records.filter((r) => computeReviewStatus(r) === "error").length;
+      const costs = records.map((r) => Number(r.cost_ms) || 0).filter((v) => v > 0);
+      const avgCost = costs.length ? costs.reduce((sum, v) => sum + v, 0) / costs.length : 0;
+      const p90 = costs.length ? percentile(costs, 0.9) : 0;
+      const successRate = records.length ? records.filter((r) => r.ok !== false).length / records.length : 0;
+
+      statusList.innerHTML = [
+        { label: "已处理", count: done, cls: "success" },
+        { label: "待处理", count: pending, cls: "warn" },
+        { label: "异常", count: error, cls: "error" },
+      ].map((item) => {
+        const ratio = total ? (item.count / total) * 100 : 0;
+        return `
+          <div class="status-item">
+            <div class="status-row"><span>${item.label}</span><span>${formatNumber(item.count)}</span></div>
+            <div class="status-bar ${item.cls}"><div style="width:${ratio}%;"></div></div>
+          </div>
+        `;
+      }).join("");
+
+      statusMetrics.innerHTML = `
+        <span class="metric-pill">成功率 ${formatPercent(successRate)}</span>
+        <span class="metric-pill">平均耗时 ${formatMs(avgCost)}</span>
+        <span class="metric-pill">P90 ${formatMs(p90)}</span>
+      `;
+      statusSub.textContent = `总计 ${formatNumber(records.length)} 条`;
+    };
+
+    const renderInsights = (stats) => {
+      if (!insightList) return;
+      insightList.innerHTML = "";
+      const items = [
+        { label: "告警占比", value: `${formatNumber(stats.alarmCount)} 条 · ${formatPercent(stats.alarmRate)}` },
+        { label: "处理完成率", value: `${formatPercent(stats.doneRate)} · 待处理 ${formatNumber(stats.pendingCount)} 条` },
+        { label: "峰值时段", value: stats.peakLabel },
+        { label: "Top 类别/来源", value: stats.topLabel },
+      ];
+      insightSub.textContent = stats.summaryLabel;
+      items.forEach((item) => {
+        const div = document.createElement("div");
+        div.className = "insight-item";
+        div.innerHTML = `<div class="insight-label">${escapeHtml(item.label)}</div><div class="insight-value">${escapeHtml(item.value)}</div>`;
+        insightList.appendChild(div);
+      });
+    };
+
+    const renderKpis = (stats, totalCount) => {
+      kpiTotal.textContent = formatNumber(stats.total);
+      kpiTotalSub.textContent = totalCount ? `当日 ${formatNumber(stats.total)} / 总 ${formatNumber(totalCount)}` : `当日 ${formatNumber(stats.total)} 条`;
+      kpiAlarm.textContent = formatNumber(stats.alarmCount);
+      kpiAlarmRate.textContent = `占比 ${formatPercent(stats.alarmRate)}`;
+      kpiPending.textContent = formatNumber(stats.pendingCount);
+      kpiPendingRate.textContent = `占比 ${formatPercent(stats.pendingRate)}`;
+      kpiDone.textContent = formatPercent(stats.doneRate);
+      kpiDoneSub.textContent = `异常 ${formatNumber(stats.errorCount)}`;
+    };
+
+    const renderTopLists = (records) => {
+      const alarmTaskCounts = new Map();
+      const sourceCounts = new Map();
+      records.forEach((record) => {
+        const src = String(record?.source || "未知来源");
+        sourceCounts.set(src, (sourceCounts.get(src) || 0) + 1);
+        if (record?.illegal === true) {
+          const task = normalizeTaskName(record?.task);
+          const cat = deriveTaskCategory(task);
+          alarmTaskCounts.set(cat, (alarmTaskCounts.get(cat) || 0) + 1);
+        }
+      });
+
+      const sortCounts = (map) => Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+      renderBarList(taskList, sortCounts(alarmTaskCounts), "linear-gradient(90deg, #ef4444, #fb7185)");
+      renderBarList(sourceList, sortCounts(sourceCounts), "linear-gradient(90deg, #0ea5e9, #22d3ee)");
+      taskSub.textContent = `覆盖 ${formatNumber(alarmTaskCounts.size)} 个类别`;
+      sourceSub.textContent = `覆盖 ${formatNumber(sourceCounts.size)} 个来源`;
+    };
+
+    const computeStats = (records) => {
+      const total = records.length;
+      const alarmCount = records.filter((r) => r?.illegal === true).length;
+      const pendingCount = records.filter((r) => computeReviewStatus(r) === "pending").length;
+      const doneCount = records.filter((r) => computeReviewStatus(r) === "done").length;
+      const errorCount = records.filter((r) => computeReviewStatus(r) === "error").length;
+      const alarmRate = total ? alarmCount / total : 0;
+      const pendingRate = total ? pendingCount / total : 0;
+      const doneRate = total ? doneCount / total : 0;
+
+      const buckets = buildHourlyBuckets(records);
+      state.buckets = buckets;
+      const peak = buckets.reduce((best, b) => (b.total > best.total ? b : best), buckets[0] || { total: 0, hour: 0 });
+      const peakLabel = peak && peak.total
+        ? `${pad2(peak.hour)}:00 - ${pad2((peak.hour + 1) % 24)}:00 · ${formatNumber(peak.total)} 条`
+        : "暂无数据";
+
+      let topTask = "-";
+      let topSource = "-";
+      const taskCounts = new Map();
+      const sourceCounts = new Map();
+      records.forEach((record) => {
+        const src = String(record?.source || "未知来源");
+        sourceCounts.set(src, (sourceCounts.get(src) || 0) + 1);
+        if (record?.illegal === true) {
+          const task = normalizeTaskName(record?.task);
+          const cat = deriveTaskCategory(task);
+          taskCounts.set(cat, (taskCounts.get(cat) || 0) + 1);
+        }
+      });
+      const sortedTasks = Array.from(taskCounts.entries()).sort((a, b) => b[1] - a[1]);
+      const sortedSources = Array.from(sourceCounts.entries()).sort((a, b) => b[1] - a[1]);
+      if (sortedTasks.length) topTask = `${sortedTasks[0][0]} (${formatNumber(sortedTasks[0][1])})`;
+      if (sortedSources.length) topSource = `${sortedSources[0][0]} (${formatNumber(sortedSources[0][1])})`;
+
+      return {
+        total,
+        alarmCount,
+        pendingCount,
+        doneCount,
+        errorCount,
+        alarmRate,
+        pendingRate,
+        doneRate,
+        peakLabel,
+        topLabel: `${topTask} · ${topSource}`,
+        summaryLabel: `告警 ${formatPercent(alarmRate)} · 完成 ${formatPercent(doneRate)}`,
+      };
+    };
+
+    const buildCounts = (records, { alarmOnly = false } = {}) => {
+      const taskCounts = new Map();
+      const sourceCounts = new Map();
+      records.forEach((record) => {
+        const src = String(record?.source || "未知来源");
+        sourceCounts.set(src, (sourceCounts.get(src) || 0) + 1);
+        if (alarmOnly && record?.illegal !== true) return;
+        const task = normalizeTaskName(record?.task);
+        const cat = deriveTaskCategory(task);
+        taskCounts.set(cat, (taskCounts.get(cat) || 0) + 1);
+      });
+
+      const toList = (map, limit = 6) =>
+        Array.from(map.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, limit)
+          .map(([name, count]) => ({ name, count }));
+
+      return {
+        tasks: toList(taskCounts),
+        sources: toList(sourceCounts),
+      };
+    };
+
+    const buildSamples = (records, filterFn, limit) =>
+      records
+        .filter(filterFn)
+        .slice(0, limit)
+        .map((r) => ({
+          time: formatLocalDateTime(getRecordTimeMs(r)),
+          task: normalizeTaskName(r.task),
+          source: String(r.source || "-"),
+          summary: truncateText(String(r.summary || ""), 80),
+          status: computeReviewStatus(r),
+          illegal: r.illegal,
+          http_status: r.http_status,
+        }));
+
+    const buildReportPayload = ({ records, startMs, endMs, sampleSize }) => {
+      const total = records.length;
+      const alarmCount = records.filter((r) => r?.illegal === true).length;
+      const pendingCount = records.filter((r) => computeReviewStatus(r) === "pending").length;
+      const doneCount = records.filter((r) => computeReviewStatus(r) === "done").length;
+      const errorCount = records.filter((r) => computeReviewStatus(r) === "error").length;
+      const alarmRate = total ? alarmCount / total : 0;
+      const successRate = total ? records.filter((r) => r.ok !== false).length / total : 0;
+      const costs = records.map((r) => Number(r.cost_ms) || 0).filter((v) => v > 0);
+      const avgCost = costs.length ? costs.reduce((sum, v) => sum + v, 0) / costs.length : 0;
+      const p90Cost = costs.length ? percentile(costs, 0.9) : 0;
+
+      const buckets = buildHourlyBuckets(records);
+      const peak = buckets.reduce((best, b) => (b.total > best.total ? b : best), buckets[0] || { total: 0, hour: 0 });
+      const peakLabel = peak && peak.total
+        ? `${pad2(peak.hour)}:00 - ${pad2((peak.hour + 1) % 24)}:00 · ${formatNumber(peak.total)} 条`
+        : "暂无数据";
+
+      const topAlarm = buildCounts(records, { alarmOnly: true });
+      const topAll = buildCounts(records, { alarmOnly: false });
+
+      return {
+        date: toDateInputValue(new Date(startMs)),
+        range: {
+          start: formatLocalDateTime(startMs),
+          end: formatLocalDateTime(endMs),
+        },
+        summary: {
+          total,
+          alarm_count: alarmCount,
+          pending_count: pendingCount,
+          done_count: doneCount,
+          error_count: errorCount,
+          alarm_rate: Number(alarmRate.toFixed(4)),
+          success_rate: Number(successRate.toFixed(4)),
+          avg_cost_ms: Number(avgCost.toFixed(2)),
+          p90_cost_ms: Number(p90Cost.toFixed(2)),
+        },
+        peak_hour: peakLabel,
+        top_alarm_tasks: topAlarm.tasks,
+        top_sources: topAll.sources,
+        hourly: buckets.map((b) => ({
+          hour: `${pad2(b.hour)}:00`,
+          total: b.total,
+          alarm: b.alarm,
+        })),
+        samples: {
+          alarms: buildSamples(records, (r) => r?.illegal === true, sampleSize),
+          pending: buildSamples(records, (r) => computeReviewStatus(r) === "pending", sampleSize),
+        },
+      };
+    };
+
+    const shrinkPayloadForLLM = (payload) => {
+      const clone = JSON.parse(JSON.stringify(payload || {}));
+      const measure = (data) => JSON.stringify(data || {}).length;
+      if (measure(clone) <= REPORT_MAX_CHARS) return clone;
+
+      if (clone.samples) {
+        if (clone.samples.alarms) clone.samples.alarms = clone.samples.alarms.slice(0, 3);
+        if (clone.samples.pending) clone.samples.pending = clone.samples.pending.slice(0, 3);
+      }
+      if (measure(clone) <= REPORT_MAX_CHARS) return clone;
+
+      if (clone.top_alarm_tasks) clone.top_alarm_tasks = clone.top_alarm_tasks.slice(0, 3);
+      if (clone.top_sources) clone.top_sources = clone.top_sources.slice(0, 3);
+      if (measure(clone) <= REPORT_MAX_CHARS) return clone;
+
+      delete clone.samples;
+      if (measure(clone) <= REPORT_MAX_CHARS) return clone;
+
+      clone.hourly = (clone.hourly || []).filter((_, idx) => idx % 4 === 0);
+      return clone;
+    };
+
+    const buildReportMessage = (payload) => {
+      const instruction = [
+        "你是安全运营分析师，请根据以下当天复判数据生成中文 Markdown 日报。",
+        "要求：",
+        "1) 输出标题与多个小节（总览、趋势、风险点、建议、重点样例）。",
+        "2) 只基于提供的数据，不要编造不存在的信息。",
+        "3) 关键信息用条目列出，语气正式简洁。",
+        "4) 输出 Markdown 字符串即可。",
+        "",
+        "数据(JSON)：",
+      ].join("\n");
+
+      const payloadSlim = shrinkPayloadForLLM(payload);
+      const payloadStr = JSON.stringify(payloadSlim);
+      const message = `${instruction}\n${payloadStr}`;
+      return { message, payloadStr };
+    };
+
+    const renderReportDocument = () => {
+      if (!reportDoc) return;
+      const markdown = state.reportMarkdown || "";
+      const html = renderMarkdownRich(markdown || "（空报告）", state.mediaItems || []);
+      reportDoc.innerHTML = html || renderMarkdownToHtml(markdown || "（空报告）");
+    };
+
+    const renderReport = (markdown, metaText, rawData) => {
+      state.reportMarkdown = String(markdown || "");
+      renderReportDocument();
+      if (reportRaw) reportRaw.textContent = rawData ? JSON.stringify(rawData, null, 2) : "-";
+      updateReportMeta(metaText);
+    };
+
+    const extractMediaItems = (records, limit = 8) => {
+      const items = [];
+      const seen = new Set();
+      for (const record of records || []) {
+        if (items.length >= limit) break;
+        const thumb = record?.thumbnail;
+        const thumbUrl = (thumb && typeof thumb === "object" && typeof thumb.url === "string") ? thumb.url : "";
+        const imageUrl = (typeof record?.image_url === "string") ? record.image_url : "";
+        const videoUrl = (typeof record?.video?.static_url === "string")
+          ? record.video.static_url
+          : (typeof record?.video_url === "string" ? record.video_url : "");
+
+        let displayUrl = thumbUrl || imageUrl || videoUrl;
+        let linkUrl = videoUrl || imageUrl || thumbUrl;
+        if (!displayUrl || typeof displayUrl !== "string") continue;
+
+        const absDisplay = buildAbsoluteUrl(displayUrl);
+        const absLink = linkUrl ? buildAbsoluteUrl(linkUrl) : absDisplay;
+        if (!absDisplay || seen.has(absDisplay)) continue;
+        seen.add(absDisplay);
+
+        let type = "image";
+        if (isVideoUrl(absDisplay)) type = "video";
+        else if (isImageUrl(absDisplay)) type = "image";
+        else type = "image";
+
+        items.push({
+          url: absDisplay,
+          link: absLink,
+          type,
+          title: record?.summary || record?.task || record?.agent_id || "复判样例",
+        });
+      }
+      return items;
+    };
+
+    const renderMediaGrid = (records) => {
+      if (!mediaGrid) return;
+      const items = extractMediaItems(records, 10);
+      state.mediaItems = items;
+      if (!items.length) {
+        mediaGrid.innerHTML = "";
+        if (mediaEmpty) mediaEmpty.style.display = "block";
+        renderReportDocument();
+        return;
+      }
+      if (mediaEmpty) mediaEmpty.style.display = "none";
+      mediaGrid.innerHTML = items.map((item) => {
+        const safeTitle = escapeHtml(String(item.title || ""));
+        const safeUrl = escapeHtml(String(item.url || ""));
+        const safeLink = escapeHtml(String(item.link || item.url || ""));
+        const isVideo = item.type === "video" || isVideoUrl(item.url || "");
+        const thumbHtml = isVideo
+          ? `<video src="${safeUrl}" muted playsinline preload="metadata"></video><span class="media-play">▶</span>`
+          : `<img src="${safeUrl}" alt="${safeTitle}" loading="lazy" decoding="async">`;
+        return `
+          <a class="media-card" href="${safeLink}" target="_blank" rel="noopener noreferrer" title="${safeTitle}">
+            <div class="media-thumb">${thumbHtml}</div>
+            <div class="media-label">${safeTitle || "样例"}</div>
+          </a>
+        `;
+      }).join("");
+      renderReportDocument();
+    };
+
+    const loadReportMedia = async (dateStr) => {
+      if (!dateStr) return;
+      const base = normalizeBaseUrl(baseInput.value);
+      const date = parseDateInput(dateStr);
+      const { startMs, endMs } = getDayRange(date);
+      try {
+        const { records } = await fetchDayRecords({
+          base,
+          startMs,
+          endMs,
+          maxRecords: 400,
+        });
+        state.records = records || [];
+        renderMediaGrid(state.records);
+      } catch {
+        renderMediaGrid([]);
+      }
+    };
+
+    const renderReportList = () => {
+      if (!reportListEl) return;
+      const keyword = (listSearchInput?.value || "").trim().toLowerCase();
+      const sortMode = listSortSelect?.value || "desc";
+      let list = reportListData.slice();
+      list = list.filter((item) => {
+        if (!keyword) return true;
+        const date = String(item?.date || item?.report_id || "").toLowerCase();
+        const agent = String(item?.agent_id || "").toLowerCase();
+        const base = String(item?.base_url || "").toLowerCase();
+        return date.includes(keyword) || agent.includes(keyword) || base.includes(keyword);
+      });
+      list.sort((a, b) => {
+        const da = String(a?.date || a?.report_id || "");
+        const db = String(b?.date || b?.report_id || "");
+        return sortMode === "asc" ? da.localeCompare(db) : db.localeCompare(da);
+      });
+      if (listMeta) listMeta.textContent = `共 ${formatNumber(list.length)} 份`;
+      if (!list.length) {
+        reportListEl.innerHTML = '<div class="empty-state">暂无日报</div>';
+        return;
+      }
+      reportListEl.innerHTML = list.map((item) => {
+        const date = String(item?.date || item?.report_id || "");
+        const stats = item?.stats || {};
+        const total = Number(stats.total ?? item?.meta?.record_count ?? 0);
+        const alarm = Number(stats.alarm_count ?? 0);
+        const pending = Number(stats.pending_count ?? 0);
+        const createdMs = Number(item?.created_at_ms || 0);
+        const createdLabel = createdMs ? formatLocalDateTime(createdMs) : "-";
+        const agentLabel = item?.agent_id || "-";
+        const isActive = activeReportDate && date === activeReportDate;
+        return `
+          <div class="report-item ${isActive ? "active" : ""}" data-date="${escapeHtml(date)}">
+            <h4>${escapeHtml(date || "-")}</h4>
+            <div class="meta">生成于 ${escapeHtml(createdLabel)} · agent ${escapeHtml(agentLabel)}</div>
+            <div class="chips">
+              <span class="chip">总量 ${formatNumber(total)}</span>
+              <span class="chip">告警 ${formatNumber(alarm)}</span>
+              <span class="chip">待处理 ${formatNumber(pending)}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      Array.from(reportListEl.querySelectorAll(".report-item")).forEach((el) => {
+        el.addEventListener("click", () => {
+          const date = el.getAttribute("data-date");
+          if (date) selectReport(date);
+        });
+      });
+    };
+
+    const refreshReportList = async ({ keepSelection = true } = {}) => {
+      const base = normalizeBaseUrl(baseInput.value);
+      updateStatus("加载列表", false);
+      try {
+        const { items } = await fetchReportHistory({ base, pageSize: 200 });
+        reportListData = Array.isArray(items) ? items : [];
+        renderReportList();
+        updateStatus("已更新", false);
+        if (keepSelection) {
+          const active = activeReportDate && reportListData.find((item) => String(item?.date || item?.report_id) === activeReportDate);
+          if (active) {
+            await selectReport(activeReportDate, { silent: true });
+          } else if (reportListData.length) {
+            const first = reportListData[0];
+            await selectReport(String(first?.date || first?.report_id || ""));
+          } else {
+            clearReportView("暂无日报，请生成或选择日期。", "未生成");
+          }
+        }
+      } catch (e) {
+        updateStatus("加载失败", true);
+        if (reportListEl) reportListEl.innerHTML = `<div class="empty-state">${escapeHtml(String(e?.message || e || "加载失败"))}</div>`;
+      }
+    };
+
+    const selectReport = async (dateStr, { silent = false } = {}) => {
+      if (!dateStr) return;
+      activeReportDate = dateStr;
+      if (dateInput) dateInput.value = dateStr;
+      setUrlParams({ date: dateStr });
+      renderReportList();
+      const base = normalizeBaseUrl(baseInput.value);
+      const { startMs, endMs } = getDayRange(parseDateInput(dateStr));
+      if (dateLabel) dateLabel.textContent = dateStr;
+      if (rangeLabel) rangeLabel.textContent = `${formatLocalTime(startMs)} - ${formatLocalTime(endMs)}`;
+      if (baseLabel) baseLabel.textContent = base;
+      if (updatedAt) updatedAt.textContent = formatLocalDateTime(Date.now());
+      const remote = await fetchReport({ base, date: dateStr });
+      if (remote && remote.report) {
+        renderReportFromRecord(remote.report, { statusLabel: "已生成（已存储）" });
+      } else if (!silent && reportAutoSelect && reportAutoSelect.value !== "0") {
+        await generateReport({ base, date: dateStr, sampleSize: Number(reportSampleSelect?.value || 6), force: true });
+      } else {
+        clearReportView("该日期暂无日报，点击生成即可创建。", "未生成");
+      }
+      await loadReportMedia(dateStr);
+    };
+
+    const loadCachedReport = ({ base, date, agentId, sampleSize }) => {
+      const cache = loadReportCache();
+      if (!cache || !cache.report_markdown) return false;
+      if (cache.date !== date || cache.base !== base) return false;
+      if (cache.agent_id && cache.agent_id !== agentId) return false;
+      if (cache.sample_size && String(cache.sample_size) !== String(sampleSize)) return false;
+      renderReport(cache.report_markdown, `缓存报告 · 生成于 ${cache.updated_at || "-"}`, cache.raw_data);
+      setReportStatus("已生成（缓存）");
+      currentReport = null;
+      setReportActionsEnabled(false);
+      return true;
+    };
+
+    const updateReportHistorySelect = (items, selectedDate) => {
+      if (!reportHistorySelect) return;
+      const list = Array.isArray(items) ? items : [];
+      if (!list.length) {
+        reportHistorySelect.innerHTML = '<option value="">暂无历史</option>';
+        return;
+      }
+      const dates = list.map((item) => item?.date || item?.report_id || "").filter(Boolean);
+      const hasSelected = selectedDate && dates.includes(selectedDate);
+      const options = (hasSelected ? dates : [selectedDate, ...dates]).filter(Boolean);
+      reportHistorySelect.innerHTML = options
+        .map((date) => `<option value="${escapeHtml(date)}">${escapeHtml(date)}</option>`)
+        .join("");
+      if (selectedDate) reportHistorySelect.value = selectedDate;
+    };
+
+    const refreshReportHistory = async () => {
+      if (!reportHistorySelect) return;
+      const base = normalizeBaseUrl(baseInput.value);
+      const { items } = await fetchReportHistory({ base, pageSize: 60 });
+      const selectedDate = dateInput.value || toDateInputValue(new Date());
+      updateReportHistorySelect(items, selectedDate);
+    };
+
+    const triggerDownload = (url) => {
+      try {
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      } catch {
+        window.open(url, "_blank");
+      }
+    };
+
+    const generateReport = async ({ base, date, sampleSize, force = false }) => {
+      if (reportGenerating) return;
+      const agentId = (reportAgentInput?.value || "").trim() || DEFAULT_REPORT_AGENT;
+      if (date) activeReportDate = date;
+      reportGenerating = true;
+      setReportStatus("生成中…", false);
+      if (reportGenerateBtn) reportGenerateBtn.disabled = true;
+      if (reportDoc) reportDoc.innerHTML = renderMarkdownToHtml("正在生成日报，请稍候...");
+      setReportActionsEnabled(false);
+
+      try {
+        const url = `${base}/api/v1/review-reports/generate`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            date,
+            base_url: base,
+            agent_id: agentId,
+            sample_size: sampleSize,
+            force: !!force,
+          }),
+        });
+        const txt = await res.text();
+        const parsed = (() => {
+          try { return JSON.parse(txt); } catch { return null; }
+        })();
+        if (!res.ok || !parsed || parsed.status !== 200) {
+          const errMsg = parsed?.detail || parsed?.message || txt || "生成失败";
+          setReportStatus("生成失败", true);
+          if (reportDoc) reportDoc.innerHTML = renderMarkdownToHtml(`生成失败：${errMsg}`);
+          return;
+        }
+
+        const report = parsed?.result?.report || parsed?.result || null;
+        if (!report) {
+          setReportStatus("生成失败", true);
+          if (reportDoc) reportDoc.innerHTML = renderMarkdownToHtml("生成失败：报告为空");
+          return;
+        }
+        renderReportFromRecord(report, { statusLabel: parsed?.result?.generated ? "已生成" : "已生成（已存储）" });
+        saveReportCache({
+          date,
+          base,
+          agent_id: agentId,
+          sample_size: sampleSize,
+          report_markdown: report.report_markdown,
+          raw_data: report.raw_data || report.payload,
+          updated_at: formatLocalDateTime(report.created_at_ms || Date.now()),
+        });
+        void refreshReportList({ keepSelection: true });
+      } catch (e) {
+        setReportStatus("生成失败", true);
+        if (reportDoc) reportDoc.innerHTML = renderMarkdownToHtml(`生成失败：${String(e?.message || e || "未知错误")}`);
+      } finally {
+        reportGenerating = false;
+        if (reportGenerateBtn) reportGenerateBtn.disabled = false;
+      }
+    };
+
+    const maybeAutoGenerateReport = async ({ base, date, sampleSize }) => {
+      const agentId = (reportAgentInput?.value || "").trim() || DEFAULT_REPORT_AGENT;
+      const remote = await fetchReport({ base, date });
+      if (remote && remote.report) {
+        renderReportFromRecord(remote.report, { statusLabel: "已生成（已存储）" });
+        saveReportCache({
+          date,
+          base,
+          agent_id: agentId,
+          sample_size: sampleSize,
+          report_markdown: remote.report.report_markdown,
+          raw_data: remote.report.raw_data || remote.report.payload,
+          updated_at: formatLocalDateTime(remote.report.created_at_ms || Date.now()),
+        });
+        return;
+      }
+
+      if (loadCachedReport({ base, date, agentId, sampleSize })) return;
+      if (reportAutoSelect && reportAutoSelect.value === "0") {
+        setReportStatus("待生成");
+        clearReportView("等待生成日报。", "待生成");
+        return;
+      }
+      await generateReport({ base, date, sampleSize, force: true });
+    };
+
+    const updateStatus = (text, isError) => {
+      statusText.textContent = text;
+      if (isError) statusPill.classList.add("error");
+      else statusPill.classList.remove("error");
+    };
+
+    const renderAll = ({ records, total, startMs, endMs }) => {
+      const stats = computeStats(records);
+      renderKpis(stats, total);
+      renderInsights(stats);
+      renderStatus(records);
+      renderTopLists(records);
+      renderTable();
+      drawTrendChart(trendChart, state.buckets);
+      trendSub.textContent = stats.peakLabel === "暂无数据" ? "每小时" : `每小时 · 峰值 ${stats.peakLabel}`;
+      updatedAt.textContent = formatLocalDateTime(Date.now());
+      dateLabel.textContent = toDateInputValue(new Date(startMs));
+      rangeLabel.textContent = `${formatLocalTime(startMs)} - ${formatLocalTime(endMs)}`;
+      reportContext = { records, startMs, endMs };
+      const sampleSize = Number(reportSampleSelect?.value || 6);
+      const base = normalizeBaseUrl(baseInput.value);
+      const date = toDateInputValue(new Date(startMs));
+      updateReportMeta(`数据范围 ${formatLocalTime(startMs)} - ${formatLocalTime(endMs)}`);
+    };
+
+    const refreshData = async ({ keepSelection = true } = {}) => {
+      const base = normalizeBaseUrl(baseInput.value);
+      if (baseLabel) baseLabel.textContent = base;
+      if (updatedAt) updatedAt.textContent = formatLocalDateTime(Date.now());
+      saveSettings({ baseUrl: base, date: dateInput.value, refreshMs: Number(refreshSelect.value || 0) });
+      await refreshReportList({ keepSelection });
+    };
+
+    const applyRefreshTimer = () => {
+      const intervalMs = Number(refreshSelect.value || 0);
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+      if (intervalMs > 0) refreshTimer = setInterval(refreshData, intervalMs);
+      saveSettings({ refreshMs: intervalMs });
+    };
+
+    const init = () => {
+      const settings = loadSettings();
+      const urlBase = getUrlParam("base") || getUrlParam("baseUrl");
+      const urlDate = getUrlParam("date");
+      const rawSettingsBase = settings.baseUrl || "";
+      let baseCandidate = urlBase || rawSettingsBase || "";
+      if (!urlBase && window.location.port === "6502" && rawSettingsBase) {
+        const normalized = normalizeBaseUrl(rawSettingsBase);
+        if (normalized.endsWith(":8005")) baseCandidate = "";
+      }
+      const base = normalizeBaseUrl(baseCandidate);
+      baseInput.value = base;
+      const initialDate = urlDate || settings.date || toDateInputValue(new Date());
+      dateInput.value = initialDate;
+      if (settings.refreshMs != null) refreshSelect.value = String(settings.refreshMs);
+      if (reportAgentInput) reportAgentInput.value = settings.reportAgentId || DEFAULT_REPORT_AGENT;
+      if (reportSampleSelect) reportSampleSelect.value = String(settings.reportSampleSize || 6);
+      if (reportAutoSelect) reportAutoSelect.value = String(settings.reportAuto ?? 1);
+      activeReportDate = initialDate;
+      setReportActionsEnabled(false);
+
+      baseInput.addEventListener("change", () => {
+        const base = normalizeBaseUrl(baseInput.value);
+        setUrlParams({ base });
+        refreshData({ keepSelection: true });
+      });
+      dateInput.addEventListener("change", () => {
+        const selected = dateInput.value;
+        setUrlParams({ date: selected });
+        selectReport(selected, { silent: true });
+      });
+      refreshSelect.addEventListener("change", applyRefreshTimer);
+      refreshBtn.addEventListener("click", () => refreshData({ keepSelection: true }));
+      if (listRefreshBtn) listRefreshBtn.addEventListener("click", () => refreshData({ keepSelection: true }));
+      if (listTodayBtn) listTodayBtn.addEventListener("click", () => {
+        const today = toDateInputValue(new Date());
+        selectReport(today);
+      });
+      if (listSearchInput) listSearchInput.addEventListener("input", renderReportList);
+      if (listSortSelect) listSortSelect.addEventListener("change", renderReportList);
+      if (reportGenerateBtn) {
+        reportGenerateBtn.addEventListener("click", () => {
+          const base = normalizeBaseUrl(baseInput.value);
+          const date = dateInput.value || toDateInputValue(new Date());
+          const sampleSize = Number(reportSampleSelect?.value || 6);
+          void generateReport({ base, date, sampleSize, force: true });
+        });
+      }
+      if (reportCopyBtn) {
+        reportCopyBtn.addEventListener("click", async () => {
+          const text = reportDoc?.textContent || "";
+          if (!text) return;
+          try {
+            await navigator.clipboard.writeText(text);
+            setReportStatus("已复制");
+          } catch {
+            setReportStatus("复制失败", true);
+          }
+        });
+      }
+      if (reportExportPdfBtn) {
+        reportExportPdfBtn.addEventListener("click", () => {
+          const date = dateInput.value || toDateInputValue(new Date());
+          if (!currentReport) {
+            setReportStatus("暂无可导出报告", true);
+            return;
+          }
+          const base = normalizeBaseUrl(baseInput.value);
+          const url = `${base}/api/v1/review-reports/${encodeURIComponent(date)}/export?format=pdf`;
+          triggerDownload(url);
+        });
+      }
+      if (reportExportDocBtn) {
+        reportExportDocBtn.addEventListener("click", () => {
+          const date = dateInput.value || toDateInputValue(new Date());
+          if (!currentReport) {
+            setReportStatus("暂无可导出报告", true);
+            return;
+          }
+          const base = normalizeBaseUrl(baseInput.value);
+          const url = `${base}/api/v1/review-reports/${encodeURIComponent(date)}/export?format=docx`;
+          triggerDownload(url);
+        });
+      }
+      if (reportClearBtn) {
+        reportClearBtn.addEventListener("click", () => {
+          clearReportCache();
+          clearReportView("已清除本地缓存，请重新生成日报。", "缓存已清除");
+        });
+      }
+      if (reportAgentInput) {
+        reportAgentInput.addEventListener("change", () => {
+          const agentId = (reportAgentInput.value || "").trim();
+          saveSettings({ reportAgentId: agentId });
+          setReportStatus("待生成");
+          currentReport = null;
+          setReportActionsEnabled(false);
+        });
+      }
+      if (reportSampleSelect) {
+        reportSampleSelect.addEventListener("change", () => {
+          saveSettings({ reportSampleSize: Number(reportSampleSelect.value || 6) });
+          setReportStatus("待生成");
+          currentReport = null;
+          setReportActionsEnabled(false);
+        });
+      }
+      if (reportAutoSelect) {
+        reportAutoSelect.addEventListener("change", () => {
+          saveSettings({ reportAuto: Number(reportAutoSelect.value || 1) });
+        });
+      }
+
+      applyRefreshTimer();
+      refreshData({ keepSelection: true });
+    };
+
+    init();
+  </script>
+</body>
+</html>

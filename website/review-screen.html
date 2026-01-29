@@ -1,0 +1,1141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI复判大屏</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f3f6fb;
+      --panel: rgba(255, 255, 255, 0.9);
+      --panel-strong: #ffffff;
+      --border: rgba(148, 163, 184, 0.28);
+      --text: #0b1220;
+      --muted: #5b6475;
+      --primary: #1d4ed8;
+      --primary-strong: #1e40af;
+      --accent: #0ea5e9;
+      --accent-2: #14b8a6;
+      --success: #16a34a;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --shadow: 0 20px 50px rgba(15, 23, 42, 0.12);
+      --radius: 18px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Sora", "Noto Sans SC", sans-serif;
+      color: var(--text);
+      background: radial-gradient(1200px 600px at 8% -10%, #dbeafe 0%, rgba(219, 234, 254, 0) 60%),
+        radial-gradient(1000px 600px at 95% 5%, #cffafe 0%, rgba(207, 250, 254, 0) 60%),
+        radial-gradient(900px 700px at 15% 100%, #fef3c7 0%, rgba(254, 243, 199, 0) 60%),
+        linear-gradient(180deg, #f8fafc 0%, #edf2fb 100%);
+      min-height: 100vh;
+      position: relative;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+        radial-gradient(circle at 85% 20%, rgba(14, 165, 233, 0.12), transparent 55%);
+      background-size: 120px 120px, 120px 120px, 100% 100%;
+      pointer-events: none;
+      opacity: 0.6;
+    }
+    body::after {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(800px 300px at 20% 0%, rgba(14, 165, 233, 0.12), transparent 60%),
+        radial-gradient(800px 300px at 80% 100%, rgba(20, 184, 166, 0.12), transparent 60%);
+      pointer-events: none;
+      opacity: 0.7;
+      mix-blend-mode: multiply;
+    }
+    .screen {
+      max-width: 1720px;
+      margin: 0 auto;
+      padding: 20px 28px 32px;
+      position: relative;
+      z-index: 1;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+      padding: 16px 18px;
+      background: rgba(255, 255, 255, 0.84);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+      position: relative;
+      overflow: hidden;
+    }
+    .topbar::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0));
+      pointer-events: none;
+      opacity: 0.6;
+    }
+    .topbar > * { position: relative; z-index: 1; }
+    .brand {
+      display: grid;
+      gap: 8px;
+    }
+    .brand-title {
+      font-size: 30px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
+      font-family: "Space Grotesk", "Sora", "Noto Sans SC", sans-serif;
+    }
+    .brand-sub {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.3px;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid rgba(14, 165, 233, 0.25);
+      background: rgba(14, 165, 233, 0.12);
+      color: var(--primary-strong);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+    }
+    .status-pill.error {
+      border-color: rgba(239, 68, 68, 0.25);
+      background: rgba(239, 68, 68, 0.12);
+      color: #b91c1c;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--primary);
+      box-shadow: 0 0 0 rgba(37, 99, 235, 0.6);
+      animation: pulse 2.2s infinite;
+    }
+    .status-pill.error .status-dot {
+      background: var(--danger);
+      box-shadow: 0 0 0 rgba(239, 68, 68, 0.5);
+      animation: none;
+    }
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 8px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.65);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(10px);
+    }
+    .control {
+      display: grid;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--muted);
+      min-width: 160px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+    .control input,
+    .control select {
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      border-radius: 12px;
+      padding: 8px 12px;
+      font-size: 13px;
+      background: #f8fafc;
+      color: var(--text);
+      min-width: 160px;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .control input:focus,
+    .control select:focus {
+      outline: none;
+      border-color: rgba(14, 165, 233, 0.6);
+      box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
+    }
+    .control button {
+      border: none;
+      border-radius: 12px;
+      padding: 10px 16px;
+      font-weight: 700;
+      cursor: pointer;
+      background: linear-gradient(135deg, #1d4ed8, #0ea5e9);
+      color: #fff;
+      box-shadow: 0 14px 28px rgba(29, 78, 216, 0.25);
+      letter-spacing: 0.2px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .card {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.82));
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.1);
+      backdrop-filter: blur(12px);
+      position: relative;
+      overflow: hidden;
+    }
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: linear-gradient(140deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0));
+      opacity: 0.7;
+      pointer-events: none;
+    }
+    .card::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 4px;
+      background: linear-gradient(90deg, rgba(14, 165, 233, 0.65), rgba(20, 184, 166, 0.35), transparent);
+      opacity: 0.9;
+      pointer-events: none;
+    }
+    .card > * { position: relative; z-index: 1; }
+    .card.reveal {
+      opacity: 0;
+      transform: translateY(14px) scale(0.985);
+      animation: floatIn 0.75s ease forwards;
+      animation-delay: var(--delay, 0s);
+    }
+    .kpi {
+      grid-column: span 3;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 12px;
+      min-height: 116px;
+      --kpi-accent: rgba(29, 78, 216, 0.22);
+    }
+    .kpi::after {
+      content: "";
+      position: absolute;
+      right: -20px;
+      top: -30px;
+      width: 140px;
+      height: 140px;
+      background: radial-gradient(circle, var(--kpi-accent), rgba(255, 255, 255, 0));
+      pointer-events: none;
+    }
+    .kpi .label {
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .kpi .value {
+      font-size: 36px;
+      font-weight: 800;
+      margin-top: 6px;
+      font-family: "Space Grotesk", "Sora", "Noto Sans SC", sans-serif;
+      letter-spacing: -0.5px;
+      font-variant-numeric: tabular-nums;
+    }
+    .kpi .unit {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .kpi .icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 18px;
+      color: #fff;
+      box-shadow: 0 10px 20px rgba(15, 23, 42, 0.2);
+    }
+    .kpi.total { --kpi-accent: rgba(29, 78, 216, 0.22); }
+    .kpi.alarm { --kpi-accent: rgba(239, 68, 68, 0.28); }
+    .kpi.pending { --kpi-accent: rgba(245, 158, 11, 0.28); }
+    .kpi.done { --kpi-accent: rgba(22, 163, 74, 0.25); }
+    .kpi.total .icon { background: linear-gradient(140deg, #1d4ed8, #38bdf8); }
+    .kpi.alarm .icon { background: linear-gradient(140deg, #ef4444, #f97316); }
+    .kpi.pending .icon { background: linear-gradient(140deg, #f59e0b, #facc15); color: #111827; }
+    .kpi.done .icon { background: linear-gradient(140deg, #16a34a, #22c55e); }
+
+    .trend { grid-column: span 7; min-height: 280px; }
+    .feed { grid-column: span 5; min-height: 280px; }
+    .status { grid-column: span 4; min-height: 250px; }
+    .tasks { grid-column: span 4; min-height: 250px; }
+    .sources { grid-column: span 4; min-height: 250px; }
+
+    .card-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0.4px;
+      margin-bottom: 12px;
+    }
+    .card-sub {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .chart-wrap {
+      position: relative;
+      height: 190px;
+      padding: 8px;
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(255, 255, 255, 0.6);
+    }
+    canvas { width: 100%; height: 100%; }
+
+    .status-list {
+      display: grid;
+      gap: 12px;
+    }
+    .status-item {
+      display: grid;
+      gap: 6px;
+    }
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .status-row span:last-child { font-size: 14px; }
+    .status-bar {
+      height: 9px;
+      background: rgba(148, 163, 184, 0.2);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .status-bar > div {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2563eb, #38bdf8);
+    }
+    .status-bar.success > div { background: linear-gradient(90deg, #16a34a, #4ade80); }
+    .status-bar.warn > div { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .status-bar.error > div { background: linear-gradient(90deg, #ef4444, #f97316); }
+
+    .metric-row {
+      margin-top: 8px;
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .metric-pill {
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
+    }
+
+    .bar-list { display: grid; gap: 10px; }
+    .bar-item { display: grid; gap: 6px; }
+    .bar-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; }
+    .bar-track { height: 9px; background: rgba(148, 163, 184, 0.2); border-radius: 999px; overflow: hidden; }
+    .bar-track > div { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2563eb, #93c5fd); }
+
+    .feed-list { display: grid; gap: 10px; max-height: 220px; overflow: hidden; }
+    .feed-item {
+      display: flex;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+      border-left: 4px solid rgba(239, 68, 68, 0.6);
+    }
+    .feed-time {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--muted);
+      min-width: 64px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(248, 250, 252, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      align-self: flex-start;
+    }
+    .feed-body { flex: 1; }
+    .feed-summary {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .feed-meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .chip {
+      align-self: flex-start;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      background: rgba(248, 250, 252, 0.95);
+    }
+    .chip.alarm {
+      border-color: rgba(239, 68, 68, 0.35);
+      background: rgba(239, 68, 68, 0.12);
+      color: #b91c1c;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 12px 0;
+    }
+
+    @keyframes floatIn {
+      from { opacity: 0; transform: translateY(14px) scale(0.985); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0.45); }
+      70% { box-shadow: 0 0 0 10px rgba(14, 165, 233, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(14, 165, 233, 0); }
+    }
+
+    @media (max-width: 1200px) {
+      .grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+      .kpi { grid-column: span 3; }
+      .trend, .feed { grid-column: span 6; }
+      .status, .tasks, .sources { grid-column: span 3; }
+    }
+    @media (max-width: 880px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .kpi, .trend, .feed, .status, .tasks, .sources { grid-column: span 2; }
+      .topbar { padding: 14px; }
+      .controls { width: 100%; }
+      .control { flex: 1 1 160px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .status-dot { animation: none; }
+      .card.reveal { animation: none; opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-title">AI复判大屏</div>
+        <div class="brand-sub">
+          数据源：<span id="baseLabel">-</span> · 范围：<span id="rangeLabel">-</span> · 更新：<span id="updatedAt">-</span>
+        </div>
+        <div class="status-pill" id="statusPill"><span class="status-dot"></span><span id="statusText">等待刷新</span></div>
+      </div>
+      <div class="controls">
+        <label class="control">
+          API Base
+          <input id="baseUrl" placeholder="http://localhost:8005" spellcheck="false" />
+        </label>
+        <label class="control">
+          时间范围
+          <select id="rangeSelect">
+            <option value="3600000">最近 1 小时</option>
+            <option value="21600000">最近 6 小时</option>
+            <option value="86400000" selected>最近 24 小时</option>
+            <option value="604800000">最近 7 天</option>
+          </select>
+        </label>
+        <label class="control">
+          刷新频率
+          <select id="refreshSelect">
+            <option value="0">关闭自动刷新</option>
+            <option value="10000">10 秒</option>
+            <option value="30000" selected>30 秒</option>
+            <option value="60000">60 秒</option>
+          </select>
+        </label>
+        <label class="control" style="align-self:flex-end;">
+          <button id="refreshBtn">立即刷新</button>
+        </label>
+      </div>
+    </header>
+
+    <main class="grid">
+      <section class="card kpi total reveal" style="--delay: 0.05s">
+        <div>
+          <div class="label">复判总量</div>
+          <div class="value" id="kpiTotal">-</div>
+          <div class="unit" id="kpiTotalSub">最近 - 条</div>
+        </div>
+        <div class="icon">Σ</div>
+      </section>
+      <section class="card kpi alarm reveal" style="--delay: 0.1s">
+        <div>
+          <div class="label">告警数量</div>
+          <div class="value" id="kpiAlarm">-</div>
+          <div class="unit" id="kpiAlarmRate">告警占比 -</div>
+        </div>
+        <div class="icon">!</div>
+      </section>
+      <section class="card kpi pending reveal" style="--delay: 0.15s">
+        <div>
+          <div class="label">待处理</div>
+          <div class="value" id="kpiPending">-</div>
+          <div class="unit" id="kpiPendingRate">待处理占比 -</div>
+        </div>
+        <div class="icon">⏳</div>
+      </section>
+      <section class="card kpi done reveal" style="--delay: 0.2s">
+        <div>
+          <div class="label">处理完成率</div>
+          <div class="value" id="kpiDone">-</div>
+          <div class="unit" id="kpiDoneSub">异常 -</div>
+        </div>
+        <div class="icon">✓</div>
+      </section>
+
+      <section class="card trend reveal" style="--delay: 0.25s">
+        <div class="card-title">
+          <span>告警趋势</span>
+          <span class="card-sub" id="trendSub">-</span>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="trendChart"></canvas>
+        </div>
+      </section>
+
+      <section class="card feed reveal" style="--delay: 0.3s">
+        <div class="card-title">
+          <span>实时告警</span>
+          <span class="card-sub">最新 8 条</span>
+        </div>
+        <div class="feed-list" id="feedList">
+          <div class="empty">暂无告警</div>
+        </div>
+      </section>
+
+      <section class="card status reveal" style="--delay: 0.35s">
+        <div class="card-title">
+          <span>处理状态</span>
+          <span class="card-sub" id="statusSub">-</span>
+        </div>
+        <div class="status-list" id="statusList"></div>
+        <div class="metric-row" id="statusMetrics"></div>
+      </section>
+
+      <section class="card tasks reveal" style="--delay: 0.4s">
+        <div class="card-title">
+          <span>任务类别 TOP</span>
+          <span class="card-sub" id="taskSub">-</span>
+        </div>
+        <div class="bar-list" id="taskList">
+          <div class="empty">暂无数据</div>
+        </div>
+      </section>
+
+      <section class="card sources reveal" style="--delay: 0.45s">
+        <div class="card-title">
+          <span>来源 TOP</span>
+          <span class="card-sub" id="sourceSub">-</span>
+        </div>
+        <div class="bar-list" id="sourceList">
+          <div class="empty">暂无数据</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const SETTINGS_KEY = "jetlinks_review_screen_settings_v1";
+    const MAX_RECORDS = 2000;
+
+    const baseInput = document.getElementById("baseUrl");
+    const rangeSelect = document.getElementById("rangeSelect");
+    const refreshSelect = document.getElementById("refreshSelect");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const baseLabel = document.getElementById("baseLabel");
+    const rangeLabel = document.getElementById("rangeLabel");
+    const updatedAt = document.getElementById("updatedAt");
+    const statusPill = document.getElementById("statusPill");
+    const statusText = document.getElementById("statusText");
+
+    const kpiTotal = document.getElementById("kpiTotal");
+    const kpiTotalSub = document.getElementById("kpiTotalSub");
+    const kpiAlarm = document.getElementById("kpiAlarm");
+    const kpiAlarmRate = document.getElementById("kpiAlarmRate");
+    const kpiPending = document.getElementById("kpiPending");
+    const kpiPendingRate = document.getElementById("kpiPendingRate");
+    const kpiDone = document.getElementById("kpiDone");
+    const kpiDoneSub = document.getElementById("kpiDoneSub");
+
+    const trendSub = document.getElementById("trendSub");
+    const trendChart = document.getElementById("trendChart");
+    const feedList = document.getElementById("feedList");
+    const statusList = document.getElementById("statusList");
+    const statusSub = document.getElementById("statusSub");
+    const statusMetrics = document.getElementById("statusMetrics");
+    const taskList = document.getElementById("taskList");
+    const taskSub = document.getElementById("taskSub");
+    const sourceList = document.getElementById("sourceList");
+    const sourceSub = document.getElementById("sourceSub");
+
+    let refreshTimer = null;
+
+    const guessApiBase = () => {
+      const { protocol, hostname, port } = window.location;
+      if (port === "4173" || port === "4311") return `${protocol}//${hostname}:8005`;
+      return `${protocol}//${hostname}${port ? `:${port}` : ""}`;
+    };
+
+    const normalizeBaseUrl = (raw) => {
+      const s = String(raw ?? "").trim();
+      if (!s) return guessApiBase();
+
+      let candidate = s;
+      const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(candidate);
+      if (!hasScheme) {
+        candidate = candidate.startsWith("/")
+          ? `${window.location.origin}${candidate}`
+          : `${window.location.protocol}//${candidate}`;
+      }
+
+      try {
+        const u = new URL(candidate);
+        const rawHost = u.hostname;
+        const hostname = (rawHost === "0.0.0.0" || rawHost === "127.0.0.1" || rawHost === "localhost")
+          ? window.location.hostname
+          : rawHost;
+        const port = u.port ? `:${u.port}` : "";
+        return `${u.protocol}//${hostname}${port}`;
+      } catch {
+        return guessApiBase();
+      }
+    };
+
+    const getUrlParam = (key) => {
+      try { return new URLSearchParams(window.location.search).get(key); } catch { return null; }
+    };
+
+    const saveSettings = (patch) => {
+      try {
+        const prev = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {};
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...prev, ...(patch || {}) }));
+      } catch {
+        // ignore
+      }
+    };
+
+    const loadSettings = () => {
+      try {
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        return raw ? JSON.parse(raw) : {};
+      } catch {
+        return {};
+      }
+    };
+
+    const formatNumber = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return "-";
+      return new Intl.NumberFormat("zh-CN").format(n);
+    };
+
+    const formatPercent = (value) => {
+      if (!Number.isFinite(value)) return "-";
+      return `${(value * 100).toFixed(1)}%`;
+    };
+
+    const formatMs = (value) => {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) return "-";
+      if (n >= 1000) return `${(n / 1000).toFixed(2)}s`;
+      return `${Math.round(n)}ms`;
+    };
+
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const formatLocalTime = (ms) => {
+      const d = new Date(ms);
+      return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    };
+
+    const formatLocalDateTime = (ms) => {
+      const d = new Date(ms);
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    };
+
+    const parseTimeMs = (value) => {
+      if (value == null || value === "") return null;
+      const toEpochMs = (n) => (n < 1e12 ? Math.round(n * 1000) : Math.round(n));
+      if (typeof value === "number") {
+        return Number.isFinite(value) ? toEpochMs(value) : null;
+      }
+      const s = String(value).trim();
+      if (!s) return null;
+      if (/^\d+$/.test(s)) {
+        const n = Number(s);
+        return Number.isFinite(n) ? toEpochMs(n) : null;
+      }
+      const hasTz = /[zZ]|[+-]\d{2}:?\d{2}$/;
+      const noTzDate = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/;
+      if (noTzDate.test(s) && !hasTz.test(s)) {
+        const iso = s.replace(" ", "T");
+        const dLocal = new Date(`${iso}+08:00`);
+        if (!Number.isNaN(dLocal.getTime())) return dLocal.getTime();
+      }
+      const d1 = new Date(s);
+      if (!Number.isNaN(d1.getTime())) return d1.getTime();
+      const d2 = new Date(s.replace(" ", "T"));
+      if (!Number.isNaN(d2.getTime())) return d2.getTime();
+      return null;
+    };
+
+    const computeReviewStatus = (record) => {
+      if (!record) return "pending";
+      const status = String(record.review_status || "").trim();
+      if (status) return status;
+      const videoStatus = String(record.video?.status || "").trim();
+      if (videoStatus === "queued" || videoStatus === "recording") return "pending";
+      if (record.ok === false) return "error";
+      return "done";
+    };
+
+    const normalizeTaskName = (value) => {
+      const s = String(value ?? "").trim();
+      return s || "（未填写）";
+    };
+
+    const deriveTaskCategory = (taskName) => {
+      const s = String(taskName ?? "").trim();
+      if (!s) return "（未填写）";
+      if (s.includes("://")) return s;
+      const m = s.match(/^(.+?)\s*[-—–｜|\/／>›»:\uff1a]\s*(.+)$/);
+      if (m && m[1] && m[2]) return String(m[1]).trim() || s;
+      return s;
+    };
+
+    const fetchJson = async (url, { timeoutMs = 6000 } = {}) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal });
+        const txt = await res.text();
+        try { return { ok: res.ok, status: res.status, json: JSON.parse(txt), raw: txt }; }
+        catch { return { ok: res.ok, status: res.status, json: null, raw: txt }; }
+      } catch (e) {
+        const msg = e?.name === "AbortError" ? `timeout ${timeoutMs}ms` : (e?.message ? String(e.message) : String(e));
+        return { ok: false, status: 0, json: null, raw: msg };
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    const mapReviewRecordListItems = (items) => {
+      if (!Array.isArray(items)) return [];
+      return items.map((item) => {
+        const createdAtMsRaw = item?.created_at_ms ?? item?.created_atMs ?? item?.createdAtMs ?? 0;
+        const createdAtMs = Number(createdAtMsRaw);
+        const atMs = Number.isFinite(createdAtMs) && createdAtMs > 0 ? createdAtMs : Date.now();
+        const recordId = item?.record_id;
+        return {
+          id: recordId,
+          at: atMs,
+          agent_id: item?.agent_id,
+          task: item?.task,
+          source: item?.source,
+          record_time: item?.record_time,
+          review_status: item?.review_status,
+          illegal: item?.illegal,
+          image_url: item?.image_url,
+          video_url: item?.video_url,
+          http_status: item?.http_status ?? 200,
+          cost_ms: item?.cost_ms,
+          ok: item?.success,
+          summary: item?.summary,
+          thumbnail: item?.thumbnail,
+          video: item?.video,
+        };
+      });
+    };
+
+    const fetchReviewRecordListPage = async ({ base, pageIndex, pageSize }) => {
+      const candidateBases = Array.from(new Set([
+        base,
+        guessApiBase(),
+        window.location.origin,
+      ].map((s) => String(s || "").replace(/\/$/, "")).filter(Boolean)));
+      let lastErr = null;
+      for (const b of candidateBases) {
+        const listUrl = `${b}/api/v1/review-records?pageIndex=${pageIndex}&pageSize=${pageSize}`;
+        try {
+          const { ok, json, raw, status } = await fetchJson(listUrl, { timeoutMs: 6000 });
+          if (!ok || !json || json.status !== 200) {
+            let msg = "";
+            if (json && typeof json.message === "string" && json.message.trim()) msg = json.message.trim();
+            else if (raw) msg = String(raw);
+            else msg = `HTTP ${status || 0}`;
+            throw new Error(msg);
+          }
+          const items = json.result?.data || [];
+          const total = Number(json.result?.total || 0);
+          return { items, total, loadedFrom: b };
+        } catch (e) {
+          lastErr = e;
+          continue;
+        }
+      }
+      throw lastErr || new Error("服务器记录加载失败");
+    };
+
+    const getRecordTimeMs = (record) => {
+      const parsed = parseTimeMs(record?.record_time);
+      if (parsed != null) return parsed;
+      return Number.isFinite(record?.at) ? Number(record.at) : Date.now();
+    };
+
+    const fetchRecentRecords = async ({ base, cutoffMs, maxRecords }) => {
+      const pageSize = 100;
+      let pageIndex = 0;
+      let total = 0;
+      let all = [];
+
+      while (all.length < maxRecords) {
+        const { items, total: totalCount } = await fetchReviewRecordListPage({ base, pageIndex, pageSize });
+        total = totalCount || total;
+        const mapped = mapReviewRecordListItems(items);
+        if (!mapped.length) break;
+        all = all.concat(mapped);
+
+        const oldest = mapped[mapped.length - 1];
+        if (cutoffMs && getRecordTimeMs(oldest) < cutoffMs) break;
+        if (totalCount && all.length >= totalCount) break;
+        pageIndex += 1;
+      }
+
+      const filtered = cutoffMs
+        ? all.filter((r) => getRecordTimeMs(r) >= cutoffMs)
+        : all;
+      filtered.sort((a, b) => getRecordTimeMs(b) - getRecordTimeMs(a));
+      return { records: filtered, total };
+    };
+
+    const buildBuckets = (records, startMs, endMs) => {
+      const span = Math.max(1, endMs - startMs);
+      let step = 10 * 60 * 1000;
+      if (span > 6 * 60 * 60 * 1000) step = 60 * 60 * 1000;
+      if (span > 24 * 60 * 60 * 1000) step = 6 * 60 * 60 * 1000;
+      if (span > 7 * 24 * 60 * 60 * 1000) step = 24 * 60 * 60 * 1000;
+
+      const buckets = [];
+      for (let t = startMs; t <= endMs; t += step) {
+        buckets.push({ ts: t, total: 0, alarm: 0 });
+      }
+      if (!buckets.length) buckets.push({ ts: startMs, total: 0, alarm: 0 });
+
+      records.forEach((record) => {
+        const t = getRecordTimeMs(record);
+        if (t < startMs || t > endMs) return;
+        const idx = Math.min(buckets.length - 1, Math.floor((t - startMs) / step));
+        buckets[idx].total += 1;
+        if (record?.illegal === true) buckets[idx].alarm += 1;
+      });
+
+      return { buckets, step };
+    };
+
+    const drawLineChart = (canvas, buckets, step) => {
+      const ctx = canvas.getContext("2d");
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      if (!width || !height) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+
+      const padding = { left: 36, right: 16, top: 16, bottom: 28 };
+      const innerW = width - padding.left - padding.right;
+      const innerH = height - padding.top - padding.bottom;
+
+      const maxVal = Math.max(1, ...buckets.map((b) => Math.max(b.total, b.alarm)));
+
+      ctx.strokeStyle = "rgba(148,163,184,0.25)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i += 1) {
+        const y = padding.top + innerH * (i / 4);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(width - padding.right, y);
+        ctx.stroke();
+      }
+
+      const drawSeries = (values, color) => {
+        ctx.beginPath();
+        values.forEach((val, idx) => {
+          const x = padding.left + (innerW * (buckets.length === 1 ? 0 : idx / (buckets.length - 1)));
+          const y = padding.top + innerH - (val / maxVal) * innerH;
+          if (idx === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      };
+
+      drawSeries(buckets.map((b) => b.total), "#60a5fa");
+      drawSeries(buckets.map((b) => b.alarm), "#ef4444");
+
+      ctx.fillStyle = "#64748b";
+      ctx.font = "11px 'Sora', sans-serif";
+      ctx.fillText(String(maxVal), 4, padding.top + 8);
+      ctx.fillText("0", 8, padding.top + innerH + 16);
+
+      if (buckets.length) {
+        const leftLabel = formatLocalTime(buckets[0].ts);
+        const rightLabel = formatLocalTime(buckets[buckets.length - 1].ts);
+        ctx.fillText(leftLabel, padding.left, height - 8);
+        ctx.fillText(rightLabel, width - padding.right - ctx.measureText(rightLabel).width, height - 8);
+      }
+    };
+
+    const renderBarList = (container, entries, color) => {
+      if (!container) return;
+      const list = entries.slice(0, 6);
+      if (!list.length) {
+        container.innerHTML = '<div class="empty">暂无数据</div>';
+        return;
+      }
+      const max = Math.max(...list.map(([, count]) => count));
+      container.innerHTML = list.map(([name, count]) => {
+        const ratio = max ? (count / max) * 100 : 0;
+        return `
+          <div class="bar-item">
+            <div class="bar-head"><span>${name}</span><span>${formatNumber(count)}</span></div>
+            <div class="bar-track"><div style="width:${ratio}%; background:${color};"></div></div>
+          </div>
+        `;
+      }).join("");
+    };
+
+    const renderFeed = (records) => {
+      const alarms = records.filter((r) => r?.illegal === true).slice(0, 8);
+      if (!alarms.length) {
+        feedList.innerHTML = '<div class="empty">暂无告警</div>';
+        return;
+      }
+      feedList.innerHTML = alarms.map((r) => {
+        const time = formatLocalTime(getRecordTimeMs(r));
+        const summary = String(r.summary || r.task || "(无摘要)").slice(0, 60);
+        const meta = `${normalizeTaskName(r.task)} · ${r.source || "-"}`;
+        return `
+          <div class="feed-item">
+            <div class="feed-time">${time}</div>
+            <div class="feed-body">
+              <div class="feed-summary">${summary}</div>
+              <div class="feed-meta">${meta}</div>
+            </div>
+            <span class="chip alarm">违法</span>
+          </div>
+        `;
+      }).join("");
+    };
+
+    const renderStatus = (records) => {
+      const total = records.length || 1;
+      const done = records.filter((r) => computeReviewStatus(r) === "done").length;
+      const pending = records.filter((r) => computeReviewStatus(r) === "pending").length;
+      const error = records.filter((r) => computeReviewStatus(r) === "error").length;
+      const avgCost = records.length
+        ? records.reduce((sum, r) => sum + (Number(r.cost_ms) || 0), 0) / records.length
+        : 0;
+      const successRate = records.length
+        ? records.filter((r) => r.ok !== false).length / records.length
+        : 0;
+
+      statusList.innerHTML = [
+        { label: "已处理", count: done, cls: "success" },
+        { label: "待处理", count: pending, cls: "warn" },
+        { label: "异常", count: error, cls: "error" },
+      ].map((item) => {
+        const ratio = total ? (item.count / total) * 100 : 0;
+        return `
+          <div class="status-item">
+            <div class="status-row"><span>${item.label}</span><span>${formatNumber(item.count)}</span></div>
+            <div class="status-bar ${item.cls}"><div style="width:${ratio}%;"></div></div>
+          </div>
+        `;
+      }).join("");
+
+      statusMetrics.innerHTML = `
+        <span class="metric-pill">平均耗时 ${formatMs(avgCost)}</span>
+        <span class="metric-pill">成功率 ${formatPercent(successRate)}</span>
+      `;
+      statusSub.textContent = `总计 ${formatNumber(records.length)} 条`;
+    };
+
+    const renderKpis = (records, totalCount) => {
+      const total = records.length;
+      const alarmCount = records.filter((r) => r?.illegal === true).length;
+      const pendingCount = records.filter((r) => computeReviewStatus(r) === "pending").length;
+      const doneCount = records.filter((r) => computeReviewStatus(r) === "done").length;
+      const errorCount = records.filter((r) => computeReviewStatus(r) === "error").length;
+      const doneRate = total ? doneCount / total : 0;
+
+      kpiTotal.textContent = formatNumber(total);
+      kpiTotalSub.textContent = totalCount ? `最近 ${formatNumber(total)} / 总 ${formatNumber(totalCount)}` : `最近 ${formatNumber(total)} 条`;
+      kpiAlarm.textContent = formatNumber(alarmCount);
+      kpiAlarmRate.textContent = `告警占比 ${formatPercent(total ? alarmCount / total : 0)}`;
+      kpiPending.textContent = formatNumber(pendingCount);
+      kpiPendingRate.textContent = `待处理占比 ${formatPercent(total ? pendingCount / total : 0)}`;
+      kpiDone.textContent = formatPercent(doneRate);
+      kpiDoneSub.textContent = `异常 ${formatNumber(errorCount)}`;
+    };
+
+    const renderTopLists = (records) => {
+      const taskCounts = new Map();
+      const sourceCounts = new Map();
+      records.forEach((record) => {
+        const task = normalizeTaskName(record?.task);
+        const cat = deriveTaskCategory(task);
+        taskCounts.set(cat, (taskCounts.get(cat) || 0) + 1);
+        const src = String(record?.source || "未知来源");
+        sourceCounts.set(src, (sourceCounts.get(src) || 0) + 1);
+      });
+
+      const sortCounts = (map) => Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+      renderBarList(taskList, sortCounts(taskCounts), "linear-gradient(90deg, #2563eb, #93c5fd)");
+      renderBarList(sourceList, sortCounts(sourceCounts), "linear-gradient(90deg, #0ea5e9, #22d3ee)");
+      taskSub.textContent = `覆盖 ${formatNumber(taskCounts.size)} 个类别`;
+      sourceSub.textContent = `覆盖 ${formatNumber(sourceCounts.size)} 个来源`;
+    };
+
+    const updateRangeLabel = () => {
+      const rangeMs = Number(rangeSelect.value || 0);
+      if (!rangeMs) {
+        rangeLabel.textContent = "全部";
+        return rangeMs;
+      }
+      const hours = Math.round(rangeMs / (60 * 60 * 1000));
+      rangeLabel.textContent = hours >= 24 ? `近 ${Math.round(hours / 24)} 天` : `近 ${hours} 小时`;
+      return rangeMs;
+    };
+
+    const updateStatus = (text, isError) => {
+      statusText.textContent = text;
+      if (isError) statusPill.classList.add("error");
+      else statusPill.classList.remove("error");
+    };
+
+    const refreshData = async () => {
+      const base = normalizeBaseUrl(baseInput.value);
+      const rangeMs = updateRangeLabel();
+      const endMs = Date.now();
+      const startMs = rangeMs ? endMs - rangeMs : null;
+      baseLabel.textContent = base;
+
+      updateStatus("正在刷新", false);
+      try {
+        const { records, total } = await fetchRecentRecords({
+          base,
+          cutoffMs: startMs,
+          maxRecords: MAX_RECORDS,
+        });
+
+        renderKpis(records, total);
+        renderStatus(records);
+        renderTopLists(records);
+        renderFeed(records);
+
+        if (startMs) {
+          const { buckets, step } = buildBuckets(records, startMs, endMs);
+          trendSub.textContent = `每 ${Math.round(step / 60000)} 分钟`; 
+          drawLineChart(trendChart, buckets, step);
+        } else {
+          trendSub.textContent = "全量";
+          drawLineChart(trendChart, buildBuckets(records, endMs - 24 * 60 * 60 * 1000, endMs).buckets, 0);
+        }
+
+        updatedAt.textContent = formatLocalDateTime(Date.now());
+        updateStatus("已更新", false);
+        saveSettings({ baseUrl: base, rangeMs, refreshMs: Number(refreshSelect.value || 0) });
+      } catch (e) {
+        updateStatus("刷新失败", true);
+        trendSub.textContent = "加载失败";
+        feedList.innerHTML = `<div class="empty">${String(e?.message || e || "加载失败")}</div>`;
+      }
+    };
+
+    const applyRefreshTimer = () => {
+      const intervalMs = Number(refreshSelect.value || 0);
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+      if (intervalMs > 0) {
+        refreshTimer = setInterval(refreshData, intervalMs);
+      }
+      saveSettings({ refreshMs: intervalMs });
+    };
+
+    const init = () => {
+      const settings = loadSettings();
+      const urlBase = getUrlParam("base") || getUrlParam("baseUrl");
+      const rawSettingsBase = settings.baseUrl || "";
+      let baseCandidate = urlBase || rawSettingsBase || "";
+      if (!urlBase && window.location.port === "6502" && rawSettingsBase) {
+        const normalized = normalizeBaseUrl(rawSettingsBase);
+        if (normalized.endsWith(":8005")) baseCandidate = "";
+      }
+      const baseUrl = normalizeBaseUrl(baseCandidate);
+      baseInput.value = baseUrl;
+      if (settings.rangeMs) rangeSelect.value = String(settings.rangeMs);
+      if (settings.refreshMs != null) refreshSelect.value = String(settings.refreshMs);
+
+      baseInput.addEventListener("change", refreshData);
+      rangeSelect.addEventListener("change", () => {
+        updateRangeLabel();
+        refreshData();
+      });
+      refreshSelect.addEventListener("change", applyRefreshTimer);
+      refreshBtn.addEventListener("click", refreshData);
+      window.addEventListener("resize", () => {
+        refreshData();
+      });
+
+      updateRangeLabel();
+      refreshData();
+      applyRefreshTimer();
+    };
+
+    init();
+  </script>
+</body>
+</html>

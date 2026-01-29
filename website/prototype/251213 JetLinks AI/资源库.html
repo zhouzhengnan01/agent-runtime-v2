@@ -1,0 +1,1840 @@
+﻿<!DOCTYPE html>
+<html>
+  <head>
+    <title>资源库</title>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+    <meta http-equiv="content-type" content="text/html; charset=utf-8"/>
+    <link href="resources/css/axure_rp_page.css" type="text/css" rel="stylesheet"/>
+    <link href="data/styles.css" type="text/css" rel="stylesheet"/>
+    <link href="files/资源库/styles.css" type="text/css" rel="stylesheet"/>
+    <script src="resources/scripts/jquery-3.2.1.min.js"></script>
+    <script src="resources/scripts/axure/axQuery.js"></script>
+    <script src="resources/scripts/axure/globals.js"></script>
+    <script src="resources/scripts/axutils.js"></script>
+    <script src="resources/scripts/axure/annotation.js"></script>
+    <script src="resources/scripts/axure/axQuery.std.js"></script>
+    <script src="resources/scripts/axure/doc.js"></script>
+    <script src="resources/scripts/messagecenter.js"></script>
+    <script src="resources/scripts/axure/events.js"></script>
+    <script src="resources/scripts/axure/recording.js"></script>
+    <script src="resources/scripts/axure/action.js"></script>
+    <script src="resources/scripts/axure/expr.js"></script>
+    <script src="resources/scripts/axure/geometry.js"></script>
+    <script src="resources/scripts/axure/flyout.js"></script>
+    <script src="resources/scripts/axure/model.js"></script>
+    <script src="resources/scripts/axure/repeater.js"></script>
+    <script src="resources/scripts/axure/sto.js"></script>
+    <script src="resources/scripts/axure/utils.temp.js"></script>
+    <script src="resources/scripts/axure/variables.js"></script>
+    <script src="resources/scripts/axure/drag.js"></script>
+    <script src="resources/scripts/axure/move.js"></script>
+    <script src="resources/scripts/axure/visibility.js"></script>
+    <script src="resources/scripts/axure/style.js"></script>
+    <script src="resources/scripts/axure/adaptive.js"></script>
+    <script src="resources/scripts/axure/tree.js"></script>
+    <script src="resources/scripts/axure/init.temp.js"></script>
+    <script src="resources/scripts/axure/legacy.js"></script>
+    <script src="resources/scripts/axure/viewer.js"></script>
+    <script src="resources/scripts/axure/math.js"></script>
+    <script src="resources/scripts/axure/jquery.nicescroll.min.js"></script>
+    <script src="data/document.js"></script>
+    <script src="files/资源库/data.js"></script>
+    <script type="text/javascript">
+      $axure.utils.getTransparentGifPath = function() { return 'resources/images/transparent.gif'; };
+      $axure.utils.getOtherPath = function() { return 'resources/Other.html'; };
+      $axure.utils.getReloadPath = function() { return 'resources/reload.html'; };
+    </script>
+  </head>
+  <body>
+    <div id="base" class="">
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28479" class="ax_default paragraph">
+        <div id="u28479_div" class=""></div>
+        <div id="u28479_text" class="text ">
+          <p><span>#### 3.2.2 页面二：新建/编辑部署向导 (The Wizard - 核心流程)</span></p><p><span>**设计理念：** 分步引导，将复杂的配置（如转换参数）折叠，突出核心业务逻辑（挂载 LoRA）。</span></p><p><span><br></span></p><p><span>**Step 1: 基础环境配置**</span></p><p><span>*&nbsp;&nbsp; **服务名称**：输入框。</span></p><p><span>*&nbsp;&nbsp; **部署目标**：</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; 单选框：`云端推理` / `边缘设备`。</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; **设备选择器**：若选边缘设备，弹出设备树（支持按标签筛选“算能设备”）。系统需自动校验设备在线状态及剩余算力。</span></p><p><span><br></span></p><p><span>**Step 2: 模型配置 (核心交互点)**</span></p><p><span>*&nbsp;&nbsp; **选择基础模型**：下拉框选择系统预置的大模型（如 Qwen2-7B-Instruct）。</span></p><p><span>*&nbsp;&nbsp; **高级微调配置 (LoRA 挂载)**：</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; **UI形态**：一个清晰的 `Switch` 开关 —— **[ ] 启用 LoRA 微调权重**。</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; **交互动作**：开启后，下方展开**“权重文件选择器”**面板。</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; **数据源**：调用「模型管理」模块的 API，展示用户训练好的 LoRA 列表。</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; **选择逻辑**：</span></p><p><span>&nbsp;&nbsp; &nbsp; &nbsp;&nbsp; *&nbsp;&nbsp; 列表显示：`任务名称` | `训练时间` | `Loss值` | `备注`。</span></p><p><span>&nbsp;&nbsp; &nbsp; &nbsp;&nbsp; *&nbsp;&nbsp; **版本控制**：选中某个任务后，需进一步选择具体的 `Checkpoint` (例如：Epoch-10, Step-500)。</span></p><p><span>&nbsp;&nbsp; &nbsp; &nbsp;&nbsp; *&nbsp;&nbsp; *设计亮点*：提供一个**“效果对比”**的超链接，点击可弹窗查看该 LoRA 在训练时的评估报告，辅助用户决策。</span></p><p><span><br></span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28480" class="ax_default paragraph">
+        <div id="u28480_div" class=""></div>
+        <div id="u28480_text" class="text ">
+          <p><span>未找到适配该设备芯片架构的模型文件</span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28481" class="ax_default paragraph">
+        <div id="u28481_div" class=""></div>
+        <div id="u28481_text" class="text ">
+          <p><span>这是一个非常经典的**多架构（Heterogeneous）边缘分发**问题。</span></p><p><span><br></span></p><p><span>简单回答你的第一个问题：**是的，必须生成多个独立的文件。**</span></p><p><span>因为不同芯片的底层指令集完全不同（例如算能是 TPU 指令，英伟达是 CUDA 指令），它们的文件结构、二进制编码甚至文件后缀（.bmodel vs .engine vs .rknn）都是风马牛不相及的。</span></p><p><span><br></span></p><p><span>为了实现**“用户操作一次，所有不同芯片的网关都能收到正确文件”**，你需要在系统设计中引入**“逻辑版本（Logical Version）”**与**“物理制品（Physical Artifact）”**分离的概念。</span></p><p><span><br></span></p><p><span>这里是详细的设计方案：</span></p><p><span><br></span></p><p><span>---</span></p><p><span><br></span></p><p><span>### 核心设计理念：类似于 &quot;App Store&quot;</span></p><p><span>这就好比你在 App Store 发布微信。你只需要发布“微信 v8.0”，但实际上后台有“iOS版”和“Android版”两个包。用户点击下载时，商店会自动根据用户的手机型号下发正确的那个包。</span></p><p><span><br></span></p><p><span>### 1. 数据结构设计</span></p><p><span><br></span></p><p><span>你需要构建一个**“发布包 (Release Bundle)”**的概念，而不是直接下发单一文件。</span></p><p><span><br></span></p><p><span>#### A. 资产/模型表 (Model_Version)</span></p><p><span>这是用户眼中的“一个东西”。</span></p><p><span>| Version ID | 名称 | 描述 | 状态 |</span></p><p><span>| :--- | :--- | :--- | :--- |</span></p><p><span>| V1001 | 医疗问答LoRA_v1.0 | 包含5个网关的3种格式 | 已转换完成 |</span></p><p><span><br></span></p><p><span>#### B. 制品/文件表 (Artifacts)</span></p><p><span>这是实际存在的物理文件。</span></p><p><span>| Artifact ID | 所属 Version ID | 芯片架构 (Tag) | 文件路径 | 文件哈希 (MD5) |</span></p><p><span>| :--- | :--- | :--- | :--- | :--- |</span></p><p><span>| A_01 | V1001 | `sophgo_bm1684x` | `/s3/lora_v1_sophgo.bmodel` | a1b2... |</span></p><p><span>| A_02 | V1001 | `nvidia_orin` | `/s3/lora_v1_nvidia.engine` | c3d4... |</span></p><p><span>| A_03 | V1001 | `rockchip_3588` | `/s3/lora_v1_rk.rknn` | e5f6... |</span></p><p><span><br></span></p><p><span>#### C. 设备注册表 (Device_Registry)</span></p><p><span>你需要知道每个网关是什么芯片。</span></p><p><span>| Device ID | 芯片架构 | 在线状态 |</span></p><p><span>| :--- | :--- | :--- |</span></p><p><span>| GW_01 | `sophgo_bm1684x` | Online |</span></p><p><span>| GW_02 | `sophgo_bm1684x` | Online |</span></p><p><span>| GW_03 | `nvidia_orin` | Online |</span></p><p><span>| ... | ... | ... |</span></p><p><span><br></span></p><p><span>---</span></p><p><span><br></span></p><p><span>### 2. 流程设计：如何实现“一次性下发”</span></p><p><span><br></span></p><p><span>**用户视角：**</span></p><p><span>1.&nbsp; 点击“智能转换”。系统提示：“检测到 3 种架构，生成了 3 个文件”。</span></p><p><span>2.&nbsp; 点击“**批量下发**”。</span></p><p><span>3.&nbsp; 进度条走完，提示“5 台设备下发成功”。</span></p><p><span><br></span></p><p><span>**系统后台视角（关键逻辑）：**</span></p><p><span><br></span></p><p><span>#### 第一步：打包与映射 (Packaging)</span></p><p><span>当“智能转换”完成后，不要把 3 个文件当作散乱的文件，而是创建一个**“分发任务单”**。</span></p><p><span>系统记录：`Task_X = { Target: &quot;All Gateways&quot;, Content: &quot;LoRA_v1.0 (Logical)&quot; }`</span></p><p><span><br></span></p><p><span>#### 第二步：任务拆解 (Task Splitting)</span></p><p><span>当下发指令发出时，分发服务（Dispatcher）遍历所有目标网关，进行**动态路由**：</span></p><p><span><br></span></p><p><span>*&nbsp;&nbsp; **遍历 GW_01 (算能):**</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; 查询网关芯片类型 -&gt; `sophgo_bm1684x`</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; 在 V1001 制品表中查找 tag 为 `sophgo_bm1684x` 的文件 -&gt; 找到 `A_01`</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; **生成子任务：** 向 GW_01 推送 `lora_v1_sophgo.bmodel`</span></p><p><span><br></span></p><p><span>*&nbsp;&nbsp; **遍历 GW_03 (英伟达):**</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; 查询网关芯片类型 -&gt; `nvidia_orin`</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; 在 V1001 制品表中查找 tag 为 `nvidia_orin` 的文件 -&gt; 找到 `A_02`</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; **生成子任务：** 向 GW_03 推送 `lora_v1_nvidia.engine`</span></p><p><span><br></span></p><p><span>#### 第三步：并行传输</span></p><p><span>系统并行执行上述子任务。</span></p><p><span><br></span></p><p><span>---</span></p><p><span><br></span></p><p><span>### 3. 工具提示文案建议</span></p><p><span><br></span></p><p><span>针对这种设计，你的“批量下发”按钮的工具提示可以这样写，给用户一种“智能、省心”的感觉：</span></p><p><span><br></span></p><p><span>**场景：用户点击“下发”按钮时**</span></p><p><span><br></span></p><p><span>&gt; **“智能分发模式：系统将根据每台边缘网关的芯片类型（如算能、英伟达等），自动从转换包中匹配并下发对应的格式文件。无需手动筛选设备。”**</span></p><p><span><br></span></p><p><span>### 4. 异常处理设计（Tips）</span></p><p><span><br></span></p><p><span>在设计时要注意一个边缘情况：**如果不匹配怎么办？**</span></p><p><span><br></span></p><p><span>假如你有一个新的边缘网关是“华为昇腾”芯片，但你只转换了“算能”和“英伟达”的格式。</span></p><p><span>*&nbsp;&nbsp; **转换时：** “智能转换”应该扫描全网，发现有华为芯片，提示用户“是否也要转换为华为格式？”（如果你的转换引擎支持的话）。</span></p><p><span>*&nbsp;&nbsp; **下发时：** 如果制品表中找不到对应芯片的文件，该网关的子任务应报错：**“下发跳过：未找到适配该设备芯片架构的模型文件。”**</span></p><p><span><br></span></p><p><span>### 总结</span></p><p><span>1.&nbsp; **文件层面：** 是多个文件。</span></p><p><span>2.&nbsp; **管理层面：** 是一个“版本包”。</span></p><p><span>3.&nbsp; **下发层面：** 是“动态路由”，系统自动做 `Device Type -&gt; File Format` 的连线题。</span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28482" class="ax_default paragraph">
+        <div id="u28482_div" class=""></div>
+        <div id="u28482_text" class="text ">
+          <p><span>批量下发承载全部下发功能</span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28483" class="ax_default paragraph">
+        <div id="u28483_div" class=""></div>
+        <div id="u28483_text" class="text ">
+          <p><span>多个格式生成多个文件</span></p>
+        </div>
+      </div>
+
+      <!-- 新增 (Dynamic Panel) -->
+      <div id="u28484" class="ax_default" data-label="新增">
+        <div id="u28484_state0" class="panel_state" data-label="模板" style="">
+          <div id="u28484_state0_content" class="panel_state_content">
+
+            <!-- Unnamed (Image) -->
+            <div id="u28485" class="ax_default image">
+              <img id="u28485_img" class="img " src="images/资源库/u28485.png"/>
+              <div id="u28485_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28486" class="ax_default shape">
+              <div id="u28486_div" class=""></div>
+              <div id="u28486_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Image) -->
+            <div id="u28487" class="ax_default image">
+              <img id="u28487_img" class="img " src="images/资源库/u28487.png"/>
+              <div id="u28487_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28488" class="ax_default shape">
+              <div id="u28488_div" class=""></div>
+              <div id="u28488_text" class="text ">
+                <p><span>温度控制场景模板</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Hot Spot) -->
+            <div id="u28489" class="ax_default">
+            </div>
+
+            <!-- Unnamed (Hot Spot) -->
+            <div id="u28490" class="ax_default">
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28491" class="ax_default shape">
+              <div id="u28491_div" class=""></div>
+              <div id="u28491_text" class="text ">
+                <p><span>A产线-夜间模式_LoRA</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28492" class="ax_default shape">
+              <div id="u28492_div" class=""></div>
+              <div id="u28492_text" class="text ">
+                <p><span>training_lora_file_v3..bmodel</span></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28493" class="ax_default paragraph">
+        <div id="u28493_div" class=""></div>
+        <div id="u28493_text" class="text ">
+          <p><span>修改展现形式,突出版本概念</span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28494" class="ax_default paragraph">
+        <div id="u28494_div" class=""></div>
+        <div id="u28494_text" class="text ">
+          <p><span>&nbsp;核心概念：建立“全能版本包”</span></p><p><span><br></span></p><p><span>在进入下发流程前，系统必须先有一个**“逻辑版本”**的概念。</span></p><p><span><br></span></p><p><span>*&nbsp;&nbsp; **错误做法：** 让用户在下发界面上传 `.bmodel`，再上传 `.safetensors`。</span></p><p><span>*&nbsp;&nbsp; **正确做法：** 用户在“模型仓库”中预先准备好一个 **LoRA 版本包 (Release v1.0)**。</span></p><p><span>&nbsp;&nbsp;&nbsp; *&nbsp;&nbsp; 该版本包在后台关联了：</span></p><p><span>&nbsp;&nbsp; &nbsp; &nbsp;&nbsp; 1.&nbsp; 通用信息（名称、描述）</span></p><p><span>&nbsp;&nbsp; &nbsp; &nbsp;&nbsp; 2.&nbsp; **文件A** (适配算能)</span></p><p><span>&nbsp;&nbsp; &nbsp; &nbsp;&nbsp; 3.&nbsp; **文件B** (适配英伟达)</span></p><p><span>&nbsp;&nbsp; &nbsp; &nbsp;&nbsp; 4.&nbsp; **文件C** (适配瑞芯微)</span></p><p><span><br></span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Image) -->
+      <div id="u28495" class="ax_default image">
+        <img id="u28495_img" class="img " src="images/资源库/u28495.png"/>
+        <div id="u28495_text" class="text " style="display:none; visibility: hidden">
+          <p></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28496" class="ax_default shape">
+        <div id="u28496_div" class=""></div>
+        <div id="u28496_text" class="text ">
+          <p><span>温度控制场景模板</span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Shape) -->
+      <div id="u28497" class="ax_default shape">
+        <img id="u28497_img" class="img " src="images/资源库/u28497.svg"/>
+        <div id="u28497_text" class="text ">
+          <p><span>微调权重</span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Group) -->
+      <div id="u28498" class="ax_default" data-left="3" data-top="2" data-width="1906" data-height="45" layer-opacity="1">
+
+        <!-- Unnamed (Group) -->
+        <div id="u28499" class="ax_default" data-left="3" data-top="2" data-width="1906" data-height="45" layer-opacity="1">
+
+          <!-- Unnamed (Rectangle) -->
+          <div id="u28500" class="ax_default shape">
+            <div id="u28500_div" class=""></div>
+            <div id="u28500_text" class="text " style="display:none; visibility: hidden">
+              <p></p>
+            </div>
+          </div>
+
+          <!-- Unnamed (Image) -->
+          <div id="u28501" class="ax_default image">
+            <img id="u28501_img" class="img " src="images/资源库_1/u10051.png"/>
+            <div id="u28501_text" class="text " style="display:none; visibility: hidden">
+              <p></p>
+            </div>
+          </div>
+
+          <!-- Unnamed (Image) -->
+          <div id="u28502" class="ax_default image">
+            <img id="u28502_img" class="img " src="images/资源库_1/u10052.png"/>
+            <div id="u28502_text" class="text " style="display:none; visibility: hidden">
+              <p></p>
+            </div>
+          </div>
+
+          <!-- Unnamed (Image) -->
+          <div id="u28503" class="ax_default image">
+            <img id="u28503_img" class="img " src="images/资源库_1/u10053.png"/>
+            <div id="u28503_text" class="text " style="display:none; visibility: hidden">
+              <p></p>
+            </div>
+          </div>
+
+          <!-- Unnamed (Rectangle) -->
+          <div id="u28504" class="ax_default shape">
+            <div id="u28504_div" class=""></div>
+            <div id="u28504_text" class="text ">
+              <p><span>人工智能</span></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Unnamed (Rectangle) -->
+        <div id="u28505" class="ax_default shape">
+          <div id="u28505_div" class=""></div>
+          <div id="u28505_text" class="text ">
+            <p><span>物联网平台</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Unnamed (Group) -->
+      <div id="u28506" class="ax_default" data-left="623" data-top="21" data-width="14" data-height="14" layer-opacity="1">
+
+        <!-- Unnamed (Shape) -->
+        <div id="u28507" class="ax_default shape">
+          <img id="u28507_img" class="img " src="images/资源库_1/u10057.svg"/>
+          <div id="u28507_text" class="text " style="display:none; visibility: hidden">
+            <p></p>
+          </div>
+        </div>
+
+        <!-- Unnamed (Shape) -->
+        <div id="u28508" class="ax_default shape">
+          <img id="u28508_img" class="img " src="images/资源库_1/u10058.svg"/>
+          <div id="u28508_text" class="text " style="display:none; visibility: hidden">
+            <p></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Unnamed (Group) -->
+      <div id="u28509" class="ax_default" data-left="1762" data-top="4" data-width="114" data-height="41" layer-opacity="1">
+
+        <!-- Unnamed (Group) -->
+        <div id="u28510" class="ax_default" data-left="1762" data-top="4" data-width="41" data-height="41" layer-opacity="1">
+
+          <!-- Unnamed (Group) -->
+          <div id="u28511" class="ax_default" data-left="1763" data-top="4" data-width="40" data-height="40" layer-opacity="1">
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28512" class="ax_default _形状">
+              <img id="u28512_img" class="img " src="images/应用列表_1/u31.svg"/>
+              <div id="u28512_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28513" class="ax_default _形状">
+              <img id="u28513_img" class="img " src="images/应用列表_1/u32.svg"/>
+              <div id="u28513_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28514" class="ax_default _形状">
+              <img id="u28514_img" class="img " src="images/应用列表_1/u33.svg"/>
+              <div id="u28514_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28515" class="ax_default _形状">
+              <img id="u28515_img" class="img " src="images/应用列表_1/u34.svg"/>
+              <div id="u28515_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28516" class="ax_default _形状">
+              <img id="u28516_img" class="img " src="images/应用列表_1/u35.svg"/>
+              <div id="u28516_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28517" class="ax_default _形状">
+              <img id="u28517_img" class="img " src="images/应用列表_1/u36.svg"/>
+              <div id="u28517_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28518" class="ax_default _形状">
+              <img id="u28518_img" class="img " src="images/应用列表_1/u37.svg"/>
+              <div id="u28518_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28519" class="ax_default _形状">
+              <img id="u28519_img" class="img " src="images/应用列表_1/u38.svg"/>
+              <div id="u28519_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Unnamed (Ellipse) -->
+          <div id="u28520" class="ax_default _形状">
+            <img id="u28520_img" class="img " src="images/应用列表_1/u39.svg"/>
+            <div id="u28520_text" class="text " style="display:none; visibility: hidden">
+              <p></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Unnamed (Rectangle) -->
+        <div id="u28521" class="ax_default paragraph">
+          <div id="u28521_div" class=""></div>
+          <div id="u28521_text" class="text ">
+            <p><span>ADMIN</span></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28522" class="ax_default shape">
+        <div id="u28522_div" class=""></div>
+        <div id="u28522_text" class="text " style="display:none; visibility: hidden">
+          <p></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28523" class="ax_default shape">
+        <div id="u28523_div" class=""></div>
+        <div id="u28523_text" class="text " style="display:none; visibility: hidden">
+          <p></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28524" class="ax_default shape">
+        <div id="u28524_div" class=""></div>
+        <div id="u28524_text" class="text " style="display:none; visibility: hidden">
+          <p></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Shape) -->
+      <div id="u28525" class="ax_default shape">
+        <img id="u28525_img" class="img " src="images/资源库/u28525.svg"/>
+        <div id="u28525_text" class="text ">
+          <p><span>AI插件</span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Shape) -->
+      <div id="u28526" class="ax_default shape">
+        <img id="u28526_img" class="img " src="images/资源库/u28525.svg"/>
+        <div id="u28526_text" class="text ">
+          <p><span>AI插件</span></p>
+        </div>
+      </div>
+
+      <!-- Unnamed (Rectangle) -->
+      <div id="u28527" class="ax_default shape">
+        <div id="u28527_div" class=""></div>
+        <div id="u28527_text" class="text " style="display:none; visibility: hidden">
+          <p></p>
+        </div>
+      </div>
+
+      <!-- ctweq (Dynamic Panel) -->
+      <div id="u28528" class="ax_default ax_default_hidden" data-label="ctweq" style="display:none; visibility: hidden">
+        <div id="u28528_state0" class="panel_state" data-label="新增" style="">
+          <div id="u28528_state0_content" class="panel_state_content">
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28529" class="ax_default shape">
+              <div id="u28529_div" class=""></div>
+              <div id="u28529_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Image) -->
+            <div id="u28530" class="ax_default image">
+              <img id="u28530_img" class="img " src="images/资源库/u28530.png"/>
+              <div id="u28530_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28531" class="ax_default shape">
+              <div id="u28531_div" class=""></div>
+              <div id="u28531_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Image) -->
+            <div id="u28532" class="ax_default image">
+              <img id="u28532_img" class="img " src="images/资源库/u28532.png"/>
+              <div id="u28532_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Hot Spot) -->
+            <div id="u28533" class="ax_default">
+            </div>
+
+            <!-- Unnamed (Hot Spot) -->
+            <div id="u28534" class="ax_default">
+            </div>
+
+            <!-- Unnamed (Dynamic Panel) -->
+            <div id="u28535" class="ax_default">
+              <div id="u28535_state0" class="panel_state" data-label="State1" style="">
+                <div id="u28535_state0_content" class="panel_state_content">
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28536" class="ax_default shape">
+                    <div id="u28536_div" class=""></div>
+                    <div id="u28536_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Image) -->
+                  <div id="u28537" class="ax_default image">
+                    <img id="u28537_img" class="img " src="images/资源库/u28537.png"/>
+                    <div id="u28537_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28538" class="ax_default shape">
+                    <div id="u28538_div" class=""></div>
+                    <div id="u28538_text" class="text ">
+                      <p><span>AI</span><span>模型</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28539" class="ax_default shape">
+                    <div id="u28539_div" class=""></div>
+                    <div id="u28539_text" class="text ">
+                      <p><span>AI插件</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28540" class="ax_default shape">
+                    <div id="u28540_div" class=""></div>
+                    <div id="u28540_text" class="text ">
+                      <p><span>微调权重</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28541" class="ax_default shape">
+                    <div id="u28541_div" class=""></div>
+                    <div id="u28541_text" class="text ">
+                      <p><span>AI任务</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28542" class="ax_default shape">
+                    <div id="u28542_div" class=""></div>
+                    <div id="u28542_text" class="text ">
+                      <p><span>请输入</span><span>ID</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28543" class="ax_default paragraph">
+                    <div id="u28543_div" class=""></div>
+                    <div id="u28543_text" class="text ">
+                      <p><span style="color:#D9001B;">*</span><span> 选择文件</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Image) -->
+                  <div id="u28544" class="ax_default image">
+                    <img id="u28544_img" class="img " src="images/资源库/u28544.png"/>
+                    <div id="u28544_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+
+                  <!-- vb55 (Dynamic Panel) -->
+                  <div id="u28545" class="ax_default" data-label="vb55">
+                    <div id="u28545_state0" class="panel_state" data-label="State1" style="">
+                      <div id="u28545_state0_content" class="panel_state_content">
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28546" class="ax_default shape">
+                          <div id="u28546_div" class=""></div>
+                          <div id="u28546_text" class="text ">
+                            <p><span>选择文件</span></p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div id="u28545_state1" class="panel_state" data-label="State2" style="visibility: hidden;">
+                      <div id="u28545_state1_content" class="panel_state_content">
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28547" class="ax_default shape">
+                          <div id="u28547_div" class=""></div>
+                          <div id="u28547_text" class="text ">
+                            <p><span>选择文件</span></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28548" class="ax_default paragraph">
+                          <div id="u28548_div" class=""></div>
+                          <div id="u28548_text" class="text ">
+                            <p><span>adapter_model_XXXXXXX.safetensors</span></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Shape) -->
+                        <div id="u28549" class="ax_default _形状">
+                          <img id="u28549_img" class="img " src="images/任务管理（云端界面）/u11197.svg"/>
+                          <div id="u28549_text" class="text " style="display:none; visibility: hidden">
+                            <p></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28550" class="ax_default shape">
+                          <div id="u28550_div" class=""></div>
+                          <div id="u28550_text" class="text " style="display:none; visibility: hidden">
+                            <p></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28551" class="ax_default paragraph">
+                          <div id="u28551_div" class=""></div>
+                          <div id="u28551_text" class="text ">
+                            <p><span>大小: 23MB</span></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28552" class="ax_default paragraph">
+                          <div id="u28552_div" class=""></div>
+                          <div id="u28552_text" class="text ">
+                            <p><span>适合芯片: NVIDIA GPU 系列</span></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28553" class="ax_default paragraph">
+                          <div id="u28553_div" class=""></div>
+                          <div id="u28553_text" class="text ">
+                            <p><span>基础模型: default_MLLM</span></p>
+                          </div>
+                        </div>
+
+                        <!-- by (Dynamic Panel) -->
+                        <div id="u28554" class="ax_default" data-label="by">
+                          <div id="u28554_state0" class="panel_state" data-label="State1" style="">
+                            <div id="u28554_state0_content" class="panel_state_content">
+
+                              <!-- Unnamed (Rectangle) -->
+                              <div id="u28555" class="ax_default _形状">
+                                <div id="u28555_div" class=""></div>
+                                <div id="u28555_text" class="text " style="display:none; visibility: hidden">
+                                  <p></p>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Dynamic Panel) -->
+                              <div id="u28556" class="ax_default">
+                                <div id="u28556_state0" class="panel_state" data-label="关" style="">
+                                  <div id="u28556_state0_content" class="panel_state_content">
+
+                                    <!-- 开关/加大/off (Group) -->
+                                    <div id="u28557" class="ax_default" data-label="开关/加大/off" data-left="0" data-top="0" data-width="40" data-height="20" layer-opacity="1">
+
+                                      <!-- Rectangle (Shape) -->
+                                      <div id="u28558" class="ax_default _形状1" data-label="Rectangle">
+                                        <img id="u28558_img" class="img " src="images/通用编排器/rectangle_u1166.svg"/>
+                                        <div id="u28558_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+
+                                      <!-- Oval (Ellipse) -->
+                                      <div id="u28559" class="ax_default _形状1" data-label="Oval">
+                                        <img id="u28559_img" class="img " src="images/通用编排器/oval_u1164.svg"/>
+                                        <div id="u28559_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Group) -->
+                              <div id="u28560" class="ax_default" data-left="19" data-top="15" data-width="23" data-height="22" layer-opacity="1">
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28561" class="ax_default _形状">
+                                  <img id="u28561_img" class="img " src="images/资源库/u28561.svg"/>
+                                  <div id="u28561_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28562" class="ax_default _形状">
+                                  <img id="u28562_img" class="img " src="images/资源库/u28562.svg"/>
+                                  <div id="u28562_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28563" class="ax_default _形状">
+                                  <img id="u28563_img" class="img " src="images/资源库/u28563.svg"/>
+                                  <div id="u28563_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Rectangle) -->
+                              <div id="u28564" class="ax_default _形状">
+                                <div id="u28564_div" class=""></div>
+                                <div id="u28564_text" class="text " style="display:none; visibility: hidden">
+                                  <p></p>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Rectangle) -->
+                              <div id="u28565" class="ax_default paragraph">
+                                <div id="u28565_div" class=""></div>
+                                <div id="u28565_text" class="text ">
+                                  <p><span>格式转换</span></p>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Group) -->
+                              <div id="u28566" class="ax_default" data-left="127" data-top="18" data-width="19" data-height="19" layer-opacity="1">
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28567" class="ax_default _形状">
+                                  <img id="u28567_img" class="img " src="images/任务中心/u22198.svg"/>
+                                  <div id="u28567_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28568" class="ax_default _形状">
+                                  <img id="u28568_img" class="img " src="images/任务中心/u22199.svg"/>
+                                  <div id="u28568_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Rectangle) -->
+                              <div id="u28569" class="ax_default _形状">
+                                <div id="u28569_div" class=""></div>
+                                <div id="u28569_text" class="text ">
+                                  <p><span>将格式转换为适配边端芯片（如算能 TPU等）的专用格式</span></p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <div id="u28554_state1" class="panel_state" data-label="State2" style="visibility: hidden;">
+                            <div id="u28554_state1_content" class="panel_state_content">
+
+                              <!-- Unnamed (Rectangle) -->
+                              <div id="u28570" class="ax_default _形状">
+                                <div id="u28570_div" class=""></div>
+                                <div id="u28570_text" class="text " style="display:none; visibility: hidden">
+                                  <p></p>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Rectangle) -->
+                              <div id="u28571" class="ax_default _形状">
+                                <div id="u28571_div" class=""></div>
+                                <div id="u28571_text" class="text " style="display:none; visibility: hidden">
+                                  <p></p>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Dynamic Panel) -->
+                              <div id="u28572" class="ax_default">
+                                <div id="u28572_state0" class="panel_state" data-label="开" style="">
+                                  <div id="u28572_state0_content" class="panel_state_content">
+
+                                    <!-- 开关/基础/On (Group) -->
+                                    <div id="u28573" class="ax_default" data-label="开关/基础/On" data-left="0" data-top="0" data-width="40" data-height="20" layer-opacity="1">
+
+                                      <!-- Rectangle (Shape) -->
+                                      <div id="u28574" class="ax_default _形状1" data-label="Rectangle">
+                                        <img id="u28574_img" class="img " src="images/通用编排器/rectangle_u1163.svg"/>
+                                        <div id="u28574_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+
+                                      <!-- Oval (Ellipse) -->
+                                      <div id="u28575" class="ax_default _形状1" data-label="Oval">
+                                        <img id="u28575_img" class="img " src="images/通用编排器/oval_u1164.svg"/>
+                                        <div id="u28575_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Group) -->
+                              <div id="u28576" class="ax_default" data-left="19" data-top="15" data-width="23" data-height="22" layer-opacity="1">
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28577" class="ax_default _形状">
+                                  <img id="u28577_img" class="img " src="images/资源库/u28561.svg"/>
+                                  <div id="u28577_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28578" class="ax_default _形状">
+                                  <img id="u28578_img" class="img " src="images/资源库/u28562.svg"/>
+                                  <div id="u28578_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28579" class="ax_default _形状">
+                                  <img id="u28579_img" class="img " src="images/资源库/u28563.svg"/>
+                                  <div id="u28579_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Rectangle) -->
+                              <div id="u28580" class="ax_default _形状">
+                                <div id="u28580_div" class=""></div>
+                                <div id="u28580_text" class="text " style="display:none; visibility: hidden">
+                                  <p></p>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Rectangle) -->
+                              <div id="u28581" class="ax_default paragraph">
+                                <div id="u28581_div" class=""></div>
+                                <div id="u28581_text" class="text ">
+                                  <p><span>格式转换</span></p>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Group) -->
+                              <div id="u28582" class="ax_default" data-left="127" data-top="18" data-width="19" data-height="19" layer-opacity="1">
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28583" class="ax_default _形状">
+                                  <img id="u28583_img" class="img " src="images/任务中心/u22198.svg"/>
+                                  <div id="u28583_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+
+                                <!-- Unnamed (Shape) -->
+                                <div id="u28584" class="ax_default _形状">
+                                  <img id="u28584_img" class="img " src="images/任务中心/u22199.svg"/>
+                                  <div id="u28584_text" class="text " style="display:none; visibility: hidden">
+                                    <p></p>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- mimio (Dynamic Panel) -->
+                              <div id="u28585" class="ax_default" data-label="mimio">
+                                <div id="u28585_state0" class="panel_state" data-label="State1" style="">
+                                  <div id="u28585_state0_content" class="panel_state_content">
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28586" class="ax_default droplist">
+                                      <div id="u28586_div" class=""></div>
+                                      <div id="u28586_text" class="text ">
+                                        <p><span>全部转换</span></p>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28587" class="ax_default droplist">
+                                      <div id="u28587_div" class=""></div>
+                                      <div id="u28587_text" class="text ">
+                                        <p><span>自定义转换</span></p>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28588" class="ax_default heading_3">
+                                      <div id="u28588_div" class=""></div>
+                                      <div id="u28588_text" class="text ">
+                                        <p><span style="color:#D9001B;">*</span><span>转换方式</span></p>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Group) -->
+                                    <div id="u28589" class="ax_default" data-left="99" data-top="38" data-width="19" data-height="19" layer-opacity="1">
+
+                                      <!-- Unnamed (Shape) -->
+                                      <div id="u28590" class="ax_default _形状">
+                                        <img id="u28590_img" class="img " src="images/资源库/u28590.svg"/>
+                                        <div id="u28590_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+
+                                      <!-- Unnamed (Shape) -->
+                                      <div id="u28591" class="ax_default _形状">
+                                        <img id="u28591_img" class="img " src="images/资源库/u28591.svg"/>
+                                        <div id="u28591_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Group) -->
+                                    <div id="u28592" class="ax_default" data-left="228" data-top="38" data-width="19" data-height="19" layer-opacity="1">
+
+                                      <!-- Unnamed (Shape) -->
+                                      <div id="u28593" class="ax_default _形状">
+                                        <img id="u28593_img" class="img " src="images/任务中心/u22198.svg"/>
+                                        <div id="u28593_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+
+                                      <!-- Unnamed (Shape) -->
+                                      <div id="u28594" class="ax_default _形状">
+                                        <img id="u28594_img" class="img " src="images/任务中心/u22199.svg"/>
+                                        <div id="u28594_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28595" class="ax_default _形状">
+                                      <div id="u28595_div" class=""></div>
+                                      <div id="u28595_text" class="text ">
+                                        <p><span>自动检测所有已接入网关的芯片类型，批量生成所有芯片必需的格式文件</span></p>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28596" class="ax_default paragraph">
+                                      <div id="u28596_div" class=""></div>
+                                      <div id="u28596_text" class="text ">
+                                        <p><span>检测到已接入 13个网关 共 3 种架构，将生成 3 个文件</span></p>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div id="u28585_state1" class="panel_state" data-label="State2" style="visibility: hidden;">
+                                  <div id="u28585_state1_content" class="panel_state_content">
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28597" class="ax_default droplist">
+                                      <div id="u28597_div" class=""></div>
+                                      <div id="u28597_text" class="text ">
+                                        <p><span>全部转换</span></p>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28598" class="ax_default droplist">
+                                      <div id="u28598_div" class=""></div>
+                                      <div id="u28598_text" class="text ">
+                                        <p><span>自定义转换</span></p>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28599" class="ax_default heading_3">
+                                      <div id="u28599_div" class=""></div>
+                                      <div id="u28599_text" class="text ">
+                                        <p><span style="color:#D9001B;">*</span><span>转换方式</span></p>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Group) -->
+                                    <div id="u28600" class="ax_default" data-left="99" data-top="38" data-width="19" data-height="19" layer-opacity="1">
+
+                                      <!-- Unnamed (Shape) -->
+                                      <div id="u28601" class="ax_default _形状">
+                                        <img id="u28601_img" class="img " src="images/任务中心/u22198.svg"/>
+                                        <div id="u28601_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+
+                                      <!-- Unnamed (Shape) -->
+                                      <div id="u28602" class="ax_default _形状">
+                                        <img id="u28602_img" class="img " src="images/任务中心/u22199.svg"/>
+                                        <div id="u28602_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Group) -->
+                                    <div id="u28603" class="ax_default" data-left="228" data-top="38" data-width="19" data-height="19" layer-opacity="1">
+
+                                      <!-- Unnamed (Shape) -->
+                                      <div id="u28604" class="ax_default _形状">
+                                        <img id="u28604_img" class="img " src="images/资源库/u28590.svg"/>
+                                        <div id="u28604_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+
+                                      <!-- Unnamed (Shape) -->
+                                      <div id="u28605" class="ax_default _形状">
+                                        <img id="u28605_img" class="img " src="images/资源库/u28591.svg"/>
+                                        <div id="u28605_text" class="text " style="display:none; visibility: hidden">
+                                          <p></p>
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28606" class="ax_default _形状">
+                                      <div id="u28606_div" class=""></div>
+                                      <div id="u28606_text" class="text ">
+                                        <p><span>&nbsp;仅为选中的特定网关转换其芯片支持的格式</span></p>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Rectangle) -->
+                                    <div id="u28607" class="ax_default heading_3">
+                                      <div id="u28607_div" class=""></div>
+                                      <div id="u28607_text" class="text ">
+                                        <p><span style="color:#D9001B;">*</span><span>选择边缘网关</span></p>
+                                      </div>
+                                    </div>
+
+                                    <!-- Unnamed (Droplist) -->
+                                    <div id="u28608" class="ax_default droplist">
+                                      <div id="u28608_div" class=""></div>
+                                      <select id="u28608_input" class="u28608_input">
+                                        <option class="u28608_input_option" value="请选择">请选择</option>
+                                        <option class="u28608_input_option" value="边缘网关A">边缘网关A</option>
+                                        <option class="u28608_input_option" value="边缘网关B">边缘网关B</option>
+                                        <option class="u28608_input_option" value="边缘网关C">边缘网关C</option>
+                                      </select>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Unnamed (Hot Spot) -->
+                              <div id="u28609" class="ax_default">
+                              </div>
+
+                              <!-- Unnamed (Hot Spot) -->
+                              <div id="u28610" class="ax_default">
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28611" class="ax_default paragraph">
+                    <div id="u28611_div" class=""></div>
+                    <div id="u28611_text" class="text ">
+                      <p><span>暂仅支持从「我的权重微调」添加</span></p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="u28528_state1" class="panel_state" data-label="编辑" style="visibility: hidden;">
+          <div id="u28528_state1_content" class="panel_state_content">
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28612" class="ax_default shape">
+              <div id="u28612_div" class=""></div>
+              <div id="u28612_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Image) -->
+            <div id="u28613" class="ax_default image">
+              <img id="u28613_img" class="img " src="images/资源库/u28613.png"/>
+              <div id="u28613_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28614" class="ax_default shape">
+              <div id="u28614_div" class=""></div>
+              <div id="u28614_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Image) -->
+            <div id="u28615" class="ax_default image">
+              <img id="u28615_img" class="img " src="images/资源库/u28532.png"/>
+              <div id="u28615_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Hot Spot) -->
+            <div id="u28616" class="ax_default">
+            </div>
+
+            <!-- Unnamed (Hot Spot) -->
+            <div id="u28617" class="ax_default">
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28618" class="ax_default shape">
+              <div id="u28618_div" class=""></div>
+              <div id="u28618_text" class="text ">
+                <p><span>编辑</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28619" class="ax_default shape">
+              <div id="u28619_div" class=""></div>
+              <div id="u28619_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Dynamic Panel) -->
+            <div id="u28620" class="ax_default">
+              <div id="u28620_state0" class="panel_state" data-label="State1" style="">
+                <div id="u28620_state0_content" class="panel_state_content">
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28621" class="ax_default shape">
+                    <div id="u28621_div" class=""></div>
+                    <div id="u28621_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Image) -->
+                  <div id="u28622" class="ax_default image">
+                    <img id="u28622_img" class="img " src="images/资源库/u28537.png"/>
+                    <div id="u28622_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28623" class="ax_default shape">
+                    <div id="u28623_div" class=""></div>
+                    <div id="u28623_text" class="text ">
+                      <p><span>AI</span><span>模型</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28624" class="ax_default shape">
+                    <div id="u28624_div" class=""></div>
+                    <div id="u28624_text" class="text ">
+                      <p><span>AI插件</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28625" class="ax_default shape">
+                    <div id="u28625_div" class=""></div>
+                    <div id="u28625_text" class="text ">
+                      <p><span>微调权重</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28626" class="ax_default shape">
+                    <div id="u28626_div" class=""></div>
+                    <div id="u28626_text" class="text ">
+                      <p><span>AI任务</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28627" class="ax_default shape">
+                    <div id="u28627_div" class=""></div>
+                    <div id="u28627_text" class="text ">
+                      <p><span>请输入</span><span>ID</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28628" class="ax_default paragraph">
+                    <div id="u28628_div" class=""></div>
+                    <div id="u28628_text" class="text ">
+                      <p><span style="color:#D9001B;">*</span><span> 选择文件</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Image) -->
+                  <div id="u28629" class="ax_default image">
+                    <img id="u28629_img" class="img " src="images/资源库/u28544.png"/>
+                    <div id="u28629_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+
+                  <!-- vb (Dynamic Panel) -->
+                  <div id="u28630" class="ax_default" data-label="vb">
+                    <div id="u28630_state0" class="panel_state" data-label="State2" style="">
+                      <div id="u28630_state0_content" class="panel_state_content">
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28631" class="ax_default shape">
+                          <div id="u28631_div" class=""></div>
+                          <div id="u28631_text" class="text ">
+                            <p><span>选择文件</span></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28632" class="ax_default paragraph">
+                          <div id="u28632_div" class=""></div>
+                          <div id="u28632_text" class="text ">
+                            <p style="font-size:13px;"><span>adapter_model_XXXXXXX.</span><span style="font-size:14px;">bmodel</span></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Shape) -->
+                        <div id="u28633" class="ax_default _形状">
+                          <img id="u28633_img" class="img " src="images/任务管理（云端界面）/u11197.svg"/>
+                          <div id="u28633_text" class="text " style="display:none; visibility: hidden">
+                            <p></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28634" class="ax_default shape">
+                          <div id="u28634_div" class=""></div>
+                          <div id="u28634_text" class="text " style="display:none; visibility: hidden">
+                            <p></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28635" class="ax_default paragraph">
+                          <div id="u28635_div" class=""></div>
+                          <div id="u28635_text" class="text ">
+                            <p><span>大小: 23MB</span></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28636" class="ax_default paragraph">
+                          <div id="u28636_div" class=""></div>
+                          <div id="u28636_text" class="text ">
+                            <p><span>适合芯片: 算能TPU 系列</span></p>
+                          </div>
+                        </div>
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28637" class="ax_default paragraph">
+                          <div id="u28637_div" class=""></div>
+                          <div id="u28637_text" class="text ">
+                            <p><span>基础模型: default_MLLM</span></p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div id="u28630_state1" class="panel_state" data-label="State1" style="visibility: hidden;">
+                      <div id="u28630_state1_content" class="panel_state_content">
+
+                        <!-- Unnamed (Rectangle) -->
+                        <div id="u28638" class="ax_default shape">
+                          <div id="u28638_div" class=""></div>
+                          <div id="u28638_text" class="text ">
+                            <p><span>选择文件</span></p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28639" class="ax_default shape">
+                    <div id="u28639_div" class=""></div>
+                    <div id="u28639_text" class="text ">
+                      <p><span>lora_file_2321321321</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28640" class="ax_default shape">
+                    <div id="u28640_div" class=""></div>
+                    <div id="u28640_text" class="text ">
+                      <p><span>lora</span><span>模型微调文件</span><span>_</span><span>算能用</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Image) -->
+                  <div id="u28641" class="ax_default image">
+                    <img id="u28641_img" class="img " src="images/资源库/u28641.png"/>
+                    <div id="u28641_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28642" class="ax_default paragraph">
+                    <div id="u28642_div" class=""></div>
+                    <div id="u28642_text" class="text ">
+                      <p><span>编辑的时候仅不支持切换文件,为了保证和我的微调权重保证1*N</span></p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- wuqin (Dynamic Panel) -->
+      <div id="u28643" class="ax_default ax_default_hidden" data-label="wuqin" style="display:none; visibility: hidden">
+        <div id="u28643_state0" class="panel_state" data-label="添加lora" style="">
+          <div id="u28643_state0_content" class="panel_state_content">
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28644" class="ax_default shape">
+              <div id="u28644_div" class=""></div>
+              <div id="u28644_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28645" class="ax_default shape">
+              <div id="u28645_div" class=""></div>
+              <div id="u28645_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28646" class="ax_default shape">
+              <img id="u28646_img" class="img " src="images/应用列表_1/u737.svg"/>
+              <div id="u28646_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28647" class="ax_default paragraph">
+              <div id="u28647_div" class=""></div>
+              <div id="u28647_text" class="text ">
+                <p><span>添加</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28648" class="ax_default _形状">
+              <div id="u28648_div" class=""></div>
+              <div id="u28648_text" class="text ">
+                <p><span>确定</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28649" class="ax_default _形状">
+              <div id="u28649_div" class=""></div>
+              <div id="u28649_text" class="text ">
+                <p><span>取消</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28650" class="ax_default _形状">
+              <div id="u28650_div" class=""></div>
+              <div id="u28650_text" class="text ">
+                <p><span>default_MLLM</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28651" class="ax_default _形状">
+              <div id="u28651_div" class=""></div>
+              <div id="u28651_text" class="text ">
+                <p><span>QWEN_v3</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28652" class="ax_default _形状">
+              <div id="u28652_div" class=""></div>
+              <div id="u28652_text" class="text ">
+                <p><span>GEMINI_qq</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28653" class="ax_default _形状">
+              <div id="u28653_div" class=""></div>
+              <div id="u28653_text" class="text ">
+                <p><span>GPT_4o</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28654" class="ax_default _形状">
+              <div id="u28654_div" class=""></div>
+              <div id="u28654_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28655" class="ax_default _形状">
+              <div id="u28655_div" class=""></div>
+              <div id="u28655_text" class="text ">
+                <p><span>名称</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28656" class="ax_default _形状">
+              <div id="u28656_div" class=""></div>
+              <div id="u28656_text" class="text ">
+                <p><span>A产线-夜间模式_LoRA</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28657" class="ax_default _形状">
+              <div id="u28657_div" class=""></div>
+              <div id="u28657_text" class="text ">
+                <p><span>文件大小</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28658" class="ax_default _形状">
+              <div id="u28658_div" class=""></div>
+              <div id="u28658_text" class="text ">
+                <p><span>18MB</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28659" class="ax_default _形状">
+              <div id="u28659_div" class=""></div>
+              <div id="u28659_text" class="text ">
+                <p><span>创建时间</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28660" class="ax_default _形状">
+              <div id="u28660_div" class=""></div>
+              <div id="u28660_text" class="text ">
+                <p><span>2025-12-11 09:11:11</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28661" class="ax_default _形状">
+              <div id="u28661_div" class=""></div>
+              <div id="u28661_text" class="text ">
+                <p><span>说明</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28662" class="ax_default _形状">
+              <div id="u28662_div" class=""></div>
+              <div id="u28662_text" class="text ">
+                <p><span>- -</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Group) -->
+            <div id="u28663" class="ax_default" data-left="697" data-top="296" data-width="15" data-height="14" layer-opacity="1">
+
+              <!-- Unnamed (Shape) -->
+              <div id="u28664" class="ax_default shape">
+                <img id="u28664_img" class="img " src="images/知识库_1/u5126.svg"/>
+                <div id="u28664_text" class="text " style="display:none; visibility: hidden">
+                  <p></p>
+                </div>
+              </div>
+
+              <!-- Unnamed (Shape) -->
+              <div id="u28665" class="ax_default shape">
+                <img id="u28665_img" class="img " src="images/知识库_1/u5127.svg"/>
+                <div id="u28665_text" class="text " style="display:none; visibility: hidden">
+                  <p></p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28666" class="ax_default _形状">
+              <div id="u28666_div" class=""></div>
+              <div id="u28666_text" class="text ">
+                <p><span>工业仪表读数优化模型_LoRA</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28667" class="ax_default _形状">
+              <div id="u28667_div" class=""></div>
+              <div id="u28667_text" class="text ">
+                <p><span>18MB</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28668" class="ax_default _形状">
+              <div id="u28668_div" class=""></div>
+              <div id="u28668_text" class="text ">
+                <p><span>2025-12-11 09:11:11</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28669" class="ax_default _形状">
+              <div id="u28669_div" class=""></div>
+              <div id="u28669_text" class="text ">
+                <p><span>- -</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Group) -->
+            <div id="u28670" class="ax_default" data-left="697" data-top="341" data-width="15" data-height="14" layer-opacity="1">
+
+              <!-- Unnamed (Shape) -->
+              <div id="u28671" class="ax_default shape">
+                <img id="u28671_img" class="img " src="images/知识库_1/u5126.svg"/>
+                <div id="u28671_text" class="text " style="display:none; visibility: hidden">
+                  <p></p>
+                </div>
+              </div>
+
+              <!-- Unnamed (Shape) -->
+              <div id="u28672" class="ax_default shape">
+                <img id="u28672_img" class="img " src="images/知识库_1/u5127.svg"/>
+                <div id="u28672_text" class="text " style="display:none; visibility: hidden">
+                  <p></p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28673" class="ax_default _形状">
+              <div id="u28673_div" class=""></div>
+              <div id="u28673_text" class="text ">
+                <p><span>安全生产-安全帽检测模型_LoRA</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28674" class="ax_default _形状">
+              <div id="u28674_div" class=""></div>
+              <div id="u28674_text" class="text ">
+                <p><span>18MB</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28675" class="ax_default _形状">
+              <div id="u28675_div" class=""></div>
+              <div id="u28675_text" class="text ">
+                <p><span>2025-12-11 09:11:11</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28676" class="ax_default _形状">
+              <div id="u28676_div" class=""></div>
+              <div id="u28676_text" class="text ">
+                <p><span>- -</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Group) -->
+            <div id="u28677" class="ax_default" data-left="697" data-top="386" data-width="15" data-height="14" layer-opacity="1">
+
+              <!-- Unnamed (Shape) -->
+              <div id="u28678" class="ax_default shape">
+                <img id="u28678_img" class="img " src="images/知识库_1/u5126.svg"/>
+                <div id="u28678_text" class="text " style="display:none; visibility: hidden">
+                  <p></p>
+                </div>
+              </div>
+
+              <!-- Unnamed (Shape) -->
+              <div id="u28679" class="ax_default shape">
+                <img id="u28679_img" class="img " src="images/知识库_1/u5127.svg"/>
+                <div id="u28679_text" class="text " style="display:none; visibility: hidden">
+                  <p></p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28680" class="ax_default _形状">
+              <div id="u28680_div" class=""></div>
+              <div id="u28680_text" class="text ">
+                <p><span>B产线-零件缺陷检测模型_LoRA</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28681" class="ax_default _形状">
+              <div id="u28681_div" class=""></div>
+              <div id="u28681_text" class="text ">
+                <p><span>18MB</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28682" class="ax_default _形状">
+              <div id="u28682_div" class=""></div>
+              <div id="u28682_text" class="text ">
+                <p><span>2025-12-11 09:11:11</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28683" class="ax_default _形状">
+              <div id="u28683_div" class=""></div>
+              <div id="u28683_text" class="text ">
+                <p><span>- -</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Group) -->
+            <div id="u28684" class="ax_default" data-left="697" data-top="431" data-width="15" data-height="14" layer-opacity="1">
+
+              <!-- Unnamed (Shape) -->
+              <div id="u28685" class="ax_default shape">
+                <img id="u28685_img" class="img " src="images/知识库_1/u5126.svg"/>
+                <div id="u28685_text" class="text " style="display:none; visibility: hidden">
+                  <p></p>
+                </div>
+              </div>
+
+              <!-- Unnamed (Shape) -->
+              <div id="u28686" class="ax_default shape">
+                <img id="u28686_img" class="img " src="images/知识库_1/u5127.svg"/>
+                <div id="u28686_text" class="text " style="display:none; visibility: hidden">
+                  <p></p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Unnamed (页数) -->
+
+            <!-- Unnamed (Group) -->
+            <div id="u28688" class="ax_default" data-left="1161" data-top="794" data-width="375" data-height="32" layer-opacity="1">
+
+              <!-- Unnamed (Rectangle) -->
+              <div id="u28689" class="ax_default label">
+                <div id="u28689_div" class=""></div>
+                <div id="u28689_text" class="text ">
+                  <p><span>共 400 条记录 第 1 / 80 页 </span></p>
+                </div>
+              </div>
+
+              <!-- Unnamed (Group) -->
+              <div id="u28690" class="ax_default" data-left="1348" data-top="794" data-width="188" data-height="32" layer-opacity="1">
+
+                <!-- Unnamed (Group) -->
+                <div id="u28691" class="ax_default" data-left="1448" data-top="794" data-width="88" data-height="32" layer-opacity="1">
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28692" class="ax_default shape">
+                    <div id="u28692_div" class=""></div>
+                    <div id="u28692_text" class="text ">
+                      <p><span style="font-family:'ArialMT', 'Arial', sans-serif;">10</span><span style="font-family:'MicrosoftYaHeiLight', 'Microsoft YaHei Light', 'Microsoft YaHei', sans-serif;font-weight:200;font-style:normal;">条/页</span></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Image) -->
+                  <div id="u28693" class="ax_default image1">
+                    <img id="u28693_img" class="img " src="images/应用列表_1/u430.svg"/>
+                    <div id="u28693_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Unnamed (Group) -->
+                <div id="u28694" class="ax_default" data-left="1348" data-top="794" data-width="32" data-height="32" layer-opacity="1">
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28695" class="ax_default shape">
+                    <div id="u28695_div" class=""></div>
+                    <div id="u28695_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Image) -->
+                  <div id="u28696" class="ax_default image1">
+                    <img id="u28696_img" class="img " src="images/应用列表_1/u433.png"/>
+                    <div id="u28696_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Unnamed (Group) -->
+                <div id="u28697" class="ax_default" data-left="1400" data-top="794" data-width="32" data-height="32" layer-opacity="1">
+
+                  <!-- Unnamed (Rectangle) -->
+                  <div id="u28698" class="ax_default shape">
+                    <div id="u28698_div" class=""></div>
+                    <div id="u28698_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+
+                  <!-- Unnamed (Image) -->
+                  <div id="u28699" class="ax_default image1">
+                    <img id="u28699_img" class="img " src="images/应用列表_1/u430.svg"/>
+                    <div id="u28699_text" class="text " style="display:none; visibility: hidden">
+                      <p></p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="u28687" style="display:none; visibility:hidden;"></div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28700" class="ax_default shape">
+              <div id="u28700_div" class=""></div>
+              <div id="u28700_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28701" class="ax_default shape">
+              <div id="u28701_div" class=""></div>
+              <div id="u28701_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28702" class="ax_default shape">
+              <div id="u28702_div" class=""></div>
+              <div id="u28702_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28703" class="ax_default shape">
+              <div id="u28703_div" class=""></div>
+              <div id="u28703_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28704" class="ax_default _形状">
+              <div id="u28704_div" class=""></div>
+              <div id="u28704_text" class="text ">
+                <p><span>请输入</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Shape) -->
+            <div id="u28705" class="ax_default _形状">
+              <img id="u28705_img" class="img " src="images/通用编排器/u1048.svg"/>
+              <div id="u28705_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28706" class="ax_default paragraph">
+              <div id="u28706_div" class=""></div>
+              <div id="u28706_text" class="text ">
+                <p><span>仅支持添加单个基础模型下单个权重文件</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Group) -->
+            <div id="u28707" class="ax_default" data-left="645" data-top="188" data-width="195" data-height="32" layer-opacity="1">
+
+              <!-- 框 (Rectangle) -->
+              <div id="u28708" class="ax_default box_1" data-label="框">
+                <div id="u28708_div" class=""></div>
+                <div id="u28708_text" class="text ">
+                  <p><span>名称</span></p>
+                </div>
+              </div>
+
+              <!-- 指示器 (Image) -->
+              <div id="u28709" class="ax_default image2" data-label="指示器">
+                <img id="u28709_img" class="img " src="images/通用编排器/指示器_u1662.png"/>
+                <div id="u28709_text" class="text " style="display:none; visibility: hidden">
+                  <p></p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Unnamed (Droplist) -->
+            <div id="u28710" class="ax_default droplist">
+              <div id="u28710_div" class=""></div>
+              <select id="u28710_input" class="u28710_input">
+                <option class="u28710_input_option" selected value="包含">包含</option>
+                <option class="u28710_input_option" value="=">=</option>
+                <option class="u28710_input_option" value="！=">！=</option>
+                <option class="u28710_input_option" value="&gt;">&gt;</option>
+                <option class="u28710_input_option" value="&lt;">&lt;</option>
+                <option class="u28710_input_option" value="&gt;=">&gt;=</option>
+                <option class="u28710_input_option" value="&lt;=">&lt;=</option>
+                <option class="u28710_input_option" value="介于">介于</option>
+                <option class="u28710_input_option" value="不包含">不包含</option>
+                <option class="u28710_input_option" value="从属于">从属于</option>
+              </select>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28711" class="ax_default box_1">
+              <div id="u28711_div" class=""></div>
+              <div id="u28711_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28712" class="ax_default shape1">
+              <div id="u28712_div" class=""></div>
+              <div id="u28712_text" class="text ">
+                <p><span>搜索</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Rectangle) -->
+            <div id="u28713" class="ax_default shape1">
+              <div id="u28713_div" class=""></div>
+              <div id="u28713_text" class="text ">
+                <p><span>重 置</span></p>
+              </div>
+            </div>
+
+            <!-- Unnamed (Ellipse) -->
+            <div id="u28714" class="ax_default shape">
+              <img id="u28714_img" class="img " src="images/资源库/u28714.svg"/>
+              <div id="u28714_text" class="text " style="display:none; visibility: hidden">
+                <p></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Unnamed (Hot Spot) -->
+      <div id="u28715" class="ax_default">
+      </div>
+
+      <!-- Unnamed (Hot Spot) -->
+      <div id="u28716" class="ax_default">
+      </div>
+    </div>
+    <script src="resources/scripts/axure/ios.js"></script>
+  </body>
+</html>

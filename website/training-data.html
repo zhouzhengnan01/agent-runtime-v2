@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>训练数据管理</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:#f5f7fb; --panel:#fff; --border:#e5e7eb; --text:#0f172a; --muted:#6b7280;
+      --primary:#2563eb; --success:#16a34a; --warning:#f59e0b; --danger:#ef4444;
+      --radius:14px; --shadow:0 12px 36px rgba(15,23,42,0.08);
+    }
+    *{box-sizing:border-box;}
+    body{margin:0;font-family:"DM Sans","Segoe UI",sans-serif;background:var(--bg);color:var(--text);padding:18px;}
+    h1,h2,h3{margin:0;}
+    .layout{max-width:1400px;margin:0 auto;display:grid;grid-template-columns: 1fr 360px;gap:16px;}
+    @media (max-width:1100px){.layout{grid-template-columns:1fr;}}
+    .panel{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px;}
+    .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;}
+    .title{font-size:20px;font-weight:700;}
+    .actions{display:flex;gap:10px;flex-wrap:wrap;}
+    .btn{border:none;cursor:pointer;padding:10px 14px;border-radius:10px;font-weight:700;}
+    .btn.primary{background:linear-gradient(135deg,#2563eb,#1d4ed8);color:#fff;box-shadow:0 10px 24px rgba(37,99,235,0.25);}
+    .btn.ghost{background:#f3f4f6;border:1px solid var(--border);color:var(--text);}
+    .filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;}
+    .chip{padding:8px 12px;border-radius:10px;background:#f3f4f6;border:1px solid var(--border);font-weight:700;cursor:pointer;}
+    .chip.active{background:#e7efff;border-color:#cbdcff;color:var(--primary);}
+    .grid{display:grid;grid-template-columns: repeat(auto-fit,minmax(260px,1fr));gap:12px;}
+    .card{border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff;display:grid;gap:6px;}
+    .muted{color:var(--muted);font-size:13px;}
+    .status{padding:6px 10px;border-radius:10px;font-weight:700;font-size:12px;display:inline-block;}
+    .status.green{background:#ecfdf3;border:1px solid #bbf7d0;color:var(--success);}
+    .status.blue{background:#e7efff;border:1px solid #cbdcff;color:var(--primary);}
+    .status.orange{background:#fff7ed;border:1px solid #fed7aa;color:#c2410c;}
+    .stats{display:flex;gap:12px;flex-wrap:wrap;font-weight:700;}
+    .table{width:100%;border-collapse:collapse;font-size:14px;}
+    .table th,.table td{padding:10px;border-bottom:1px solid var(--border);text-align:left;}
+    .table th{color:var(--muted);font-weight:700;}
+    .right{display:grid;gap:12px;}
+    .section-head{font-weight:700;margin-bottom:6px;}
+    .form{display:grid;gap:10px;}
+    input,select,textarea{width:100%;padding:11px;border-radius:10px;border:1px solid var(--border);font-family:inherit;font-size:14px;background:#fff;}
+    textarea{min-height:120px;resize:vertical;}
+    .upload{border:1px dashed #cbd5e1;background:#f8fafc;padding:14px;border-radius:12px;text-align:center;cursor:pointer;}
+    .badge{padding:6px 10px;border-radius:10px;border:1px solid var(--border);background:#f3f4f6;font-weight:700;font-size:12px;}
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <main class="panel">
+      <div class="header">
+        <div class="title">训练数据管理</div>
+        <div class="actions">
+          <button class="btn ghost" id="importBtn">导入数据</button>
+          <button class="btn primary" id="createBtn">新建数据集</button>
+        </div>
+      </div>
+      <div class="filters">
+        <div class="chip active" data-tab="all">全部</div>
+        <div class="chip" data-tab="vision">视觉</div>
+        <div class="chip" data-tab="iot">物联</div>
+        <div class="chip" data-tab="nlp">文本</div>
+        <div class="chip" data-tab="pending">待处理</div>
+      </div>
+
+      <div class="grid" id="datasetGrid"></div>
+
+      <div class="panel" style="margin-top:12px; border:1px solid var(--border); box-shadow:none;">
+        <div class="section-head">最近上传</div>
+        <table class="table" id="uploadTable">
+          <thead>
+            <tr><th>文件</th><th>数据集</th><th>大小</th><th>状态</th><th>时间</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </main>
+
+    <aside class="right">
+      <div class="panel">
+        <div class="section-head">数据集详情</div>
+        <div class="muted">选择左侧数据集查看详情</div>
+        <div id="dsDetail" style="margin-top:8px; display:none;">
+          <h3 id="dsName"></h3>
+          <div class="muted" id="dsDesc"></div>
+          <div class="stats" style="margin:10px 0;">
+            <span class="badge" id="dsType">-</span>
+            <span class="badge" id="dsStatus">-</span>
+            <span class="badge" id="dsCount">0 条样本</span>
+            <span class="badge" id="dsVersion">版本 v1</span>
+          </div>
+          <div class="muted">标签</div>
+          <div id="dsTags" style="display:flex; gap:6px; flex-wrap:wrap; margin:6px 0 10px;"></div>
+          <div class="muted">最近更新 <span id="dsUpdated">-</span></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="section-head">上传/新增样本</div>
+        <form class="form" id="uploadForm">
+          <input id="sampleName" placeholder="样本名称（可选）">
+          <textarea id="sampleDesc" placeholder="备注（可选）"></textarea>
+          <div class="upload" id="uploadArea">
+            <strong>拖拽或点击上传文件</strong>
+            <div class="muted" style="margin-top:6px;">支持图片/视频/文本，或填写 URL。</div>
+            <input id="fileInput" type="file" style="display:none" multiple>
+          </div>
+          <input id="fileUrl" placeholder="或输入文件 URL">
+          <select id="targetDataset"></select>
+          <div class="actions" style="justify-content:flex-end;">
+            <button type="submit" class="btn primary">上传</button>
+          </div>
+        </form>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    const datasets = [
+      { id:"ds1", name:"多场景目标识别数据集", desc:"摄像头抓拍，包含门禁/通道/周界等", type:"vision", status:"进行中", total:18420, tags:["安防","检测","生产"], updated:"2025-12-10", version:"v3" },
+      { id:"ds2", name:"工业表面瑕疵检测数据集", desc:"钢板/芯片表面缺陷标注", type:"vision", status:"已发布", total:9320, tags:["工业","检测"], updated:"2025-12-08", version:"v2" },
+      { id:"ds3", name:"文本告警工单数据集", desc:"历史告警与处置记录文本", type:"nlp", status:"待清洗", total:6120, tags:["NLP","告警"], updated:"2025-12-09", version:"v1" },
+      { id:"ds4", name:"IoT 设备时序数据", desc:"传感器时序+事件标签", type:"iot", status:"进行中", total:15210, tags:["物联","时序"], updated:"2025-12-07", version:"v2" }
+    ];
+    const uploads = [
+      { file:"camera_batch_12.zip", ds:"多场景目标识别数据集", size:"320MB", status:"处理中", time:"12-13 10:20" },
+      { file:"defect_20241212.csv", ds:"工业表面瑕疵检测数据集", size:"58MB", status:"已入库", time:"12-13 09:45" },
+      { file:"alert_text_01.jsonl", ds:"文本告警工单数据集", size:"12MB", status:"待清洗", time:"12-12 20:18" }
+    ];
+
+    let activeTab = "all";
+    let activeDs = null;
+
+    const grid = document.getElementById("datasetGrid");
+    const uploadTable = document.querySelector("#uploadTable tbody");
+    const dsDetail = document.getElementById("dsDetail");
+    const dsName = document.getElementById("dsName");
+    const dsDesc = document.getElementById("dsDesc");
+    const dsType = document.getElementById("dsType");
+    const dsStatus = document.getElementById("dsStatus");
+    const dsCount = document.getElementById("dsCount");
+    const dsVersion = document.getElementById("dsVersion");
+    const dsTags = document.getElementById("dsTags");
+    const dsUpdated = document.getElementById("dsUpdated");
+    const targetDataset = document.getElementById("targetDataset");
+
+    function renderDatasets() {
+      grid.innerHTML = "";
+      datasets.filter(d => {
+        if (activeTab === "vision" || activeTab === "iot" || activeTab === "nlp") return d.type === activeTab;
+        if (activeTab === "pending") return d.status !== "已发布";
+        return true;
+      }).forEach(d => {
+        const card = document.createElement("div");
+        card.className = "card";
+        const statusClass = d.status === "已发布" ? "green" : (d.status === "进行中" ? "blue" : "orange");
+        card.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-weight:700;">${d.name}</div>
+            <span class="status ${statusClass}">${d.status}</span>
+          </div>
+          <div class="muted">${d.desc}</div>
+          <div class="stats">
+            <span>样本 ${d.total}</span>
+            <span>版本 ${d.version}</span>
+            <span>${d.updated}</span>
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">${d.tags.map(t=>`<span class="badge">${t}</span>`).join("")}</div>
+        `;
+        card.onclick = () => { activeDs = d; renderDetail(); };
+        grid.appendChild(card);
+      });
+    }
+
+    function renderUploads() {
+      uploadTable.innerHTML = "";
+      uploads.forEach(u => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${u.file}</td>
+          <td>${u.ds}</td>
+          <td>${u.size}</td>
+          <td>${u.status}</td>
+          <td>${u.time}</td>
+        `;
+        uploadTable.appendChild(tr);
+      });
+    }
+
+    function renderDetail() {
+      if (!activeDs) { dsDetail.style.display="none"; return; }
+      dsDetail.style.display = "block";
+      dsName.textContent = activeDs.name;
+      dsDesc.textContent = activeDs.desc;
+      dsType.textContent = activeDs.type.toUpperCase();
+      dsStatus.textContent = activeDs.status;
+      dsStatus.className = "badge";
+      dsCount.textContent = `${activeDs.total} 条样本`;
+      dsVersion.textContent = `版本 ${activeDs.version}`;
+      dsUpdated.textContent = activeDs.updated;
+      dsTags.innerHTML = activeDs.tags.map(t=>`<span class="badge">${t}</span>`).join("");
+    }
+
+    document.querySelectorAll(".chip").forEach(chip => {
+      chip.onclick = () => {
+        document.querySelectorAll(".chip").forEach(c=>c.classList.remove("active"));
+        chip.classList.add("active");
+        activeTab = chip.dataset.tab;
+        renderDatasets();
+      };
+    });
+
+    function populateTargetSelect() {
+      targetDataset.innerHTML = datasets.map(d=>`<option value="${d.id}">${d.name}</option>`).join("");
+    }
+
+    const uploadArea = document.getElementById("uploadArea");
+    const fileInput = document.getElementById("fileInput");
+
+    uploadArea.onclick = () => fileInput.click();
+    uploadArea.ondragover = e => { e.preventDefault(); uploadArea.style.borderColor="#2563eb"; };
+    uploadArea.ondragleave = () => uploadArea.style.borderColor="#cbd5e1";
+    uploadArea.ondrop = e => { e.preventDefault(); uploadArea.style.borderColor="#cbd5e1"; fileInput.files = e.dataTransfer.files; };
+
+    document.getElementById("uploadForm").onsubmit = e => {
+      e.preventDefault();
+      alert("已模拟提交上传/新增样本（示例页面不实际上传）");
+    };
+
+    document.getElementById("createBtn").onclick = () => alert("示例：新建数据集表单弹窗");
+    document.getElementById("importBtn").onclick = () => alert("示例：导入数据流程");
+
+    renderDatasets();
+    renderUploads();
+    populateTargetSelect();
+    renderDetail();
+  </script>
+</body>
+</html>

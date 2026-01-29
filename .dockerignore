@@ -1,0 +1,11 @@
+.git
+__pycache__
+*.pyc
+*.pyo
+.env
+storage
+logs
+node_modules
+website/prototype
+third_party/ffmpeg/_extract
+certs
