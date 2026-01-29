@@ -12,6 +12,8 @@ storage/logs/
 storage/review_records/
 storage/uploads/
 storage/static/uploads/
+storage/
+tmp_review_request.json
 out/
 .tmp_jar_bare/
 qwen3vl-fastapi/
