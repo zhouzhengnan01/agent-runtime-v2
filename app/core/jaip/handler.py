@@ -10,6 +10,7 @@ JAIP 协议处理器
 
 import logging
 import json
+import asyncio
 import os
 import time
 import uuid
@@ -18,8 +19,11 @@ from typing import Dict, Any, Optional, AsyncIterator, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.agents.template_agent_factory import TemplateAgentFactory
 from app.core.tools.session_tool_manager import session_tool_manager
+from app.core.llm.usage import TokenUsageTracker
+from app.exceptions import DatabaseUnavailableError
 from app.services.agent_service import AgentService
 from app.shared.jetlinks_video.utils.logger_utils import get_logger
 
@@ -28,6 +32,8 @@ logger = get_logger(__file__)
 
 class JAIPHandler:
     """JAIP 协议处理器"""
+
+    _BUILTIN_AGENT_IDS = {"video_patrol", "video_patrol_builtin", "cv_patrol"}
 
     def __init__(self, websocket_manager=None, client_id=None):
         """初始化handler
@@ -50,12 +56,113 @@ class JAIPHandler:
         self._pending_tools = {}  # {execution_id: {toolName, arguments, user_query, toolType, result_id}}
         self._pending_tool_results = {}  # {random_tool_id: execution_id}
 
+        # 外部工具超时看门狗：避免 Java 中转/前端未回结果导致生成器永久挂起
+        self._external_tool_watchers: Dict[str, asyncio.Task] = {}
+        self._external_tool_timeout_s = self._get_external_tool_timeout_s()
+
         # 生成器管理（支持暂停/恢复）
         self._active_generators = {}  # {session_id: generator_object}
 
         # 流式 chunk 合并（降低 WebSocket 小包频率，避免高频输出导致断链）
         # key: (session_id, response_id)
         self._chunk_buffers: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._usage_trackers: Dict[str, TokenUsageTracker] = {}
+
+    @staticmethod
+    def _get_external_tool_timeout_s(default: float = 180.0) -> float:
+        try:
+            raw = (os.getenv("EXTERNAL_TOOL_TIMEOUT_SECONDS") or "").strip()
+            if not raw:
+                return float(default)
+            return max(0.0, float(raw))
+        except Exception:
+            return float(default)
+
+    def _cancel_external_tool_watchdog(self, execution_id: Optional[str]) -> None:
+        if not execution_id:
+            return
+        task = self._external_tool_watchers.pop(str(execution_id), None)
+        if task:
+            try:
+                current = asyncio.current_task()
+            except Exception:
+                current = None
+            # Avoid self-cancel when the watchdog itself triggers the synthetic result.
+            if current is not None and task is current:
+                return
+            task.cancel()
+
+    def _start_external_tool_watchdog(self, execution_id: Optional[str], tool_name: str) -> None:
+        if not execution_id:
+            return
+        timeout_s = float(self._external_tool_timeout_s or 0.0)
+        if timeout_s <= 0:
+            return
+
+        exec_id = str(execution_id)
+        self._cancel_external_tool_watchdog(exec_id)
+
+        async def _watch() -> None:
+            try:
+                await asyncio.sleep(timeout_s)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                return
+
+            # Still pending? If yes, synthesize an error result so the generator can continue.
+            if exec_id not in self._pending_tools:
+                return
+
+            logger.error(
+                "⏰ [外部工具超时] tool=%s | execution_id=%s | timeout=%ss",
+                tool_name,
+                exec_id,
+                timeout_s,
+            )
+
+            timeout_result = {
+                "jsonrpc": "2.0",
+                "id": exec_id,
+                "result": {
+                    "success": False,
+                    "error": f"外部工具执行超时（>{timeout_s}s）。可能是 Java 中转/外部服务未返回结果，或参数导致执行卡住。",
+                    "timeout": True,
+                    "tool": tool_name,
+                    "executionId": exec_id,
+                },
+            }
+            try:
+                # Remove self first so handle_tool_result won't cancel this running task.
+                self._external_tool_watchers.pop(exec_id, None)
+                await self.handle_tool_result(exec_id, timeout_result)
+            except Exception as e:
+                logger.error("❌ [外部工具超时] 自动恢复失败: %s", e, exc_info=True)
+
+        self._external_tool_watchers[exec_id] = asyncio.create_task(_watch())
+
+    def _build_builtin_agent_config(
+        self,
+        agent_id: str,
+        init_params: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        if agent_id not in self._BUILTIN_AGENT_IDS:
+            return None
+        model = init_params.get("model") or settings.DEFAULT_AGENT_MODEL or settings.DEFAULT_LLM_MODEL
+        temperature = init_params.get("temperature", 0.3)
+        max_tokens = init_params.get("max_tokens", 2048)
+        system_prompt = (init_params.get("system_prompt") or init_params.get("prompt") or "").strip()
+        return {
+            "name": "视频巡检智能体(内置)",
+            "type": "video_patrol",
+            "template": "video_patrol",
+            "model": model,
+            "system_prompt": system_prompt,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "id": agent_id,
+            "init_parameters": init_params,
+        }
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 内部：安全发送（若断链，立刻清理并抛异常中断上游循环）
@@ -107,11 +214,17 @@ class JAIPHandler:
         try:
             # 从数据库加载 Agent 配置
             agent_service = AgentService(db)
-            agent_config = agent_service.get_agent(agent_id)
+            agent_config = None
+            db_unavailable = None
+            try:
+                agent_config = agent_service.get_agent(agent_id)
+            except DatabaseUnavailableError as exc:
+                db_unavailable = exc
+                logger.warning("⚠️ DB 不可用，尝试内置巡检智能体兜底: %s", exc)
 
             # DB 可能在容器启动时尚未就绪，导致启动阶段的 create_all/seed 失败；
             # 这里做一次“按需自举”，尽量保证默认智能体可用（幂等）。
-            if not agent_config:
+            if not agent_config and not db_unavailable:
                 logger.warning(f"⚠️ Agent {agent_id} not found, trying DB bootstrap/seed once...")
                 try:
                     from app.db.session import engine, Base
@@ -135,6 +248,23 @@ class JAIPHandler:
                 agent_config = agent_service.get_agent(agent_id)
 
             if not agent_config:
+                builtin_config = self._build_builtin_agent_config(agent_id, init_params)
+                if builtin_config:
+                    result = await self.initialize_session(
+                        session_id=new_session_id,
+                        agent_config=builtin_config,
+                        available_tools=available_tools,
+                        client_session_id=new_session_id
+                    )
+                    self.session_id = new_session_id
+                    return {
+                        "sessionId": new_session_id,
+                        "agentId": agent_id,
+                        "protocolVersion": protocol_version,
+                        **result
+                    }
+                if db_unavailable:
+                    raise db_unavailable
                 raise ValueError(f"Agent {agent_id} not found")
 
             config = agent_config.config if agent_config and agent_config.config else {}
@@ -143,6 +273,40 @@ class JAIPHandler:
             model = config.get("model", "qwen-turbo")
             temperature = config.get("temperature", 0.3)
             max_tokens = config.get("max_tokens", 2048)
+
+            # Forward optional runtime knobs from DB config and initialize parameters.
+            # Priority: init_params (runtime) > DB config.
+            passthrough: Dict[str, Any] = {}
+
+            def _set_if_present(src: Any, key: str) -> None:
+                if not isinstance(src, dict):
+                    return
+                if key in src and src.get(key) is not None:
+                    passthrough[key] = src.get(key)
+
+            # Allow enabling internal tools by config (list of TOOL_REGISTRY names)
+            _set_if_present(config, "tools")
+
+            # Tool-calling/runtime behavior
+            for k in ("auto_confirm_tools", "disable_tools"):
+                _set_if_present(config, k)
+                _set_if_present(init_params, k)
+
+            # Stepwise tool-calling knobs
+            for k in (
+                "stepwise_max_steps",
+                "stepwise_show_plan",
+                "stepwise_planner_context",
+                "stepwise_history_max",
+                "stepwise_result_max_chars",
+            ):
+                _set_if_present(config, k)
+                _set_if_present(init_params, k)
+
+            # Session markdown logging knobs (let templates decide defaults if not set)
+            for k in ("session_md_enabled", "session_md_dir"):
+                _set_if_present(config, k)
+                _set_if_present(init_params, k)
 
             result = await self.initialize_session(
                 session_id=new_session_id,
@@ -154,7 +318,8 @@ class JAIPHandler:
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                     "id": agent_id,
-                    "init_parameters": init_params
+                    "init_parameters": init_params,
+                    **passthrough,
                 },
                 available_tools=available_tools,
                 client_session_id=new_session_id
@@ -210,6 +375,19 @@ class JAIPHandler:
                     logger.warning(f"  ⚠️ [内部工具] 未找到: {tool_name} (可用工具: {list(TOOL_REGISTRY.keys())})")
             logger.info(f"  ✅ [内部工具] 加载完成，共 {len([t for t in internal_tool_names if t in TOOL_REGISTRY])} 个")
 
+        # Add skill tool if enabled and skills are available
+        if getattr(settings, "SKILL_ENABLED", True):
+            try:
+                from app.core.skills import get_skill_registry
+                from app.core.tools.skill_tool import SkillTool
+
+                skill_registry = get_skill_registry()
+                if skill_registry.list_skills():
+                    tool_instances.append(SkillTool())
+                    logger.info("  ✅ [内部工具] 加载: skill (skills detected)")
+            except Exception as e:
+                logger.warning("  ⚠️ [内部工具] skill tool load failed: %s", e)
+
         template = agent_config.get("type") or agent_config.get("template", "tool_calling")
 
         config = {
@@ -226,8 +404,23 @@ class JAIPHandler:
             "agent_id": agent_config.get("id"),
             "init_parameters": agent_config.get("init_parameters", {}),
             "enable_compression": False,
-            "enable_multimodal": False
+            "enable_multimodal": False,
         }
+
+        # Pass through optional runtime knobs (let template decide defaults if not set).
+        for key in (
+            "auto_confirm_tools",
+            "disable_tools",
+            "stepwise_max_steps",
+            "stepwise_show_plan",
+            "stepwise_planner_context",
+            "stepwise_history_max",
+            "stepwise_result_max_chars",
+            "session_md_enabled",
+            "session_md_dir",
+        ):
+            if key in agent_config and agent_config.get(key) is not None:
+                config[key] = agent_config.get(key)
         self.system_prompt = agent_config.get("system_prompt", "你是一个智能助手")
 
         try:
@@ -371,6 +564,8 @@ class JAIPHandler:
 
         message, message_type, message_context, _ = self._extract_message_content(params)
         msg_session_id = session_id
+        if message_context is None:
+            message_context = {}
 
         # 兼容 session.message 不同入参格式：确保 original_params 同时包含 sessionId/content/context
         params_for_agent = dict(params) if isinstance(params, dict) else {}
@@ -386,6 +581,10 @@ class JAIPHandler:
 
         if "context" not in params_for_agent or params_for_agent.get("context") is None:
             params_for_agent["context"] = message_context or {}
+
+        usage_tracker = TokenUsageTracker()
+        message_context["usage_tracker"] = usage_tracker
+        self._usage_trackers[msg_session_id] = usage_tracker
 
         # ✅ 透传 client_id 给 VideoPatrolAgent（用于断链 stop/cleanup）
         params_for_agent["_ws_client_id"] = self.client_id
@@ -418,6 +617,47 @@ class JAIPHandler:
                         call_params = item.get("params", {})
                         call_info = call_params.get("call", {})
                         tool_type = call_params.get("toolType", "external")
+
+                        # ✅ 不改前端/Java 的兜底：把工具确认关键信息以“普通文本流”发出去，
+                        # 确保聊天窗口可见（有些前端不会渲染 agent.message(type=tools.confirm) 的卡片）。
+                        if getattr(settings, "SHOW_TOOL_CALLS", False):
+                            try:
+                                tool_label = (
+                                    call_info.get("toolDisplayName")
+                                    or call_info.get("toolName")
+                                    or ""
+                                )
+                                tool_args = call_info.get("arguments", {})
+                                try:
+                                    args_preview = json.dumps(tool_args, ensure_ascii=False)
+                                except Exception:
+                                    args_preview = str(tool_args)
+
+                                if len(args_preview) > 1200:
+                                    args_preview = args_preview[:1200] + "...(truncated)"
+
+                                notice_lines = []
+                                if tool_label:
+                                    notice_lines.append(f"🔧 即将调用工具：{tool_label}")
+                                else:
+                                    notice_lines.append("🔧 即将调用工具")
+                                if tool_type:
+                                    notice_lines.append(f"工具类型：{tool_type}")
+                                if args_preview and args_preview != "{}":
+                                    notice_lines.append(f"参数：{args_preview}")
+                                notice = "\n".join(notice_lines) + "\n"
+
+                                if not response_start_sent:
+                                    await self.send_response_start(msg_session_id, response_id, message_id)
+                                    response_start_sent = True
+
+                                sent_chunks += await self.send_chunk(
+                                    msg_session_id, response_id, notice, sent_chunks
+                                )
+                                # Force flush so it shows before tools.confirm control message.
+                                sent_chunks += await self.flush_chunks(msg_session_id, response_id)
+                            except Exception as notice_err:
+                                logger.debug("⚠️ [tools.confirm] notice render failed: %s", notice_err)
 
                         # 保存工具调用上下文
                         self._tool_contexts[execution_id] = {
@@ -466,7 +706,15 @@ class JAIPHandler:
 
             if response_start_sent:
                 sent_chunks += await self.flush_chunks(msg_session_id, response_id)
-            await self.send_response_end(msg_session_id, response_id, sent_chunks, start_time)
+            include_usage = msg_session_id not in self._active_generators
+            usage_tracker = self._usage_trackers.get(msg_session_id) if include_usage else None
+            await self.send_response_end(
+                msg_session_id,
+                response_id,
+                sent_chunks,
+                start_time,
+                usage_tracker=usage_tracker,
+            )
 
         except ConnectionError:
             # ws 断开：已 stop/cleanup，静默结束
@@ -476,9 +724,11 @@ class JAIPHandler:
             try:
                 if response_start_sent:
                     sent_chunks += await self.flush_chunks(msg_session_id, response_id)
+                include_usage = msg_session_id not in self._active_generators
+                usage_tracker = self._usage_trackers.get(msg_session_id) if include_usage else None
                 await self.send_response_end(
                     msg_session_id, response_id, sent_chunks, start_time,
-                    status="error", error=str(e)
+                    status="error", error=str(e), usage_tracker=usage_tracker
                 )
             except Exception:
                 pass
@@ -559,18 +809,101 @@ class JAIPHandler:
                 logger.error(f"未找到工具上下文: {execution_id}")
                 return
 
+            tool_name = tool_info.get("toolName") or ""
+            arguments = tool_info.get("arguments") or {}
+            if not isinstance(arguments, dict):
+                arguments = {}
+
+            # Tool aliases from init_parameters (populated during session.initialize normalization).
+            tool_aliases = {}
+            try:
+                init_params = getattr(self.agent, "init_parameters", None)
+                if isinstance(init_params, dict) and isinstance(init_params.get("_tool_aliases"), dict):
+                    tool_aliases = init_params.get("_tool_aliases") or {}
+            except Exception:
+                tool_aliases = {}
+
+            mapped_tool_name = tool_aliases.get(tool_name) if isinstance(tool_aliases, dict) else None
+            if isinstance(mapped_tool_name, str) and mapped_tool_name.strip():
+                mapped_tool_name = mapped_tool_name.strip()
+            else:
+                mapped_tool_name = tool_name
+
+            def _is_missing(value: Any) -> bool:
+                if value is None:
+                    return True
+                if isinstance(value, str):
+                    s = value.strip()
+                    if not s:
+                        return True
+                    if s.lower() in {"auto-filled", "autofilled", "auto filled"}:
+                        return True
+                if isinstance(value, (list, tuple, set)) and len(value) == 0:
+                    return True
+                if isinstance(value, dict) and len(value) == 0:
+                    return True
+                return False
+
+            component_params: Dict[str, Any] = {}
+            component_id = None
+            for k in ("componentId", "component_id", "component id"):
+                v = arguments.get(k)
+                if not _is_missing(v):
+                    component_params[k] = v
+                    if component_id is None:
+                        component_id = str(v).strip() if isinstance(v, str) else str(v)
+
+            tool_group_id = None
+            tool_suffix = None
+            if isinstance(mapped_tool_name, str) and "#" in mapped_tool_name:
+                tool_group_id, tool_suffix = mapped_tool_name.rsplit("#", 1)
+                tool_group_id = tool_group_id.strip() or None
+                tool_suffix = (tool_suffix or "").strip() or None
+
+            # Compatibility: some JetLinks executors route visualization tools by
+            # (toolGroupId + componentId) and/or require an explicit toolId.
+            # Do NOT inject into `arguments` (tool inputs) to avoid confusing schema/LLM.
+            if (
+                isinstance(mapped_tool_name, str)
+                and mapped_tool_name.lower().startswith("visualizationservice:")
+                and tool_suffix
+            ):
+                component_params.setdefault("componentId", tool_suffix)
+                if component_id is None:
+                    component_id = tool_suffix
+
+            logger.info(
+                "✅ [tools.confirm] confirmed -> tools.execute | execution_id=%s | tool=%s -> %s | componentId=%s | args_keys=%s",
+                execution_id,
+                tool_name,
+                mapped_tool_name,
+                component_id,
+                list(arguments.keys())[:30],
+            )
+
             random_tool_id = str(random.randint(1, 999999))
             self._pending_tool_results[random_tool_id] = execution_id
             if execution_id in self._pending_tools:
                 self._pending_tools[execution_id]["result_id"] = random_tool_id
+
+            # Start timeout watchdog after user confirmation triggers execution.
+            self._start_external_tool_watchdog(execution_id, mapped_tool_name or tool_name)
 
             await self._safe_send({
                 "jsonrpc": "2.0",
                 "id": random_tool_id,
                 "method": "tools.execute",
                 "params": {
-                    "toolName": tool_info["toolName"],
-                    "arguments": tool_info["arguments"],
+                    "toolName": mapped_tool_name,
+                    "arguments": arguments,
+                    # ⚠️ Some external executors validate componentId at the top-level params.
+                    # Keep it duplicated here for compatibility.
+                    **component_params,
+                    **(
+                        {"toolId": tool_group_id, "toolGroupId": tool_group_id}
+                        if tool_group_id
+                        else {}
+                    ),
                     "executionId": execution_id
                 }
             })
@@ -592,6 +925,28 @@ class JAIPHandler:
             logger.error(f"❌ [工具结果] 找不到对应的执行ID，放弃处理 | msg_id={msg_id}")
             return
 
+        # Stop any pending external-tool watchdog now that we have a response.
+        self._cancel_external_tool_watchdog(execution_id)
+
+        # 打印工具上下文（工具来源/参数等）
+        tool_ctx = self._pending_tools.get(execution_id) or self._tool_contexts.get(execution_id) or {}
+        ctx_tool_name = tool_ctx.get("toolName") or ""
+        ctx_tool_type = tool_ctx.get("toolType") or "external"
+        ctx_args = tool_ctx.get("arguments", {})
+        try:
+            args_preview = str(ctx_args)
+            if len(args_preview) > 300:
+                args_preview = args_preview[:300] + "...(truncated)"
+        except Exception:
+            args_preview = "<unprintable>"
+        logger.info(
+            "🔧 [工具结果] 对应工具: %s | toolType=%s | execution_id=%s | args=%s",
+            ctx_tool_name,
+            ctx_tool_type,
+            execution_id,
+            args_preview,
+        )
+
         # ✅ 恢复生成器（新架构）
         session_id = None
         logger.info(f"🔍 [工具结果] 查找活跃生成器，当前数量: {len(self._active_generators)}")
@@ -604,27 +959,73 @@ class JAIPHandler:
         if session_id and session_id in self._active_generators:
             logger.info(f"🔄 [工具结果] 恢复生成器: {session_id}")
 
-            tool_result = result_data
+            # Normalize tool result payload:
+            # - JSON-RPC wrapper: {"jsonrpc","id","result":{...}} -> {...}
+            # - JSON-RPC error: {"error":{code,message}} -> {"success":False,...}
+            # - Some clients embed failures as {"result":{"success":False,...}, ...}
+            tool_result: Any = result_data
+            if isinstance(tool_result, dict):
+                if "error" in tool_result and "result" not in tool_result:
+                    error_info = tool_result.get("error") or {}
+                    error_message = None
+                    error_code = None
+                    error_data = None
+                    if isinstance(error_info, dict):
+                        error_message = error_info.get("message")
+                        error_code = error_info.get("code")
+                        error_data = error_info.get("data")
+                    if not error_message:
+                        error_message = str(error_info) if error_info else "外部工具执行失败"
+                    logger.error(f"❌ [外部工具错误] {error_message}")
+                    tool_result = {
+                        "success": False,
+                        "error": error_message,
+                        "error_code": error_code,
+                        "error_data": error_data,
+                        "is_external_tool_error": True,
+                    }
+                elif "result" in tool_result:
+                    tool_result = tool_result.get("result")
 
-            if isinstance(tool_result, dict) and "error" in tool_result:
-                error_info = tool_result["error"]
-                error_message = error_info.get("message", "外部工具执行失败")
-                logger.error(f"❌ [外部工具错误] {error_message}")
-                tool_result = {
-                    "success": False,
-                    "error": error_message,
-                    "error_code": error_info.get("code"),
-                    "is_external_tool_error": True
-                }
-            else:
-                while isinstance(tool_result, dict) and "result" in tool_result and len(tool_result) == 1:
-                    tool_result = tool_result["result"]
+            # Parse embedded error payloads like "{'code': -32602, 'message': '...'}"
+            if isinstance(tool_result, dict) and tool_result.get("success") is False:
+                err_val = tool_result.get("error")
+                if isinstance(err_val, dict):
+                    if "error_code" not in tool_result and err_val.get("code") is not None:
+                        tool_result["error_code"] = err_val.get("code")
+                    if err_val.get("message"):
+                        tool_result["error"] = err_val.get("message")
+                elif isinstance(err_val, str):
+                    parsed = None
+                    try:
+                        parsed = json.loads(err_val)
+                    except Exception:
+                        try:
+                            import ast
+
+                            parsed = ast.literal_eval(err_val)
+                        except Exception:
+                            parsed = None
+                    if isinstance(parsed, dict):
+                        if "error_code" not in tool_result and parsed.get("code") is not None:
+                            tool_result["error_code"] = parsed.get("code")
+                        if parsed.get("message"):
+                            tool_result["error"] = parsed.get("message")
 
             logger.info(f"🔄 [恢复生成器] 提取到工具结果: {type(tool_result)}")
 
             if self.agent and hasattr(self.agent, 'cognitive_engine'):
                 self.agent.cognitive_engine.tool_res = tool_result
                 logger.info(f"🔧 [修复] 已直接设置 agent.cognitive_engine.tool_res")
+
+            # 工具错误日志（保留 code/message，便于定位缺参/接口问题）
+            if isinstance(tool_result, dict) and tool_result.get("success") is False:
+                logger.warning(
+                    "⚠️ [工具结果] 工具执行失败: tool=%s | code=%s | msg=%s",
+                    ctx_tool_name,
+                    tool_result.get("error_code"),
+                    tool_result.get("error"),
+                )
 
             logger.info(f"🔄 [恢复生成器] 注入工具结果并恢复")
 
@@ -661,22 +1062,158 @@ class JAIPHandler:
         execution_id = params.get("executionId")
         tool_name = params.get("toolName")
         arguments = params.get("arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
+
+        # Merge with arguments captured during tools.confirm (client may drop/whitelist fields).
+        if execution_id:
+            ctx = self._tool_contexts.get(execution_id) or self._pending_tools.get(execution_id) or {}
+            ctx_args = ctx.get("arguments") if isinstance(ctx, dict) else None
+            if isinstance(ctx_args, dict) and ctx_args:
+                merged = dict(ctx_args)
+                merged.update(arguments)  # client-provided overrides
+                arguments = merged
+
+        # Apply tool alias mapping when available (same as handle_tool_confirmation).
+        tool_aliases = {}
+        try:
+            init_params = getattr(self.agent, "init_parameters", None)
+            if isinstance(init_params, dict) and isinstance(init_params.get("_tool_aliases"), dict):
+                tool_aliases = init_params.get("_tool_aliases") or {}
+        except Exception:
+            tool_aliases = {}
+
+        mapped_tool_name = tool_aliases.get(tool_name) if isinstance(tool_aliases, dict) else None
+        if isinstance(mapped_tool_name, str) and mapped_tool_name.strip():
+            mapped_tool_name = mapped_tool_name.strip()
+        else:
+            mapped_tool_name = tool_name
 
         logger.info(f"🔧 [tools.execute] 收到工具执行请求")
         logger.info(f"🔧 [tools.execute] execution_id={execution_id}")
-        logger.info(f"🔧 [tools.execute] tool_name={tool_name}")
+        logger.info(f"🔧 [tools.execute] tool_name={tool_name} -> {mapped_tool_name}")
         logger.info(f"🔧 [tools.execute] arguments={str(arguments)[:200]}")
 
-        tool_res = await self._execute_tool_directly(tool_name, arguments, agent_id, db)
+        tool_res = await self._execute_tool_directly(mapped_tool_name, arguments, agent_id, db)
         logger.info(f"🔧 [tools.execute] 工具执行完成 | 结果: {str(tool_res)[:200]}")
 
         if tool_res.get("is_external"):
-            logger.info(f"🌐 [外部工具] 转发给前端执行: {tool_name}")
+            def _is_missing(value: Any) -> bool:
+                if value is None:
+                    return True
+                if isinstance(value, str):
+                    s = value.strip()
+                    if not s:
+                        return True
+                    if s.lower() in {"auto-filled", "autofilled", "auto filled"}:
+                        return True
+                if isinstance(value, (list, tuple, set)) and len(value) == 0:
+                    return True
+                if isinstance(value, dict) and len(value) == 0:
+                    return True
+                return False
+
+            forward_params = dict(params) if isinstance(params, dict) else {}
+            forward_args = dict(arguments)
+
+            # Normalize common visualization query fields where some clients send JSON strings
+            # instead of structured objects/arrays (e.g. `terms` defined as array in schema).
+            try:
+                is_visualization = isinstance(mapped_tool_name, str) and mapped_tool_name.lower().startswith("visualizationservice:")
+
+                def _maybe_load_json(text: Any) -> Any:
+                    if not isinstance(text, str):
+                        return None
+                    s = text.strip()
+                    if not s:
+                        return None
+                    if not (s.startswith("{") or s.startswith("[")):
+                        return None
+                    try:
+                        return json.loads(s)
+                    except Exception:
+                        return None
+
+                if is_visualization:
+                    for key in ("filter", "terms", "sorts"):
+                        val = forward_args.get(key)
+                        loaded = _maybe_load_json(val)
+                        if loaded is None:
+                            continue
+                        # terms/sorts sometimes come wrapped: {"terms":[...]} / {"sorts":[...]}
+                        if isinstance(loaded, dict) and key in loaded:
+                            loaded = loaded.get(key)
+                        # Ensure we forward the structured value (object/array) rather than raw JSON string.
+                        if isinstance(loaded, (dict, list)):
+                            forward_args[key] = loaded
+            except Exception:
+                pass
+
+            component_params: Dict[str, Any] = {}
+            component_id = None
+            for k in ("componentId", "component_id", "component id"):
+                v = forward_params.get(k)
+                if not _is_missing(v):
+                    component_params[k] = v
+                    if component_id is None:
+                        component_id = str(v).strip() if isinstance(v, str) else str(v)
+            for k in ("componentId", "component_id", "component id"):
+                v = forward_args.get(k)
+                if not _is_missing(v):
+                    component_params.setdefault(k, v)
+                    if component_id is None:
+                        component_id = str(v).strip() if isinstance(v, str) else str(v)
+
+            if component_params:
+                forward_params.update(component_params)
+            forward_params["arguments"] = forward_args
+            forward_params["toolName"] = mapped_tool_name
+
+            if isinstance(mapped_tool_name, str) and "#" in mapped_tool_name:
+                group_id = mapped_tool_name.rsplit("#", 1)[0].strip()
+                if group_id and _is_missing(forward_params.get("toolId")):
+                    forward_params["toolId"] = group_id
+                if group_id and _is_missing(forward_params.get("toolGroupId")):
+                    forward_params["toolGroupId"] = group_id
+                # visualizationService tools: add missing componentId for routing if required.
+                if mapped_tool_name.lower().startswith("visualizationservice:"):
+                    suffix = mapped_tool_name.rsplit("#", 1)[-1].strip()
+                    if suffix and _is_missing(forward_params.get("componentId")):
+                        forward_params["componentId"] = suffix
+                    if suffix and _is_missing(forward_params.get("commandId")):
+                        forward_params["commandId"] = suffix
+
+            logger.info(
+                "🌐 [外部工具] 转发给前端执行: %s | componentId=%s | args_keys=%s",
+                mapped_tool_name,
+                component_id,
+                list(forward_args.keys())[:30],
+            )
+            try:
+                if isinstance(mapped_tool_name, str) and mapped_tool_name.lower().startswith("visualizationservice:"):
+                    arg_types = {k: type(v).__name__ for k, v in forward_args.items()}
+                    logger.info(
+                        "🌐 [外部工具] payload(meta) | tool=%s | exec=%s | sessionId=%s | toolGroupId=%s | toolId=%s | commandId=%s | componentId=%s | arg_types=%s",
+                        mapped_tool_name,
+                        forward_params.get("executionId"),
+                        forward_params.get("sessionId"),
+                        forward_params.get("toolGroupId"),
+                        forward_params.get("toolId"),
+                        forward_params.get("commandId"),
+                        forward_params.get("componentId"),
+                        list(arg_types.items())[:12],
+                    )
+            except Exception:
+                pass
+
+            # Start timeout watchdog after forwarding to the external executor.
+            self._start_external_tool_watchdog(execution_id, mapped_tool_name or tool_name)
+
             await self._safe_send({
                 "jsonrpc": "2.0",
                 "id": execution_id,
                 "method": "tools.execute",
-                "params": params
+                "params": forward_params
             })
         else:
             logger.info(f"🔧 [tools.execute] 内部工具执行完成，恢复生成器 | execution_id={execution_id}")
@@ -811,7 +1348,8 @@ class JAIPHandler:
         total_chunks: int,
         start_time: float,
         status: str = "completed",
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        usage_tracker: Optional[TokenUsageTracker] = None
     ):
         """发送 session.response_end"""
         processing_time = (time.time() - start_time) * 1000
@@ -819,6 +1357,10 @@ class JAIPHandler:
         metadata = {"processingTime": processing_time}
         if error:
             metadata["error"] = error
+        if usage_tracker:
+            usage_meta = usage_tracker.build_meta()
+            if usage_meta:
+                metadata.update(usage_meta)
 
         try:
             await self._safe_send({
@@ -834,6 +1376,8 @@ class JAIPHandler:
             })
         finally:
             self._chunk_buffers.pop((session_id, response_id), None)
+            if usage_tracker and self._usage_trackers.get(session_id) is usage_tracker:
+                self._usage_trackers.pop(session_id, None)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # 内部辅助方法
@@ -994,25 +1538,94 @@ class JAIPHandler:
                     await self._resume_generator_after_tool_result(session_id, internal_result)
 
             else:
-                logger.info(f"📝 [恢复生成器] 收到文本响应")
+                logger.info(f"📝 [恢复生成器] 收到非工具响应，开始流式转发")
 
                 response_id = f"resp_{uuid.uuid4().hex[:8]}"
                 message_id = f"msg_{uuid.uuid4().hex[:8]}"
-                chunk_index = 0
+                start_time = time.time()
+                sent_chunks = 0
+                response_start_sent = False
+                paused_for_tool = False
 
-                await self.send_response_start(session_id, response_id, message_id)
-                await self.send_chunk(session_id, response_id, str(next_item), chunk_index)
-                chunk_index += 1
+                async def _send_text(content: str) -> None:
+                    nonlocal response_start_sent, sent_chunks
+                    if not content:
+                        return
+                    if not response_start_sent:
+                        await self.send_response_start(session_id, response_id, message_id)
+                        response_start_sent = True
+                    sent_chunks += await self.send_chunk(session_id, response_id, content, sent_chunks)
 
-                logger.info(f"🔄 [恢复生成器] 继续迭代获取后续响应内容")
-                async for item in generator:
-                    await self.send_chunk(session_id, response_id, str(item), chunk_index)
-                    chunk_index += 1
+                async def _handle_dict(item: Dict[str, Any]) -> None:
+                    nonlocal paused_for_tool, sent_chunks
+                    # Ensure buffered text chunks are flushed before control/tool messages.
+                    if response_start_sent:
+                        sent_chunks += await self.flush_chunks(session_id, response_id)
 
-                await self.send_response_end(session_id, response_id, chunk_index, time.time())
-                logger.info(f"✅ [恢复生成器] 完整响应发送完毕，共 {chunk_index} 个chunk")
+                    if item.get("method") == "tools.confirm":
+                        execution_id = item.get("id")
+                        call_params = item.get("params", {}) or {}
+                        call_info = call_params.get("call", {}) or {}
+                        tool_type = call_params.get("toolType", "external")
 
-                if session_id in self._active_generators:
+                        self._tool_contexts[execution_id] = {
+                            "toolName": call_info.get("toolName", ""),
+                            "arguments": call_info.get("arguments", {}),
+                            "toolType": tool_type,
+                        }
+                        self._pending_tools[execution_id] = {
+                            "toolName": call_info.get("toolName", ""),
+                            "arguments": call_info.get("arguments", {}),
+                            "toolType": tool_type,
+                            "result_id": None,
+                        }
+
+                        await self._safe_send(item)
+                        logger.info(
+                            "⏸️  [恢复生成器] 遇到工具确认，暂停等待前端返回: %s (%s)",
+                            execution_id,
+                            tool_type,
+                        )
+                        paused_for_tool = True
+                        return
+
+                    await self._safe_send(item)
+
+                async def _process_item(item: Any) -> None:
+                    if paused_for_tool:
+                        return
+                    if isinstance(item, dict):
+                        await _handle_dict(item)
+                        return
+                    await _send_text(str(item) if item is not None else "")
+
+                # Process the first item returned by asend(...)
+                await _process_item(next_item)
+
+                if not paused_for_tool:
+                    logger.info(f"🔄 [恢复生成器] 继续迭代获取后续响应内容")
+                    async for item in generator:
+                        await _process_item(item)
+                        if paused_for_tool:
+                            break
+
+                if response_start_sent:
+                    sent_chunks += await self.flush_chunks(session_id, response_id)
+
+                include_usage = (not paused_for_tool) and (session_id in self._active_generators)
+                usage_tracker = self._usage_trackers.get(session_id) if include_usage else None
+
+                await self.send_response_end(
+                    session_id,
+                    response_id,
+                    sent_chunks,
+                    start_time,
+                    usage_tracker=usage_tracker,
+                )
+                logger.info(f"✅ [恢复生成器] 本段响应已发送完毕 | paused_for_tool={paused_for_tool} | chunks={sent_chunks}")
+
+                # Only clear generator when fully finished. If paused_for_tool, generator is waiting for tool result.
+                if not paused_for_tool and session_id in self._active_generators:
                     del self._active_generators[session_id]
                     logger.info(f"✅ [恢复生成器] 所有工具执行完毕，生成器已清理")
 
@@ -1025,7 +1638,14 @@ class JAIPHandler:
 
                 await self.send_response_start(session_id, response_id, message_id)
                 await self.send_chunk(session_id, response_id, str(e.value), 0)
-                await self.send_response_end(session_id, response_id, 1, time.time())
+                usage_tracker = self._usage_trackers.get(session_id)
+                await self.send_response_end(
+                    session_id,
+                    response_id,
+                    1,
+                    time.time(),
+                    usage_tracker=usage_tracker,
+                )
 
             if session_id in self._active_generators:
                 del self._active_generators[session_id]
@@ -1045,7 +1665,16 @@ class JAIPHandler:
 
                 await self.send_response_start(session_id, response_id, message_id)
                 await self.send_chunk(session_id, response_id, error_message, 0)
-                await self.send_response_end(session_id, response_id, 1, time.time(), status="error", error=str(e))
+                usage_tracker = self._usage_trackers.get(session_id)
+                await self.send_response_end(
+                    session_id,
+                    response_id,
+                    1,
+                    time.time(),
+                    status="error",
+                    error=str(e),
+                    usage_tracker=usage_tracker,
+                )
             except Exception:
                 pass
 
@@ -1069,14 +1698,25 @@ class JAIPHandler:
             tool_router = self.agent.cognitive_engine.tool_router
 
             from app.core.tools import TOOL_REGISTRY
-            tool_obj = TOOL_REGISTRY.get(tool_name)
-            if not tool_obj:
-                logger.error(f"❌ [内部工具执行] 工具未注册: {tool_name}")
-                return {"error": f"工具不存在: {tool_name}"}
+
+            real_tool_name = (
+                tool_name.replace("_ai_service_#", "", 1)
+                if isinstance(tool_name, str) and tool_name.startswith("_ai_service_#")
+                else tool_name
+            )
+            if real_tool_name != tool_name:
+                logger.info("🔧 [内部工具执行] 工具名称去前缀: %s -> %s", tool_name, real_tool_name)
+
+            tool_class = TOOL_REGISTRY.get(real_tool_name)
+            if not tool_class:
+                logger.error(f"❌ [内部工具执行] 工具未注册: {real_tool_name}")
+                return {"error": f"工具不存在: {real_tool_name}"}
+
+            tool_instance = tool_class()
 
             import asyncio
             result = await asyncio.wait_for(
-                tool_router.execute_tool(tool_obj, arguments),
+                tool_router.execute_tool(tool_instance, arguments),
                 timeout=timeout
             )
 
@@ -1109,6 +1749,14 @@ class JAIPHandler:
                 pass
         self._active_generators.clear()
 
+        # Cancel any pending external-tool watchdogs.
+        for exec_id, task in list(self._external_tool_watchers.items()):
+            try:
+                task.cancel()
+            except Exception:
+                pass
+        self._external_tool_watchers.clear()
+
         # 2) 通知 agent 停止所有该 client 的下游任务（VideoPatrolAgent 实现了 stop_all_tasks_by_client_id）
         try:
             if self.agent and hasattr(self.agent, "stop_all_tasks_by_client_id"):
@@ -1126,6 +1774,7 @@ class JAIPHandler:
         self._tool_contexts.clear()
         self._pending_tools.clear()
         self._pending_tool_results.clear()
+        self._usage_trackers.clear()
 
     def cleanup(self):
         """清理资源（同步版本，保留兼容）"""
@@ -1138,6 +1787,7 @@ class JAIPHandler:
         self._tool_contexts.clear()
         self._pending_tools.clear()
         self._pending_tool_results.clear()
+        self._usage_trackers.clear()
 
     # ==================== WebSocket 管理方法（保留原有） ====================
 

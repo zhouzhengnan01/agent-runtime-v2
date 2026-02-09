@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YOLO / CV 效果台</title>
+    <meta name="description" content="上传 YOLO 模型并查看实时检测效果" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-badge"></div>
+          <div>
+            <div class="brand-title">JetLinks Agent Console</div>
+            <div class="brand-sub">YOLO / CV 效果台</div>
+          </div>
+        </div>
+        <nav class="nav">
+          <a href="/">控制台</a>
+          <a class="pill" href="/yolo.html">YOLO 工具</a>
+          <a href="/docs" target="_blank" rel="noreferrer">API Docs</a>
+        </nav>
+      </div>
+    </div>
+
+    <main class="page page--cv">
+      <header class="page-head">
+        <div>
+          <div class="breadcrumb">CV / YOLO</div>
+          <div class="page-title">模型上传与效果查看</div>
+          <div class="page-sub">
+            模型文件存储在 <span class="mono" id="cvModelDir">storage/models/cv</span>，任务 name 使用
+            <span class="mono">cv:模型名</span> 规则。
+          </div>
+        </div>
+        <div class="page-actions">
+          <span class="pill" id="cvWsStatus">未连接</span>
+          <button class="btn sm ghost" id="cvClearAll">清空结果</button>
+        </div>
+      </header>
+
+      <section class="grid cv-grid">
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">模型库</div>
+            <div class="row">
+              <button class="btn sm ghost" id="cvRefreshModels">刷新</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="field">
+              <label class="label">上传 YOLO 模型</label>
+              <input id="cvModelFile" type="file" accept=".pt,.onnx,.engine,.pth,.torchscript" />
+              <div class="row">
+                <label class="help">
+                  <input type="checkbox" id="cvOverwrite" />
+                  覆盖同名文件
+                </label>
+                <span class="help">支持扩展：<span id="cvExtList">.pt</span></span>
+              </div>
+              <div class="row">
+                <button class="btn primary" id="cvUploadBtn">上传模型</button>
+                <div class="help" id="cvUploadOut">等待上传</div>
+              </div>
+            </div>
+
+            <div class="field">
+              <label class="label">可用模型</label>
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>模型名</th>
+                    <th>大小</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="cvModelTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">检测任务</div>
+            <div class="row">
+              <button class="btn sm ghost" id="cvRefreshAgents">刷新智能体</button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="field">
+              <label class="label">巡检智能体</label>
+              <select id="cvAgentSelect"></select>
+              <div class="help">选择配置了 video_patrol_template 的智能体（无可用时使用内置巡检智能体）</div>
+            </div>
+
+            <div class="field">
+              <label class="label">模型</label>
+              <select id="cvModelSelect"></select>
+              <div class="help">选择后可点击“生成 name”写入任务名称</div>
+            </div>
+
+            <div class="field">
+              <label class="label">任务名称</label>
+              <input id="cvNameInput" placeholder="例如：cv:yolov8n.pt 人员检测" />
+              <div class="row">
+                <input id="cvNameDesc" placeholder="描述（如：人员检测）" />
+                <button class="btn sm" id="cvNameBuild">生成 name</button>
+              </div>
+              <label class="help">
+                <input type="checkbox" id="cvAutoName" checked />
+                自动同步 name
+              </label>
+            </div>
+
+            <div class="field">
+              <label class="label">视频流地址</label>
+              <input id="cvStreamUrl" class="mono" placeholder="rtsp:// 或 rtmp://" />
+              <div class="row">
+                <input id="cvSourceId" class="mono" placeholder="source id (默认 stream-1)" />
+                <input id="cvInterval" type="number" min="10" placeholder="间隔秒数 (>=10)" />
+              </div>
+              <label class="help">
+                <input type="checkbox" id="cvAlwaysReturn" checked />
+                无目标也返回证据帧
+              </label>
+            </div>
+
+            <div class="row">
+              <button class="btn primary" id="cvStartBtn">启动检测</button>
+              <button class="btn danger" id="cvStopBtn">停止检测</button>
+            </div>
+            <div class="help" id="cvTaskHint">等待启动</div>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid cv-grid">
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">任务输出</div>
+            <span class="pill" id="cvResultStat">0 次结果</span>
+          </div>
+          <div class="card-body">
+            <div id="cvLog" class="cv-log"></div>
+            <pre id="cvResultJson" class="cv-output mono">等待结果...</pre>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="card-header">
+            <div class="card-title">证据帧与画框</div>
+            <div class="row">
+              <span class="help">点击图片可新开查看</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="cv-media-columns">
+              <div>
+                <div class="label">原始证据帧</div>
+                <div id="cvEvidenceList" class="patrol-media-list"></div>
+              </div>
+              <div>
+                <div class="label">画框结果</div>
+                <div id="cvBoxList" class="patrol-media-list"></div>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <script type="module" src="/assets/yolo.js"></script>
+  </body>
+</html>

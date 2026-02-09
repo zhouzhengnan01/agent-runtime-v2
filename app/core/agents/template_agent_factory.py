@@ -87,6 +87,7 @@ class TemplateAgentFactory:
             ("tool_calling", "app.core.agents.template_agent.tool_calling_template", "ToolCallingAgent"),
             ("video_inspection", "app.core.agents.template_agent.video_inspection_template", "VideoInspectionAgent"),
             ("video_patrol", "app.core.agents.template_agent.video_patrol_template", "VideoPatrolAgent"),
+            ("stepwise_tool", "app.core.agents.template_agent.stepwise_tool_template", "StepwiseToolAgent"),
         ]
 
         for template_id, module_path, class_name in builtin:

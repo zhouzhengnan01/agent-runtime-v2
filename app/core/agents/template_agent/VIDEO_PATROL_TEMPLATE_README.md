@@ -76,6 +76,48 @@ Machine 端 **不支持 OFFLINE**，仅支持：
 - `len(source) >= 2` → SECURITY_POLLING
 - 多路时 `interval < 10` 会自动提升到 `10`
 
+### 2.2.1 后端选择（可选）
+默认走 VLM。可用以下方式指定 CV/YOLO：
+- `params.backend = "cv"` 或 `params.detector = "yolo"`
+- 或在 `name` 前缀中标注：`cv:yolov8n.pt 人员检测`
+  - 前缀格式：`cv:<model>` 或 `yolo:<model>`
+  - 若未指定 model，使用默认模型
+  - 默认模型目录：`storage/models/cv/`
+
+### 2.2.2 Pose 规则检测（跌倒/抽烟/吵架）
+当 `name`/`task`/`source.name` 含以下关键词时，CV 走 **Pose 规则**：
+- 跌倒：`跌倒/摔倒/倒地/fall`
+- 抽烟：`抽烟/吸烟/smoke/smoking`
+- 吵架：`吵架/打架/斗殴/fight`
+
+规则检测会优先使用 `yolov8n-pose.pt`（若未显式指定 model）。
+
+### 2.2.3 CV 参数覆盖（可选）
+支持在 `params` / `params.configuration` / `params.cvConfig` 里传入：
+- `conf` / `iou` / `imgsz` / `max_det` / `max_boxes` / `classes` / `device`
+- `roi`：`{"rect":[x1,y1,x2,y2], "normalized": true, "mode": "center|intersect|inside", "draw": true, "padding": 0.05}`
+- `pose`（跌倒/抽烟/吵架的阈值，偏召回可调低阈值）：
+  - `minKptConf`
+  - `fallRatio` / `fallAngleRatio` / `fallLowY`
+  - `smokeDistRatio` / `smokeWristYMargin`
+  - `fightCenterRatio` / `fightHandRatio` / `fightMinScore`
+
+支持按 source 配 ROI：
+`source[i].roi = {...}`
+
+示例（偏召回）：
+```json
+{
+  "state": "start",
+  "name": "cv:yolov8n-pose.pt 跌倒检测",
+  "cvTask": "fall",
+  "configuration": {
+    "roi": {"rect":[0.1,0.1,0.9,0.9], "normalized": true, "draw": true},
+    "pose": {"minKptConf": 0.15, "fallRatio": 0.8, "fallLowY": 0.55}
+  }
+}
+```
+
 ### 2.3 关键：prompt 追加约束（强制结构化）
 每路 `source.prompt` 会被模板追加常量：
 

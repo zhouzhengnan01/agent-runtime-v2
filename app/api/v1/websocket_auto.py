@@ -1263,13 +1263,21 @@ async def websocket_endpoint(
                                 logger.warning(f"⚠️ [Auto-内部工具失败] 转发到 JetLinks 重试: {tool_name}")
                                 logger.warning(f"⚠️ [Auto-内部工具失败] 原因: {tool_res.get('result', {}).get('error', 'unknown')}")
 
+                            forward_arguments = dict(arguments) if isinstance(arguments, dict) else {}
+                            component_params = {}
+                            for k in ("componentId", "component_id", "component id"):
+                                v = forward_arguments.get(k)
+                                if v is not None and str(v).strip():
+                                    component_params[k] = v
+
                             res = {
                                 "jsonrpc": "2.0",
                                 "id": random_tool_id,
                                 "method": "tools.execute",
                                 "params": {
-                                    "toolName": tool_name.replace("_ai_service_#", ""),
-                                    "arguments": arguments,
+                                    "toolName": tool_name,
+                                    "arguments": forward_arguments,
+                                    **component_params,
                                     "executionId": execute_id
                                 }
                             }
@@ -1482,13 +1490,30 @@ async def websocket_endpoint(
                     )
                     logger.debug("工具执行结果: %s", tool_res)
                     if not tool_res.get("success"):
+                        forward_tool_name = params.get("toolName", "weather") if isinstance(params, dict) else "weather"
+                        forward_arguments = params.get("arguments", {"city": "重庆", "date": "2023-10-05"}) if isinstance(params, dict) else {"city": "重庆", "date": "2023-10-05"}
+                        if not isinstance(forward_arguments, dict):
+                            forward_arguments = {"value": forward_arguments}
+
+                        component_params = {}
+                        if isinstance(params, dict):
+                            for k in ("componentId", "component_id", "component id"):
+                                v = params.get(k)
+                                if v is not None and str(v).strip():
+                                    component_params[k] = v
+                        for k in ("componentId", "component_id", "component id"):
+                            v = forward_arguments.get(k)
+                            if v is not None and str(v).strip():
+                                component_params.setdefault(k, v)
+
                         res ={
                         "jsonrpc": "2.0", 
                         "id": random_tool_id,  
                         "method": "tools.execute", 
                         "params":{
-                            "toolName": params.get("toolName", "weather").replace("_ai_service_#", ""), 
-                            "arguments": params.get("arguments", {"city": "重庆", "date": "2023-10-05"}),
+                            "toolName": forward_tool_name,
+                            "arguments": forward_arguments,
+                            **component_params,
                             "executionId": params.get("executionId", "exec_10c1d6b4"),
                             }
                             }

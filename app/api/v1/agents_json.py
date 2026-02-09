@@ -26,7 +26,8 @@ import copy
 from urllib.parse import urlparse
 
 from app.db.session import get_db
-from app.core.agents.agent_json import process_json_message
+from app.core.agents.agent_json import process_json_message, process_json_message_with_usage
+from app.core.llm.usage import TokenUsageTracker
 from app.services.review_record_service import get_review_record_service
 from app.services.review_kb_sync_service import enqueue_review_kb_sync
 
@@ -93,6 +94,14 @@ def _parse_json_with_fallback(raw_response: str) -> Optional[Dict[str, Any]]:
     # 4. 所有方法都失败
     logger.error("❌ [JSON解析] 无法解析JSON，所有fallback方法均失败")
     return None
+
+
+def _merge_usage_meta(meta: Dict[str, Any], usage_tracker: Optional[TokenUsageTracker]) -> None:
+    if not usage_tracker:
+        return
+    usage_meta = usage_tracker.build_meta()
+    if usage_meta:
+        meta.update(usage_meta)
 
 
 def _default_value_for_schema_spec(spec: Any) -> Any:
@@ -204,6 +213,7 @@ async def _repair_json_with_llm(
     raw_response: str,
     user_message: str,
     json_schema: Dict[str, Any],
+    usage_tracker: Optional[TokenUsageTracker] = None,
 ) -> Optional[Dict[str, Any]]:
     try:
         from app.core.llm.client import LLMClient
@@ -245,6 +255,8 @@ async def _repair_json_with_llm(
             max_tokens=1024,
             response_format={"type": "json_object"},
         )
+        if usage_tracker:
+            usage_tracker.add(llm_client.last_usage, source="json_repair")
     except Exception as e:
         logger.warning("⚠️ [JSON修复] 二次修复调用失败: %s", e, exc_info=True)
         return None
@@ -832,6 +844,7 @@ async def chat_with_json_response(
     - 批量处理和数据提取
     """
     start_time = time.time()
+    usage_tracker = TokenUsageTracker()
 
     try:
         review_store = get_review_record_service()
@@ -890,12 +903,13 @@ async def chat_with_json_response(
                 logger.info(f"    - {f.media_type}: {f.url}")
 
         # 2. 处理消息（一次性生成JSON）
-        raw_response = await process_json_message(
+        raw_response, usage = await process_json_message_with_usage(
             message=request.message,
             agent_id=agent_id,
             context=context_dict,
             parameter=request.context.parameters or {}
         )
+        usage_tracker.add(usage, source="json_response")
 
         logger.info(f"💬 [JSON API] 获得原始响应，长度: {len(raw_response)}")
         logger.info(f"📄 [JSON API] 原始响应内容: {raw_response}")
@@ -911,6 +925,7 @@ async def chat_with_json_response(
                 raw_response=raw_response,
                 user_message=request.message,
                 json_schema=augmented_json_schema,
+                usage_tracker=usage_tracker,
             )
             if repaired_data is not None:
                 structured_data = repaired_data
@@ -951,6 +966,7 @@ async def chat_with_json_response(
                     "media_frames": _build_media_frames(request.context.files),
                 }
             )
+            _merge_usage_meta(response.meta, usage_tracker)
             try:
                 video_url = _extract_first_video_url(request.context.files)
                 request_payload = {
@@ -988,6 +1004,7 @@ async def chat_with_json_response(
                     "llm_raw_response_length": len(raw_response),
                     "llm_json_repair_attempted": True,
                 }
+                _merge_usage_meta(record_meta, usage_tracker)
                 record_paths = review_store.create_record(
                     agent_id=agent_id,
                     request_payload=request_payload,
@@ -1062,6 +1079,7 @@ async def chat_with_json_response(
                 "media_frames": _build_media_frames(request.context.files),
             }
         )
+        _merge_usage_meta(response.meta, usage_tracker)
 
         # ───────────────────────────────────────────────────────────
         # 落盘调用记录（全局最近1000条）+ 可选录制30秒视频
@@ -1103,6 +1121,7 @@ async def chat_with_json_response(
             "llm_raw_response_length": len(raw_response),
             "llm_json_repair_used": bool(repaired),
         }
+        _merge_usage_meta(record_meta, usage_tracker)
         record_paths = review_store.create_record(
             agent_id=agent_id,
             request_payload=request_payload,
@@ -1172,9 +1191,17 @@ async def chat_with_json_response(
                 "media_frames": _build_media_frames(request.context.files),
             }
         )
+        _merge_usage_meta(response.meta, usage_tracker)
         try:
             review_store = get_review_record_service()
             video_url = _extract_first_video_url(request.context.files)
+            record_meta = {
+                "http_status": 200,
+                "cost_ms": int(response_time * 1000),
+                "summary": str(e),
+                "llm_raw_response": None,
+            }
+            _merge_usage_meta(record_meta, usage_tracker)
             record_paths = review_store.create_record(
                 agent_id=agent_id,
                 request_payload={
@@ -1200,12 +1227,7 @@ async def chat_with_json_response(
                     "error": str(e),
                     "error_type": "ValidationError",
                 },
-                meta={
-                    "http_status": 200,
-                    "cost_ms": int(response_time * 1000),
-                    "summary": str(e),
-                    "llm_raw_response": None,
-                },
+                meta=record_meta,
             )
             review_store.save_image_preview_from_files(record_paths.record_id, request.context.files)
             response.meta["review_record_id"] = record_paths.record_id
@@ -1265,9 +1287,17 @@ async def chat_with_json_response(
                 "media_frames": _build_media_frames(request.context.files),
             }
         )
+        _merge_usage_meta(response.meta, usage_tracker)
         try:
             review_store = get_review_record_service()
             video_url = _extract_first_video_url(request.context.files)
+            record_meta = {
+                "http_status": 200,
+                "cost_ms": int(response_time * 1000),
+                "summary": error_message,
+                "llm_raw_response": None,
+            }
+            _merge_usage_meta(record_meta, usage_tracker)
             record_paths = review_store.create_record(
                 agent_id=agent_id,
                 request_payload={
@@ -1293,12 +1323,7 @@ async def chat_with_json_response(
                     "error": error_message,
                     "error_type": type(e).__name__,
                 },
-                meta={
-                    "http_status": 200,
-                    "cost_ms": int(response_time * 1000),
-                    "summary": error_message,
-                    "llm_raw_response": None,
-                },
+                meta=record_meta,
             )
             review_store.save_image_preview_from_files(record_paths.record_id, request.context.files)
             response.meta["review_record_id"] = record_paths.record_id

@@ -2,12 +2,13 @@
 文件上传接口 - 支持图片、视频等多模态内容
 """
 from fastapi import APIRouter, File, UploadFile, HTTPException
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 import shutil
 import uuid
 import logging
 import os
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,9 @@ ALLOWED_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
 ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm', '.m4v'}
 ALLOWED_DOCUMENT_EXTENSIONS = {'.pdf', '.doc', '.docx', '.txt', '.md'}
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+
+ALLOWED_CV_MODEL_EXTENSIONS = {".pt", ".onnx", ".engine", ".pth", ".torchscript"}
+MAX_CV_MODEL_SIZE = 1024 * 1024 * 1024  # 1GB
 
 @router.post("/video")
 async def upload_video(file: UploadFile = File(...)):
@@ -185,4 +189,86 @@ async def upload_multiple_files(files: List[UploadFile] = File(...)):
         "total": len(files),
         "successful": sum(1 for r in results if r.get("success")),
         "results": results
+    }
+
+
+def _get_cv_model_dir() -> Path:
+    try:
+        from app.shared.jetlinks_video.configs.cv_config import build_cv_config
+        cfg = build_cv_config()
+        model_dir = cfg.model_dir or "storage/models/cv"
+    except Exception as e:
+        logger.warning("Failed to read cv model config, fallback to storage/models/cv: %s", e)
+        model_dir = "storage/models/cv"
+    path = Path(model_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+@router.get("/cv-models")
+async def list_cv_models() -> Dict[str, Any]:
+    """
+    查询本地 CV/YOLO 模型列表
+    """
+    model_dir = _get_cv_model_dir()
+    models: List[Dict[str, Any]] = []
+    for item in model_dir.iterdir():
+        if not item.is_file():
+            continue
+        if item.suffix.lower() not in ALLOWED_CV_MODEL_EXTENSIONS:
+            continue
+        stat = item.stat()
+        models.append({
+            "name": item.name,
+            "size": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        })
+    models.sort(key=lambda x: x["name"].lower())
+    return {
+        "success": True,
+        "model_dir": str(model_dir),
+        "models": models,
+        "allowed_extensions": sorted(ALLOWED_CV_MODEL_EXTENSIONS),
+        "max_size_bytes": MAX_CV_MODEL_SIZE,
+    }
+
+
+@router.post("/cv-model")
+async def upload_cv_model(file: UploadFile = File(...), overwrite: bool = False) -> Dict[str, Any]:
+    """
+    上传 CV/YOLO 模型文件到 storage/models/cv
+    """
+    filename = Path(file.filename or "").name
+    if not filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+
+    file_extension = Path(filename).suffix.lower()
+    if file_extension not in ALLOWED_CV_MODEL_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported model format: {file_extension}")
+
+    model_dir = _get_cv_model_dir()
+    dest_path = model_dir / filename
+
+    if dest_path.exists() and not overwrite:
+        raise HTTPException(status_code=409, detail="Model file already exists. Set overwrite=true to replace.")
+    if dest_path.exists() and overwrite:
+        dest_path.unlink()
+
+    with dest_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    size = dest_path.stat().st_size
+    if size > MAX_CV_MODEL_SIZE:
+        try:
+            dest_path.unlink()
+        except Exception:
+            pass
+        raise HTTPException(status_code=400, detail="Model file exceeds size limit")
+
+    logger.info("CV model uploaded successfully: %s", dest_path)
+    return {
+        "success": True,
+        "filename": filename,
+        "file_path": str(dest_path.absolute()),
+        "size": size,
     }

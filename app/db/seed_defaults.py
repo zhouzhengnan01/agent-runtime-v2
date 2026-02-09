@@ -318,6 +318,15 @@ def seed_default_templates_and_agents() -> None:
         capabilities=["streaming", "tools", "confirmation"],
     )
     changed_any |= _upsert_template(
+        template_id="stepwise_tool",
+        name="复杂任务编排模板",
+        description="面向复杂任务的逐步规划与工具链编排，支持会话Markdown记录",
+        class_path="app.core.agents.template_agent.stepwise_tool_template.StepwiseToolAgent",
+        framework="langchain",
+        type_="stepwise_tool",
+        capabilities=["streaming", "tools", "confirmation", "stepwise", "session_markdown"],
+    )
+    changed_any |= _upsert_template(
         template_id="video_inspection",
         name="视频巡检模板",
         description="视频/图片分析与巡检报告生成",

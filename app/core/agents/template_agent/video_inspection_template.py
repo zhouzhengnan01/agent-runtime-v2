@@ -97,7 +97,11 @@ class VideoInspectionAgent(BaseTemplateAgent):
         """
         try:
             logger.info("🔄 [VideoInspection] 开始简单分析")
-            return await self._simple_analysis(message, context)
+            self._md_append("user", message)
+            response = await self._simple_analysis(message, context)
+            if response:
+                self._md_append("assistant", response)
+            return response
 
         except Exception as e:
             logger.error(f"❌ [VideoInspection] 处理失败: {e}", exc_info=True)
@@ -124,8 +128,14 @@ class VideoInspectionAgent(BaseTemplateAgent):
         """
         try:
             logger.info("🔄 [VideoInspection] 开始流式简单分析")
+            self._md_append("user", message)
+            full_response = ""
             async for chunk in self._simple_analysis_stream(message, context):
+                if chunk:
+                    full_response += chunk
                 yield chunk
+            if full_response:
+                self._md_append("assistant", full_response)
 
         except Exception as e:
             logger.error(f"❌ [VideoInspection] 流式处理失败: {e}", exc_info=True)

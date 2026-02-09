@@ -93,6 +93,7 @@ async def get_tools_list(include_document: bool = False, db: Session = Depends(g
             "inputs": converted_inputs,
             "output": output,
             "async": tool.is_async,
+            "source": tool.source,
             "_converted": True  # 标记：表明经过转换
         }
 
@@ -191,5 +192,4 @@ async def update_tool_config(tool_id: str, config: ToolConfigRequest, db: Sessio
     db.refresh(tool)
 
     return {"message": "工具配置更新成功", "tool_id": tool_id}
-
 

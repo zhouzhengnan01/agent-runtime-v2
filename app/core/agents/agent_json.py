@@ -101,6 +101,46 @@ def _cache_set_agent(agent_id: str, value: AgentConfigSnapshot) -> None:
 class JSONAgentProcessor:
     """JSON智能体代理 - 极简版"""
 
+    _BUILTIN_AGENT_IDS = {"video_patrol", "video_patrol_builtin", "cv_patrol"}
+
+    def _build_builtin_agent_snapshot(self, agent_id: str) -> Optional[AgentConfigSnapshot]:
+        """Fallback agent config when DB is unavailable or agent row is missing.
+
+        Notes:
+        - Keep this minimal and deterministic (no DB required).
+        - Only used for a small set of well-known builtin agent ids.
+        """
+        if agent_id not in self._BUILTIN_AGENT_IDS:
+            return None
+
+        try:
+            from app.config import settings
+
+            default_model = settings.DEFAULT_AGENT_MODEL or settings.DEFAULT_LLM_MODEL
+        except Exception:
+            default_model = None
+
+        cfg: Dict[str, Any] = {
+            "template": "video_patrol",
+            "type": "video_patrol",
+            "model": default_model,
+            "temperature": 0.3,
+            "max_tokens": 2048,
+            "system_prompt": (
+                "你是专业的视频/图片巡检智能体。请从输入的图片/视频中识别安全隐患、违规行为或异常事件，"
+                "并按要求输出结构化JSON结果。"
+            ),
+        }
+        # Remove None fields to avoid leaking "model": None into prompts/logs.
+        cfg = {k: v for k, v in cfg.items() if v is not None}
+
+        return AgentConfigSnapshot(
+            id=agent_id,
+            name="视频巡检智能体(内置)",
+            type="video_patrol",
+            config=cfg,
+        )
+
     def _build_json_output_instruction(self, json_schema: Optional[Dict[str, Any]]) -> str:
         """
         Build a strict "JSON only" instruction block for providers that don't
@@ -647,8 +687,10 @@ class JSONAgentProcessor:
         message: str,
         agent_id: str,
         context: Optional[Dict[str, Any]] = None,
-        parameter: Optional[Dict[str, Any]] = None
-    ) -> str:
+        parameter: Optional[Dict[str, Any]] = None,
+        *,
+        return_usage: bool = False
+    ) -> Any:
         """
         处理JSON格式的消息请求
 
@@ -659,7 +701,7 @@ class JSONAgentProcessor:
             parameter: 系统提示词参数（用于{{variable}}替换）
 
         Returns:
-            完整的AI响应文本（JSON格式）
+            完整的AI响应文本（JSON格式），或 (response, usage) 元组
         """
         try:
             logger.info(f"🚀 [JSON代理] 开始处理消息")
@@ -735,9 +777,12 @@ class JSONAgentProcessor:
                 max_tokens=agent_config.config.get('max_tokens', 2048),
                 response_format=response_format
             )
+            usage = llm_client.last_usage
 
             logger.info(f"✅ [JSON代理] 消息处理完成，响应长度: {len(response)}")
             logger.info(f"📄 [JSON代理] 完整响应: {response}")
+            if return_usage:
+                return response, usage
             return response
 
         except Exception as e:
@@ -758,7 +803,43 @@ class JSONAgentProcessor:
             agent_service = AgentService(db)
             agent = agent_service.get_agent(agent_id)
             if not agent:
-                raise ValueError(f"智能体 {agent_id} 不存在")
+                # DB 可能在容器启动时尚未就绪，导致启动阶段的 create_all/seed 失败；
+                # 这里做一次“按需自举”，尽量保证默认智能体可用（幂等）。
+                logger.warning(
+                    "⚠️ [配置] 智能体不存在: %s，尝试执行一次 DB bootstrap/seed 后重试...",
+                    agent_id,
+                )
+                try:
+                    from app.db.session import engine, Base
+
+                    Base.metadata.create_all(bind=engine)
+                except Exception as e:
+                    logger.warning("⚠️ [配置] create_all 失败: %s", e)
+
+                try:
+                    from app.db.seed_defaults import seed_default_templates_and_agents
+
+                    seed_default_templates_and_agents()
+                except Exception as e:
+                    logger.warning("⚠️ [配置] 默认seed失败: %s", e)
+
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
+                agent = agent_service.get_agent(agent_id)
+
+            if not agent:
+                builtin = self._build_builtin_agent_snapshot(agent_id)
+                if builtin:
+                    logger.info("✅ [配置] 使用内置智能体配置: agent_id=%s", agent_id)
+                    _cache_set_agent(agent_id, builtin)
+                    return builtin
+                raise ValueError(
+                    f"智能体 {agent_id} 不存在。请先通过 /api/v1/agent/list 查看可用ID，"
+                    f"或调用 /api/v1/agent/create 创建智能体。"
+                )
 
             cfg = getattr(agent, "config", None) or {}
             if isinstance(cfg, str):
@@ -779,6 +860,11 @@ class JSONAgentProcessor:
             logger.info("📋 [配置] 智能体: %s (类型: %s)", snapshot.name, snapshot.type)
             return snapshot
         except DatabaseUnavailableError:
+            builtin = self._build_builtin_agent_snapshot(agent_id)
+            if builtin:
+                logger.warning("⚠️ [配置] DB不可用，使用内置配置: agent_id=%s", agent_id)
+                _cache_set_agent(agent_id, builtin)
+                return builtin
             stale = _cache_get_agent_stale(agent_id)
             if stale:
                 logger.warning("⚠️ [配置] DB不可用，使用缓存(可能过期): agent_id=%s", agent_id)
@@ -1778,3 +1864,22 @@ async def process_json_message(
         context=context,
         parameter=parameter
     )
+
+
+async def process_json_message_with_usage(
+    message: str,
+    agent_id: str,
+    context: Optional[Dict[str, Any]] = None,
+    parameter: Optional[Dict[str, Any]] = None
+) -> tuple[str, Optional[Dict[str, Any]]]:
+    processor = JSONAgentProcessor()
+    result = await processor.process_message(
+        message=message,
+        agent_id=agent_id,
+        context=context,
+        parameter=parameter,
+        return_usage=True,
+    )
+    if isinstance(result, tuple) and len(result) == 2:
+        return result[0], result[1]
+    return result, None

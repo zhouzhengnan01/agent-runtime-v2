@@ -38,6 +38,7 @@ class LLMClient:
         self.llm_fallback_model: Optional[str] = None
         self.vlm_fallback_model: Optional[str] = None
         self.embedding_fallback_model: Optional[str] = None
+        self.last_usage: Optional[Dict[str, Any]] = None
 
         # 初始化客户端
         if provider == "unified":
@@ -218,6 +219,55 @@ class LLMClient:
             or "handler is closed" in msg
             or ("write_eof" in msg and "uvloop" in msg)
         )
+
+    def _extract_usage(self, response: Any, *, model: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        usage_obj = getattr(response, "usage", None)
+        if usage_obj is None:
+            return None
+
+        if isinstance(usage_obj, dict):
+            prompt_tokens = usage_obj.get("prompt_tokens")
+            completion_tokens = usage_obj.get("completion_tokens")
+            total_tokens = usage_obj.get("total_tokens")
+            details = usage_obj.get("prompt_tokens_details") or usage_obj.get("completion_tokens_details")
+        else:
+            prompt_tokens = getattr(usage_obj, "prompt_tokens", None)
+            completion_tokens = getattr(usage_obj, "completion_tokens", None)
+            total_tokens = getattr(usage_obj, "total_tokens", None)
+            details = (
+                getattr(usage_obj, "prompt_tokens_details", None)
+                or getattr(usage_obj, "completion_tokens_details", None)
+            )
+
+        try:
+            prompt_tokens_i = int(prompt_tokens or 0)
+        except Exception:
+            prompt_tokens_i = 0
+        try:
+            completion_tokens_i = int(completion_tokens or 0)
+        except Exception:
+            completion_tokens_i = 0
+        try:
+            total_tokens_i = int(total_tokens or (prompt_tokens_i + completion_tokens_i))
+        except Exception:
+            total_tokens_i = prompt_tokens_i + completion_tokens_i
+
+        if prompt_tokens_i <= 0 and completion_tokens_i <= 0 and total_tokens_i <= 0:
+            return None
+
+        model_name = getattr(response, "model", None) or model
+
+        usage: Dict[str, Any] = {
+            "prompt_tokens": prompt_tokens_i,
+            "completion_tokens": completion_tokens_i,
+            "total_tokens": total_tokens_i,
+            "provider": self.provider,
+        }
+        if model_name:
+            usage["model"] = model_name
+        if details:
+            usage["details"] = details
+        return usage
 
     def _is_model_not_found_error(self, error: Exception) -> bool:
         try:
@@ -436,6 +486,7 @@ class LLMClient:
         Returns:
             模型响应文本
         """
+        self.last_usage = None
         # 智能模型选择：根据消息内容自动选择合适的模型
         if not model:
             if self.provider == "qwen":
@@ -560,6 +611,7 @@ class LLMClient:
 
                     raise
 
+            self.last_usage = self._extract_usage(response, model=model_to_use)
             return response.choices[0].message.content
 
         except Exception as e:

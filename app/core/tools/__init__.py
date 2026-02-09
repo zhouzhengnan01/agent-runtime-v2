@@ -64,6 +64,8 @@ from app.core.tools.agent_tools.sora_video_generator_tool import SoraVideoGenera
 # Google搜索工具
 from app.core.tools.google_tool import GoogleSearchTool
 from app.core.tools.baidu_tool  import BaiduSearchTool
+# Skill tool
+from app.core.tools.skill_tool import SkillTool
 # 导入参数填充器
 from app.core.tools.parameter_filler import (
     ParameterFiller,
@@ -97,6 +99,7 @@ __all__ = [
     # Google搜索工具
     "GoogleSearchTool",
     "BaiduSearchTool",
+    "SkillTool",
     "ParameterFiller",
     "parameter_filler",
     "init_parameter_filler",

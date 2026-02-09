@@ -32,6 +32,7 @@ import concurrent.futures
 from app.core.tools.base import BaseTool, register_tool
 from app.core.llm.langchain_factory import create_langchain_llm
 from app.config import settings
+from app.db.utils import get_postgres_driver
 
 logger = logging.getLogger(__name__)
 
@@ -225,8 +226,9 @@ class ChatBITool(BaseTool):
         # 数据库配置（默认使用环境变量）
         db_type = (getattr(settings, "DB_TYPE", "mysql") or "mysql").lower()
         if db_type in {"postgres", "postgresql", "pg"}:
+            pg_driver = get_postgres_driver()
             self.db_url = (
-                f"postgresql+psycopg2://{settings.DB_USER}:{settings.DB_PASSWORD}"
+                f"postgresql+{pg_driver}://{settings.DB_USER}:{settings.DB_PASSWORD}"
                 f"@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
             )
         else:
@@ -360,7 +362,8 @@ class ChatBITool(BaseTool):
                 if driver == 'mysql':
                     self.db_url = f"mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
                 elif driver == 'postgresql':
-                    self.db_url = f"postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+                    pg_driver = get_postgres_driver()
+                    self.db_url = f"postgresql+{pg_driver}://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
                 elif driver == 'sqlite':
                     self.db_url = f"sqlite:///{db_name}"
                 else:
@@ -369,8 +372,9 @@ class ChatBITool(BaseTool):
                 logger.info(f"[ChatBI] 使用环境变量数据库配置")
                 db_type = (getattr(settings, "DB_TYPE", "mysql") or "mysql").lower()
                 if db_type in {"postgres", "postgresql", "pg"}:
+                    pg_driver = get_postgres_driver()
                     self.db_url = (
-                        f"postgresql+psycopg2://{settings.DB_USER}:{settings.DB_PASSWORD}"
+                        f"postgresql+{pg_driver}://{settings.DB_USER}:{settings.DB_PASSWORD}"
                         f"@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
                     )
                 else:

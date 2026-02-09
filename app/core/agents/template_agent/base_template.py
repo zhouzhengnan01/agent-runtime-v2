@@ -17,6 +17,7 @@ import logging
 # 项目内部导入
 # ═══════════════════════════════════════════════════════════════
 from app.core.agents.cognitive_agent import LangChainCognitiveAgent
+from app.services.session_markdown_logger import SessionMarkdownLogger
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,13 @@ class BaseTemplateAgent:
         # 配置
         # ═══════════════════════════════════════════════════════════
         self.config = config or {}
+        self.session_id = self.config.get("session_id")
+        self.config_agent_id = self.config.get("agent_id")
+        self.session_md_enabled = bool(self.config.get("session_md_enabled", False))
+        self.session_md_dir = self.config.get("session_md_dir", "storage/session_rd")
+        self.session_md_logger = (
+            SessionMarkdownLogger(self.session_md_dir) if self.session_md_enabled else None
+        )
 
         logger.info(f"初始化 BaseLangChainTemplateAgent: {self.name}")
         logger.info(f"  版本: {self.version}")
@@ -217,6 +225,17 @@ class BaseTemplateAgent:
             "message": message,
             "response": response
         })
+
+    def _md_append(self, title: str, content: str, meta: Optional[Dict[str, Any]] = None) -> None:
+        if not self.session_md_logger or not self.session_id:
+            return
+        self.session_md_logger.append(
+            session_id=self.session_id,
+            title=title,
+            content=content,
+            meta=meta,
+            agent_id=self.config_agent_id or self.agent_id,
+        )
 
     def update_context(self, key: str, value: Any):
         """

@@ -13,6 +13,7 @@ from app.api.v1.schema import router as schema_router
 from app.api.v1.agents_json import router as agents_json_router
 from app.api.v1.review_records import router as review_records_router
 from app.api.v1.review_reports import router as review_reports_router
+from app.api.v1.deliverables import router as deliverables_router
 from app.api.v1.hls import router as hls_router
 from app.api.v1.clip import router as clip_router
 from app.api.v1.patrol_streams import router as patrol_streams_router
@@ -46,6 +47,8 @@ api_router.include_router(agents_json_router, tags=["JSON Agents"])
 # 复判/调用记录（落盘 + 查询）
 api_router.include_router(review_records_router, tags=["Review Records"])
 api_router.include_router(review_reports_router, tags=["Review Reports"])
+# 导出交付物（txt + docx）
+api_router.include_router(deliverables_router, tags=["Deliverables"])
 # HLS 直播转发
 api_router.include_router(hls_router, tags=["HLS"])
 # 视频片段剪辑
@@ -74,7 +77,8 @@ async def api_root():
             "/prompt/optimize - 优化提示词",
             "/prompt/analyze - 分析提示词",
             "/prompt/templates - 提示词模板",
-            "/schemas/template/{template_name}/schemas - 查询模板支持的JSON结构"
+            "/schemas/template/{template_name}/schemas - 查询模板支持的JSON结构",
+            "/deliverables/export - 导出交付物（命令调用.txt + 步骤说明.docx）"
         ],
         "protocol_features": [
             "会话管理（session.create, session.heartbeat）",

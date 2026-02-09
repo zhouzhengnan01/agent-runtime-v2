@@ -5,6 +5,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import json
 import logging
 import time
+import re
 from typing import Dict, Any, Optional, List, Callable, Awaitable, Union
 import uuid
 import asyncio
@@ -16,6 +17,52 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 MIN_INTERVAL_SECONDS = 10
+
+_BACKEND_NAME_RE = re.compile(r"^\s*(?P<backend>cv|yolo|vlm)(?::(?P<model>[^\s]+))?", re.IGNORECASE)
+
+
+def _normalize_backend_name(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    v = value.strip().lower()
+    if v in {"cv", "yolo"}:
+        return "cv"
+    if v in {"vlm", "llm"}:
+        return "vlm"
+    return None
+
+
+def _infer_backend_hint(params: Dict[str, Any]) -> Optional[str]:
+    backend = _normalize_backend_name(
+        params.get("backend") or params.get("engine") or params.get("detector")
+    )
+    if backend:
+        return backend
+
+    name = (params.get("name") or "").strip()
+    if not name:
+        cfg = params.get("configuration") or {}
+        if isinstance(cfg, dict):
+            name = (cfg.get("name") or "").strip()
+    if name:
+        m = _BACKEND_NAME_RE.match(name)
+        if m:
+            return _normalize_backend_name(m.group("backend"))
+
+    sources = params.get("source") or []
+    if isinstance(sources, list):
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+            b = _normalize_backend_name(src.get("backend") or src.get("engine") or src.get("detector"))
+            if b:
+                return b
+            n = (src.get("name") or "").strip()
+            if n:
+                m = _BACKEND_NAME_RE.match(n)
+                if m:
+                    return _normalize_backend_name(m.group("backend"))
+    return None
 
 DisconnectHook = Union[Callable[[str], None], Callable[[str], Awaitable[None]]]
 
@@ -60,7 +107,236 @@ def _normalize_initialize_params(params: Any) -> Dict[str, Any]:
         if user_id is not None:
             normalized["userContext"] = {"userId": user_id}
 
+    def _value_type_to_schema(value_type: Any) -> Dict[str, Any]:
+        """Convert JetLinks ValueType-like dict to a JSON-Schema-ish object (best-effort)."""
+        if not isinstance(value_type, dict):
+            return {"type": "string"}
+
+        raw_type = value_type.get("type") or value_type.get("id") or "string"
+        t = str(raw_type).strip().lower()
+        if t in {"int"}:
+            t = "integer"
+
+        if t in {"string", "number", "integer", "boolean"}:
+            return {"type": t}
+
+        if t == "array":
+            elem = value_type.get("elementType") or value_type.get("items") or {}
+            return {"type": "array", "items": _value_type_to_schema(elem)}
+
+        if t == "object":
+            schema: Dict[str, Any] = {"type": "object", "properties": {}}
+            props = value_type.get("properties")
+            if isinstance(props, list):
+                for prop in props:
+                    if not isinstance(prop, dict):
+                        continue
+                    pid = prop.get("id")
+                    if not pid:
+                        continue
+                    child_schema = _value_type_to_schema(prop.get("valueType") or prop.get("value_type"))
+                    desc = prop.get("description") or prop.get("name")
+                    if desc and isinstance(child_schema, dict):
+                        child_schema = {**child_schema, "description": str(desc)}
+                    schema["properties"][pid] = child_schema
+            return schema
+
+        # unknown / complex: fall back to string so the LLM can still fill something.
+        return {"type": "string"}
+
+    def _proxy_inputs_to_schema(inputs: Any) -> Dict[str, Any]:
+        """Convert proxyCommand.inputs (list) to JSON Schema parameters."""
+        schema: Dict[str, Any] = {"type": "object", "properties": {}, "required": []}
+        if not isinstance(inputs, list):
+            return schema
+        for item in inputs:
+            if not isinstance(item, dict):
+                continue
+            pid = item.get("id")
+            if not pid:
+                continue
+            prop_schema = _value_type_to_schema(item.get("valueType"))
+            desc = item.get("description") or item.get("name")
+            if desc and isinstance(prop_schema, dict):
+                prop_schema = {**prop_schema, "description": str(desc)}
+            schema["properties"][pid] = prop_schema
+            if item.get("required") is True:
+                schema["required"].append(pid)
+        # keep required stable & unique
+        if schema["required"]:
+            seen = set()
+            schema["required"] = [x for x in schema["required"] if x and not (x in seen or seen.add(x))]
+        return schema
+
+    def _flatten_tool_groups(tool_groups: Any) -> tuple[list[Dict[str, Any]], Dict[str, str]]:
+        """Flatten params.tools/agentConfig.tools (proxyCommands format) to availableTools."""
+        flattened: list[Dict[str, Any]] = []
+        aliases: Dict[str, str] = {}
+        real_id_counts: Dict[str, int] = {}
+
+        if not isinstance(tool_groups, list):
+            return flattened, aliases
+
+        # First pass: collect counts of realCommandId for safe bare-alias mapping.
+        for group in tool_groups:
+            if not isinstance(group, dict):
+                continue
+            group_id = (group.get("id") or "").strip()
+            proxy_cmds = group.get("proxyCommands") or group.get("proxy_commands") or []
+            if not isinstance(proxy_cmds, list):
+                continue
+            for cmd in proxy_cmds:
+                if not isinstance(cmd, dict):
+                    continue
+                real_id = (cmd.get("realCommandId") or cmd.get("real_command_id") or "").strip()
+                if real_id:
+                    real_id_counts[real_id] = real_id_counts.get(real_id, 0) + 1
+
+        for group in tool_groups:
+            if not isinstance(group, dict):
+                continue
+            group_id = (group.get("id") or "").strip()
+            proxy_cmds = group.get("proxyCommands") or group.get("proxy_commands") or []
+            if not isinstance(proxy_cmds, list):
+                continue
+
+            for cmd in proxy_cmds:
+                if not isinstance(cmd, dict):
+                    continue
+                command_id = (cmd.get("commandId") or cmd.get("command_id") or "").strip()
+                real_command_id = (cmd.get("realCommandId") or cmd.get("real_command_id") or "").strip()
+                # Prefer stable executable id: groupId#commandId
+                if not group_id or not command_id:
+                    continue
+                tool_id = f"{group_id}#{command_id}"
+
+                parameters = _proxy_inputs_to_schema(cmd.get("inputs"))
+                # Provide simplified inputs for compatibility (some frontends use inputs as whitelist).
+                simplified_inputs = []
+                if isinstance(cmd.get("inputs"), list):
+                    for it in cmd.get("inputs") or []:
+                        if not isinstance(it, dict):
+                            continue
+                        iid = it.get("id")
+                        if not iid:
+                            continue
+                        vt = it.get("valueType") or {}
+                        simplified_inputs.append({
+                            "id": iid,
+                            "name": it.get("name") or iid,
+                            "type": (vt.get("type") or vt.get("id") or "string"),
+                            "description": it.get("description") or it.get("name") or iid,
+                            "required": bool(it.get("required") is True),
+                        })
+
+                tool_def: Dict[str, Any] = {
+                    "id": tool_id,
+                    "name": cmd.get("name") or real_command_id or command_id,
+                    "description": cmd.get("description") or "",
+                    "parameters": parameters,
+                    "inputs": simplified_inputs,
+                    "output": cmd.get("output"),
+                    # Keep original identifiers for aliasing/debugging.
+                    "toolGroupId": group_id,
+                    "commandId": command_id,
+                    "realCommandId": real_command_id,
+                }
+                flattened.append(tool_def)
+
+                # Alias: groupId#RealCommandId -> groupId#commandId (helps prompts that mention realCommandId).
+                if real_command_id:
+                    aliases[f"{group_id}#{real_command_id}"] = tool_id
+                    # Bare alias is only safe when unique across all tool groups in this init.
+                    if real_id_counts.get(real_command_id) == 1 and real_command_id not in aliases:
+                        aliases[real_command_id] = tool_id
+
+        # Deduplicate by id (keep first occurrence).
+        seen_ids = set()
+        deduped: list[Dict[str, Any]] = []
+        for item in flattened:
+            tid = item.get("id")
+            if not tid or tid in seen_ids:
+                continue
+            seen_ids.add(tid)
+            deduped.append(item)
+
+        return deduped, aliases
+
+    # tools/proxyCommands → availableTools (兼容 Java 中转的初始化结构)
+    tool_groups = None
+    if isinstance(normalized.get("tools"), list):
+        tool_groups = normalized.get("tools")
+    else:
+        agent_cfg = normalized.get("agentConfig") if isinstance(normalized.get("agentConfig"), dict) else {}
+        tool_groups = agent_cfg.get("tools") if isinstance(agent_cfg.get("tools"), list) else None
+
+    flattened, aliases = _flatten_tool_groups(tool_groups)
+
+    # Merge flattened tools into availableTools (do not override existing definitions).
+    existing_tools = normalized.get("availableTools")
+    merged_tools: list[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    if isinstance(existing_tools, list):
+        for t in existing_tools:
+            if not isinstance(t, dict):
+                continue
+            tid = t.get("id") or t.get("name")
+            if not tid or tid in seen_ids:
+                continue
+            seen_ids.add(str(tid))
+            merged_tools.append(t)
+    for t in flattened:
+        tid = t.get("id") or t.get("name")
+        if not tid or str(tid) in seen_ids:
+            continue
+        seen_ids.add(str(tid))
+        merged_tools.append(t)
+    if merged_tools and merged_tools != existing_tools:
+        normalized["availableTools"] = merged_tools
+
+    if aliases:
+        params_obj = normalized.get("parameters") if isinstance(normalized.get("parameters"), dict) else {}
+        params_obj.setdefault("_tool_aliases", {})
+        if isinstance(params_obj.get("_tool_aliases"), dict):
+            params_obj["_tool_aliases"].update(aliases)
+        normalized["parameters"] = params_obj
+
     return normalized
+
+
+def _summarize_initialize_payload(params: Any) -> Dict[str, Any]:
+    if not isinstance(params, dict):
+        return {"type": str(type(params))}
+    summary: Dict[str, Any] = {"keys": list(params.keys())[:50]}
+
+    available_tools = params.get("availableTools")
+    if isinstance(available_tools, list):
+        summary["availableTools_len"] = len(available_tools)
+        summary["availableTools_sample"] = [
+            (t.get("id") or t.get("name")) if isinstance(t, dict) else str(t)
+            for t in available_tools[:8]
+        ]
+
+    tool_groups = params.get("tools")
+    if isinstance(tool_groups, list):
+        groups = []
+        for g in tool_groups[:8]:
+            if not isinstance(g, dict):
+                continue
+            gid = g.get("id")
+            proxy_cmds = g.get("proxyCommands") or g.get("proxy_commands") or []
+            groups.append({"id": gid, "proxyCommands": len(proxy_cmds) if isinstance(proxy_cmds, list) else None})
+        summary["tools_len"] = len(tool_groups)
+        summary["tools_groups_sample"] = groups
+
+    agent_cfg = params.get("agentConfig")
+    if isinstance(agent_cfg, dict):
+        summary["agentConfig_keys"] = list(agent_cfg.keys())[:30]
+        cfg_tools = agent_cfg.get("tools")
+        if isinstance(cfg_tools, list):
+            summary["agentConfig_tools_len"] = len(cfg_tools)
+
+    return summary
 
 
 def _build_jsonrpc_error(
@@ -143,6 +419,8 @@ async def _handle_computer_vision_task(
             return
         params["interval"] = interval_val
 
+        backend_hint = _infer_backend_hint(params)
+
         use_content = bool(params.get("useContent", False))
         if use_content:
             content = (params.get("content") or "").strip()
@@ -150,20 +428,23 @@ async def _handle_computer_vision_task(
                 await manager.send_message(client_id, _build_jsonrpc_error(request_id, "useContent=true 时需提供 content"))
                 return
         else:
-            missing_prompt_idx = [
-                idx for idx, src in enumerate(sources)
-                if not (src.get("prompt") or "").strip()
-            ]
-            if missing_prompt_idx:
-                await manager.send_message(
-                    client_id,
-                    _build_jsonrpc_error(
-                        request_id,
-                        "prompt 必填（或使用 useContent+content）",
-                        data={"missingPromptIndexes": missing_prompt_idx}
+            if backend_hint == "cv":
+                pass
+            else:
+                missing_prompt_idx = [
+                    idx for idx, src in enumerate(sources)
+                    if not (src.get("prompt") or "").strip()
+                ]
+                if missing_prompt_idx:
+                    await manager.send_message(
+                        client_id,
+                        _build_jsonrpc_error(
+                            request_id,
+                            "prompt 必填（或使用 useContent+content）",
+                            data={"missingPromptIndexes": missing_prompt_idx}
+                        )
                     )
-                )
-                return
+                    return
 
     if not hasattr(jaip_handler, "handle_computer_vision_task"):
         await manager.send_message(
@@ -398,6 +679,69 @@ async def websocket_endpoint(
 
                 # 如果消息只包含 traceId/jsonrpc，没有实际内容，直接忽略
                 if not has_result and not has_params and not has_data and not has_error:
+                    # Some relays send a "complete-only" ACK for tools.execute (especially when the external
+                    # tool returns void). If the id matches a pending tool execution, treat it as an empty
+                    # tool result to avoid the generator hanging until watchdog timeout.
+                    try:
+                        complete_val = data.get("complete")
+                        complete_flag = complete_val is True
+                        if not complete_flag and complete_val is not None:
+                            try:
+                                s = str(complete_val).strip().lower()
+                                complete_flag = s in {"true", "1", "yes", "y", "ok", "done", "complete"}
+                            except Exception:
+                                complete_flag = False
+
+                        execution_id = None
+                        try:
+                            if str(msg_id) in getattr(jaip_handler, "_pending_tool_results", {}):
+                                execution_id = getattr(jaip_handler, "_pending_tool_results", {}).get(str(msg_id))
+                            elif str(msg_id) in getattr(jaip_handler, "_pending_tools", {}):
+                                execution_id = str(msg_id)
+                        except Exception:
+                            execution_id = None
+
+                        # Only synthesize a tool result when the external-tool watchdog is active, meaning we
+                        # have already forwarded `tools.execute` and are waiting for a result payload.
+                        watching = False
+                        try:
+                            watchers = getattr(jaip_handler, "_external_tool_watchers", {}) or {}
+                            watching = bool(execution_id) and str(execution_id) in watchers
+                        except Exception:
+                            watching = False
+
+                        if watching and str(msg_id) != "-1":
+                            tool_name = None
+                            try:
+                                ctx = (getattr(jaip_handler, "_pending_tools", {}) or {}).get(str(execution_id)) or {}
+                                if isinstance(ctx, dict):
+                                    tool_name = ctx.get("toolName")
+                            except Exception:
+                                tool_name = None
+
+                            logger.info(
+                                "📦 [WebSocket] 收到空工具结果（complete-only ack），继续恢复流程 | id=%s | execution_id=%s | tool=%s | complete=%r",
+                                msg_id,
+                                execution_id,
+                                tool_name,
+                                complete_val,
+                            )
+                            await jaip_handler.handle_tool_result(
+                                str(msg_id),
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": str(msg_id),
+                                    "result": {
+                                        "success": True,
+                                        "result": None,
+                                        "complete_only_ack": True,
+                                        "executionId": execution_id,
+                                    },
+                                },
+                                agent_id,
+                            )
+                    except Exception:
+                        pass
                     continue
 
                 # 如果有 error 字段，优先处理工具执行错误
@@ -406,8 +750,24 @@ async def websocket_endpoint(
                     logger.error(f"❌ [WebSocket] 收到工具执行错误 | id={msg_id} | error={error_info}")
 
                     # 将错误转换为工具结果格式，继续处理流程避免堵塞
+                    error_message = None
+                    error_code = None
+                    error_data = None
+                    if isinstance(error_info, dict):
+                        error_message = error_info.get("message")
+                        error_code = error_info.get("code")
+                        error_data = error_info.get("data")
+                    if not error_message:
+                        error_message = str(error_info)
+
                     error_result = {
-                        "result": {"success": False, "error": str(error_info)},
+                        "result": {
+                            "success": False,
+                            "error": error_message,
+                            "error_code": error_code,
+                            "error_data": error_data,
+                            "is_external_tool_error": True,
+                        },
                         "id": msg_id,
                         "jsonrpc": "2.0"
                     }
@@ -419,18 +779,65 @@ async def websocket_endpoint(
                 if has_result:
                     result_value = data.get("result")
 
-                    is_confirmation = (
-                        result_value is True or
-                        (isinstance(result_value, dict) and result_value.get("wait") is True)
-                    )
+                    pending_exec = str(msg_id) in getattr(jaip_handler, "_pending_tools", {})
 
-                    if is_confirmation:
-                        logger.info(f"✅ [WebSocket] 收到工具确认消息 | id={msg_id} | result={result_value}")
+                    # tools.confirm 的第一阶段响应（Java中转常返回 {"wait": true} 表示已推送到前端，等待用户确认）
+                    if isinstance(result_value, dict) and "wait" in result_value:
+                        wait_flag = result_value.get("wait")
+                        if wait_flag is True:
+                            logger.info(
+                                "⏳ [WebSocket] 收到 tools.confirm 等待响应 | id=%s | wait=true",
+                                msg_id,
+                            )
+                            continue
+
+                        logger.info(
+                            "✅ [WebSocket] 收到 tools.confirm 确认响应 | id=%s | wait=%s",
+                            msg_id,
+                            wait_flag,
+                        )
+                        try:
+                            await jaip_handler.handle_tool_confirmation(str(msg_id), result_value)
+                        except Exception as confirm_err:
+                            logger.error(
+                                "❌ [WebSocket] 处理工具确认失败 | id=%s | err=%s",
+                                msg_id,
+                                confirm_err,
+                                exc_info=True,
+                            )
                         continue
-                    else:
-                        logger.info(f"📦 [WebSocket] 收到工具结果 | id={msg_id}")
-                        await jaip_handler.handle_tool_result(msg_id, data, agent_id)
+
+                    # 兼容部分客户端直接返回布尔值 true/false
+                    if pending_exec and result_value is True:
+                        logger.info(f"✅ [WebSocket] 收到工具确认(true) | id={msg_id}")
+                        try:
+                            await jaip_handler.handle_tool_confirmation(str(msg_id), {"wait": False})
+                        except Exception as confirm_err:
+                            logger.error(
+                                "❌ [WebSocket] 处理工具确认失败 | id=%s | err=%s",
+                                msg_id,
+                                confirm_err,
+                                exc_info=True,
+                            )
                         continue
+
+                    if pending_exec and result_value is False:
+                        logger.info(f"🛑 [WebSocket] 收到工具取消(false) | id={msg_id}")
+                        cancel_result = {
+                            "jsonrpc": "2.0",
+                            "id": msg_id,
+                            "result": {
+                                "success": False,
+                                "error": "用户取消工具调用",
+                                "cancelled": True,
+                            },
+                        }
+                        await jaip_handler.handle_tool_result(msg_id, cancel_result, agent_id)
+                        continue
+
+                    logger.info(f"📦 [WebSocket] 收到工具结果 | id={msg_id}")
+                    await jaip_handler.handle_tool_result(msg_id, data, agent_id)
+                    continue
 
                 logger.info(f"📦 [WebSocket] 收到其他消息（可能是工具结果）| id={msg_id}")
                 await jaip_handler.handle_tool_result(msg_id, data, agent_id)
@@ -452,7 +859,18 @@ async def websocket_endpoint(
 
                 # 会话初始化
                 if method == "session.initialize":
+                    try:
+                        logger.info("🧩 [session.initialize] raw params summary: %s", _summarize_initialize_payload(params))
+                    except Exception:
+                        pass
                     params = _normalize_initialize_params(params)
+                    try:
+                        logger.info(
+                            "🧩 [session.initialize] normalized params summary: %s",
+                            _summarize_initialize_payload(params),
+                        )
+                    except Exception:
+                        pass
                     try:
                         init_result = await jaip_handler.handle_initialize(
                             params=params,
@@ -582,6 +1000,20 @@ async def websocket_endpoint(
                 elif method == "tools.execute":
                     logger.info(f"🔧 [WebSocket] 收到 tools.execute 消息")
                     logger.info(f"🔧 [WebSocket] params: {json.dumps(params, ensure_ascii=False)[:500]}")
+
+                    # JSON-RPC ack: some relays treat tools.execute as a request and expect a response.
+                    # We keep it lightweight and continue the actual tool flow via the existing
+                    # confirm/execute/result messages (executionId-based).
+                    if request_id is not None:
+                        try:
+                            await manager.send_message(client_id, {
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "result": {"accepted": True},
+                            })
+                        except Exception:
+                            pass
+
                     await jaip_handler.handle_tool_execute(
                         params=params,
                         agent_id=agent_id,

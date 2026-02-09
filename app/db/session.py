@@ -7,6 +7,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from urllib.parse import quote_plus
 from app.config import settings
+from app.db.utils import get_postgres_driver
 
 # 构建数据库连接URL（对密码进行URL编码以处理特殊字符）
 encoded_password = quote_plus(settings.DB_PASSWORD or "")
@@ -24,8 +25,9 @@ if db_type in {"sqlite", "sqlite3"}:
             sqlite_path = os.path.abspath(sqlite_path)
         SQLALCHEMY_DATABASE_URL = f"sqlite:///{sqlite_path}"
 elif db_type in {"postgres", "postgresql", "pg"}:
+    pg_driver = get_postgres_driver()
     SQLALCHEMY_DATABASE_URL = (
-        f"postgresql+psycopg2://{settings.DB_USER}:{encoded_password}"
+        f"postgresql+{pg_driver}://{settings.DB_USER}:{encoded_password}"
         f"@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
     )
 else:

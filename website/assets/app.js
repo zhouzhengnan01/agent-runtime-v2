@@ -2313,6 +2313,26 @@ async function loadTools(includeDocument = true) {
   return state.tools;
 }
 
+function isExternalTool(tool) {
+  if (!tool || typeof tool !== "object") return false;
+  const source = String(tool.source || "").trim().toLowerCase();
+  if (source) return source === "external";
+  const id = String(tool.id || tool.name || "");
+  return id.includes(":") || id.includes("#");
+}
+
+async function getAvailableExternalTools() {
+  if (!state.toolsLoaded) {
+    try {
+      await loadTools(false);
+    } catch (e) {
+      console.warn("Load tools failed:", e);
+      return [];
+    }
+  }
+  return (state.tools || []).filter(isExternalTool);
+}
+
 async function loadTemplates() {
   const endpoints = [
     "/api/v1/agent/templates/list",
@@ -2679,19 +2699,27 @@ function bindChat() {
     socket.send(JSON.stringify(payload));
   }
 
-  function requestInit() {
+  async function requestInit() {
     if (!chatWsState.socket || chatWsState.initRequestId) return;
     chatWsState.initError = "";
     chatWsState.initRequestId = rpcId("init");
-    sendWs({
-      jsonrpc: "2.0",
-      id: chatWsState.initRequestId,
-      method: "session.initialize",
-      params: {
-        protocolVersion: "2.0",
-        userContext: { userId: "web" },
-      },
-    });
+    const availableTools = await getAvailableExternalTools();
+    try {
+      sendWs({
+        jsonrpc: "2.0",
+        id: chatWsState.initRequestId,
+        method: "session.initialize",
+        params: {
+          protocolVersion: "2.0",
+          userContext: { userId: "web" },
+          availableTools,
+        },
+      });
+    } catch (e) {
+      chatWsState.initRequestId = "";
+      chatWsState.initError = String(e);
+      out.textContent = chatWsState.initError;
+    }
   }
 
   function rejectExternalTool(executionId, toolName = "") {
@@ -2857,7 +2885,7 @@ function bindChat() {
     chatWsState.connectPromise = new Promise((resolve, reject) => {
       socket.addEventListener("open", () => {
         updateStatus();
-        requestInit();
+        void requestInit();
         resolve(socket);
       }, { once: true });
 
@@ -2895,7 +2923,7 @@ function bindChat() {
     try {
       await ensureChatWs(agentId);
       if (!chatWsState.initDone) {
-        requestInit();
+        await requestInit();
         await waitForInit();
       }
       sendWs({
@@ -4079,19 +4107,27 @@ function buildReviewCommand(stream) {
     socket.send(JSON.stringify(payload));
   }
 
-  function requestPatrolInit() {
+  async function requestPatrolInit() {
     if (!patrolWsState.socket || patrolWsState.initRequestId) return;
     patrolWsState.initError = "";
     patrolWsState.initRequestId = rpcId("patrol_init");
-    sendPatrolWs({
-      jsonrpc: "2.0",
-      id: patrolWsState.initRequestId,
-      method: "session.initialize",
-      params: {
-        protocolVersion: "2.0",
-        userContext: { userId: "patrol" },
-      },
-    });
+    const availableTools = await getAvailableExternalTools();
+    try {
+      sendPatrolWs({
+        jsonrpc: "2.0",
+        id: patrolWsState.initRequestId,
+        method: "session.initialize",
+        params: {
+          protocolVersion: "2.0",
+          userContext: { userId: "patrol" },
+          availableTools,
+        },
+      });
+    } catch (e) {
+      patrolWsState.initRequestId = "";
+      patrolWsState.initError = String(e);
+      if (consoleOut) consoleOut.textContent = patrolWsState.initError;
+    }
   }
 
   function rejectExternalTool(executionId, toolName = "") {
@@ -4258,7 +4294,7 @@ function buildReviewCommand(stream) {
     patrolWsState.connectPromise = new Promise((resolve, reject) => {
       socket.addEventListener("open", () => {
         updateWsStatus();
-        requestPatrolInit();
+        void requestPatrolInit();
         resolve(socket);
       }, { once: true });
 
@@ -4296,7 +4332,7 @@ function buildReviewCommand(stream) {
     try {
       await ensurePatrolWs(agentId);
       if (!patrolWsState.initDone) {
-        requestPatrolInit();
+        await requestPatrolInit();
         await waitForPatrolInit();
       }
       sendPatrolWs({
@@ -4340,7 +4376,7 @@ function buildReviewCommand(stream) {
     try {
       await ensurePatrolWs(agentId);
       if (!patrolWsState.initDone) {
-        requestPatrolInit();
+        await requestPatrolInit();
         await waitForPatrolInit();
       }
       sendPatrolWs({

@@ -144,6 +144,12 @@ def _env_get_bool(key: str, default: bool = False) -> bool:
 # --------------------
 from app.core.agents.template_agent.base_template import BaseTemplateAgent
 from app.shared.jetlinks_video.all_enum import MODEL
+from app.shared.jetlinks_video.configs.cv_config import (
+    CvConfig,
+    CvPoseConfig,
+    CvRoiConfig,
+    build_cv_config,
+)
 from app.shared.jetlinks_video.configs.rtsp_batch_config import RTSPBatchConfig, RTSP
 from app.shared.jetlinks_video.configs.runtime_machine_config import RuntimeMachineConfig
 from app.shared.jetlinks_video.configs.vlm_config import VlmConfig
@@ -1158,6 +1164,456 @@ class VideoPatrolAgent(BaseTemplateAgent):
         )""",
         re.IGNORECASE | re.VERBOSE,
     )
+    _BACKEND_NAME_RE = re.compile(r"^\s*(?P<backend>cv|yolo|vlm)(?::(?P<model>[^\s]+))?", re.IGNORECASE)
+
+    @staticmethod
+    def _normalize_backend_name(backend: Optional[str]) -> Optional[str]:
+        if not backend:
+            return None
+        b = str(backend).strip().lower()
+        if b in ("cv", "yolo"):
+            return "cv"
+        if b in ("vlm", "llm"):
+            return "vlm"
+        return None
+
+    @classmethod
+    def _parse_backend_from_name(cls, name: str) -> Tuple[Optional[str], Optional[str]]:
+        if not name:
+            return None, None
+        m = cls._BACKEND_NAME_RE.match(str(name).strip())
+        if not m:
+            return None, None
+        backend = cls._normalize_backend_name(m.group("backend"))
+        model = (m.group("model") or "").strip() or None
+        return backend, model
+
+    def _resolve_backend_and_model(
+        self,
+        params: Dict[str, Any],
+    ) -> Tuple[str, Optional[str], Optional[str]]:
+        backend_hint = self._normalize_backend_name(
+            params.get("backend") or params.get("engine") or params.get("detector")
+        )
+        model_hint = (
+            (params.get("model") or params.get("modelName") or params.get("model_path") or params.get("modelPath"))
+            or ""
+        ).strip() or None
+
+        name_hint = (params.get("name") or "").strip()
+        if not name_hint:
+            cfg = params.get("configuration") or {}
+            if isinstance(cfg, dict):
+                name_hint = (cfg.get("name") or "").strip()
+                if not backend_hint:
+                    backend_hint = self._normalize_backend_name(
+                        cfg.get("backend") or cfg.get("engine") or cfg.get("detector")
+                    )
+                if not model_hint:
+                    model_hint = (cfg.get("model") or cfg.get("modelName") or "").strip() or None
+
+        if name_hint:
+            b_from_name, m_from_name = self._parse_backend_from_name(name_hint)
+            if not backend_hint and b_from_name:
+                backend_hint = b_from_name
+            if not model_hint and m_from_name:
+                model_hint = m_from_name
+
+        source_backends = set()
+        sources = params.get("source") or []
+        if isinstance(sources, list):
+            for src in sources:
+                if not isinstance(src, dict):
+                    continue
+                sb = self._normalize_backend_name(src.get("backend") or src.get("engine") or src.get("detector"))
+                if sb:
+                    source_backends.add(sb)
+                if not model_hint:
+                    sm = (src.get("model") or src.get("modelName") or "").strip() or None
+                    if sm:
+                        model_hint = sm
+
+                if not backend_hint:
+                    sn = (src.get("name") or "").strip()
+                    if sn:
+                        b_from_name, m_from_name = self._parse_backend_from_name(sn)
+                        if b_from_name:
+                            source_backends.add(b_from_name)
+                        if not model_hint and m_from_name:
+                            model_hint = m_from_name
+
+        if backend_hint:
+            source_backends.add(backend_hint)
+
+        if len(source_backends) > 1:
+            return "vlm", model_hint, "backend conflict in params/source"
+
+        backend = source_backends.pop() if source_backends else "vlm"
+        return backend, model_hint, None
+
+    @staticmethod
+    def _normalize_cv_task(value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        s = str(value).strip().lower()
+        if not s:
+            return None
+
+        # explicit canonical values
+        if s in {"fall", "fallen", "falling"}:
+            return "fall"
+        if s in {"smoke", "smoking", "cigarette"}:
+            return "smoke"
+        if s in {"fight", "fighting", "brawl"}:
+            return "fight"
+
+        # keyword match (zh/en)
+        fall_keywords = ("跌倒", "摔倒", "倒地", "fall")
+        smoke_keywords = ("抽烟", "吸烟", "smoke", "smoking", "cigarette")
+        fight_keywords = ("吵架", "打架", "斗殴", "fight", "fighting", "brawl")
+
+        if any(k in s for k in fall_keywords):
+            return "fall"
+        if any(k in s for k in smoke_keywords):
+            return "smoke"
+        if any(k in s for k in fight_keywords):
+            return "fight"
+
+        return None
+
+    def _resolve_cv_task(self, params: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        tasks = set()
+
+        def _add_task(raw: Any) -> None:
+            t = self._normalize_cv_task(raw)
+            if t:
+                tasks.add(t)
+
+        # explicit task fields
+        _add_task(params.get("cvTask"))
+        _add_task(params.get("task"))
+        _add_task(params.get("taskType"))
+        _add_task(params.get("action"))
+        _add_task(params.get("scene"))
+
+        name_hint = params.get("name")
+        _add_task(name_hint)
+
+        cfg = params.get("configuration") or {}
+        if isinstance(cfg, dict):
+            _add_task(cfg.get("name"))
+            _add_task(cfg.get("task"))
+            for key in ("cv", "cvConfig", "cv_config", "vision", "yolo"):
+                sub = cfg.get(key)
+                if isinstance(sub, dict):
+                    _add_task(sub.get("task"))
+                    _add_task(sub.get("name"))
+
+        for key in ("cv", "cvConfig", "cv_config", "vision", "yolo"):
+            sub = params.get(key)
+            if isinstance(sub, dict):
+                _add_task(sub.get("task"))
+                _add_task(sub.get("name"))
+
+        sources = params.get("source") or []
+        if isinstance(sources, list):
+            for src in sources:
+                if not isinstance(src, dict):
+                    continue
+                _add_task(src.get("name"))
+                _add_task(src.get("task"))
+
+        if len(tasks) > 1:
+            return None, "cv task conflict in params/name/source"
+        if tasks:
+            return tasks.pop(), None
+        return None, None
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: Optional[bool] = None) -> Optional[bool]:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in ("1", "true", "yes", "y", "on"):
+                return True
+            if s in ("0", "false", "no", "n", "off", ""):
+                return False
+        return default
+
+    @staticmethod
+    def _coerce_float(value: Any, default: Optional[float] = None) -> Optional[float]:
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _coerce_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+        if value is None:
+            return default
+        try:
+            return int(float(value))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _coerce_int_list(value: Any) -> Optional[List[int]]:
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)):
+            out = []
+            for v in value:
+                try:
+                    out.append(int(float(v)))
+                except Exception:
+                    continue
+            return out or None
+        if isinstance(value, str):
+            parts = value.replace(";", ",").split(",")
+            out = []
+            for part in parts:
+                p = part.strip()
+                if not p:
+                    continue
+                try:
+                    out.append(int(float(p)))
+                except Exception:
+                    continue
+            return out or None
+        return None
+
+    @classmethod
+    def _parse_roi_config(cls, raw: Any) -> Optional[CvRoiConfig]:
+        if raw is None:
+            return None
+
+        rect = None
+        normalized = None
+        mode = None
+        draw = None
+        padding = None
+
+        if isinstance(raw, dict):
+            normalized = raw.get("normalized")
+            rect = raw.get("rect")
+            if rect is None and all(k in raw for k in ("x1", "y1", "x2", "y2")):
+                rect = [raw.get("x1"), raw.get("y1"), raw.get("x2"), raw.get("y2")]
+            if rect is None and all(k in raw for k in ("x", "y", "w", "h")):
+                x = raw.get("x")
+                y = raw.get("y")
+                w = raw.get("w")
+                h = raw.get("h")
+                rect = [x, y, None if w is None else x + w, None if h is None else y + h]
+            if rect is None and all(k in raw for k in ("left", "top", "right", "bottom")):
+                rect = [raw.get("left"), raw.get("top"), raw.get("right"), raw.get("bottom")]
+            mode = raw.get("mode") or raw.get("roiMode") or raw.get("roi_mode")
+            draw = raw.get("draw") or raw.get("drawRoi") or raw.get("roiDraw")
+            padding = raw.get("padding") or raw.get("pad")
+        elif isinstance(raw, (list, tuple)) and len(raw) >= 4:
+            rect = raw
+
+        if not rect:
+            return None
+
+        try:
+            x1 = float(rect[0])
+            y1 = float(rect[1])
+            x2 = float(rect[2])
+            y2 = float(rect[3])
+        except Exception:
+            return None
+
+        if normalized is None:
+            vals = [x1, y1, x2, y2]
+            normalized = min(vals) >= 0.0 and max(vals) <= 1.0
+        else:
+            normalized = cls._coerce_bool(normalized, default=True)
+
+        mode_str = (mode or "center").strip().lower()
+        draw_flag = bool(cls._coerce_bool(draw, default=False))
+        pad_val = float(padding) if padding is not None else 0.0
+
+        return CvRoiConfig(
+            rect=(x1, y1, x2, y2),
+            normalized=bool(normalized),
+            mode=mode_str or "center",
+            draw=draw_flag,
+            padding=max(0.0, pad_val),
+        )
+
+    @staticmethod
+    def _looks_like_cv_config(obj: Any) -> bool:
+        if not isinstance(obj, dict):
+            return False
+        keys = {
+            "conf",
+            "confidence",
+            "score",
+            "iou",
+            "imgsz",
+            "max_det",
+            "maxDet",
+            "max_boxes",
+            "maxBoxes",
+            "device",
+            "classes",
+            "class_ids",
+            "roi",
+            "roiRect",
+            "roiMode",
+            "roi_mode",
+            "pose",
+            "poseConfig",
+            "rule",
+            "ruleConfig",
+        }
+        return any(k in obj for k in keys)
+
+    def _apply_pose_overrides(self, pose_cfg: CvPoseConfig, pose_raw: Any) -> bool:
+        if not isinstance(pose_raw, dict):
+            return False
+        touched = False
+
+        def _set_float(attr: str, raw_key: str) -> None:
+            nonlocal touched
+            if raw_key not in pose_raw:
+                return
+            val = self._coerce_float(pose_raw.get(raw_key))
+            if val is None:
+                return
+            setattr(pose_cfg, attr, float(val))
+            touched = True
+
+        _set_float("min_kpt_conf", "minKptConf")
+        _set_float("min_kpt_conf", "min_kpt_conf")
+        _set_float("fall_ratio", "fallRatio")
+        _set_float("fall_ratio", "fall_ratio")
+        _set_float("fall_angle_ratio", "fallAngleRatio")
+        _set_float("fall_angle_ratio", "fall_angle_ratio")
+        _set_float("fall_low_y", "fallLowY")
+        _set_float("fall_low_y", "fall_low_y")
+        _set_float("smoke_dist_ratio", "smokeDistRatio")
+        _set_float("smoke_dist_ratio", "smoke_dist_ratio")
+        _set_float("smoke_wrist_y_margin", "smokeWristYMargin")
+        _set_float("smoke_wrist_y_margin", "smoke_wrist_y_margin")
+        _set_float("fight_center_ratio", "fightCenterRatio")
+        _set_float("fight_center_ratio", "fight_center_ratio")
+        _set_float("fight_hand_ratio", "fightHandRatio")
+        _set_float("fight_hand_ratio", "fight_hand_ratio")
+        _set_float("fight_min_score", "fightMinScore")
+        _set_float("fight_min_score", "fight_min_score")
+
+        return touched
+
+    def _apply_cv_config_dict(self, cv_cfg: CvConfig, cfg: Any, *, flags: Dict[str, bool]) -> None:
+        if not isinstance(cfg, dict):
+            return
+
+        if "conf" in cfg or "confidence" in cfg or "score" in cfg:
+            val = self._coerce_float(cfg.get("conf") or cfg.get("confidence") or cfg.get("score"))
+            if val is not None:
+                cv_cfg.conf = float(val)
+                flags["conf"] = True
+
+        if "iou" in cfg:
+            val = self._coerce_float(cfg.get("iou"))
+            if val is not None:
+                cv_cfg.iou = float(val)
+
+        if "imgsz" in cfg:
+            val = self._coerce_int(cfg.get("imgsz"))
+            if val is not None:
+                cv_cfg.imgsz = int(val)
+
+        if "max_det" in cfg or "maxDet" in cfg:
+            val = self._coerce_int(cfg.get("max_det") or cfg.get("maxDet"))
+            if val is not None:
+                cv_cfg.max_det = int(val)
+
+        if "max_boxes" in cfg or "maxBoxes" in cfg:
+            val = self._coerce_int(cfg.get("max_boxes") or cfg.get("maxBoxes"))
+            if val is not None:
+                cv_cfg.max_boxes = int(val)
+
+        if "device" in cfg:
+            val = str(cfg.get("device") or "").strip()
+            if val:
+                cv_cfg.device = val
+
+        if "classes" in cfg or "class_ids" in cfg:
+            cls_list = self._coerce_int_list(cfg.get("classes") or cfg.get("class_ids"))
+            if cls_list is not None:
+                cv_cfg.classes = cls_list
+
+        roi_raw = cfg.get("roi") or cfg.get("roiRect")
+        roi_cfg = self._parse_roi_config(roi_raw)
+        if roi_cfg:
+            cv_cfg.roi = roi_cfg
+
+        pose_raw = (
+            cfg.get("pose")
+            or cfg.get("poseConfig")
+            or cfg.get("rule")
+            or cfg.get("ruleConfig")
+        )
+        if pose_raw:
+            self._apply_pose_overrides(cv_cfg.pose, pose_raw)
+
+    def _apply_cv_overrides(self, cv_cfg: CvConfig, params: Dict[str, Any]) -> Dict[str, bool]:
+        flags = {"conf": False}
+
+        # 1) top-level params
+        self._apply_cv_config_dict(cv_cfg, params, flags=flags)
+
+        # 2) configuration block
+        cfg = params.get("configuration")
+        if isinstance(cfg, dict):
+            self._apply_cv_config_dict(cv_cfg, cfg, flags=flags)
+            for key in ("cv", "cvConfig", "cv_config", "vision", "yolo"):
+                if isinstance(cfg.get(key), dict):
+                    self._apply_cv_config_dict(cv_cfg, cfg.get(key), flags=flags)
+
+        # 3) explicit cv config on params
+        for key in ("cv", "cvConfig", "cv_config", "vision", "yolo"):
+            if isinstance(params.get(key), dict):
+                self._apply_cv_config_dict(cv_cfg, params.get(key), flags=flags)
+
+        # 4) roi from sources (by id)
+        sources = params.get("source") or []
+        if isinstance(sources, list):
+            for src in sources:
+                if not isinstance(src, dict):
+                    continue
+                src_id = src.get("id")
+                if src_id is None:
+                    continue
+                roi_raw = src.get("roi") or src.get("roiRect")
+                cfg = src.get("configuration") or {}
+                if not roi_raw and isinstance(cfg, dict):
+                    roi_raw = cfg.get("roi") or cfg.get("roiRect")
+                roi_cfg = self._parse_roi_config(roi_raw)
+                if roi_cfg:
+                    cv_cfg.roi_by_id[str(src_id)] = roi_cfg
+
+        return flags
+
+    @staticmethod
+    def _pick_cv_roi(cv_cfg: Optional[CvConfig], source_id: Any) -> Optional[CvRoiConfig]:
+        if not cv_cfg:
+            return None
+        if source_id is not None:
+            key = str(source_id)
+            roi = cv_cfg.roi_by_id.get(key)
+            if roi:
+                return roi
+        return cv_cfg.roi
 
     @staticmethod
     def _parse_interval_seconds(text: str) -> Optional[int]:
@@ -1561,7 +2017,17 @@ class VideoPatrolAgent(BaseTemplateAgent):
     # ------------------------------------------------------------------
     # Machine：VLM config
     # ------------------------------------------------------------------
-    def _build_vlm_config_for_machine(self) -> VlmConfig:
+    def _build_vlm_config_for_machine(self, backend: str) -> Any:
+        if backend == "cv":
+            return SimpleNamespace(
+                vlm_streaming=False,
+                is_json_format=True,
+                vlm_temperature=0.0,
+                vlm_max_frames=8,
+                vlm_static_evidence_images_dir=str(_EVIDENCE_IMAGES_ROOT),
+                vlm_static_evidence_images_url_prefix="/storage/evidence_images",
+            )
+
         vlm_cfg = VlmConfig()
         vlm_cfg.vlm_streaming = False
         vlm_cfg.is_json_format = True
@@ -1578,6 +2044,8 @@ class VideoPatrolAgent(BaseTemplateAgent):
         interval: int,
         *,
         task_id: str,
+        backend: str = "vlm",
+        cv_config: Optional[CvConfig] = None,
     ) -> StreamingAnalyze:
         rtsp_list: List[RTSP] = []
         for src in sources:
@@ -1594,9 +2062,10 @@ class VideoPatrolAgent(BaseTemplateAgent):
                 logger.warning("[Machine] source 缺少 rtsp/rtmp，跳过: %r", src)
                 continue
 
-            # ✅ machine：prompt 追加“对象检测 JSON数组”约束
-            prompt = (src.get("prompt") or "") + VLM_OBJECT_DETECT_JSON_CONSTRAINTS_8B_Q8
-            # prompt = (src.get("prompt") or "") + VLM_OBJECT_DETECT_JSON_CONSTRAINTS_8B_Q4
+            prompt = (src.get("prompt") or "")
+            if backend == "vlm":
+                prompt += VLM_OBJECT_DETECT_JSON_CONSTRAINTS_8B_Q8
+                # prompt = (src.get("prompt") or "") + VLM_OBJECT_DETECT_JSON_CONSTRAINTS_8B_Q4
             rtsp_list.append(RTSP(rtsp_id=rtsp_id, rtsp_url=rtsp_url, rtsp_system_prompt=prompt))
 
         if not rtsp_list:
@@ -1606,7 +2075,7 @@ class VideoPatrolAgent(BaseTemplateAgent):
             interval = 10
 
         batch_cfg = RTSPBatchConfig(polling_list=rtsp_list, polling_batch_interval=float(interval))
-        vlm_cfg = self._build_vlm_config_for_machine()
+        vlm_cfg = self._build_vlm_config_for_machine(backend)
         runtime_machine_cfg = RuntimeMachineConfig()
 
         return StreamingAnalyze(
@@ -1616,7 +2085,9 @@ class VideoPatrolAgent(BaseTemplateAgent):
             enable_c=False,
             rtsp_batch_config=batch_cfg,
             vlm_config=vlm_cfg,
+            cv_config=cv_config,
             runtime_machine_config=runtime_machine_cfg,
+            b_backend=backend,
         )
 
     # ------------------------------------------------------------------
@@ -1930,6 +2401,30 @@ class VideoPatrolAgent(BaseTemplateAgent):
             yield json.dumps({"error": {"message": "当前任务繁忙，建议指数退避后再次请求。"}}, ensure_ascii=False)
             return
 
+        backend, model_hint, backend_error = self._resolve_backend_and_model(params)
+        if backend_error:
+            yield json.dumps({"error": {"message": backend_error}}, ensure_ascii=False)
+            return
+        cv_task, cv_task_error = self._resolve_cv_task(params)
+        if cv_task_error:
+            yield json.dumps({"error": {"message": cv_task_error}}, ensure_ascii=False)
+            return
+
+        if backend == "cv" and cv_task and not model_hint:
+            model_hint = "yolov8n-pose.pt"
+
+        cv_cfg = build_cv_config(model_hint) if backend == "cv" else None
+        cv_flags = {}
+        if cv_cfg:
+            cv_flags = self._apply_cv_overrides(cv_cfg, params)
+            if cv_task:
+                cv_cfg.task = cv_task
+                if not cv_flags.get("conf"):
+                    cv_cfg.conf = min(cv_cfg.conf, 0.2)
+                model_name = os.path.basename(cv_cfg.model_path or "")
+                if "pose" not in model_name.lower():
+                    logger.warning("[Machine] cv_task=%s 建议使用 pose 模型，当前=%s", cv_task, model_name or "?")
+
         sources = params.get("source") or []
         if not isinstance(sources, list) or not sources:
             yield json.dumps({"error": {"message": "缺少参数 source，至少需要提供一个视频源。"}}, ensure_ascii=False)
@@ -1968,6 +2463,8 @@ class VideoPatrolAgent(BaseTemplateAgent):
                 sources=sources,
                 interval=interval,
                 task_id=str(rpc_id),
+                backend=backend,
+                cv_config=cv_cfg,
             )
 
             meta = TaskMeta(
@@ -2044,11 +2541,13 @@ class VideoPatrolAgent(BaseTemplateAgent):
                             events_for_box = [{"objects": objects_flat}]
 
                         try:
+                            roi_cfg = self._pick_cv_roi(cv_cfg, source_id)
                             raw_box_urls = export_evidence_images_with_boxes(
                                 evidence_images=evidence_images_for_box,
                                 events=events_for_box,
                                 seg_idx=seg_idx,
                                 vlm_config=box_cfg,  # SimpleNamespace
+                                roi=roi_cfg,
                             )
                             evidence_image_box_urls = (
                                 self._absolutize_evidence_urls(list(raw_box_urls)) or list(evidence_image_urls)
@@ -2108,8 +2607,15 @@ class VideoPatrolAgent(BaseTemplateAgent):
             ws_client_id = None
 
         if self._is_chat_envelope(original_params):
+            content, _ = self._extract_chat_message_and_system_prompt(original_params)
+            self._md_append("user", content)
+            full_response = ""
             async for chunk in self._handle_chat_request(original_params):
+                chunk_text = str(chunk) if chunk is not None else ""
+                full_response += chunk_text
                 yield chunk
+            if full_response:
+                self._md_append("assistant", full_response)
             return
 
         rpc_id, params = self._extract_rpc_id_and_params(original_params)

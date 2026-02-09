@@ -1211,13 +1211,13 @@ class ToolSelector:
             'params': {
                 'message': f'需要调用工具：{tool_name}',
                 'call': {
-                    'toolName': tool_name.replace('_ai_service_#', ''),
+                    'toolName': tool_name,
                     'arguments': filled_params,
                     'executionId': execution_id
                 },
                 'command': {
-                    'id': tool_name.replace('_ai_service_#', ''),
-                    'name': tool_name.replace('_ai_service_#', ''),
+                    'id': tool_name,
+                    'name': tool_name,
                     'description': tool_description,
                     'inputs': inputs
                 }

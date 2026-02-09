@@ -45,6 +45,9 @@ class InternalToolRegistry:
         # 标记是否已加载
         self._loaded: bool = False
 
+        # Built-in internal tools (always treated as internal)
+        self._always_internal_ids: Set[str] = {"skill"}
+
     async def load_from_database(self, db: Session):
         """
         从数据库加载内部工具列表
@@ -74,6 +77,9 @@ class InternalToolRegistry:
                     "description": tool.description,
                     "is_async": tool.is_async
                 }
+
+            # Ensure always-internal tools are registered
+            self._internal_tool_ids.update(self._always_internal_ids)
 
             self._loaded = True
 
@@ -108,6 +114,15 @@ class InternalToolRegistry:
             print("这也是内部工具")
         ```
         """
+        # Always allow built-in internal tools
+        if tool_id in self._always_internal_ids:
+            return True
+
+        if tool_id.startswith("_ai_service_#"):
+            actual_tool_id = tool_id.replace("_ai_service_#", "", 1)
+            if actual_tool_id in self._always_internal_ids:
+                return True
+
         if not self._loaded:
             logger.warning(
                 "⚠️ 内部工具注册表尚未加载，默认视为外部工具。"

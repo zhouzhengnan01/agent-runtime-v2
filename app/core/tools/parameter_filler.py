@@ -234,25 +234,130 @@ class ParameterFiller:
             return self._fallback_fill_parameters(parameters, user_message, context)
 
         try:
+            effective_context = dict(context) if isinstance(context, dict) else {}
+
+            # ✅ 外部工具链优化：从本次会话的工具结果中预填充参数（避免 LLM “看不到上一步结果”）
+            auto_prefilled = self._derive_prefilled_from_session_tool_history(parameters, effective_context, tool_name=tool_name)
+            explicit_prefilled = effective_context.get("pre_filled_arguments", {}) or {}
+            if auto_prefilled:
+                merged_prefilled = {**auto_prefilled, **explicit_prefilled}  # 显式预填充优先
+                effective_context["pre_filled_arguments"] = merged_prefilled
+            else:
+                merged_prefilled = dict(explicit_prefilled) if isinstance(explicit_prefilled, dict) else {}
+
             # 构建完整的提示词
             prompt = await self._build_comprehensive_prompt(
-                parameters, user_message, context, tool_name
+                parameters, user_message, effective_context, tool_name
             )
 
             # 调用LLM
-            result = await self._call_llm(prompt, tool_name)
+            usage_tracker = effective_context.get("usage_tracker") if isinstance(effective_context, dict) else None
+            result = await self._call_llm(prompt, tool_name, usage_tracker)
 
             if result:
                 self.logger.info(f"✅ [简化填充] LLM填充成功: {tool_name}")
-                self.logger.info(f"🎯 填充结果: {json.dumps(result, ensure_ascii=False)}")
-                return result
+                # 合并：自动预填充 < LLM结果 < 显式预填充（显式参数为准）
+                final_params: Dict[str, Any] = {}
+                if auto_prefilled:
+                    final_params.update(auto_prefilled)
+                if isinstance(result, dict):
+                    final_params.update(result)
+                if isinstance(explicit_prefilled, dict) and explicit_prefilled:
+                    final_params.update(explicit_prefilled)
+
+                # Prefer authoritative values from tool history for complex visualization toolchains.
+                # Especially for FillComponent, `component` structure is strict; keep the default
+                # component config selected from SearchComponentInfo when available.
+                try:
+                    props = parameters.get("properties") if isinstance(parameters, dict) else None
+                    is_visualization = (
+                        isinstance(tool_name, str)
+                        and tool_name.lower().startswith("visualizationservice:")
+                        and isinstance(props, dict)
+                    )
+                    if is_visualization and isinstance(auto_prefilled, dict) and isinstance(props, dict):
+                        # Keep key parameters from deterministic prefill when available; LLM may
+                        # override them with incomplete values (especially `terms`/`component`).
+                        for k in ("id", "terms", "component"):
+                            if k not in props:
+                                continue
+                            if k in auto_prefilled and auto_prefilled.get(k) is not None:
+                                final_params[k] = auto_prefilled.get(k)
+                except Exception:
+                    pass
+
+                filtered_params = self._filter_params_by_schema(
+                    parameters,
+                    final_params,
+                    keep_unknown_keys=set((auto_prefilled or {}).keys()) | set((explicit_prefilled or {}).keys()),
+                    tool_name=tool_name,
+                )
+
+                self.logger.info(
+                    "🎯 填充结果: %s",
+                    json.dumps(filtered_params, ensure_ascii=False)[:1500],
+                )
+                return filtered_params
             else:
                 self.logger.warning(f"⚠️ [简化填充] LLM填充失败，使用规则填充")
-                return self._fallback_fill_parameters(parameters, user_message, context)
+                fallback = self._fallback_fill_parameters(parameters, user_message, effective_context)
+                if auto_prefilled:
+                    return {**auto_prefilled, **fallback, **explicit_prefilled}
+                return fallback
 
         except Exception as e:
             self.logger.error(f"❌ [简化填充] 参数填充异常: {e}")
-            return self._fallback_fill_parameters(parameters, user_message, context)
+            fallback = self._fallback_fill_parameters(parameters, user_message, context)
+            try:
+                auto_prefilled = self._derive_prefilled_from_session_tool_history(parameters, context)
+                explicit_prefilled = (context or {}).get("pre_filled_arguments", {}) if isinstance(context, dict) else {}
+                if auto_prefilled:
+                    return {**auto_prefilled, **fallback, **(explicit_prefilled or {})}
+            except Exception:
+                pass
+            return fallback
+
+    def _filter_params_by_schema(
+        self,
+        parameters: Dict[str, Any],
+        params: Dict[str, Any],
+        *,
+        keep_unknown_keys: Optional[set] = None,
+        tool_name: str = "unknown",
+    ) -> Dict[str, Any]:
+        """Restrict filled params to JSON-Schema declared properties.
+
+        Some external tool executors validate params strictly and will reject
+        unknown keys (e.g. an LLM hallucinating `text` for a tool without it).
+        """
+        if not isinstance(params, dict):
+            return params
+
+        props = parameters.get("properties") if isinstance(parameters, dict) else None
+        if not isinstance(props, dict) or not props:
+            return params
+
+        allowed = set(str(k) for k in props.keys() if k)
+        keep = set()
+        if isinstance(keep_unknown_keys, set):
+            keep = set(str(k) for k in keep_unknown_keys if k)
+
+        dropped: List[str] = []
+        filtered: Dict[str, Any] = {}
+        for k, v in params.items():
+            if k in allowed or k in keep:
+                filtered[k] = v
+            else:
+                dropped.append(str(k))
+
+        if dropped:
+            self.logger.warning(
+                "⚠️ [参数过滤] 工具 %s 输出包含未声明字段，已丢弃: %s",
+                tool_name,
+                dropped[:20],
+            )
+
+        return filtered
 
     async def _build_comprehensive_prompt(
         self,
@@ -276,6 +381,8 @@ class ParameterFiller:
 
         # 4. 获取工具调用历史
         tool_history_text = await self._get_tool_call_history(context, tool_name)
+        session_tool_history_text = self._format_session_tool_call_history(context.get("tool_call_history"))
+        last_tool_result_text = self._format_tool_result_brief(context.get("tool_res"))
 
         # 5. 格式化时间转换规则
         time_rules = self._format_time_rules()
@@ -291,7 +398,7 @@ class ParameterFiller:
 {params_text}
 
 **上下文参考信息**:
-{self._format_context_info(init_parameters, pre_filled, system_prompt, history_text, tool_history_text)}
+{self._format_context_info(init_parameters, pre_filled, system_prompt, history_text, tool_history_text, session_tool_history_text, last_tool_result_text)}
 
 **时间转换规则**:
 {time_rules}
@@ -351,20 +458,32 @@ class ParameterFiller:
         pre_filled: Dict[str, Any],
         system_prompt: str,
         history_text: str,
-        tool_history_text: str
+        tool_history_text: str,
+        session_tool_history_text: str = "",
+        last_tool_result_text: str = ""
     ) -> str:
         """格式化上下文信息"""
         context_parts = []
+
+        def _format_kv(data: Dict[str, Any], *, max_items: int = 12, max_value_chars: int = 180) -> str:
+            if not data or not isinstance(data, dict):
+                return ""
+            items = []
+            for idx, (k, v) in enumerate(list(data.items())[:max_items]):
+                items.append(f"{k}={self._format_tool_result_brief(v, max_chars=max_value_chars)}")
+            if len(data) > max_items:
+                items.append("...(more)")
+            return ", ".join(items)
 
         if system_prompt:
             context_parts.append(f"- 系统角色: {system_prompt}")
 
         if init_parameters:
-            init_text = ", ".join([f"{k}={v}" for k, v in init_parameters.items()])
+            init_text = _format_kv(init_parameters, max_items=12, max_value_chars=140)
             context_parts.append(f"- 初始参数: {init_text}")
 
         if pre_filled:
-            pre_text = ", ".join([f"{k}={v}" for k, v in pre_filled.items()])
+            pre_text = _format_kv(pre_filled, max_items=10, max_value_chars=180)
             context_parts.append(f"- 建议参数: {pre_text}")
 
         if history_text:
@@ -372,6 +491,12 @@ class ParameterFiller:
 
         if tool_history_text:
             context_parts.append(f"- 工具调用历史: {tool_history_text}")
+
+        if session_tool_history_text:
+            context_parts.append(f"- 本次会话工具结果: {session_tool_history_text}")
+
+        if last_tool_result_text:
+            context_parts.append(f"- 上一步工具结果(原始摘要): {last_tool_result_text}")
 
         return "\n".join(context_parts) if context_parts else "无上下文信息"
 
@@ -390,6 +515,270 @@ class ParameterFiller:
             history_items.append(f"{role}: {content}")
 
         return " | ".join(history_items)
+
+    def _format_tool_result_brief(self, value: Any, *, max_chars: int = 800) -> str:
+        """把工具结果压缩成可放入提示词的短文本（避免超长 JSON 撑爆 prompt）。"""
+        if value is None:
+            return ""
+        try:
+            if isinstance(value, (dict, list)):
+                text = json.dumps(value, ensure_ascii=False)
+            else:
+                text = str(value)
+        except Exception:
+            text = str(value)
+        text = text.strip()
+        if len(text) > max_chars:
+            return text[:max_chars] + "...(truncated)"
+        return text
+
+    def _format_session_tool_call_history(self, history: Any, *, max_items: int = 3, max_chars: int = 1200) -> str:
+        """格式化本次 session 内的工具结果（来自 agent_context.tool_call_history）。"""
+        if not history or not isinstance(history, list):
+            return ""
+
+        recent = history[-max_items:]
+        parts: List[str] = []
+        for entry in recent:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("tool_name") or "unknown"
+            args = entry.get("arguments", {})
+            result = entry.get("result", None)
+            args_text = self._format_tool_result_brief(args, max_chars=260)
+            res_text = self._format_tool_result_brief(result, max_chars=420)
+            parts.append(f"{name} args={args_text} result={res_text}")
+
+        text = " | ".join(parts)
+        if len(text) > max_chars:
+            return text[:max_chars] + "...(truncated)"
+        return text
+
+    def _derive_prefilled_from_session_tool_history(
+        self,
+        parameters: Dict[str, Any],
+        context: Dict[str, Any],
+        *,
+        tool_name: str = "unknown",
+    ) -> Dict[str, Any]:
+        """从本次会话工具返回值中“自动取数”预填充参数（外部工具链场景）。"""
+        if not isinstance(parameters, dict) or not isinstance(context, dict):
+            return {}
+
+        properties = parameters.get("properties") or {}
+        if not isinstance(properties, dict) or not properties:
+            return {}
+
+        required = parameters.get("required") or []
+        if not isinstance(required, list):
+            required = []
+
+        history = context.get("tool_call_history") or []
+        if not isinstance(history, list):
+            history = []
+
+        # last_result: 优先使用 context.tool_res，否则取最近一次工具 result
+        last_result = context.get("tool_res")
+        if last_result is None and history:
+            try:
+                last_result = history[-1].get("result")
+            except Exception:
+                last_result = None
+
+        def _extract(result: Any, key: str) -> Any:
+            if not isinstance(result, dict):
+                return None
+            if key in result:
+                return result.get(key)
+            for wrapper_key in ("data", "result", "payload"):
+                wrapped = result.get(wrapper_key)
+                if isinstance(wrapped, dict) and key in wrapped:
+                    return wrapped.get(key)
+            return None
+
+        def _unwrap_list(value: Any) -> Optional[List[Any]]:
+            """Best-effort unwrap for tool results that wrap the real list payload.
+
+            Some external tool relays return results in shapes like:
+            - {"success": true, "result": [ ... ]}
+            - {"result": {"data": [ ... ]}}
+            - {"data": [ ... ]}
+            We try common container keys recursively.
+            """
+            if isinstance(value, list):
+                return value
+            if not isinstance(value, dict):
+                return None
+            for k in ("data", "result", "payload", "list", "records", "items"):
+                inner = value.get(k)
+                unwrapped = _unwrap_list(inner)
+                if unwrapped is not None:
+                    return unwrapped
+            return None
+
+        derived: Dict[str, Any] = {}
+
+        # ──────────────────────────────────────────────────────────────
+        # 可视化大屏工具链（SearchComponentInfo）兜底：从上一步骨架结果推导 terms
+        #
+        # 背景：某些可视化工具 schema 会把 `terms` 定义为 array，但前端默认值常以 JSON 字符串
+        # 形式下发，且 LLM 有时会误填 `text` 导致参数为空。这里做一次确定性补齐，降低外部执行错误率。
+        # ──────────────────────────────────────────────────────────────
+        try:
+            is_visualization_tool = isinstance(tool_name, str) and tool_name.lower().startswith("visualizationservice:")
+            if is_visualization_tool and "terms" in properties and "id" not in properties and "component" not in properties:
+                explicit_terms = None
+                try:
+                    pre = context.get("pre_filled_arguments") if isinstance(context.get("pre_filled_arguments"), dict) else {}
+                    explicit_terms = pre.get("terms")
+                except Exception:
+                    explicit_terms = None
+
+                if explicit_terms is None and "terms" not in derived and isinstance(last_result, dict):
+                    module_meta = (
+                        last_result.get("moduleMeta")
+                        or last_result.get("module_meta")
+                        or _extract(last_result, "moduleMeta")
+                        or _extract(last_result, "module_meta")
+                    )
+                    optional_values: List[str] = []
+                    if isinstance(module_meta, list):
+                        for module in module_meta:
+                            if not isinstance(module, dict):
+                                continue
+                            for part_key in ("header", "content"):
+                                part = module.get(part_key) or {}
+                                if not isinstance(part, dict):
+                                    continue
+                                opts = part.get("optional") or []
+                                if isinstance(opts, list):
+                                    for opt in opts:
+                                        if isinstance(opt, str) and opt.strip():
+                                            optional_values.append(opt.strip())
+
+                    # de-dup while preserving order
+                    seen = set()
+                    deduped: List[str] = []
+                    for v in optional_values:
+                        if v in seen:
+                            continue
+                        seen.add(v)
+                        deduped.append(v)
+
+                    if deduped:
+                        terms: List[Dict[str, Any]] = []
+                        for opt in deduped[:10]:
+                            terms.append({
+                                "column": "resourceId",
+                                "termType": "like",
+                                "value": f"%{opt}%",
+                                "type": "or",
+                            })
+                        terms.append({
+                            "column": "provider",
+                            "termType": "eq",
+                            "value": "system",
+                            "type": "and",
+                        })
+                        terms.append({
+                            "column": "type",
+                            "termType": "eq",
+                            "value": "component",
+                            "type": "and",
+                        })
+                        derived["terms"] = terms
+        except Exception:
+            pass
+
+        # ──────────────────────────────────────────────────────────────
+        # 可视化大屏工具链（FillComponent）兜底：从上一步组件查询结果直接选取 component
+        #
+        # 背景：FillComponent 的 component 结构复杂，LLM 容易“少字段/错字段”，导致外部执行器卡住或不返回结果。
+        # 这里优先复用 SearchComponentInfo 返回的默认组件配置（最可信），提升链路稳定性。
+        # ──────────────────────────────────────────────────────────────
+        try:
+            is_visualization_tool = isinstance(tool_name, str) and tool_name.lower().startswith("visualizationservice:")
+            if is_visualization_tool and "component" in properties and "id" in properties:
+                pre = context.get("pre_filled_arguments") if isinstance(context.get("pre_filled_arguments"), dict) else {}
+                if pre.get("component") is None and "component" not in derived:
+                    def _looks_like_component_list(value: Any) -> bool:
+                        items = _unwrap_list(value) if not isinstance(value, list) else value
+                        if not isinstance(items, list) or not items:
+                            return False
+                        first = items[0]
+                        if not isinstance(first, dict):
+                            return False
+                        if "type" not in first:
+                            return False
+                        if "componentProps" in first or "component_props" in first:
+                            return True
+                        if "dataSourceProps" in first or "dataSource_props" in first:
+                            return True
+                        return False
+
+                    preferred: Optional[List[Dict[str, Any]]] = None
+                    fallback: Optional[List[Dict[str, Any]]] = None
+                    for call in reversed(history):
+                        if not isinstance(call, dict):
+                            continue
+                        name = call.get("tool_name") or call.get("toolName") or call.get("name") or ""
+                        res = call.get("result")
+                        res_list = _unwrap_list(res) if not isinstance(res, list) else res
+                        if not _looks_like_component_list(res_list):
+                            continue
+                        # Normalize to a list[dict] for downstream selection.
+                        normalized: List[Dict[str, Any]] = [x for x in (res_list or []) if isinstance(x, dict)]
+                        if not normalized:
+                            continue
+                        if not fallback:
+                            fallback = normalized
+                        name_text = str(name).lower() if isinstance(name, str) else ""
+                        if "565rvz" in name_text or "searchcomponent" in name_text:
+                            preferred = normalized
+                            break
+
+                    selected = preferred or fallback
+                    if selected:
+                        derived["component"] = [selected[0]]
+        except Exception:
+            pass
+
+        # 1) 先按“参数名=结果字段名”精确匹配
+        for param_name, prop in properties.items():
+            if not param_name:
+                continue
+            # 避免覆盖显式预填充
+            explicit = (context.get("pre_filled_arguments") or {}).get(param_name) if isinstance(context.get("pre_filled_arguments"), dict) else None
+            if explicit is not None:
+                continue
+
+            candidate = None
+            for call in reversed(history):
+                if not isinstance(call, dict):
+                    continue
+                candidate = _extract(call.get("result"), param_name)
+                if candidate is not None:
+                    break
+
+            if candidate is None and last_result is not None:
+                candidate = _extract(last_result, param_name)
+
+            if candidate is not None:
+                derived[param_name] = candidate
+
+        # 2) 若存在“唯一一个必填 object/array”但仍未填，兜底把上一步 result 塞进去
+        missing_required = [name for name in required if name in properties and name not in derived]
+        obj_like_missing = []
+        for name in missing_required:
+            prop = properties.get(name) or {}
+            typ = str(prop.get("type") or "").lower()
+            if typ in {"object", "array"}:
+                obj_like_missing.append(name)
+
+        if len(obj_like_missing) == 1 and isinstance(last_result, (dict, list)):
+            derived.setdefault(obj_like_missing[0], last_result)
+
+        return derived
 
     async def _get_tool_call_history(self, context: Dict[str, Any], tool_name: str) -> str:
         """获取相关的工具调用历史"""
@@ -446,14 +835,29 @@ class ParameterFiller:
 - 最近1小时 → {self._time_cache['recent_1_hour']}
 - 最近24小时 → {self._time_cache['recent_24_hours']}"""
 
-    async def _call_llm(self, prompt: str, tool_name: str) -> Dict[str, Any]:
+    async def _call_llm(
+        self,
+        prompt: str,
+        tool_name: str,
+        usage_tracker: Optional[Any] = None
+    ) -> Dict[str, Any]:
         """调用LLM获取参数填充结果"""
         try:
             from langchain_core.messages import HumanMessage
+            from langchain_community.callbacks.manager import get_openai_callback
+            from app.core.llm.usage import usage_from_openai_callback
 
             self.logger.info(f"🤖 [LLM调用] 开始调用LLM: {tool_name}")
 
-            response = self.llm.invoke([HumanMessage(content=prompt)])
+            with get_openai_callback() as cb:
+                response = self.llm.invoke([HumanMessage(content=prompt)])
+            usage = usage_from_openai_callback(
+                cb,
+                model=getattr(self.llm, "model_name", None),
+                provider="langchain",
+            )
+            if usage_tracker and usage:
+                usage_tracker.add(usage, source="parameter_filler")
             response_text = response.content.strip()
 
             self.logger.info(f"📤 [LLM响应] 原始响应长度: {len(response_text)} 字符")
@@ -555,7 +959,8 @@ class ParameterFiller:
 
         # 获取工具信息
         tool_name = getattr(tool, 'name', 'unknown')
-        tool_description = getattr(tool, 'description', '')
+        display_tool_name = str(tool_name)
+        tool_description = (getattr(tool, 'description', '') or '').strip()
         parameters = getattr(tool, 'parameters', {})
 
         # 生成执行ID
@@ -579,15 +984,19 @@ class ParameterFiller:
             'method': 'tools.confirm',
             'id': execution_id,
             'params': {
-                'message': f'需要调用工具：{tool_name}',
+                'message': (
+                    f"准备调用工具：{display_tool_name}"
+                    + (f"（{tool_description[:80]}{'...' if len(tool_description) > 80 else ''}）" if tool_description else "")
+                    + "，请确认参数。"
+                ),
                 'call': {
-                    'toolName': tool_name.replace('_ai_service_#', ''),
+                    'toolName': display_tool_name,
                     'arguments': filled_params,
                     'executionId': execution_id
                 },
                 'command': {
-                    'id': tool_name.replace('_ai_service_#', ''),
-                    'name': tool_name.replace('_ai_service_#', ''),
+                    'id': display_tool_name,
+                    'name': display_tool_name,
                     'description': tool_description,
                     'inputs': inputs
                 }
@@ -595,10 +1004,10 @@ class ParameterFiller:
         }
 
         # 知识库工具自动执行
-        if 'knowledgeService#Search' == tool_name:
+        if 'knowledgeService#Search' == display_tool_name:
             confirmation['params']['auto'] = True
 
-        self.logger.info(f"✅ 生成工具确认消息: {tool_name}")
+        self.logger.info(f"✅ 生成工具确认消息: {display_tool_name}")
         return confirmation
 
     def _convert_parameters_to_inputs(self, parameters: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     VIDEO_ANALYZER_PROVIDER: str = "openai"
     DEFAULT_LLM_PROVIDER: str = "openai"
     DEFAULT_LLM_MODEL: str = "glm-4.6"
+
+    # Token billing configuration
+    TOKEN_BILLING_ENABLED: bool = True
+    TOKEN_PRICE_INPUT_PER_1K: float = 0.0
+    TOKEN_PRICE_OUTPUT_PER_1K: float = 0.0
+    TOKEN_PRICE_TABLE: Optional[str] = None
+    TOKEN_PRICE_CURRENCY: str = "USD"
     
     # JAIP配置
     ENABLE_JAIP: bool = True
@@ -145,6 +152,13 @@ class Settings(BaseSettings):
     # Tool配置
     TOOL_EXECUTION_TIMEOUT: int = 60
     TOOL_MAX_RETRIES: int = 3
+
+    # Skill configuration
+    SKILL_ENABLED: bool = True
+    SKILL_PATHS: Optional[str] = None  # comma-separated paths
+    SKILL_CACHE_TTL: int = 60  # seconds
+    SKILL_MAX_ITEMS: int = 50  # max skills exposed in prompts
+    SKILL_MAX_CHARS: int = 12000  # max chars returned per skill
 
     # Milvus配置
     MILVUS_HOST: str = "localhost"

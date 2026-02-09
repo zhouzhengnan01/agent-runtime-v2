@@ -145,7 +145,8 @@ proglog==0.1.12
 propcache==0.3.2
 protobuf==6.32.1
 psutil==7.1.0
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.9; python_version < "3.13"
+psycopg[binary]==3.2.6; python_version >= "3.13"
 py-cpuinfo==9.0.0
 pyasn1==0.6.1
 pyclipper==1.3.0.post6
@@ -158,7 +159,6 @@ Pygments==2.19.2
 pymilvus==2.6.2
 PyMuPDF==1.26.4
 PyMySQL==1.1.1
-psycopg2-binary==2.9.9
 pyparsing==3.2.5
 pypdf==6.0.0
 pypdfium2==4.30.0

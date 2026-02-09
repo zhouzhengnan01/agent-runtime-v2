@@ -9,11 +9,13 @@ import os
 import queue
 import threading
 import time
+from types import SimpleNamespace
 from typing import List, Optional, Callable, Dict, Any, Iterator
 
 from app.shared.jetlinks_video.all_enum import MODEL, SOURCE_KIND
 from app.shared.jetlinks_video.utils import logger_utils
 from app.shared.jetlinks_video.workers import worker_a_cut, worker_b_vlm, worker_c_asr
+from app.shared.jetlinks_video.configs.cv_config import CvConfig
 from app.shared.jetlinks_video.configs.vlm_config import VlmConfig
 from app.shared.jetlinks_video.configs.asr_config import AsrConfig
 from app.shared.jetlinks_video.configs.cut_config import CutConfig
@@ -41,9 +43,11 @@ class StreamingAnalyze:
         enable_c: bool = True,
         rtsp_batch_config: Optional[RTSPBatchConfig] = None,  # SECURITY_SINGLE / SECURITY_POLLING 才能传入
         vlm_config: Optional[VlmConfig] = None,
+        cv_config: Optional[CvConfig] = None,
         asr_config: Optional[AsrConfig] = None,
         cut_config: Optional[CutConfig] = None,
-        runtime_machine_config: RuntimeMachineConfig = RuntimeMachineConfig()
+        runtime_machine_config: RuntimeMachineConfig = RuntimeMachineConfig(),
+        b_backend: str = "vlm",
     ):
         if not isinstance(mode, MODEL):
             raise ValueError(f"mode 只接受 MODEL 枚举，但传入了 {type(mode)}")
@@ -58,7 +62,25 @@ class StreamingAnalyze:
         self.runtime_machine_config = runtime_machine_config
 
         # ---------- 其它配置默认化（必须在后面使用前完成） ----------
-        self.vlm_config = vlm_config or VlmConfig()
+        backend = (b_backend or "vlm").strip().lower()
+        if backend == "yolo":
+            backend = "cv"
+        self.b_backend = backend
+        self.cv_config = cv_config
+
+        if self.b_backend == "cv":
+            if vlm_config is None:
+                vlm_config = SimpleNamespace(
+                    vlm_streaming=False,
+                    is_json_format=True,
+                    vlm_temperature=0.0,
+                    vlm_max_frames=8,
+                    vlm_static_evidence_images_dir="",
+                    vlm_static_evidence_images_url_prefix="/storage/evidence_images",
+                )
+            self.vlm_config = vlm_config
+        else:
+            self.vlm_config = vlm_config or VlmConfig()
         self.asr_config = asr_config or AsrConfig()
         self.cut_config = cut_config or CutConfig()
 
@@ -128,10 +150,11 @@ class StreamingAnalyze:
 
         # ---------- 初始化本地 VLM 运行时状态机（仅安防 + 本地后端 + 启用开关） ----------
         if (
-            self.runtime_machine_config.local_vlm_runtime_machine
+            self.b_backend != "cv"
+            and self.runtime_machine_config.local_vlm_runtime_machine
             and self.enable_b
             and self.mode in (MODEL.SECURITY_SINGLE, MODEL.SECURITY_POLLING)
-            ):
+        ):
             # 从 cut_config 中取一个基线的切片时长，兜底 10 秒
             base_cut_window_sec = float(getattr(self.cut_config, "cut_window_sec", 10.0) or 10.0)
             if base_cut_window_sec <= 0:
@@ -166,10 +189,11 @@ class StreamingAnalyze:
                 logger.warning("[主控] LocalVlmRuntimeMachine 初始化失败，自动降级关闭：%s", e)
         else:
             logger.info(
-                "[主控] LocalVlmRuntimeMachine 未启用：mode=%s, enable_b=%s, switch=%s",
+                "[主控] LocalVlmRuntimeMachine 未启用：mode=%s, enable_b=%s, switch=%s, backend=%s",
                 self.mode.value,
                 self.enable_b,
                 self.runtime_machine_config.local_vlm_runtime_machine,
+                self.b_backend,
             )
 
         # ---------- 回调占位 ----------
@@ -467,11 +491,29 @@ class StreamingAnalyze:
         t_b = None
         # 纯音频 OFFLINE：不创建 B
         if self.enable_b and (not is_offline_audio):
-            t_b = threading.Thread(
-                target=worker_b_vlm.worker_b_vlm, daemon=True,
-                args=(self._Q_VIDEO, self._Q_VLM, self._Q_CTRL_B, self._STOP, self.mode, self.rtsp_batch_config, self.vlm_config),
-                name="B-VLM解析"
-            )
+            if self.b_backend == "cv":
+                from app.shared.jetlinks_video.workers import worker_b_cv
+
+                t_b = threading.Thread(
+                    target=worker_b_cv.worker_b_cv, daemon=True,
+                    args=(
+                        self._Q_VIDEO,
+                        self._Q_VLM,
+                        self._Q_CTRL_B,
+                        self._STOP,
+                        self.mode,
+                        self.rtsp_batch_config,
+                        self.cv_config,
+                        self.vlm_config,
+                    ),
+                    name="B-CV"
+                )
+            else:
+                t_b = threading.Thread(
+                    target=worker_b_vlm.worker_b_vlm, daemon=True,
+                    args=(self._Q_VIDEO, self._Q_VLM, self._Q_CTRL_B, self._STOP, self.mode, self.rtsp_batch_config, self.vlm_config),
+                    name="B-VLM解析"
+                )
 
         t_c = None
         if self.enable_c:

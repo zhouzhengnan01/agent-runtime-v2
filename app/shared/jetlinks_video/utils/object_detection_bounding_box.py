@@ -167,11 +167,77 @@ def _draw_transparent_rect(
     cv2.addWeighted(overlay, alpha, roi, 1.0 - alpha, 0, roi)
 
 
+def _resolve_roi_pixels(
+    roi_cfg: Any,
+    img_w: int,
+    img_h: int,
+) -> Optional[Tuple[int, int, int, int]]:
+    if roi_cfg is None:
+        return None
+    rect = getattr(roi_cfg, "rect", None) if not isinstance(roi_cfg, dict) else roi_cfg.get("rect")
+    normalized = getattr(roi_cfg, "normalized", None) if not isinstance(roi_cfg, dict) else roi_cfg.get("normalized")
+    draw = getattr(roi_cfg, "draw", None) if not isinstance(roi_cfg, dict) else roi_cfg.get("draw")
+    padding = getattr(roi_cfg, "padding", None) if not isinstance(roi_cfg, dict) else roi_cfg.get("padding")
+
+    if not rect or not draw:
+        return None
+    try:
+        x1, y1, x2, y2 = rect
+        x1 = float(x1)
+        y1 = float(y1)
+        x2 = float(x2)
+        y2 = float(y2)
+    except Exception:
+        return None
+
+    if normalized is None:
+        vals = [x1, y1, x2, y2]
+        normalized = min(vals) >= 0.0 and max(vals) <= 1.0
+    elif isinstance(normalized, str):
+        normalized = normalized.strip().lower() in {"1", "true", "yes", "y", "on"}
+    else:
+        normalized = bool(normalized)
+
+    pad_val = float(padding) if padding is not None else 0.0
+
+    if normalized:
+        x1 *= img_w
+        x2 *= img_w
+        y1 *= img_h
+        y2 *= img_h
+        if pad_val:
+            x1 -= pad_val * img_w
+            x2 += pad_val * img_w
+            y1 -= pad_val * img_h
+            y2 += pad_val * img_h
+    else:
+        if pad_val:
+            x1 -= pad_val
+            x2 += pad_val
+            y1 -= pad_val
+            y2 += pad_val
+
+    if x2 < x1:
+        x1, x2 = x2, x1
+    if y2 < y1:
+        y1, y2 = y2, y1
+
+    x1 = max(0, min(int(round(x1)), img_w - 1))
+    y1 = max(0, min(int(round(y1)), img_h - 1))
+    x2 = max(0, min(int(round(x2)), img_w))
+    y2 = max(0, min(int(round(y2)), img_h))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return (x1, y1, x2, y2)
+
+
 def export_evidence_images_with_boxes(
     evidence_images: List[str],
     events: List[Dict[str, Any]],
     seg_idx: int,
     vlm_config: Optional[VlmConfig] = None,
+    roi: Optional[Any] = None,
 ) -> List[str]:
     if not evidence_images or not events:
         return []
@@ -201,6 +267,18 @@ def export_evidence_images_with_boxes(
 
         h, w = img.shape[:2]
         objs = _collect_objects_for_image(events, i, total_images=total)
+
+        roi_pixels = _resolve_roi_pixels(roi, w, h)
+        if roi_pixels:
+            rx1, ry1, rx2, ry2 = roi_pixels
+            _draw_transparent_rect(
+                img,
+                (rx1, ry1),
+                (rx2, ry2),
+                color_bgr=(0, 165, 255),
+                alpha=0.18,
+            )
+            cv2.rectangle(img, (rx1, ry1), (rx2, ry2), (0, 165, 255), thickness=2)
 
         dbg_img(
             "bbox:imread",

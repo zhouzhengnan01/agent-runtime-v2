@@ -164,7 +164,8 @@ class ToolCallingAgent(BaseTemplateAgent):
                 {"role": "tools", "content": self.function_list}  # 传递工具列表
             ]
             chunk_index = 0
-            async for chunk in self.cognitive_engine._run_stream(messages):
+            usage_tracker = context.get("usage_tracker") if isinstance(context, dict) else None
+            async for chunk in self.cognitive_engine._run_stream(messages, usage_tracker=usage_tracker):
                 chunk_index += 1
                 if chunk is None:
                     continue
@@ -276,9 +277,7 @@ class ToolCallingAgent(BaseTemplateAgent):
             if internal_tools:
                 tool_guide += "**AI内部工具**:\n"
                 for tool_name, tool_desc in internal_tools:
-                    # 去掉前缀显示
-                    display_name = tool_name.replace('_ai_service_#', '')
-                    tool_guide += f"- **{display_name}**: {tool_desc}\n"
+                    tool_guide += f"- **{tool_name}**: {tool_desc}\n"
 
             tool_guide += f"\n**总计: {len(self.function_list)} 个工具**\n"
 

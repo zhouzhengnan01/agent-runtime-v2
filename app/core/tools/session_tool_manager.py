@@ -80,6 +80,13 @@ class SessionTool(BaseTool):
 
         # 设置工具基本属性（兼容 id 和 name 字段）
         self.name = tool_def.get('id') or tool_def.get('name', '')
+        self.display_name = (
+            tool_def.get("name")
+            or tool_def.get("displayName")
+            or tool_def.get("display_name")
+            or tool_def.get("title")
+            or self.name
+        )
         self.description = tool_def.get('description', '')
         self.async_mode = tool_def.get('async', False)
 
@@ -110,7 +117,18 @@ class SessionTool(BaseTool):
                 logger.info(f"🔧 [工具调试] {self.name} 原始 parameters: {json.dumps(self.raw_parameters, ensure_ascii=False, indent=2)}")
 
             # 为 qwen-agent 清理非标准字段，生成兼容版本
-            self.parameters = self._clean_parameters_for_llm(tool_def['parameters'])
+            cleaned_parameters = self._clean_parameters_for_llm(tool_def['parameters'])
+
+            # ✅ 兼容：有些客户端会同时提供 inputs + parameters，但 parameters 可能缺字段。
+            # 这里用 inputs 补齐 properties/required，避免出现“后端必填但 schema 未声明”的缺参问题。
+            if self.inputs:
+                try:
+                    inputs_parameters = self._convert_inputs_to_parameters(self.inputs)
+                    cleaned_parameters = self._merge_parameters(cleaned_parameters, inputs_parameters)
+                except Exception as merge_error:
+                    logger.debug("⚠️ tools.parameters merge inputs failed for %s: %s", self.name, merge_error)
+
+            self.parameters = cleaned_parameters
 
             # 🆕 调试：检查清理后的参数中的默认值
             if self.name == 'deviceService:device#GetMetadata':
@@ -198,6 +216,7 @@ class SessionTool(BaseTool):
                 'string': 'string',
                 'number': 'number',
                 'integer': 'integer',
+                'int': 'integer',
                 'boolean': 'boolean',
                 'array': 'array',
                 'object': 'object'
@@ -220,6 +239,42 @@ class SessionTool(BaseTool):
             'properties': properties,
             'required': required
         }
+
+    def _merge_parameters(self, base: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge two JSON-Schema-like parameter definitions (best-effort).
+
+        Rules:
+        - properties: base wins on key conflicts
+        - required: union (stable order)
+        """
+        if not isinstance(base, dict):
+            base = {}
+        if not isinstance(extra, dict):
+            return base
+
+        merged = dict(base)
+
+        base_props = merged.get("properties") if isinstance(merged.get("properties"), dict) else {}
+        extra_props = extra.get("properties") if isinstance(extra.get("properties"), dict) else {}
+        props = dict(base_props)
+        for k, v in extra_props.items():
+            if k not in props:
+                props[k] = v
+        if props:
+            merged["properties"] = props
+
+        base_required = merged.get("required") if isinstance(merged.get("required"), list) else []
+        extra_required = extra.get("required") if isinstance(extra.get("required"), list) else []
+        required = []
+        for item in list(base_required) + list(extra_required):
+            if item and item not in required:
+                required.append(item)
+        merged["required"] = required
+
+        if not merged.get("type"):
+            merged["type"] = extra.get("type") or "object"
+
+        return merged
 
     def run(self, **kwargs: Any) -> Any:
         """执行工具 - 优先检查是否为内部工具，否则通过WebSocket回调到客户端
@@ -402,6 +457,33 @@ class SessionToolManager:
 
                 # 创建会话工具实例
                 session_tool = SessionTool(tool_def, session_id, ws_handler)
+
+                # 轻量日志：工具参数概览（用于排查“schema 缺参导致后端报错”）
+                try:
+                    params = getattr(session_tool, "parameters", {}) or {}
+                    props = params.get("properties") if isinstance(params, dict) else {}
+                    required = params.get("required") if isinstance(params, dict) else []
+                    input_ids = []
+                    required_inputs = []
+                    if isinstance(session_tool.inputs, list):
+                        for item in session_tool.inputs:
+                            if not isinstance(item, dict):
+                                continue
+                            pid = item.get("id")
+                            if pid:
+                                input_ids.append(pid)
+                                if item.get("required") is True:
+                                    required_inputs.append(pid)
+                    logger.info(
+                        "🧰 [register_session_tools] tool=%s | props=%s | required=%s | inputs=%s | inputs_required=%s",
+                        tool_id,
+                        list(props.keys())[:30] if isinstance(props, dict) else [],
+                        required,
+                        input_ids[:30],
+                        required_inputs[:30],
+                    )
+                except Exception:
+                    pass
                 
                 # 注册到会话工具列表
                 self.session_tools[session_id][tool_id] = session_tool

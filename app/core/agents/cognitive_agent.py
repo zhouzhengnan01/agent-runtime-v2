@@ -28,6 +28,7 @@ from app.core.tools.tool_router import ToolRouter
 from app.core.tools.internal_tool_registry import internal_tool_registry
 from app.core.memory.redis_chat_memory import redis_memory_manager
 from app.services.tool_config_service import tool_config_service
+from app.services.session_markdown_logger import SessionMarkdownLogger
 from app.core.agents.planning import IntelligentPlanner
 from app.config import settings
 
@@ -35,8 +36,97 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+class ToolPipelineAbort(RuntimeError):
+    """Abort the current tool pipeline with a user-facing reason."""
+
+    def __init__(self, message: str, *, tool_name: Optional[str] = None, missing_required: Optional[List[str]] = None):
+        super().__init__(message)
+        self.tool_name = tool_name
+        self.missing_required = list(missing_required or [])
+
+
 class LangChainCognitiveAgent:
     """LangChain认知智能体 - 负责LLM调用、任务规划、工具编排和记忆管理"""
+
+    @staticmethod
+    def _display_tool_name(tool_name: Optional[str]) -> str:
+        """Return tool name as-is (keep prefixes like `_ai_service_#`)."""
+        if not tool_name:
+            return ""
+        return str(tool_name)
+
+    def _display_tool_label(self, tool_name: Optional[str]) -> str:
+        """Best-effort tool label for UI/logs: '<display_name> (tool_id)'."""
+        tool_id = self._display_tool_name(tool_name)
+        if not tool_id:
+            return ""
+
+        display_name = None
+        description = ""
+        try:
+            for tool in self.function_list or []:
+                if str(getattr(tool, "name", "") or "") != str(tool_name or ""):
+                    continue
+                display_name = getattr(tool, "display_name", None)
+                description = (getattr(tool, "description", "") or "").strip()
+                if not display_name and isinstance(getattr(tool, "tool_def", None), dict):
+                    tool_def = getattr(tool, "tool_def") or {}
+                    display_name = (
+                        tool_def.get("name")
+                        or tool_def.get("displayName")
+                        or tool_def.get("display_name")
+                        or tool_def.get("title")
+                    )
+                    if not description:
+                        description = (tool_def.get("description") or "").strip()
+                break
+        except Exception:
+            display_name = None
+
+        def _looks_like_tool_id(value: str) -> bool:
+            v = (value or "").strip()
+            if not v:
+                return False
+            # e.g. visualizationService:project#bgr39i / deviceService:device#Query / knowledgeService#Search
+            if "#" in v and ":" in v and " " not in v:
+                return True
+            if v.startswith("_ai_service_#"):
+                return True
+            # Keep it conservative: treat "xxx#yyy" without spaces as tool id.
+            if "#" in v and " " not in v:
+                return True
+            return False
+
+        def _has_chinese(value: str) -> bool:
+            return bool(re.search(r"[\u4e00-\u9fff]", value or ""))
+
+        def _extract_display_from_description(desc: str) -> Optional[str]:
+            if not desc:
+                return None
+            # Java 侧 ToolInfo.description 常为：toolsDescription,metadata.name,metadata.description
+            parts = [p.strip() for p in re.split(r"[，,]", desc) if p and p.strip()]
+            if not parts:
+                return None
+            if len(parts) >= 2:
+                return parts[1]
+            return parts[0]
+
+        if display_name:
+            display_name = str(display_name).strip()
+
+        # 1) Prefer explicit display_name when it looks like a human label (esp. Chinese)
+        if display_name and display_name != tool_id and not _looks_like_tool_id(display_name):
+            return display_name
+
+        # 2) Fallback: derive a Chinese label from tool.description (common for platform-provided tools)
+        derived = _extract_display_from_description(description)
+        if derived:
+            derived = str(derived).strip()
+        if derived and derived != tool_id and _has_chinese(derived):
+            return derived
+
+        # 3) Last resort: show the tool id to avoid blank UI.
+        return tool_id
 
     def __init__(self, config: Dict[str, Any]):
         """初始化认知智能体"""
@@ -75,6 +165,11 @@ class LangChainCognitiveAgent:
         self.session_id = config.get("session_id", None)
         self.agent_id = config.get("agent_id", None)
         self.memory = None
+        self.session_md_enabled = bool(config.get("session_md_enabled", False))
+        self.session_md_dir = config.get("session_md_dir", "storage/session_rd")
+        self.session_md_logger = (
+            SessionMarkdownLogger(self.session_md_dir) if self.session_md_enabled else None
+        )
 
         if self.enable_memory and self.session_id:
             self.memory = redis_memory_manager.create_memory(
@@ -120,6 +215,101 @@ class LangChainCognitiveAgent:
         self.planner = IntelligentPlanner(planner_config)
         logger.info(f"✅ 独立计划器初始化完成: {planner_model}")
 
+    def _postprocess_tool_arguments(self, tool: Any, arguments: Any, agent_context: Dict[str, Any]) -> Any:
+        """Best-effort补齐外部工具常见必填字段（例如 componentId）。
+
+        NOTE:
+        - 外部工具的真实后端可能要求字段，但客户端传来的 JSON Schema 未声明 required；
+          此处做轻量兜底，避免重复触发 “xxx 不能为空” 的外部报错。
+        """
+        if not isinstance(arguments, dict):
+            return arguments
+
+        tool_name = str(getattr(tool, "name", "") or "")
+        tool_parameters = getattr(tool, "parameters", None)
+        declared_properties = set()
+        try:
+            props = tool_parameters.get("properties") if isinstance(tool_parameters, dict) else None
+            if isinstance(props, dict):
+                declared_properties = set(props.keys())
+        except Exception:
+            declared_properties = set()
+
+        init_parameters = agent_context.get("init_parameters") if isinstance(agent_context, dict) else None
+        if not isinstance(init_parameters, dict):
+            init_parameters = {}
+
+        def _is_missing(value: Any) -> bool:
+            if value is None:
+                return True
+            if isinstance(value, str):
+                s = value.strip()
+                if not s:
+                    return True
+                if s.lower() in {"auto-filled", "autofilled", "auto filled"}:
+                    return True
+            if isinstance(value, (list, tuple, set)) and len(value) == 0:
+                return True
+            if isinstance(value, dict) and len(value) == 0:
+                return True
+            return False
+
+        def _extract_suffix_id(name: str) -> Optional[str]:
+            if not name or "#" not in name:
+                return None
+            suffix = name.rsplit("#", 1)[-1].strip()
+            if not suffix:
+                return None
+            # Heuristic: CamelCase/含大写通常是方法名（如 #GetMetadata），非资源 id
+            if any(ch.isupper() for ch in suffix):
+                return None
+            if re.match(r"^[a-z0-9][a-z0-9_-]{2,63}$", suffix):
+                return suffix
+            # fallback: still return suffix when it's short and looks id-ish
+            if re.match(r"^[a-z0-9_-]{3,128}$", suffix, flags=re.IGNORECASE):
+                return suffix
+            return None
+
+        args = dict(arguments)
+
+        # componentId 兜底：优先使用显式参数，其次 init_parameters，其次工具名后缀（或 alias 映射后的后缀）
+        # IMPORTANT: 仅当该字段在工具 schema 中声明时才自动补齐，避免向严格校验的外部工具注入“非法字段”。
+        component_keys = ("componentId", "component_id", "component id")
+        allowed_component_keys = [k for k in component_keys if k in declared_properties]
+        if not allowed_component_keys:
+            # Also strip these legacy aliases when the tool schema doesn't declare them.
+            for k in component_keys:
+                args.pop(k, None)
+            return args
+
+        suffix_id = _extract_suffix_id(tool_name)
+        if suffix_id is None:
+            tool_aliases = init_parameters.get("_tool_aliases") if isinstance(init_parameters, dict) else None
+            if isinstance(tool_aliases, dict):
+                mapped = tool_aliases.get(tool_name)
+                if isinstance(mapped, str) and mapped:
+                    suffix_id = _extract_suffix_id(mapped)
+
+        candidate = None
+        for v in (
+            args.get("componentId"),
+            args.get("component_id"),
+            args.get("component id"),
+            init_parameters.get("componentId"),
+            init_parameters.get("component_id"),
+            init_parameters.get("component id"),
+            suffix_id,
+        ):
+            if not _is_missing(v):
+                candidate = str(v).strip() if isinstance(v, str) else v
+                break
+        if candidate is not None:
+            for k in allowed_component_keys:
+                if _is_missing(args.get(k)):
+                    args[k] = candidate
+
+        return args
+
     def _get_env_model(self, model_type: str) -> Optional[str]:
         key = "LLM_MODEL" if model_type == "llm" else "VLM_MODEL"
         legacy_key = "LLM_MODEL_NEW" if model_type == "llm" else "VLM_MODEL_NEW"
@@ -153,6 +343,17 @@ class LangChainCognitiveAgent:
     def _read(self):
         self.logger.debug("tool_res=%s", self.tool_res)
 
+    def _md_append(self, title: str, content: str, meta: Optional[Dict[str, Any]] = None) -> None:
+        if not self.session_md_logger or not self.session_id:
+            return
+        self.session_md_logger.append(
+            session_id=self.session_id,
+            title=title,
+            content=content,
+            meta=meta,
+            agent_id=self.agent_id,
+        )
+
     async def _fill_parameters_with_parameter_filler(
         self,
         tool: Any,
@@ -174,11 +375,13 @@ class LangChainCognitiveAgent:
 
         # 获取工具信息
         tool_name = getattr(tool, 'name', 'unknown')
-        tool_description = getattr(tool, 'description', '')
+        display_tool_name = self._display_tool_name(tool_name)
+        tool_label = self._display_tool_label(tool_name)
+        tool_description = (getattr(tool, 'description', '') or '').strip()
         parameters = getattr(tool, 'parameters', {})
 
         # 🆕 调试：打印参数定义
-        logger.info(f"🔧 [参数调试] 工具: {tool_name}")
+        logger.info(f"🔧 [参数调试] 工具: {display_tool_name}")
         logger.info(f"🔧 [参数调试] 参数定义: {parameters}")
         if parameters:
             props = parameters.get('properties', {})
@@ -211,9 +414,35 @@ class LangChainCognitiveAgent:
                 context=enhanced_context,
                 tool_name=tool_name
             )
+            filled_params = self._postprocess_tool_arguments(tool, filled_params, enhanced_context)
 
             # 将 parameters 转换为 inputs 格式（使用 ParameterFiller 的方法）
-            inputs = filler._convert_parameters_to_inputs(parameters)
+            # NOTE: 有些前端会用 `command.inputs` 作为“允许传参白名单”，因此这里要把自动补齐的关键参数
+            # (如 componentId) 同步进 inputs，避免前端执行时丢参导致 “component id 不能为空”。
+            # IMPORTANT: deep-copy to avoid mutating tool.parameters (which would affect later LLM filling).
+            import copy
+
+            parameters_for_inputs = copy.deepcopy(parameters) if isinstance(parameters, dict) else {"type": "object"}
+            props = parameters_for_inputs.get("properties")
+            if not isinstance(props, dict):
+                props = {}
+            # 先把已填充的参数写入 default，方便前端表单/执行器直接复用（有些实现不会读取 call.arguments）
+            if isinstance(filled_params, dict):
+                for k, v in filled_params.items():
+                    if k in props and isinstance(props.get(k), dict) and "default" not in props.get(k, {}):
+                        props[k] = {**props[k], "default": v}
+            for key in ("componentId", "component_id", "component id"):
+                if key in (filled_params or {}) and key not in props:
+                    props[key] = {
+                        "type": "string",
+                        "description": "auto-filled",
+                        "default": (filled_params or {}).get(key),
+                    }
+            parameters_for_inputs["properties"] = props
+            if "required" not in parameters_for_inputs or not isinstance(parameters_for_inputs.get("required"), list):
+                parameters_for_inputs["required"] = []
+
+            inputs = filler._convert_parameters_to_inputs(parameters_for_inputs)
         except Exception as e:
             logger.error(f"❌ ParameterFiller 调用失败: {e}")
             raise
@@ -224,15 +453,20 @@ class LangChainCognitiveAgent:
             'method': 'tools.confirm',
             'id': execution_id,
             'params': {
-                'message': f'需要调用工具：{tool_name}',
+                'message': (
+                    f"准备调用工具：{tool_label}"
+                    + (f"（{tool_description[:80]}{'...' if len(tool_description) > 80 else ''}）" if tool_description else "")
+                    + "，请确认参数。"
+                ),
                 'call': {
-                    'toolName': tool_name.replace('_ai_service_#', ''),
+                    'toolName': display_tool_name,
+                    'toolDisplayName': tool_label,
                     'arguments': filled_params,
                     'executionId': execution_id
                 },
                 'command': {
-                    'id': tool_name.replace('_ai_service_#', ''),
-                    'name': tool_name.replace('_ai_service_#', ''),
+                    'id': display_tool_name,
+                    'name': tool_label,
                     'description': tool_description,
                     'inputs': inputs
                 }
@@ -240,10 +474,10 @@ class LangChainCognitiveAgent:
         }
 
         # 如果工具是知识库工具
-        if 'knowledgeService#Search' == tool_name:
+        if 'knowledgeService#Search' == display_tool_name:
             confirmation['params']['auto'] = True
 
-        logger.info(f"✅ ParameterFiller 填充完成: {tool_name}, 参数: {filled_params}")
+        logger.info(f"✅ ParameterFiller 填充完成: {display_tool_name}, 参数: {filled_params}")
         return confirmation 
 
     def _init_langchain(self):
@@ -294,11 +528,25 @@ class LangChainCognitiveAgent:
             return ""
 
         markdown = "## 📋 执行计划\n\n"
+        planner_model = getattr(getattr(self, "planner", None), "model", None)
+        if planner_model:
+            markdown += f"**规划器模型(Planner)**：`{planner_model}`\n\n"
 
         for i, (step, tool) in enumerate(zip(steps, tools), 1):
             markdown += f"**步骤 {i}**\n"
             markdown += f"{step}\n"
-            markdown += f"🔧 工具：`{tool}`\n\n"
+            markdown += f"🔧 工具：`{self._display_tool_label(tool)}`\n\n"
+
+        unavailable = plan.get("unavailable_tools") or []
+        if isinstance(unavailable, list) and unavailable:
+            # Keep it compact; this is mainly for debugging “为什么只规划了两个工具”.
+            labels = [self._display_tool_label(str(t)) for t in unavailable if t]
+            labels = [x for x in labels if x]
+            if labels:
+                markdown += "⚠️ 当前会话未注册/不可用的工具（因此未纳入计划）：\n"
+                for item in labels[:12]:
+                    markdown += f"- `{item}`\n"
+                markdown += "\n"
 
         return markdown
 
@@ -389,8 +637,11 @@ class LangChainCognitiveAgent:
             "init_parameters": self.init_parameters,
             "conversation_history": conversation_history,
             "tool_call_history": tool_call_history,
-            "tool_res":self.tool_res
+            "tool_res": self.tool_res
         }
+        usage_tracker = kwargs.get("usage_tracker")
+        if usage_tracker:
+            agent_context["usage_tracker"] = usage_tracker
 
         return {
             "system_prompt": system_prompt,
@@ -443,8 +694,29 @@ class LangChainCognitiveAgent:
         # 🚀 使用独立计划器生成计划
         planning_context = {
             "agent_context": agent_context,
-            "conversation_history": agent_context.get("conversation_history", [])
+            "conversation_history": agent_context.get("conversation_history", []),
+            # IMPORTANT: planner has its own system prompt; pass agent prompt so it can respect
+            # fixed tool orders / business constraints configured on the agent.
+            "system_prompt": self.system_prompt,
         }
+        if agent_context.get("usage_tracker"):
+            planning_context["usage_tracker"] = agent_context.get("usage_tracker")
+
+        try:
+            from app.core.skills import get_skill_registry
+
+            registry = get_skill_registry()
+            skills = registry.list_skills()
+            planning_context["skills"] = [
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "tags": skill.tags,
+                }
+                for skill in skills
+            ]
+        except Exception as e:
+            logger.debug("⚠️ Failed to load skills for planning: %s", e)
 
         plan_result = await self.planner.generate_plan(
             user_input=input_text,
@@ -469,6 +741,16 @@ class LangChainCognitiveAgent:
             "task_type": task_type,
             "confidence": plan_result.get("confidence", 0.8)
         }
+        # Surface filtered/unavailable tools without treating them as fatal missing-tools.
+        # (The fatal `missing_tools` list is computed later when a tool cannot be resolved to an instance.)
+        unavailable_tools: List[str] = []
+        for key in ("unavailable_tools", "missing_tools"):
+            value = plan_result.get(key)
+            if isinstance(value, list):
+                unavailable_tools.extend([str(x) for x in value if x])
+        if unavailable_tools:
+            seen = set()
+            plan["unavailable_tools"] = [x for x in unavailable_tools if x and not (x in seen or seen.add(x))]
 
         # 映射工具实例 - 添加详细调试
         logger.info(f"🔍 [DEBUG] 可用工具列表 (共{len(tools)}个):")
@@ -481,24 +763,74 @@ class LangChainCognitiveAgent:
 
         # 尝试多种工具标识符映射
         tool_map = {}
+        normalized_index = {}
+        normalized_count = {}
+        suffix_index = {}
+        suffix_count = {}
+
+        def _norm(value: Any) -> str:
+            try:
+                text = str(value or "")
+            except Exception:
+                text = ""
+            return re.sub(r"[^0-9a-zA-Z]+", "", text).lower()
+
         for t in tools:
             # 使用多种可能的标识符
             name = getattr(t, 'name', '')
             tool_id = getattr(t, 'id', getattr(t, 'tool_id', ''))
             if name:
                 tool_map[name] = t
+                n = _norm(name)
+                if n:
+                    normalized_index[n] = t
+                    normalized_count[n] = normalized_count.get(n, 0) + 1
+                if isinstance(name, str) and "#" in name:
+                    suffix = name.rsplit("#", 1)[-1].strip().lower()
+                    if suffix:
+                        suffix_index[suffix] = t
+                        suffix_count[suffix] = suffix_count.get(suffix, 0) + 1
             if tool_id:
                 tool_map[tool_id] = t
+                n = _norm(tool_id)
+                if n:
+                    normalized_index[n] = t
+                    normalized_count[n] = normalized_count.get(n, 0) + 1
 
         logger.info(f"🔍 [DEBUG] 工具映射表: {list(tool_map.keys())}")
 
         planned_tools = []
+        missing_tools = list(plan.get("missing_tools", []) or [])
+        tool_aliases = None
+        try:
+            init_params = agent_context.get("init_parameters") if isinstance(agent_context, dict) else None
+            if isinstance(init_params, dict):
+                tool_aliases = init_params.get("_tool_aliases")
+        except Exception:
+            tool_aliases = None
+
         for name in tools_needed:
-            if name in tool_map:
-                planned_tools.append(tool_map[name])
+            resolved = tool_map.get(name)
+            if resolved is None and isinstance(tool_aliases, dict):
+                mapped = tool_aliases.get(name)
+                if mapped:
+                    resolved = tool_map.get(mapped)
+            if resolved is None:
+                n = _norm(name)
+                if n and normalized_count.get(n) == 1:
+                    resolved = normalized_index.get(n)
+            if resolved is None and isinstance(name, str) and "#" not in name:
+                s = name.strip().lower()
+                if s and suffix_count.get(s) == 1:
+                    resolved = suffix_index.get(s)
+
+            if resolved is not None:
+                planned_tools.append(resolved)
                 logger.info(f"✅ [DEBUG] 找到工具: {name}")
             else:
                 logger.warning(f"❌ [DEBUG] 未找到工具: {name}")
+                if name not in missing_tools:
+                    missing_tools.append(name)
 
         logger.info(f"🔍 [DEBUG] 实际匹配的工具: {[getattr(t, 'name', getattr(t, 'id', 'UNKNOWN')) for t in planned_tools]}")
         is_complex_task = len(planned_tools) >= 2
@@ -511,7 +843,11 @@ class LangChainCognitiveAgent:
         logger.info(f"   💾 缓存状态: {'命中' if is_cached else '未命中'}")
         logger.info(f"   ⏱️  执行时间: {plan_result.get('execution_time', 0):.2f}s")
 
-        return plan, planned_tools, use_historical_plan, is_complex_task
+        if missing_tools:
+            plan["missing_tools"] = missing_tools
+            logger.warning(f"⚠️ 计划包含未注册工具: {missing_tools}")
+
+        return plan, planned_tools, missing_tools, use_historical_plan, is_complex_task
 
     # ==========================================
     # 辅助方法：执行单个工具
@@ -552,6 +888,94 @@ class LangChainCognitiveAgent:
         confirmation_id = confirmation.get("id", f"tool_confirm_{int(time.time() * 1000)}")
         tool_params = confirmation.get("params", {}).get("call", {}).get("arguments", {})
 
+        # 工具来源与参数校验日志
+        is_internal = internal_tool_registry.is_internal_tool(tool.name)
+        tool_type = "internal" if is_internal else "external"
+        tool_category = getattr(tool, "category", None)
+        tool_class = type(tool).__name__
+        try:
+            params_preview = json.dumps(tool_params, ensure_ascii=False)
+        except Exception:
+            params_preview = str(tool_params)
+        if len(params_preview) > 800:
+            params_preview = params_preview[:800] + "...(truncated)"
+        logger.info(
+            "🧩 [工具信息] tool=%s | toolType=%s | class=%s | category=%s | confirm_id=%s | args=%s",
+            tool.name,
+            tool_type,
+            tool_class,
+            tool_category,
+            confirmation_id,
+            params_preview,
+        )
+
+        # 必填参数校验：缺参时直接中止，避免连续多次外部工具报同一个错误
+        required_fields = []
+        try:
+            schema = getattr(tool, "parameters", None) or {}
+            required_fields = schema.get("required", []) if isinstance(schema, dict) else []
+        except Exception:
+            required_fields = []
+
+        def _is_missing(value: Any) -> bool:
+            if value is None:
+                return True
+            if isinstance(value, str) and not value.strip():
+                return True
+            if isinstance(value, (list, tuple, set)) and len(value) == 0:
+                return True
+            if isinstance(value, dict) and len(value) == 0:
+                return True
+            return False
+
+        missing_required = []
+        # Some external tool schemas (esp. visualizationService) don't mark required fields correctly.
+        # Add a small heuristic so we fail fast instead of hanging the external executor with null params.
+        try:
+            schema_props = (schema or {}).get("properties") if isinstance(schema, dict) else None
+            if (
+                isinstance(getattr(tool, "name", None), str)
+                and tool.name.lower().startswith("visualizationservice:")
+                and isinstance(schema_props, dict)
+            ):
+                must_have = []
+                if "text" in schema_props:
+                    must_have.append("text")
+                if "terms" in schema_props:
+                    must_have.append("terms")
+                if "id" in schema_props:
+                    must_have.append("id")
+                if "component" in schema_props:
+                    must_have.append("component")
+                for k in must_have:
+                    if k and k not in required_fields:
+                        required_fields.append(k)
+        except Exception:
+            pass
+
+        if isinstance(required_fields, list) and required_fields:
+            for field in required_fields:
+                if not field:
+                    continue
+                if _is_missing(tool_params.get(field)):
+                    missing_required.append(field)
+
+        if missing_required:
+            logger.warning(
+                "⚠️ [参数缺失] tool=%s | toolType=%s | required=%s | missing=%s | args=%s",
+                tool.name,
+                tool_type,
+                required_fields,
+                missing_required,
+                params_preview,
+            )
+            raise ToolPipelineAbort(
+                f"工具 `{tool.name}` 缺少必填参数: {', '.join(missing_required)}。"
+                "请在初始化参数（session.initialize.params.parameters）或问题描述中提供这些参数后重试。",
+                tool_name=tool.name,
+                missing_required=missing_required,
+            )
+
         # 🔥 JSON处理器的自动确认机制
         if self.auto_confirm_tools:
             logger.info(f"🤖 [自动确认] 自动执行工具: {tool.name}")
@@ -574,8 +998,6 @@ class LangChainCognitiveAgent:
         # ⚠️ 注意：不在这里yield confirmation，由_handle_internal_tool / _handle_external_tool负责
         # yield confirmation
 
-        # 判断工具类型
-        is_internal = internal_tool_registry.is_internal_tool(tool.name)
         logger.info(f"🔍 工具类型: {tool.name} -> {'内部' if is_internal else '外部'}")
 
         # 执行工具
@@ -622,12 +1044,13 @@ class LangChainCognitiveAgent:
             - 工具执行结果
         """
         # 获取工具执行配置
-        tool_config = tool_config_service.get_execution_config(tool.name)
+        tool_id = self._display_tool_name(getattr(tool, "name", ""))
+        tool_config = tool_config_service.get_execution_config(tool_id)
         exec_mode = tool_config.get("execution_mode", "sync")
         estimated_time = tool_config.get("estimated_time", 3)
         exec_timeout = tool_config.get("timeout", 30)
 
-        logger.info(f"🔧 内部工具: {tool.name} | 模式={exec_mode} | 预估={estimated_time}秒")
+        logger.info(f"🔧 内部工具: {tool_id} | 模式={exec_mode} | 预估={estimated_time}秒")
 
         if exec_mode == "sync":
             # ⚡ 快速工具：直接同步执行
@@ -644,7 +1067,7 @@ class LangChainCognitiveAgent:
                 "method": "tools.confirm",
                 "params": {
                     "call": {
-                        "toolName": tool.name,
+                        "toolName": tool_id,
                         "arguments": tool_params
                     },
                     "toolType": "internal",
@@ -744,16 +1167,34 @@ class LangChainCognitiveAgent:
                         # 工具执行结果
                         final_result = item
 
-                tools_executed.append(tool.name)
+                tool_display_name = self._display_tool_name(getattr(tool, "name", ""))
+                tools_executed.append(tool_display_name)
 
                 # 🎯 修复：如果final_result为None，使用self.tool_res中已有的结果
                 if final_result is None and self.tool_res:
                     logger.info(f"🔧 [修复] final_result为None，使用self.tool_res: {type(self.tool_res)}")
                     final_result = self.tool_res
 
+                # 外部工具错误：立即中止后续工具，避免重复报错（尤其是缺参类错误）
+                if isinstance(final_result, dict) and final_result.get("success") is False:
+                    err_msg = str(final_result.get("error") or "")
+                    err_code = final_result.get("error_code")
+                    logger.warning(
+                        "⚠️ [工具失败] tool=%s | code=%s | error=%s",
+                        tool_display_name,
+                        err_code,
+                        err_msg,
+                    )
+                    raise ToolPipelineAbort(
+                        f"外部工具 `{tool_display_name}` 调用失败"
+                        + (f"（code={err_code}）" if err_code is not None else "")
+                        + f": {err_msg}",
+                        tool_name=tool_display_name,
+                    )
+
                 # 更新self.tool_res以保持一致性（关键：这会传递给下一个工具）
                 self.tool_res = final_result
-                logger.info(f"📝 [第{iteration + 1}轮] 工具结果已保存: {tool.name} -> tool_res类型={type(final_result)}")
+                logger.info(f"📝 [第{iteration + 1}轮] 工具结果已保存: {tool_display_name} -> tool_res类型={type(final_result)}")
 
                 # 🔧 修复：不使用ToolMessage，改为收集工具结果用于提示词
                 # 因为通义千问API要求ToolMessage必须跟在tool_calls之后，我们改为直接在提示词中描述工具结果
@@ -765,7 +1206,7 @@ class LangChainCognitiveAgent:
                     agent_context['tool_call_history'] = []
 
                 agent_context['tool_call_history'].append({
-                    'tool_name': tool.name,
+                    'tool_name': tool_display_name,
                     'arguments': tool_params,
                     'result': final_result
                 })
@@ -779,8 +1220,13 @@ class LangChainCognitiveAgent:
                     if isinstance(last_call['result'], dict):
                         logger.info(f"🔍 [调试] 结果内容摘要: {str(last_call['result'])[:200]}...")
 
-            except Exception as e:
+            except ToolPipelineAbort as e:
+                # 缺参/外部工具失败等应立即中止，避免反复尝试导致“同一个错误刷屏”
                 logger.error(f"❌ 工具执行异常: {tool.name} - {e}")
+                raise
+            except Exception as e:
+                logger.error(f"❌ 工具执行异常: {tool.name} - {e}", exc_info=True)
+                raise
 
         logger.info(f"🔍 [工具流水线] 执行完成，共{len(tools_executed)}个工具: {tools_executed}")
         # 在异步生成器中不能使用return，用yield代替
@@ -817,7 +1263,7 @@ class LangChainCognitiveAgent:
         if agent_context.get('tool_call_history'):
             tool_results_summary = "\n\n## 工具执行结果：\n"
             for i, tool_call in enumerate(agent_context['tool_call_history'], 1):
-                tool_name = tool_call.get('tool_name', 'unknown')
+                tool_name = self._display_tool_name(tool_call.get('tool_name', 'unknown'))
                 arguments = tool_call.get('arguments', {})
                 result = tool_call.get('result', '')
 
@@ -882,11 +1328,20 @@ class LangChainCognitiveAgent:
 
         full_response = ""
         chunk_count = 0
-        async for chunk in intelligent_llm.astream(message_list):
-            if hasattr(chunk, 'content'):
-                full_response += chunk.content
-                chunk_count += 1
-                yield chunk.content
+        usage_tracker = agent_context.get("usage_tracker")
+        from langchain_community.callbacks.manager import get_openai_callback
+        from app.core.llm.usage import usage_from_openai_callback
+
+        with get_openai_callback() as cb:
+            async for chunk in intelligent_llm.astream(message_list):
+                if hasattr(chunk, 'content'):
+                    full_response += chunk.content
+                    chunk_count += 1
+                    yield chunk.content
+
+        usage = usage_from_openai_callback(cb, model=intelligent_model, provider="langchain")
+        if usage_tracker and usage:
+            usage_tracker.add(usage, source="final_response")
 
         # 记录LLM响应详情
         self._log_llm_response(
@@ -1037,14 +1492,16 @@ class LangChainCognitiveAgent:
             input_text = context_init["input_text"]
             tools = context_init["tools"]
             agent_context = context_init["agent_context"]
+            history_count = len(agent_context.get("tool_call_history", []))
+            self._md_append("user", input_text)
 
             # ===== 步骤2：统一工具选择和计划生成 =====
-            plan, planned_tools, use_historical_plan, is_complex_task = await self._intelligent_tool_selection(
+            plan, planned_tools, missing_tools, use_historical_plan, is_complex_task = await self._intelligent_tool_selection(
                 input_text, tools, agent_context
             )
 
             # 🔥 立即发送计划（新增 - 计划完成后立即发送，不等待工具参数填充）
-            if plan and plan.get("steps"):
+            if plan and plan.get("steps") and not missing_tools:
                 # 🆕 记录计划生成详情
                 self._log_plan_generation(plan, input_text)
 
@@ -1055,6 +1512,7 @@ class LangChainCognitiveAgent:
                     "steps": plan.get("steps", []),
                     "tools": plan.get("tools_needed", []),
                     "reasoning": plan.get("reasoning", ""),
+                    "unavailable_tools": plan.get("unavailable_tools", []),
                     "confidence": plan.get("confidence", 0.8),
                     "sent_immediately": True  # 标记这是立即发送的计划
                 }
@@ -1079,7 +1537,13 @@ class LangChainCognitiveAgent:
             execution_success = True
             full_response = ""
 
-            if not planned_tools:
+            if missing_tools:
+                missing_list = ", ".join(missing_tools)
+                full_response = f"未配置或不可用的工具: {missing_list}。请先注册/启用相关工具后重新初始化会话。"
+                execution_success = False
+                logger.warning(f"⚠️ 工具缺失，终止本次执行: {missing_tools}")
+                yield full_response
+            elif not planned_tools:
                 # 无工具：对话模式
                 logger.info("⚠️ 无工具，对话模式")
                 async for chunk in self._generate_final_response(
@@ -1098,6 +1562,14 @@ class LangChainCognitiveAgent:
                 # 流水线执行完成，收集已执行的工具名称
                 tools_executed = [t.name for t in planned_tools]
                 logger.info(f"🔧 [工具流水线] 执行完成，共{len(tools_executed)}个工具: {tools_executed}")
+                new_history = agent_context.get("tool_call_history", [])[history_count:]
+                if new_history:
+                    for entry in new_history:
+                        tool_name = entry.get("tool_name", "unknown")
+                        arguments = entry.get("arguments", {})
+                        result_text = self._format_tool_result_for_prompt(entry.get("result", ""))
+                        self._md_append("tool", result_text, {"tool": tool_name, "arguments": arguments})
+                    history_count = len(agent_context.get("tool_call_history", []))
 
                 # ===== 步骤4：生成最终响应 =====
                 logger.info(f"🚀 [最终响应] 开始生成最终回复...")
@@ -1117,6 +1589,15 @@ class LangChainCognitiveAgent:
 
             # 🆕 记录Agent执行结束
             self._log_agent_execution_end(self.name, task_duration, tools_executed)
+            if full_response:
+                self._md_append(
+                    "assistant",
+                    full_response,
+                    {
+                        "tools_executed": tools_executed,
+                        "plan_type": "historical" if use_historical_plan else "generated",
+                    },
+                )
 
             await self._save_execution_to_memory(
                 input_text, plan, tools_executed, full_response,
@@ -1431,7 +1912,7 @@ class LangChainCognitiveAgent:
         """
         try:
             # 从数据库获取工具配置
-            tool_config = tool_config_service.get_tool_config(tool_name)
+            tool_config = tool_config_service.get_tool_config(self._display_tool_name(tool_name))
             if not tool_config:
                 return False
 
