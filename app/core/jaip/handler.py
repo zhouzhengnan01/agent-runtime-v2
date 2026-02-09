@@ -862,13 +862,18 @@ class JAIPHandler:
 
             # Compatibility: some JetLinks executors route visualization tools by
             # (toolGroupId + componentId) and/or require an explicit toolId.
-            # Do NOT inject into `arguments` (tool inputs) to avoid confusing schema/LLM.
+            # Some external relays/executors only read routing fields from `arguments`
+            # (or may whitelist/strip top-level params). Keep them duplicated in both
+            # top-level params and arguments for robustness.
             if (
                 isinstance(mapped_tool_name, str)
                 and mapped_tool_name.lower().startswith("visualizationservice:")
                 and tool_suffix
             ):
                 component_params.setdefault("componentId", tool_suffix)
+                component_params.setdefault("commandId", tool_suffix)
+                arguments.setdefault("componentId", tool_suffix)
+                arguments.setdefault("commandId", tool_suffix)
                 if component_id is None:
                     component_id = tool_suffix
 
@@ -1182,6 +1187,10 @@ class JAIPHandler:
                         forward_params["componentId"] = suffix
                     if suffix and _is_missing(forward_params.get("commandId")):
                         forward_params["commandId"] = suffix
+                    if suffix and _is_missing(forward_args.get("componentId")):
+                        forward_args["componentId"] = suffix
+                    if suffix and _is_missing(forward_args.get("commandId")):
+                        forward_args["commandId"] = suffix
 
             logger.info(
                 "🌐 [外部工具] 转发给前端执行: %s | componentId=%s | args_keys=%s",

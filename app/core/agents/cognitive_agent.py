@@ -511,7 +511,13 @@ class LangChainCognitiveAgent:
 
     
     
-    def _format_plan_to_markdown(self, plan: Dict[str, Any]) -> str:
+    def _format_plan_to_markdown(
+        self,
+        plan: Dict[str, Any],
+        *,
+        start_step_index: int = 1,
+        title: str = "## 📋 执行计划",
+    ) -> str:
         """
         将工具调用计划转换为Markdown格式
 
@@ -527,13 +533,21 @@ class LangChainCognitiveAgent:
         if not steps:
             return ""
 
-        markdown = "## 📋 执行计划\n\n"
+        try:
+            start_step_index = int(start_step_index)
+        except Exception:
+            start_step_index = 1
+        if start_step_index <= 0:
+            start_step_index = 1
+
+        markdown = f"{title}\n\n"
         planner_model = getattr(getattr(self, "planner", None), "model", None)
         if planner_model:
             markdown += f"**规划器模型(Planner)**：`{planner_model}`\n\n"
 
-        for i, (step, tool) in enumerate(zip(steps, tools), 1):
-            markdown += f"**步骤 {i}**\n"
+        for i, (step, tool) in enumerate(zip(steps, tools), 0):
+            step_no = start_step_index + i
+            markdown += f"**步骤 {step_no}**\n"
             markdown += f"{step}\n"
             markdown += f"🔧 工具：`{self._display_tool_label(tool)}`\n\n"
 

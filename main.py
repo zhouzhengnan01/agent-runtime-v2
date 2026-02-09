@@ -106,11 +106,15 @@ else:
 
 # 3️⃣ 设置特定模块的日志级别（DEBUG以查看详细WebSocket通信）
 handler_logger = logging.getLogger('app.core.jaip.handler')
-handler_logger.setLevel(logging.DEBUG)
-handler_logger.propagate = False  # ✅ 禁止传播到根日志器，避免重复输出
 handler_logger.handlers.clear()  # ✅ 清空现有handlers，避免重复添加
 if settings.DEBUG:
+    handler_logger.setLevel(logging.DEBUG)
+    handler_logger.propagate = False  # ✅ 禁止传播到根日志器，避免重复输出
     handler_logger.addHandler(console_handler)  # 控制台输出
+else:
+    # 生产环境不要“吞日志”：至少让 INFO+/ERROR 能出现在根日志中，便于排查工具链/超时等问题。
+    handler_logger.setLevel(logging.INFO)
+    handler_logger.propagate = True
 
 websocket_logger = logging.getLogger('app.api.v1.websocket')
 websocket_logger.setLevel(logging.INFO)  # 🚀 固定为INFO级别，屏蔽DEBUG通信日志
@@ -126,73 +130,100 @@ tool_manager_logger.addHandler(console_handler)  # 始终使用INFO级别
 
 # 🆕 增加详细的工具执行日志
 tool_router_logger = logging.getLogger('app.core.tools.tool_router')
-tool_router_logger.setLevel(logging.DEBUG)
-tool_router_logger.propagate = False
 tool_router_logger.handlers.clear()
 if settings.DEBUG:
+    tool_router_logger.setLevel(logging.DEBUG)
+    tool_router_logger.propagate = False
     tool_router_logger.addHandler(console_handler)
+else:
+    tool_router_logger.setLevel(logging.INFO)
+    tool_router_logger.propagate = True
 
 # 🆕 增加详细的Agent执行日志
 cognitive_agent_logger = logging.getLogger('app.core.agents.cognitive_agent')
-cognitive_agent_logger.setLevel(logging.DEBUG)
-cognitive_agent_logger.propagate = False
 cognitive_agent_logger.handlers.clear()
 if settings.DEBUG:
+    cognitive_agent_logger.setLevel(logging.DEBUG)
+    cognitive_agent_logger.propagate = False
     cognitive_agent_logger.addHandler(console_handler)
+else:
+    cognitive_agent_logger.setLevel(logging.INFO)
+    cognitive_agent_logger.propagate = True
 
 # 🆕 增加详细的计划器日志
 planner_logger = logging.getLogger('app.core.agents.planning.intelligent_planner')
-planner_logger.setLevel(logging.DEBUG)
-planner_logger.propagate = False
 planner_logger.handlers.clear()
 if settings.DEBUG:
+    planner_logger.setLevel(logging.DEBUG)
+    planner_logger.propagate = False
     planner_logger.addHandler(console_handler)
+else:
+    planner_logger.setLevel(logging.INFO)
+    planner_logger.propagate = True
 
 # 🆕 增加参数填充器日志
 parameter_filler_logger = logging.getLogger('app.core.tools.parameter_filler')
-parameter_filler_logger.setLevel(logging.DEBUG)
-parameter_filler_logger.propagate = False
 parameter_filler_logger.handlers.clear()
 if settings.DEBUG:
+    parameter_filler_logger.setLevel(logging.DEBUG)
+    parameter_filler_logger.propagate = False
     parameter_filler_logger.addHandler(console_handler)
+else:
+    parameter_filler_logger.setLevel(logging.INFO)
+    parameter_filler_logger.propagate = True
 
 # 🆕 增加模板Agent日志
 template_agent_logger = logging.getLogger('app.core.agents.template_agent')
-template_agent_logger.setLevel(logging.DEBUG)
-template_agent_logger.propagate = False
 template_agent_logger.handlers.clear()
 if settings.DEBUG:
+    template_agent_logger.setLevel(logging.DEBUG)
+    template_agent_logger.propagate = False
     template_agent_logger.addHandler(console_handler)
+else:
+    template_agent_logger.setLevel(logging.INFO)
+    template_agent_logger.propagate = True
 
 # 🆕 增加 shared/jetlinks_video 模块日志
 streaming_analyze_logger = logging.getLogger('app.shared.streaming_analyze')
-streaming_analyze_logger.setLevel(logging.DEBUG)
-streaming_analyze_logger.propagate = False
 streaming_analyze_logger.handlers.clear()
 if settings.DEBUG:
+    streaming_analyze_logger.setLevel(logging.DEBUG)
+    streaming_analyze_logger.propagate = False
     streaming_analyze_logger.addHandler(console_handler)
+else:
+    streaming_analyze_logger.setLevel(logging.INFO)
+    streaming_analyze_logger.propagate = True
 
 # 增加 jetlinks_video workers 日志
 worker_a_logger = logging.getLogger('app.shared.jetlinks_video.workers.worker_a_cut')
-worker_a_logger.setLevel(logging.DEBUG)
-worker_a_logger.propagate = False
 worker_a_logger.handlers.clear()
 if settings.DEBUG:
+    worker_a_logger.setLevel(logging.DEBUG)
+    worker_a_logger.propagate = False
     worker_a_logger.addHandler(console_handler)
+else:
+    worker_a_logger.setLevel(logging.INFO)
+    worker_a_logger.propagate = True
 
 worker_b_logger = logging.getLogger('app.shared.jetlinks_video.workers.worker_b_vlm')
-worker_b_logger.setLevel(logging.DEBUG)
-worker_b_logger.propagate = False
 worker_b_logger.handlers.clear()
 if settings.DEBUG:
+    worker_b_logger.setLevel(logging.DEBUG)
+    worker_b_logger.propagate = False
     worker_b_logger.addHandler(console_handler)
+else:
+    worker_b_logger.setLevel(logging.INFO)
+    worker_b_logger.propagate = True
 
 worker_c_logger = logging.getLogger('app.shared.jetlinks_video.workers.worker_c_asr')
-worker_c_logger.setLevel(logging.DEBUG)
-worker_c_logger.propagate = False
 worker_c_logger.handlers.clear()
 if settings.DEBUG:
+    worker_c_logger.setLevel(logging.DEBUG)
+    worker_c_logger.propagate = False
     worker_c_logger.addHandler(console_handler)
+else:
+    worker_c_logger.setLevel(logging.INFO)
+    worker_c_logger.propagate = True
 
 # 禁用第三方库的DEBUG日志，减少干扰
 logging.getLogger('dashscope').setLevel(logging.WARNING)

@@ -134,7 +134,10 @@ class StepwiseCognitiveAgent(LangChainCognitiveAgent):
                     plan["steps"] = plan["steps"][:1]
 
             if self.stepwise_show_plan and plan.get("steps") and plan.get("tools_needed"):
-                markdown_plan = self._format_plan_to_markdown(plan)
+                markdown_plan = self._format_plan_to_markdown(
+                    plan,
+                    start_step_index=len(tools_executed) + 1,
+                )
                 if markdown_plan:
                     yield markdown_plan
 

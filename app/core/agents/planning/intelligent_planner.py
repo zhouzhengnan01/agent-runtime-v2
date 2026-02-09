@@ -269,7 +269,10 @@ class IntelligentPlanner:
                 if "component" in keys and "id" in keys:
                     role_candidates.setdefault("fill_component", tid)
                     continue
-                if keys == {"id"}:
+                # QueryGenerateTemplateInfo often only needs `id`, but some platforms/executors
+                # add routing keys (e.g. componentId/commandId). Treat it as the query step as
+                # long as it's "id-only" semantically (no `component`/`terms`/`text`).
+                if "id" in keys and "component" not in keys and "terms" not in keys and "text" not in keys:
                     role_candidates.setdefault("query_template", tid)
                     continue
 
