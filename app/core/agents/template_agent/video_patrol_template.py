@@ -2301,7 +2301,14 @@ class VideoPatrolAgent(BaseTemplateAgent):
             except Exception:
                 conf_f = 0.0
             conf_f = max(0.0, min(1.0, conf_f))
-            out.append({"label": label, "confidence": round(conf_f, 2), "box": box4})
+            obj_out: Dict[str, Any] = {"label": label, "confidence": round(conf_f, 2), "box": box4}
+            idx_raw = o.get("image_index", o.get("frame_index"))
+            if idx_raw is not None:
+                try:
+                    obj_out["image_index"] = int(idx_raw)
+                except Exception:
+                    pass
+            out.append(obj_out)
 
         def _extend_from_list(lst: Any) -> None:
             if not isinstance(lst, list):

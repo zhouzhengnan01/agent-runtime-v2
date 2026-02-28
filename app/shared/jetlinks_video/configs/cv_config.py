@@ -29,6 +29,16 @@ def _env_get_float(key: str, default: float) -> float:
         return default
 
 
+def _env_get_float_optional(key: str) -> Optional[float]:
+    raw = _env_get(key)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except Exception:
+        return None
+
+
 def _env_get_int(key: str, default: int) -> int:
     raw = _env_get(key)
     if raw is None:
@@ -59,6 +69,21 @@ CV_MODEL_REGISTRY: Dict[str, str] = {
     "yolov8n.pt": "yolov8n.pt",
     "yolov8n-pose.pt": "yolov8n-pose.pt",
 }
+
+def _default_device() -> str:
+    """
+    Ultralytics fails hard when forcing `device=0` on CPU-only installs.
+    Prefer env override, else auto-detect CUDA and fall back to CPU.
+    """
+    explicit = _env_get("CV_DEVICE") or _env_get("YOLO_DEVICE")
+    if explicit:
+        return explicit
+    try:
+        import torch  # type: ignore
+
+        return "0" if bool(getattr(torch, "cuda", None) and torch.cuda.is_available()) else "cpu"
+    except Exception:
+        return "cpu"
 
 
 @dataclass
@@ -147,16 +172,25 @@ def build_cv_config(model_hint: Optional[str] = None) -> CvConfig:
         or "yolov8n.pt"
     )
 
-    resolved_default = resolve_model_path(
-        default_model,
+    selected_model = (model_hint or "").strip() or default_model
+    resolved_model = resolve_model_path(
+        selected_model,
         model_dir=model_dir,
         model_registry=CV_MODEL_REGISTRY,
     )
 
+    is_om_model = str(resolved_model).lower().endswith(".om")
+    conf_default = 0.05 if is_om_model else 0.25
+    conf = None
+    if is_om_model:
+        conf = _env_get_float_optional("CV_OM_CONF")
+    if conf is None:
+        conf = _env_get_float("CV_CONF", conf_default)
+
     cfg = CvConfig(
-        model_path=resolved_default,
-        device=_env_get("CV_DEVICE") or _env_get("YOLO_DEVICE") or "0",
-        conf=_env_get_float("CV_CONF", 0.25),
+        model_path=resolved_model,
+        device=_default_device(),
+        conf=float(conf),
         iou=_env_get_float("CV_IOU", 0.45),
         imgsz=_env_get_int("CV_IMGSZ", 640),
         max_det=_env_get_int("CV_MAX_DET", 300),
@@ -165,12 +199,5 @@ def build_cv_config(model_hint: Optional[str] = None) -> CvConfig:
         model_dir=model_dir,
         model_registry=dict(CV_MODEL_REGISTRY),
     )
-
-    if model_hint:
-        cfg.model_path = resolve_model_path(
-            model_hint,
-            model_dir=cfg.model_dir,
-            model_registry=cfg.model_registry,
-        )
 
     return cfg

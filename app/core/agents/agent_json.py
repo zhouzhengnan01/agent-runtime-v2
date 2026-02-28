@@ -103,6 +103,179 @@ class JSONAgentProcessor:
 
     _BUILTIN_AGENT_IDS = {"video_patrol", "video_patrol_builtin", "cv_patrol"}
 
+    @staticmethod
+    def _get_gemini_api_keys() -> list[str]:
+        """Read Gemini API keys from env (GEMINI_API_KEY / GEMINI_API_KEYS).
+
+        - GEMINI_API_KEYS supports comma or whitespace separated values.
+        - Returns unique keys in stable order.
+        """
+        import os
+        import re
+
+        keys: list[str] = []
+
+        multi = (os.getenv("GEMINI_API_KEYS") or "").strip()
+        if multi:
+            for part in re.split(r"[,\s]+", multi):
+                k = (part or "").strip()
+                if k and k not in keys:
+                    keys.append(k)
+
+        single = (os.getenv("GEMINI_API_KEY") or "").strip()
+        if single and single not in keys:
+            keys.append(single)
+
+        return keys
+
+    @staticmethod
+    def _data_url_to_gemini_inline_part(url: str) -> Optional[dict]:
+        if not isinstance(url, str):
+            return None
+        s = url.strip()
+        if not s.startswith("data:"):
+            return None
+        m = re.match(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", s, flags=re.IGNORECASE | re.DOTALL)
+        if not m:
+            return None
+        mime = (m.group("mime") or "image/jpeg").strip()
+        data = (m.group("data") or "").strip()
+        if not data:
+            return None
+        return {"inline_data": {"mime_type": mime, "data": data}}
+
+    def _build_gemini_parts_from_messages(self, messages: list) -> list[dict]:
+        system_chunks: list[str] = []
+        user_chunks: list[str] = []
+        image_parts: list[dict] = []
+
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                continue
+            role = (msg.get("role") or "").strip().lower()
+            content = msg.get("content")
+
+            if role == "system" and isinstance(content, str) and content.strip():
+                system_chunks.append(content.strip())
+                continue
+
+            if role != "user":
+                continue
+
+            if isinstance(content, str):
+                if content.strip():
+                    user_chunks.append(content.strip())
+                continue
+
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    t = (item.get("type") or "").strip().lower()
+                    if t == "text":
+                        text = item.get("text")
+                        if isinstance(text, str) and text.strip():
+                            user_chunks.append(text.strip())
+                        continue
+
+                    if t == "image_url":
+                        img = item.get("image_url")
+                        url = img.get("url") if isinstance(img, dict) else None
+                        inline = self._data_url_to_gemini_inline_part(url) if isinstance(url, str) else None
+                        if inline:
+                            image_parts.append(inline)
+
+        prompt = "\n\n".join([*system_chunks, *user_chunks]).strip() or "请按要求输出 JSON。"
+        parts: list[dict] = [{"text": prompt}]
+
+        # Keep image count bounded to avoid hitting provider limits.
+        max_images = 10
+        parts.extend(image_parts[:max_images])
+        return parts
+
+    async def _chat_with_gemini(self, *, parts: list[dict], temperature: float, max_output_tokens: int) -> str:
+        import os
+        import httpx
+
+        api_keys = self._get_gemini_api_keys()
+        if not api_keys:
+            raise ValueError("GEMINI_API_KEY not found")
+
+        api_base = (os.getenv("GEMINI_API_BASE") or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        model = (os.getenv("GEMINI_MODEL") or "models/gemini-flash-latest").strip()
+        if not model.startswith("models/"):
+            model = "models/" + model
+
+        payload = {
+            "contents": [{"role": "user", "parts": parts}],
+            "generationConfig": {
+                "temperature": float(temperature),
+                "maxOutputTokens": int(max_output_tokens),
+            },
+        }
+
+        timeout_s = float(os.getenv("GEMINI_HTTP_TIMEOUT_SECONDS") or 6)
+        timeout = httpx.Timeout(timeout_s, connect=min(6.0, timeout_s))
+
+        last_err: Exception | None = None
+        for key in api_keys:
+            url = f"{api_base}/{model}:generateContent?key={key}"
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(url, json=payload, headers={"User-Agent": "jetlinks-agent/1.0"})
+                if resp.status_code in (401, 403, 429):
+                    last_err = RuntimeError(f"Gemini HTTP {resp.status_code}")
+                    continue
+                resp.raise_for_status()
+                data = resp.json() if resp.content else {}
+                candidates = data.get("candidates") or []
+                for c in candidates:
+                    content = (c or {}).get("content") or {}
+                    parts2 = content.get("parts") or []
+                    for p in parts2:
+                        t = (p or {}).get("text")
+                        if isinstance(t, str) and t.strip():
+                            return t.strip()
+                # Fallback: return compact JSON for debugging.
+                import json
+
+                return json.dumps(data, ensure_ascii=False)
+            except Exception as e:
+                last_err = e
+                continue
+
+        raise last_err or RuntimeError("Gemini request failed")
+
+    @staticmethod
+    def _build_cv_review_fallback_json(parameter: Optional[Dict[str, Any]]) -> str:
+        import json
+
+        p = parameter or {}
+        raw_objs = p.get("cv_objects") or p.get("objects") or []
+        objs = raw_objs if isinstance(raw_objs, list) else []
+
+        counts: Dict[str, int] = {}
+        for it in objs:
+            if not isinstance(it, dict):
+                continue
+            label = str(it.get("label") or "").strip() or "obj"
+            counts[label] = counts.get(label, 0) + 1
+
+        illegal_labels = {"smoke", "fire", "fall", "fight", "knife", "weapon"}
+        has_illegal = any(k.lower() in illegal_labels for k in counts.keys())
+
+        severity = "P1" if any(k.lower() in {"fire", "weapon"} for k in counts.keys()) else ("P2" if has_illegal else "P4")
+        reason = "LLM 不可用，使用规则兜底复判。objects=" + json.dumps(counts, ensure_ascii=False)
+
+        payload: Dict[str, Any] = {
+            "illegal": bool(has_illegal),
+            "hit": 1 if has_illegal else 0,
+            "severity": severity,
+            "reason": reason,
+            "objects": counts,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
     def _build_builtin_agent_snapshot(self, agent_id: str) -> Optional[AgentConfigSnapshot]:
         """Fallback agent config when DB is unavailable or agent row is missing.
 
@@ -287,6 +460,21 @@ class JSONAgentProcessor:
         except Exception:
             return default
 
+    def _coerce_bool(self, value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            s = value.strip().lower()
+            if s in {"1", "true", "yes", "y", "on"}:
+                return True
+            if s in {"0", "false", "no", "n", "off"}:
+                return False
+        return default
+
     def _get_media_tuning(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         从请求 context 中读取多媒体调参，优先级：context > env > default
@@ -300,6 +488,14 @@ class JSONAgentProcessor:
         sample_fps = self._coerce_float(context.get("video_sample_fps"), default_sample_fps)
         max_side = self._coerce_int(context.get("image_max_side"), default_max_side)
         jpeg_quality = self._coerce_int(context.get("image_jpeg_quality"), default_jpeg_quality)
+        disable_image_compression = self._coerce_bool(
+            context.get("image_disable_compression"),
+            False,
+        )
+        disable_video_frame_compression = self._coerce_bool(
+            context.get("video_disable_frame_compression"),
+            disable_image_compression,
+        )
 
         max_frames = max(1, min(32, max_frames))
         sample_fps = max(0.1, min(10.0, sample_fps))
@@ -311,6 +507,8 @@ class JSONAgentProcessor:
             "sample_fps": sample_fps,
             "max_side": max_side,
             "jpeg_quality": jpeg_quality,
+            "disable_image_compression": disable_image_compression,
+            "disable_video_frame_compression": disable_video_frame_compression,
         }
 
     def _parse_roi_rect(self, roi: Any) -> Optional[Dict[str, Any]]:
@@ -625,14 +823,15 @@ class JSONAgentProcessor:
 
         raise last_err or RuntimeError("视频下载失败")
 
-    def _encode_frame_to_jpeg_base64(
+    def _encode_frame_to_image_payload(
         self,
         frame,
         *,
         max_side: int,
         quality: int,
         roi: Optional[Dict[str, Any]] = None,
-    ) -> Optional[str]:
+        disable_compression: bool = False,
+    ) -> Optional[Dict[str, str]]:
         try:
             import base64
             import cv2
@@ -645,20 +844,72 @@ class JSONAgentProcessor:
                 if frame is None:
                     return None
 
-            h, w = frame.shape[:2]
-            if max_side and max(h, w) > max_side:
-                if h >= w:
-                    new_h = max_side
-                    new_w = int(w * (max_side / h))
-                else:
-                    new_w = max_side
-                    new_h = int(h * (max_side / w))
-                frame = cv2.resize(frame, (max(1, new_w), max(1, new_h)), interpolation=cv2.INTER_AREA)
+            if not disable_compression:
+                h, w = frame.shape[:2]
+                if max_side and max(h, w) > max_side:
+                    if h >= w:
+                        new_h = max_side
+                        new_w = int(w * (max_side / h))
+                    else:
+                        new_w = max_side
+                        new_h = int(h * (max_side / w))
+                    frame = cv2.resize(frame, (max(1, new_w), max(1, new_h)), interpolation=cv2.INTER_AREA)
 
-            ok, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+                ok, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+                if not ok:
+                    return None
+                return {"mime": "image/jpeg", "base64": base64.b64encode(buffer).decode('utf-8')}
+
+            ok, buffer = cv2.imencode('.png', frame)
             if not ok:
                 return None
-            return base64.b64encode(buffer).decode('utf-8')
+            return {"mime": "image/png", "base64": base64.b64encode(buffer).decode('utf-8')}
+        except Exception:
+            return None
+
+    def _encode_frame_to_jpeg_base64(
+        self,
+        frame,
+        *,
+        max_side: int,
+        quality: int,
+        roi: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        payload = self._encode_frame_to_image_payload(
+            frame,
+            max_side=max_side,
+            quality=quality,
+            roi=roi,
+            disable_compression=False,
+        )
+        if payload and payload.get("mime") == "image/jpeg":
+            return payload.get("base64")
+        return None
+
+    def _encode_image_bytes_to_image_payload(
+        self,
+        image_bytes: bytes,
+        *,
+        max_side: int,
+        quality: int,
+        roi: Optional[Dict[str, Any]] = None,
+        disable_compression: bool = False,
+    ) -> Optional[Dict[str, str]]:
+        try:
+            import numpy as np
+            import cv2
+
+            arr = np.frombuffer(image_bytes, dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                return None
+            return self._encode_frame_to_image_payload(
+                img,
+                max_side=max_side,
+                quality=quality,
+                roi=roi,
+                disable_compression=disable_compression,
+            )
         except Exception:
             return None
 
@@ -670,17 +921,16 @@ class JSONAgentProcessor:
         quality: int,
         roi: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
-        try:
-            import numpy as np
-            import cv2
-
-            arr = np.frombuffer(image_bytes, dtype=np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img is None:
-                return None
-            return self._encode_frame_to_jpeg_base64(img, max_side=max_side, quality=quality, roi=roi)
-        except Exception:
-            return None
+        payload = self._encode_image_bytes_to_image_payload(
+            image_bytes,
+            max_side=max_side,
+            quality=quality,
+            roi=roi,
+            disable_compression=False,
+        )
+        if payload and payload.get("mime") == "image/jpeg":
+            return payload.get("base64")
+        return None
 
     async def process_message(
         self,
@@ -770,14 +1020,43 @@ class JSONAgentProcessor:
             # 6. 调用LLM
             llm_client = LLMClient(provider="unified")
             logger.info(f"📡 [JSON代理] 开始调用LLM...")
-            response = await llm_client.chat(
-                messages=messages,
-                model=model,
-                temperature=agent_config.config.get('temperature', 0.3),
-                max_tokens=agent_config.config.get('max_tokens', 2048),
-                response_format=response_format
-            )
-            usage = llm_client.last_usage
+            temperature = agent_config.config.get('temperature', 0.3)
+            max_tokens = agent_config.config.get('max_tokens', 2048)
+            try:
+                response = await llm_client.chat(
+                    messages=messages,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format=response_format
+                )
+                usage = llm_client.last_usage
+            except Exception as e:
+                # Best-effort fallback: if an OpenAI-compatible endpoint isn't available/configured,
+                # allow Gemini REST API as a backup when GEMINI_API_KEY is provided.
+                response = None
+                usage = None
+
+                if self._get_gemini_api_keys():
+                    try:
+                        logger.warning("⚠️ [JSON代理] LLM 调用失败，尝试 Gemini 兜底: %s", e)
+                        parts = self._build_gemini_parts_from_messages(messages)
+                        response = await self._chat_with_gemini(
+                            parts=parts,
+                            temperature=temperature,
+                            max_output_tokens=max_tokens,
+                        )
+                    except Exception as e2:
+                        logger.warning("⚠️ [JSON代理] Gemini 兜底失败: %s", e2)
+                        response = None
+
+                # If this is a CV review call, allow a local heuristic fallback (no network required).
+                if response is None and isinstance(parameter, dict) and str(parameter.get("task") or "").strip() == "cv_review":
+                    logger.warning("🛟 [JSON代理] 使用 cv_review 规则兜底输出（无外部模型）")
+                    response = self._build_cv_review_fallback_json(parameter)
+
+                if response is None:
+                    raise
 
             logger.info(f"✅ [JSON代理] 消息处理完成，响应长度: {len(response)}")
             logger.info(f"📄 [JSON代理] 完整响应: {response}")
@@ -1084,6 +1363,8 @@ class JSONAgentProcessor:
                 sample_fps = tuning["sample_fps"]
                 max_side = tuning["max_side"]
                 jpeg_quality = tuning["jpeg_quality"]
+                disable_image_compression = tuning["disable_image_compression"]
+                disable_video_frame_compression = tuning["disable_video_frame_compression"]
                 max_video_size_mb = self._get_int_env("VIDEO_MAX_SIZE_MB", 500)
                 is_stream_video = (media_type == 'video') and self._looks_like_video_stream_url(url)
                 local_path = _resolve_local_path(url) if isinstance(url, str) else None
@@ -1226,14 +1507,25 @@ class JSONAgentProcessor:
                                 max_side=max_side,
                                 jpeg_quality=jpeg_quality,
                                 roi=roi,
+                                disable_compression=disable_video_frame_compression,
                             )
                             if video_frames:
-                                logger.info(f"🎬 [Video] (stream) 提取了 {len(video_frames)} 帧")
-                                for frame_base64 in video_frames:
+                                logger.info(
+                                    f"🎬 [Video] (stream) 提取了 {len(video_frames)} 帧(关闭关键帧压缩={disable_video_frame_compression})"
+                                )
+                                for frame_item in video_frames:
+                                    if isinstance(frame_item, dict):
+                                        frame_base64 = str(frame_item.get("base64") or "")
+                                        frame_mime = str(frame_item.get("mime") or "image/jpeg")
+                                    else:
+                                        frame_base64 = str(frame_item or "")
+                                        frame_mime = "image/jpeg"
+                                    if not frame_base64:
+                                        continue
                                     content.append({
                                         "type": "image_url",
                                         "image_url": {
-                                            "url": f"data:image/jpeg;base64,{frame_base64}"
+                                            "url": f"data:{frame_mime};base64,{frame_base64}"
                                         }
                                     })
                                 content[0]["text"] += f"\n\n[视频 {idx}: 已从视频流提取 {len(video_frames)} 个关键帧进行分析]"
@@ -1257,15 +1549,26 @@ class JSONAgentProcessor:
                             max_side=max_side,
                             jpeg_quality=jpeg_quality,
                             roi=roi,
+                            disable_compression=disable_video_frame_compression,
                         )
 
                         if video_frames:
-                            logger.info(f"🎬 [Video] 提取了 {len(video_frames)} 帧")
-                            for frame_base64 in video_frames:
+                            logger.info(
+                                f"🎬 [Video] 提取了 {len(video_frames)} 帧(关闭关键帧压缩={disable_video_frame_compression})"
+                            )
+                            for frame_item in video_frames:
+                                if isinstance(frame_item, dict):
+                                    frame_base64 = str(frame_item.get("base64") or "")
+                                    frame_mime = str(frame_item.get("mime") or "image/jpeg")
+                                else:
+                                    frame_base64 = str(frame_item or "")
+                                    frame_mime = "image/jpeg"
+                                if not frame_base64:
+                                    continue
                                 content.append({
                                     "type": "image_url",
                                     "image_url": {
-                                        "url": f"data:image/jpeg;base64,{frame_base64}"
+                                        "url": f"data:{frame_mime};base64,{frame_base64}"
                                     }
                                 })
                             content[0]["text"] += f"\n\n[视频 {idx}: 已提取 {len(video_frames)} 个关键帧进行分析]"
@@ -1281,14 +1584,27 @@ class JSONAgentProcessor:
                                 pass
 
                 elif media_type == 'image':
-                    # 图片处理：压缩以提速与降低传输体积（无法解码时fallback为原始base64）
-                    compressed = self._compress_image_bytes_to_jpeg_base64(
-                        file_content,
-                        max_side=max_side,
-                        quality=jpeg_quality,
-                        roi=roi,
-                    )
-                    if compressed:
+                    compressed = None
+                    if not disable_image_compression:
+                        compressed = self._compress_image_bytes_to_jpeg_base64(
+                            file_content,
+                            max_side=max_side,
+                            quality=jpeg_quality,
+                            roi=roi,
+                        )
+                    if disable_image_compression:
+                        if url.startswith('data:'):
+                            content_type = mime_type or 'image/jpeg'
+                        else:
+                            content_type = guess_type(url)[0] or 'image/jpeg'
+                        image_base64 = base64.b64encode(file_content).decode('utf-8')
+                        content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{content_type};base64,{image_base64}"
+                            }
+                        })
+                    elif compressed:
                         content.append({
                             "type": "image_url",
                             "image_url": {
@@ -1307,7 +1623,9 @@ class JSONAgentProcessor:
                                 "url": f"data:{content_type};base64,{image_base64}"
                             }
                         })
-                    logger.info(f"✅ [Image] 图片 {idx} 完成(压缩={bool(compressed)})")
+                    logger.info(
+                        f"✅ [Image] 图片 {idx} 完成(关闭压缩={disable_image_compression}, 压缩={bool(compressed)})"
+                    )
                 else:
                     logger.warning(f"⚠️ [Multimodal] 不支持的媒体类型: {media_type}")
                     content[0]["text"] += f"\n\n注意：文件 {idx} 类型不支持({media_type})"
@@ -1331,6 +1649,7 @@ class JSONAgentProcessor:
         max_side: int = 768,
         jpeg_quality: int = 75,
         roi: Optional[Dict[str, Any]] = None,
+        disable_compression: bool = False,
     ) -> list:
         """
         使用 ffmpeg 从视频流/网络视频中直接抓帧（不落整段视频）。
@@ -1380,7 +1699,8 @@ class JSONAgentProcessor:
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="jetlinks_stream_frames_"))
         try:
-            out_pattern = str(tmp_dir / "frame_%03d.jpg")
+            out_ext = "png" if disable_compression else "jpg"
+            out_pattern = str(tmp_dir / f"frame_%03d.{out_ext}")
 
             capture_url = url
             hls_path = _resolve_local_hls_playlist(url)
@@ -1443,29 +1763,42 @@ class JSONAgentProcessor:
                     logger.error("❌ [Video] 抓帧失败源: %s", url)
                 return []
 
-            frames = sorted(tmp_dir.glob("frame_*.jpg"))
+            frames = sorted(tmp_dir.glob(f"frame_*.{out_ext}"))
             if not frames:
                 logger.warning("⚠️ [Video] ffmpeg 未输出任何帧：url=%s", capture_url)
                 return []
 
-            frames_base64: list[str] = []
+            frames_payload: list[dict] = []
             for p in frames:
                 try:
                     img_bytes = p.read_bytes()
-                    compressed = self._compress_image_bytes_to_jpeg_base64(
-                        img_bytes,
-                        max_side=max_side,
-                        quality=jpeg_quality,
-                        roi=roi,
-                    )
-                    if compressed:
-                        frames_base64.append(compressed)
+                    if disable_compression:
+                        payload = self._encode_image_bytes_to_image_payload(
+                            img_bytes,
+                            max_side=max_side,
+                            quality=jpeg_quality,
+                            roi=roi,
+                            disable_compression=True,
+                        )
+                        if payload and payload.get("base64"):
+                            frames_payload.append(payload)
                     else:
-                        frames_base64.append(base64.b64encode(img_bytes).decode("utf-8"))
+                        compressed = self._compress_image_bytes_to_jpeg_base64(
+                            img_bytes,
+                            max_side=max_side,
+                            quality=jpeg_quality,
+                            roi=roi,
+                        )
+                        if compressed:
+                            frames_payload.append({"mime": "image/jpeg", "base64": compressed})
+                        else:
+                            frames_payload.append(
+                                {"mime": "image/jpeg", "base64": base64.b64encode(img_bytes).decode("utf-8")}
+                            )
                 except Exception:
                     continue
 
-            return frames_base64[:max_frames]
+            return frames_payload[:max_frames]
         finally:
             try:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1482,6 +1815,7 @@ class JSONAgentProcessor:
         max_side: int = 768,
         jpeg_quality: int = 75,
         roi: Optional[Dict[str, Any]] = None,
+        disable_compression: bool = False,
     ) -> list:
         """
         从视频内容提取关键帧
@@ -1610,19 +1944,22 @@ class JSONAgentProcessor:
                     selected.add(int(i))
 
             selected_list = sorted(selected, key=lambda i: candidates[i]["t_ms"])[:max_frames]
-            frames_base64: list[str] = []
+            frames_payload: list[dict] = []
             for i in selected_list:
-                b64 = self._encode_frame_to_jpeg_base64(
+                payload = self._encode_frame_to_image_payload(
                     candidates[i]["frame"],
                     max_side=max_side,
                     quality=jpeg_quality,
                     roi=roi,
+                    disable_compression=disable_compression,
                 )
-                if b64:
-                    frames_base64.append(b64)
+                if payload and payload.get("base64"):
+                    frames_payload.append(payload)
 
-            logger.info(f"✅ [Video] 成功提取 {len(frames_base64)} 帧(上限{max_frames})")
-            return frames_base64
+            logger.info(
+                f"✅ [Video] 成功提取 {len(frames_payload)} 帧(上限{max_frames}, 关闭关键帧压缩={disable_compression})"
+            )
+            return frames_payload
 
         except Exception as e:
             logger.error(f"❌ [Video] 视频帧提取失败: {e}", exc_info=True)

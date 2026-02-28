@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.tool import Tool
 from app.schemas.tool import ToolCallRequest, ToolInfo, ToolConfigRequest, ToolConfigResponse
+from app.core.tools.internal_tool_executor import internal_tool_executor
 
 router = APIRouter()
 
@@ -193,3 +194,43 @@ async def update_tool_config(tool_id: str, config: ToolConfigRequest, db: Sessio
 
     return {"message": "工具配置更新成功", "tool_id": tool_id}
 
+
+@router.post("/call")
+async def call_tool(payload: ToolCallRequest, timeout: float = 120.0):
+    """
+    直接调用 AI 服务内置工具（TOOL_REGISTRY 中注册的工具）。
+
+    注意：
+    - 仅支持内置工具（例如：weather / chatbi / bbox_drawer 等）。
+    - 不会回显敏感参数（如 password）。
+    """
+    tool_name = (payload.tool_name or "").strip()
+    if not tool_name:
+        raise HTTPException(status_code=400, detail="tool_name 不能为空")
+
+    parameters = payload.parameters or {}
+
+    # 简单敏感字段脱敏（避免回显到响应中）
+    masked = dict(parameters)
+    for key in ("password", "passwd", "secret", "api_key", "token"):
+        if key in masked and masked[key] is not None:
+            masked[key] = "***"
+
+    result = await internal_tool_executor.execute(tool_name=tool_name, arguments=parameters, timeout=timeout)
+
+    # 统一响应结构（避免回显原始 parameters）
+    if result.get("success") is True:
+        return {
+            "success": True,
+            "tool_name": result.get("tool_name") or tool_name,
+            "parameters": masked,
+            "result": result.get("result"),
+        }
+
+    return {
+        "success": False,
+        "tool_name": result.get("tool_name") or tool_name,
+        "parameters": masked,
+        "error": result.get("error") or "工具执行失败",
+        "detail": result.get("detail"),
+    }

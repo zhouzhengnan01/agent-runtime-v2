@@ -468,9 +468,19 @@ if os.path.exists(settings.SESSION_STORAGE_PATH):
     logger.info(f"Mounted session files at /session-files from {settings.SESSION_STORAGE_PATH}")
 
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
+
+
+def _ensure_dir(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+        return True
+    except Exception:
+        return False
+
+
 # 4. 挂载视频巡检证据帧
 evidence_images_path = os.path.join(BASE_PATH, "storage", "evidence_images")
-if os.path.exists(evidence_images_path):
+if _ensure_dir(evidence_images_path):
     app.mount(
         "/storage/evidence_images",
         StaticFiles(directory=evidence_images_path),
@@ -480,7 +490,7 @@ if os.path.exists(evidence_images_path):
 
 # 5. 挂载视频巡检带目标框证据帧
 evidence_images_box_path = os.path.join(BASE_PATH, "storage", "evidence_images_box")
-if os.path.exists(evidence_images_box_path):
+if _ensure_dir(evidence_images_box_path):
     app.mount(
         "/storage/evidence_images_box",
         StaticFiles(directory=evidence_images_box_path),
@@ -490,7 +500,7 @@ if os.path.exists(evidence_images_box_path):
 
 # 6. 挂载 http url 下载后的临时本地视频
 http_tmp_path = os.path.join(BASE_PATH, "storage", "http_tmp")
-if os.path.exists(http_tmp_path):
+if _ensure_dir(http_tmp_path):
     app.mount(
         "/storage/http_tmp",
         StaticFiles(directory=http_tmp_path),

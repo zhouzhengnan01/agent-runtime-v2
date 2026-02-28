@@ -506,6 +506,8 @@ class ContextData(BaseModel):
     video_sample_fps: Optional[float] = Field(default=None, description="视频抽帧候选采样频率(帧/秒)，越大越准但越慢（默认2.0）")
     image_max_side: Optional[int] = Field(default=None, description="图片/视频帧压缩最大边（默认768）")
     image_jpeg_quality: Optional[int] = Field(default=None, description="图片/视频帧JPEG质量1-100（默认75）")
+    image_disable_compression: Optional[bool] = Field(default=None, description="是否关闭图片压缩（默认false）")
+    video_disable_frame_compression: Optional[bool] = Field(default=None, description="是否关闭视频关键帧压缩（默认false；未设置时跟随image_disable_compression）")
 
 
 class ChatRequest(BaseModel):
@@ -888,6 +890,8 @@ async def chat_with_json_response(
             "video_sample_fps": request.context.video_sample_fps,
             "image_max_side": request.context.image_max_side,
             "image_jpeg_quality": request.context.image_jpeg_quality,
+            "image_disable_compression": request.context.image_disable_compression,
+            "video_disable_frame_compression": request.context.video_disable_frame_compression,
             "roi": request.context.roi,
         }
 
@@ -980,6 +984,8 @@ async def chat_with_json_response(
                         "video_sample_fps": request.context.video_sample_fps,
                         "image_max_side": request.context.image_max_side,
                         "image_jpeg_quality": request.context.image_jpeg_quality,
+                        "image_disable_compression": request.context.image_disable_compression,
+                        "video_disable_frame_compression": request.context.video_disable_frame_compression,
                         "roi": request.context.roi,
                         "files": [
                             {"url": _mask_data_uri(f.url), "media_type": f.media_type}
@@ -1096,6 +1102,8 @@ async def chat_with_json_response(
                 "video_sample_fps": request.context.video_sample_fps,
                 "image_max_side": request.context.image_max_side,
                 "image_jpeg_quality": request.context.image_jpeg_quality,
+                "image_disable_compression": request.context.image_disable_compression,
+                "video_disable_frame_compression": request.context.video_disable_frame_compression,
                 "roi": request.context.roi,
                 "files": [
                     {"url": _mask_data_uri(f.url), "media_type": f.media_type}

@@ -5,6 +5,7 @@ Date: 2025-10-17 15:21:53
 LastEditTime: 2025-12-04 16:25:09
 '''
 
+import json
 import os
 import queue
 import threading
@@ -706,7 +707,19 @@ class StreamingAnalyze:
             except Exception as e:
                 logger.warning("[OUT] on_vlm_done 回调异常：%s", e)
 
-        text = (payload.get("full_text") or "").strip()
+        # VLM backend returns full_text: str; CV backend returns full_text: list[dict] (objects).
+        # Keep logger robust to both; never crash the OUT-VLM consumer thread.
+        ft = payload.get("full_text")
+        if isinstance(ft, str):
+            text = ft.strip()
+        elif not ft:
+            text = ""
+        else:
+            try:
+                text = json.dumps(ft, ensure_ascii=False)
+            except Exception:
+                text = str(ft)
+
         suppressed = bool(payload.get("suppressed_dup"))
         streaming_flag = payload.get("streaming")
         suppress_empty_log = os.getenv("VLM_LOG_SUPPRESS_EMPTY", "1") == "1"

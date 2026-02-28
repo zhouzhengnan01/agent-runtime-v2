@@ -22,6 +22,9 @@ ENV_PATH = os.path.join(BASE_PATH, ".env")
 
 VLM_HTTP_MAX_WAIT = float(read_env_kv(ENV_PATH, "VLM_HTTP_MAX_WAIT", "240") or 240)
 VLM_HTTP_MAX_RETRY = int(read_env_kv(ENV_PATH, "VLM_HTTP_MAX_RETRY", "1") or 1)
+VLM_API_STYLE = (
+    os.getenv("VLM_API_STYLE") or read_env_kv(ENV_PATH, "VLM_API_STYLE", "") or "auto"
+).strip().lower()
 
 
 def _strip_file_scheme(p: str) -> str:
@@ -90,6 +93,22 @@ class VlmCurlClient:
         self.backup_api_key: Optional[str] = vlm_config.vlm_api_key_backup
         self.backup_base_url: Optional[str] = vlm_config.vlm_base_url_backup
         self.backup_model_name: Optional[str] = vlm_config.vlm_model_name_backup
+
+        # API style:
+        # - chat:      POST {base_url}/chat/completions  (OpenAI Chat Completions compatible)
+        # - responses: POST {base_url}/responses         (OpenAI Responses API, SSE required for some providers)
+        style = (VLM_API_STYLE or "auto").strip().lower()
+        if style in ("chat.completions", "chat_completions", "completions"):
+            style = "chat"
+        if style in ("response",):
+            style = "responses"
+        if (not style) or style == "auto":
+            # Heuristic: tabcode uses "/openai" prefix and exposes Responses API.
+            base = (self.base_url or "").strip().lower()
+            style = "responses" if "/openai" in base else "chat"
+        if style not in ("chat", "responses"):
+            style = "chat"
+        self.api_style: str = style
 
         # 上游提供的“高层”参数
         self.system_prompt = (system_prompt or "").strip()
@@ -194,6 +213,82 @@ class VlmCurlClient:
 
         return payload, has_image
 
+    def _build_responses_input(self, api_key: Optional[str] = None) -> Tuple[List[Dict[str, Any]], bool]:
+        """
+        构造 OpenAI Responses API 的 input（list）：
+        https://platform.openai.com/docs/api-reference/responses
+        """
+        active_key = api_key if api_key is not None else self.api_key
+        if not active_key:
+            raise ValueError("VLM_API_KEY 未配置，请检查 .env 文件")
+
+        inputs: List[Dict[str, Any]] = []
+        has_image = False
+
+        if self.system_prompt:
+            inputs.append(
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": self.system_prompt}],
+                }
+            )
+
+        user_contents: List[Dict[str, Any]] = []
+
+        text_parts: List[str] = []
+        if self.user_prompt:
+            text_parts.append(self.user_prompt)
+        if self.text:
+            text_parts.append(self.text)
+        if text_parts:
+            user_contents.append({"type": "input_text", "text": "\n".join(text_parts)})
+
+        for img_path in self.images:
+            if not img_path:
+                continue
+            if img_path.lower().startswith(("http://", "https://")):
+                user_contents.append({"type": "input_image", "image_url": img_path})
+                has_image = True
+                continue
+
+            local_path = _strip_file_scheme(img_path)
+            if not os.path.exists(local_path):
+                logger.warning("[CloudVLMCurlClient] 图片文件不存在: %s", local_path)
+                continue
+            b64 = _image_to_base64(local_path)
+            if not b64:
+                continue
+            user_contents.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"})
+            has_image = True
+
+        for v in self.videos:
+            logger.warning("[CloudVLMCurlClient] 当前未对视频进行特殊处理: %s", v)
+
+        if user_contents:
+            inputs.append({"role": "user", "content": user_contents})
+
+        if not inputs:
+            raise ValueError("CloudVLMCurlClient: 构造出的 responses input 为空，请检查上游参数")
+
+        return inputs, has_image
+
+    def _build_payload_responses(
+        self,
+        *,
+        model_name: Optional[str] = None,
+        api_key: Optional[str] = None,
+        stream: bool = True,
+    ) -> Tuple[Dict[str, Any], bool]:
+        inputs, has_image = self._build_responses_input(api_key=api_key)
+        payload: Dict[str, Any] = {
+            "model": model_name or self.model_name,
+            "input": inputs,
+            # Some providers (e.g. tabcode) require stream=true for /responses.
+            "stream": bool(stream),
+            "max_output_tokens": 2048,
+        }
+        return payload, has_image
+
     # ----------------- 日志：调用参数（中文便于排查） -----------------
     def _log_call_info(
         self,
@@ -209,7 +304,7 @@ class VlmCurlClient:
         """
         model = payload.get("model") or self.model_name
         temperature = payload.get("temperature", self.temperature)
-        max_tokens = payload.get("max_tokens", 0)
+        max_tokens = payload.get("max_tokens", payload.get("max_output_tokens", 0))
 
         # 兜底类型
         try:
@@ -246,6 +341,14 @@ class VlmCurlClient:
         model_name: str,
         label: str,
     ) -> Tuple[str, Dict[str, Any]]:
+        if self.api_style == "responses":
+            return self._call_api_nonstream_responses_with(
+                base_url=base_url,
+                api_key=api_key,
+                model_name=model_name,
+                label=label,
+            )
+
         payload, has_image = self._build_payload(model_name=model_name, api_key=api_key)
 
         headers = {
@@ -314,6 +417,112 @@ class VlmCurlClient:
             if line.startswith("data:"):
                 yield line[len("data:"):].strip()
 
+    # ----------------- Responses API（流式） -----------------
+    def _call_api_stream_responses_with(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model_name: str,
+        label: str,
+    ) -> Iterator[Tuple[Optional[str], Optional[dict]]]:
+        payload, _ = self._build_payload_responses(model_name=model_name, api_key=api_key, stream=True)
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        url = f"{base_url.rstrip('/')}/responses"
+
+        self._log_call_info(stream=True, payload=payload, base_url=base_url, label=label)
+
+        t0 = time.time()
+        usage_raw: dict = {}
+        stopped_by_ctrl = False
+
+        with requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=VLM_HTTP_MAX_WAIT,
+            stream=True,
+        ) as resp:
+            if resp.status_code != 200:
+                try:
+                    err = resp.json()
+                except Exception:
+                    err = resp.text
+                raise RuntimeError(f"VLM API 错误 {resp.status_code}: {err}")
+
+            for data_str in self._iter_sse_data_lines(resp):
+                # STOP 检测
+                if _poll_ctrl_heartbeat(self.q_ctrl, self.stop):
+                    stopped_by_ctrl = True
+                    logger.warning("[CloudVLMCurlClient] 检测到 STOP 信号，中断流式读取")
+                    break
+
+                if data_str == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data_str)
+                except Exception:
+                    continue
+
+                t = chunk.get("type")
+                if t == "response.output_text.delta":
+                    delta = chunk.get("delta") or ""
+                    if delta:
+                        yield str(delta), None
+                    continue
+
+                if t == "response.completed":
+                    resp_obj = chunk.get("response")
+                    if isinstance(resp_obj, dict):
+                        u = resp_obj.get("usage")
+                        if isinstance(u, dict) and u:
+                            usage_raw = u
+                    break
+
+                if t == "response.failed":
+                    resp_obj = chunk.get("response")
+                    raise RuntimeError(f"VLM API 错误 (responses): {resp_obj or chunk}")
+
+        usage_final = {
+            "backend": label,
+            "model": model_name,
+            "status": "stopped" if stopped_by_ctrl else "ok",
+            "elapsed_sec": time.time() - t0,
+            "api_style": "responses",
+            "raw_usage": usage_raw,
+        }
+        yield None, usage_final
+
+    def _call_api_nonstream_responses_with(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model_name: str,
+        label: str,
+    ) -> Tuple[str, Dict[str, Any]]:
+        buf: List[str] = []
+        usage_final: dict = {}
+        for delta, usage in self._call_api_stream_responses_with(
+            base_url=base_url,
+            api_key=api_key,
+            model_name=model_name,
+            label=label,
+        ):
+            if delta:
+                buf.append(str(delta))
+            if usage:
+                usage_final = usage
+        text = ("".join(buf) or "").strip()
+        if not text:
+            text = "模型未生成有效回复。"
+        return text, usage_final
+
     # ----------------- 流式调用 -----------------
     def _call_api_stream_with(
         self,
@@ -323,6 +532,15 @@ class VlmCurlClient:
         model_name: str,
         label: str,
     ) -> Iterator[Tuple[Optional[str], Optional[dict]]]:
+        if self.api_style == "responses":
+            yield from self._call_api_stream_responses_with(
+                base_url=base_url,
+                api_key=api_key,
+                model_name=model_name,
+                label=label,
+            )
+            return
+
         payload, has_image = self._build_payload(model_name=model_name, api_key=api_key)
         payload["stream"] = True  # 强制流式
 

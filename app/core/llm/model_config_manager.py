@@ -83,12 +83,29 @@ class ModelConfigManager:
     def _init_separated_config(self) -> MultiProviderConfig:
         """初始化分离配置模式 - 每种模型可以使用不同服务商"""
 
+        # NOTE:
+        # "separated config" is triggered when any of LLM_API_KEY/VLM_API_KEY/EMBEDDING_API_KEY is present.
+        # In practice, many deployments only set **one** key (e.g. VLM) and expect it to work for all
+        # model types. The previous implementation hard-required all three keys and failed fast with
+        # "LLM_API_KEY not found", which breaks multimodal-only workloads (review, vision QA, etc.).
+        #
+        # Here we relax the constraint: missing keys fall back to any available key (LLM/VLM/OPENAI),
+        # and missing base_url fields fall back across services as well. This keeps separated-config
+        # flexible while still allowing explicit per-service overrides.
+
         # LLM配置
-        llm_api_key = _get_env_or_settings("LLM_API_KEY") or _get_env_or_settings("OPENAI_API_KEY")
+        llm_api_key = (
+            _get_env_or_settings("LLM_API_KEY")
+            or _get_env_or_settings("OPENAI_API_KEY")
+            or _get_env_or_settings("VLM_API_KEY")
+            or _get_env_or_settings("EMBEDDING_API_KEY")
+        )
         llm_base_url = (
             _get_env_or_settings("LLM_BASE_URL")
             or _get_env_or_settings("OPENAI_BASE_URL")
             or _get_env_or_settings("OPENAI_API_BASE")
+            or _get_env_or_settings("VLM_BASE_URL")
+            or _get_env_or_settings("EMBEDDING_BASE_URL")
             or "https://api.openai.com/v1"
         )
         llm_model = (
@@ -99,11 +116,18 @@ class ModelConfigManager:
         llm_provider = self._detect_provider_name(llm_base_url)
 
         # VLM配置
-        vlm_api_key = _get_env_or_settings("VLM_API_KEY") or _get_env_or_settings("OPENAI_API_KEY")
+        vlm_api_key = (
+            _get_env_or_settings("VLM_API_KEY")
+            or _get_env_or_settings("OPENAI_API_KEY")
+            or _get_env_or_settings("LLM_API_KEY")
+            or _get_env_or_settings("EMBEDDING_API_KEY")
+        )
         vlm_base_url = (
             _get_env_or_settings("VLM_BASE_URL")
             or _get_env_or_settings("OPENAI_BASE_URL")
             or _get_env_or_settings("OPENAI_API_BASE")
+            or _get_env_or_settings("LLM_BASE_URL")
+            or _get_env_or_settings("EMBEDDING_BASE_URL")
             or "https://api.openai.com/v1"
         )
         vlm_model = (
@@ -114,11 +138,18 @@ class ModelConfigManager:
         vlm_provider = self._detect_provider_name(vlm_base_url)
 
         # Embedding配置
-        embedding_api_key = _get_env_or_settings("EMBEDDING_API_KEY") or _get_env_or_settings("OPENAI_API_KEY")
+        embedding_api_key = (
+            _get_env_or_settings("EMBEDDING_API_KEY")
+            or _get_env_or_settings("OPENAI_API_KEY")
+            or _get_env_or_settings("LLM_API_KEY")
+            or _get_env_or_settings("VLM_API_KEY")
+        )
         embedding_base_url = (
             _get_env_or_settings("EMBEDDING_BASE_URL")
             or _get_env_or_settings("OPENAI_BASE_URL")
             or _get_env_or_settings("OPENAI_API_BASE")
+            or _get_env_or_settings("LLM_BASE_URL")
+            or _get_env_or_settings("VLM_BASE_URL")
             or "https://api.openai.com/v1"
         )
         embedding_model = (
@@ -128,13 +159,14 @@ class ModelConfigManager:
         )
         embedding_provider = self._detect_provider_name(embedding_base_url)
 
-        # 验证配置
-        if not llm_api_key or not vlm_api_key or not embedding_api_key:
-            missing = []
-            if not llm_api_key: missing.append("LLM_API_KEY")
-            if not vlm_api_key: missing.append("VLM_API_KEY")
-            if not embedding_api_key: missing.append("EMBEDDING_API_KEY")
-            raise ValueError(f"❌ 分离配置模式下缺少API Key: {', '.join(missing)}")
+        # Final fallback: if some keys are still missing, reuse any available one.
+        any_key = llm_api_key or vlm_api_key or embedding_api_key
+        llm_api_key = llm_api_key or any_key
+        vlm_api_key = vlm_api_key or any_key
+        embedding_api_key = embedding_api_key or any_key
+
+        if not (llm_api_key and vlm_api_key and embedding_api_key):
+            raise ValueError("❌ 未配置API Key：请至少设置 OPENAI_API_KEY 或 任一(LLM_API_KEY/VLM_API_KEY/EMBEDDING_API_KEY)")
 
         return MultiProviderConfig(
             llm_config=ModelServiceConfig(

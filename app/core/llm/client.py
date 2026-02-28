@@ -226,17 +226,26 @@ class LLMClient:
             return None
 
         if isinstance(usage_obj, dict):
-            prompt_tokens = usage_obj.get("prompt_tokens")
-            completion_tokens = usage_obj.get("completion_tokens")
+            # Chat Completions: prompt_tokens/completion_tokens
+            # Responses API: input_tokens/output_tokens
+            prompt_tokens = usage_obj.get("prompt_tokens") or usage_obj.get("input_tokens")
+            completion_tokens = usage_obj.get("completion_tokens") or usage_obj.get("output_tokens")
             total_tokens = usage_obj.get("total_tokens")
-            details = usage_obj.get("prompt_tokens_details") or usage_obj.get("completion_tokens_details")
+            details = (
+                usage_obj.get("prompt_tokens_details")
+                or usage_obj.get("completion_tokens_details")
+                or usage_obj.get("input_tokens_details")
+                or usage_obj.get("output_tokens_details")
+            )
         else:
-            prompt_tokens = getattr(usage_obj, "prompt_tokens", None)
-            completion_tokens = getattr(usage_obj, "completion_tokens", None)
+            prompt_tokens = getattr(usage_obj, "prompt_tokens", None) or getattr(usage_obj, "input_tokens", None)
+            completion_tokens = getattr(usage_obj, "completion_tokens", None) or getattr(usage_obj, "output_tokens", None)
             total_tokens = getattr(usage_obj, "total_tokens", None)
             details = (
                 getattr(usage_obj, "prompt_tokens_details", None)
                 or getattr(usage_obj, "completion_tokens_details", None)
+                or getattr(usage_obj, "input_tokens_details", None)
+                or getattr(usage_obj, "output_tokens_details", None)
             )
 
         try:
@@ -266,8 +275,198 @@ class LLMClient:
         if model_name:
             usage["model"] = model_name
         if details:
-            usage["details"] = details
+            # Ensure JSON-serializable (FastAPI response + review record persistence).
+            safe_details: Any = None
+            if isinstance(details, dict):
+                safe_details = details
+            else:
+                try:
+                    safe_details = details.model_dump()  # type: ignore[attr-defined]
+                except Exception:
+                    try:
+                        safe_details = details.dict()  # type: ignore[attr-defined]
+                    except Exception:
+                        safe_details = None
+            if safe_details:
+                usage["details"] = safe_details
         return usage
+
+    @staticmethod
+    def _is_chat_completions_endpoint_missing(error: Exception) -> bool:
+        """Detect providers that only support Responses API (no /chat/completions)."""
+        status_code = getattr(error, "status_code", None) or getattr(error, "status", None)
+        if status_code not in (404, 405):
+            return False
+
+        msg = str(error).lower()
+        if "chat/completions" in msg:
+            return True
+        if "cannot post" in msg and "chat" in msg and "completions" in msg:
+            return True
+        return False
+
+    @staticmethod
+    def _is_responses_stream_required(error: Exception) -> bool:
+        msg = str(error).lower()
+        return "stream must be set to true" in msg or "stream must be true" in msg
+
+    @staticmethod
+    def _is_responses_system_messages_not_allowed(error: Exception) -> bool:
+        msg = str(error).lower()
+        return "system messages are not allowed" in msg
+
+    @staticmethod
+    def _extract_unsupported_parameter_name(error: Exception) -> Optional[str]:
+        import re
+
+        msg = str(error)
+        m = re.search(r"unsupported parameter\\s*[:：]\\s*([\\w.]+)", msg, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        return None
+
+    @staticmethod
+    def _coerce_messages_to_responses_input_and_instructions(
+        messages: List[Dict[str, Any]],
+        *,
+        use_instructions: bool = False,
+    ) -> Tuple[List[Dict[str, Any]], str]:
+        """Convert Chat Completions messages to Responses API (input + instructions)."""
+        out: List[Dict[str, Any]] = []
+        instructions_parts: List[str] = []
+
+        def _role(raw: Any) -> str:
+            r = str(raw or "user").strip().lower()
+            if r in {"user", "assistant", "system", "developer"}:
+                return r
+            return "user"
+
+        def _append_text(parts: List[Dict[str, Any]], text: Any) -> None:
+            s = str(text or "")
+            if not s:
+                return
+            parts.append({"type": "input_text", "text": s})
+
+        def _append_image(parts: List[Dict[str, Any]], url: Any) -> None:
+            s = str(url or "").strip()
+            if not s:
+                return
+            parts.append({"type": "input_image", "image_url": s})
+
+        def _content_to_plain_text(content: Any) -> str:
+            if content is None:
+                return ""
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                texts: List[str] = []
+                for part in content:
+                    if isinstance(part, str) and part.strip():
+                        texts.append(part.strip())
+                    elif isinstance(part, dict):
+                        t = part.get("text")
+                        if isinstance(t, str) and t.strip():
+                            texts.append(t.strip())
+                return "\n".join(texts)
+            if isinstance(content, dict):
+                t = content.get("text")
+                if isinstance(t, str) and t.strip():
+                    return t.strip()
+            return str(content)
+
+        def _content_to_responses_parts(content: Any) -> List[Dict[str, Any]]:
+            parts: List[Dict[str, Any]] = []
+
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, str):
+                        _append_text(parts, part)
+                        continue
+                    if not isinstance(part, dict):
+                        continue
+
+                    ptype = str(part.get("type") or "").strip().lower()
+                    if ptype in {"text", "input_text"} or "text" in part:
+                        _append_text(parts, part.get("text"))
+                        continue
+
+                    if ptype in {"image_url", "image", "input_image"} or "image_url" in part or "image" in part:
+                        if isinstance(part.get("image_url"), dict):
+                            _append_image(parts, (part.get("image_url") or {}).get("url"))
+                        else:
+                            _append_image(parts, part.get("image_url") or part.get("image"))
+                        continue
+
+                return parts or [{"type": "input_text", "text": ""}]
+
+            if isinstance(content, dict):
+                ptype = str(content.get("type") or "").strip().lower()
+                if ptype in {"text", "input_text"} or "text" in content:
+                    _append_text(parts, content.get("text"))
+                    return parts or [{"type": "input_text", "text": ""}]
+                if ptype in {"image_url", "image", "input_image"} or "image_url" in content or "image" in content:
+                    if isinstance(content.get("image_url"), dict):
+                        _append_image(parts, (content.get("image_url") or {}).get("url"))
+                    else:
+                        _append_image(parts, content.get("image_url") or content.get("image"))
+                    return parts or [{"type": "input_text", "text": ""}]
+
+            # Fallback: stringify to input_text.
+            _append_text(parts, content)
+            return parts or [{"type": "input_text", "text": ""}]
+
+        for m in messages or []:
+            if not isinstance(m, dict):
+                continue
+            role = _role(m.get("role"))
+            if role in {"system", "developer"} and use_instructions:
+                t = _content_to_plain_text(m.get("content")).strip()
+                if t:
+                    instructions_parts.append(t)
+                continue
+
+            parts = _content_to_responses_parts(m.get("content"))
+
+            out.append(
+                {
+                    "role": role,
+                    "content": parts,
+                }
+            )
+
+        instructions = "\n\n".join([p for p in instructions_parts if p.strip()])
+        return out, instructions
+
+    @staticmethod
+    def _coerce_response_format_to_responses_text(response_format: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not response_format or not isinstance(response_format, dict):
+            return None
+
+        t = str(response_format.get("type") or "").strip().lower()
+        if not t:
+            return None
+
+        if t in {"json_object", "object"}:
+            return {"format": {"type": "json_object"}}
+
+        if t in {"json_schema", "schema"}:
+            inner = response_format.get("json_schema") if isinstance(response_format.get("json_schema"), dict) else None
+            if not inner:
+                return None
+            schema = inner.get("schema")
+            if not isinstance(schema, dict) or not schema:
+                return None
+            return {
+                "format": {
+                    "type": "json_schema",
+                    "name": str(inner.get("name") or "AnalysisResult"),
+                    "schema": schema,
+                    "strict": bool(inner.get("strict", True)),
+                    "description": str(inner.get("description") or ""),
+                }
+            }
+
+        return None
 
     def _is_model_not_found_error(self, error: Exception) -> bool:
         try:
@@ -540,18 +739,129 @@ class LLMClient:
             attempts = 0
             response_format_removed = False
             used_fallback = False
+            use_responses_api = False
+            responses_text: Optional[Dict[str, Any]] = None
+            responses_input: Optional[List[Dict[str, Any]]] = None
+            responses_instructions: Optional[str] = None
+            responses_force_stream = False
+            responses_output_text: Optional[str] = None
+            responses_use_instructions = False
+            responses_disabled_params: set[str] = set()
             while True:
                 attempts += 1
                 try:
-                    if isinstance(client, OpenAI):
-                        response = await asyncio.to_thread(
-                            client.chat.completions.create,
-                            **api_params
-                        )
+                    if use_responses_api:
+                        if responses_input is None:
+                            responses_input, responses_instructions = self._coerce_messages_to_responses_input_and_instructions(
+                                messages,
+                                use_instructions=responses_use_instructions,
+                            )  # type: ignore[arg-type]
+                        if responses_text is None:
+                            responses_text = self._coerce_response_format_to_responses_text(api_params.get("response_format"))  # type: ignore[arg-type]
+
+                        resp_params: Dict[str, Any] = {
+                            "model": api_params.get("model"),
+                            "input": responses_input,
+                        }
+                        if "max_output_tokens" not in responses_disabled_params:
+                            resp_params["max_output_tokens"] = api_params.get("max_tokens")
+                        if responses_instructions and "instructions" not in responses_disabled_params:
+                            resp_params["instructions"] = responses_instructions
+                        if responses_text and "text" not in responses_disabled_params:
+                            resp_params["text"] = responses_text
+                        if responses_force_stream and "stream" not in responses_disabled_params:
+                            resp_params["stream"] = True
+
+                        if responses_force_stream:
+                            def _collect_stream_text(sync_client: Any, params: Dict[str, Any]) -> Tuple[str, Optional[Any]]:
+                                stream_obj = sync_client.responses.create(**params)
+                                chunks: List[str] = []
+                                final_resp: Optional[Any] = None
+                                try:
+                                    for ev in stream_obj:
+                                        try:
+                                            ev_type = getattr(ev, "type", None) or (ev.get("type") if isinstance(ev, dict) else None)
+                                        except Exception:
+                                            ev_type = None
+                                        if ev_type == "response.output_text.delta":
+                                            delta = getattr(ev, "delta", None) if not isinstance(ev, dict) else ev.get("delta")
+                                            if isinstance(delta, str) and delta:
+                                                chunks.append(delta)
+                                        elif ev_type == "response.completed":
+                                            r = getattr(ev, "response", None) if not isinstance(ev, dict) else ev.get("response")
+                                            if r is not None:
+                                                final_resp = r
+                                finally:
+                                    try:
+                                        stream_obj.close()
+                                    except Exception:
+                                        pass
+                                return "".join(chunks), final_resp
+
+                            if isinstance(client, OpenAI):
+                                responses_output_text, response = await asyncio.to_thread(_collect_stream_text, client, resp_params)
+                            else:
+                                # AsyncOpenAI stream path isn't used in unified mode; keep a simple fallback.
+                                stream_obj = await client.responses.create(**resp_params)
+                                chunks: List[str] = []
+                                final_resp: Optional[Any] = None
+                                try:
+                                    async for ev in stream_obj:
+                                        ev_type = getattr(ev, "type", None)
+                                        if ev_type == "response.output_text.delta":
+                                            delta = getattr(ev, "delta", None)
+                                            if isinstance(delta, str) and delta:
+                                                chunks.append(delta)
+                                        elif ev_type == "response.completed":
+                                            r = getattr(ev, "response", None)
+                                            if r is not None:
+                                                final_resp = r
+                                finally:
+                                    try:
+                                        await stream_obj.close()
+                                    except Exception:
+                                        pass
+                                responses_output_text = "".join(chunks)
+                                response = final_resp
+                        else:
+                            if isinstance(client, OpenAI):
+                                response = await asyncio.to_thread(client.responses.create, **resp_params)
+                            else:
+                                response = await client.responses.create(**resp_params)
+                            responses_output_text = getattr(response, "output_text", None)
                     else:
-                        response = await client.chat.completions.create(**api_params)
+                        if isinstance(client, OpenAI):
+                            response = await asyncio.to_thread(
+                                client.chat.completions.create,
+                                **api_params
+                            )
+                        else:
+                            response = await client.chat.completions.create(**api_params)
                     break
                 except Exception as e:
+                    if (not use_responses_api) and self._is_chat_completions_endpoint_missing(e):
+                        logger.warning("⚠️ [LLM] /chat/completions 不可用，切换到 Responses API 重试一次...")
+                        use_responses_api = True
+                        continue
+                    if use_responses_api and (not responses_force_stream) and self._is_responses_stream_required(e):
+                        logger.warning("⚠️ [LLM] Responses API 要求 stream=true，已启用后重试一次...")
+                        responses_force_stream = True
+                        continue
+                    if use_responses_api and (not responses_use_instructions) and self._is_responses_system_messages_not_allowed(e):
+                        logger.warning("⚠️ [LLM] Responses API 不允许 system messages，改用 instructions 重试一次...")
+                        responses_use_instructions = True
+                        responses_input = None
+                        responses_instructions = None
+                        continue
+                    if use_responses_api:
+                        unsupported = self._extract_unsupported_parameter_name(e)
+                        if unsupported:
+                            top = unsupported.split(".")[0].strip()
+                            if top and top not in {"model", "input"} and top not in responses_disabled_params:
+                                logger.warning("⚠️ [LLM] Responses API 不支持参数 %s，移除后重试一次...", top)
+                                responses_disabled_params.add(top)
+                                continue
+
                     # 只有当“走的是 VLM client 且模型不存在”时，才回退到 env/config 的 VLM_MODEL。
                     if (
                         original_model
@@ -601,6 +911,7 @@ class LLMClient:
                         logger.warning("⚠️ [LLM] response_format 该后端不支持，移除后重试一次...")
                         api_params.pop("response_format", None)
                         response_format_removed = True
+                        responses_text = None
                         continue
 
                     # httpx/uvloop 偶发 closed transport：重试一次降低噪声
@@ -612,6 +923,13 @@ class LLMClient:
                     raise
 
             self.last_usage = self._extract_usage(response, model=model_to_use)
+            if use_responses_api:
+                if isinstance(responses_output_text, str) and responses_output_text.strip():
+                    return responses_output_text
+                text = getattr(response, "output_text", None)
+                if isinstance(text, str) and text.strip():
+                    return text
+                return str(text or responses_output_text or "")
             return response.choices[0].message.content
 
         except Exception as e:

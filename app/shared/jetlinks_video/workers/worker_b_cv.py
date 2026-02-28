@@ -9,7 +9,7 @@ from queue import Queue, Empty
 
 from app.shared.jetlinks_video.utils import logger_utils
 from app.shared.jetlinks_video.all_enum import MODEL
-from app.shared.jetlinks_video.configs.cv_config import CvConfig, CvPoseConfig, CvRoiConfig
+from app.shared.jetlinks_video.configs.cv_config import CvConfig, CvPoseConfig, CvRoiConfig, build_cv_config
 from app.shared.jetlinks_video.configs.rtsp_batch_config import RTSPBatchConfig
 from app.shared.jetlinks_video.configs.vlm_config import VlmConfig
 from app.shared.jetlinks_video.workers.worker_b_vlm import (
@@ -363,7 +363,7 @@ def _coerce_pose_objects(
     objects: List[dict] = []
     label = _TASK_LABELS.get(task, task)
 
-    for res in results:
+    for image_index, res in enumerate(results):
         people = _extract_pose_people(res, pose_cfg.min_kpt_conf)
         if not people:
             continue
@@ -383,6 +383,7 @@ def _coerce_pose_objects(
                         "label": label,
                         "confidence": round(min(1.0, score), 2),
                         "box": people[idx]["box"],
+                        "image_index": image_index,
                     }
                 )
             continue
@@ -404,6 +405,7 @@ def _coerce_pose_objects(
                     "label": label,
                     "confidence": round(min(1.0, score), 2),
                     "box": person["box"],
+                    "image_index": image_index,
                 }
             )
 
@@ -438,7 +440,7 @@ def _coerce_objects(
     roi_cfg: Optional[CvRoiConfig],
 ) -> List[dict]:
     objects: List[dict] = []
-    for res in results:
+    for image_index, res in enumerate(results):
         boxes = getattr(res, "boxes", None)
         if boxes is None:
             continue
@@ -481,6 +483,7 @@ def _coerce_objects(
                     "label": label,
                     "confidence": round(max(0.0, min(1.0, conf)), 2),
                     "box": norm,
+                    "image_index": image_index,
                 }
             )
 
@@ -502,176 +505,297 @@ def worker_b_cv(
 ):
     running = False
     paused = False
-    cv_config = cv_config or CvConfig(
-        model_path="yolov8n.pt",
-        device="0",
-        conf=0.25,
-        iou=0.45,
-        imgsz=640,
-        max_det=300,
-        max_boxes=12,
-        classes=None,
-    )
+    # If caller doesn't provide a config, build from env with safe device defaults.
+    cv_config = cv_config or build_cv_config()
 
     model_tag = f"cv:{os.path.basename(cv_config.model_path)}"
 
-    try:
-        from ultralytics import YOLO
-    except Exception as e:
-        logger.error("[B-CV] ultralytics import failed: %s", e)
-        _emit_done(
-            q_vlm,
-            seg_idx=-1,
-            full_text="",
-            model=model_tag,
-            item={},
-            usage={"status": "import_error", "error": str(e)},
-            latency_ms=0,
-            streaming=False,
-            is_task=True,
-            is_json_format=True,
-            evidence_images=[],
-            evidence_image_urls=[],
-            q_ctrl=q_ctrl,
-            stop=stop,
-        )
-        return
+    use_ascend_om = str(cv_config.model_path).lower().endswith(".om")
+    detector = None
+    om_detector = None
+
+    if use_ascend_om:
+        if cv_config.task in {"fall", "smoke", "fight"}:
+            err = "Ascend OM 后端暂不支持 pose 任务（fall/smoke/fight），请先用 .pt 或提供 pose 的 .om"
+            logger.error("[B-CV] %s", err)
+            _emit_done(
+                q_vlm,
+                seg_idx=-1,
+                full_text="",
+                model=model_tag,
+                item={},
+                usage={"status": "model_load_error", "backend": "ascend_om", "error": err},
+                latency_ms=0,
+                streaming=False,
+                is_task=True,
+                is_json_format=True,
+                evidence_images=[],
+                evidence_image_urls=[],
+                q_ctrl=q_ctrl,
+                stop=stop,
+            )
+            return
+        try:
+            from app.shared.jetlinks_video.utils.ascend_om_yolo import AscendOmYoloV8Detector
+
+            om_detector = AscendOmYoloV8Detector(cv_config.model_path)
+            logger.info("[B-CV] using Ascend OM backend: %s", cv_config.model_path)
+        except Exception as e:
+            logger.error("[B-CV] Ascend OM init failed: %s", e)
+            _emit_done(
+                q_vlm,
+                seg_idx=-1,
+                full_text="",
+                model=model_tag,
+                item={},
+                usage={"status": "import_error", "backend": "ascend_om", "error": str(e)},
+                latency_ms=0,
+                streaming=False,
+                is_task=True,
+                is_json_format=True,
+                evidence_images=[],
+                evidence_image_urls=[],
+                q_ctrl=q_ctrl,
+                stop=stop,
+            )
+            return
+    else:
+        try:
+            from ultralytics import YOLO
+        except Exception as e:
+            logger.error("[B-CV] ultralytics import failed: %s", e)
+            _emit_done(
+                q_vlm,
+                seg_idx=-1,
+                full_text="",
+                model=model_tag,
+                item={},
+                usage={"status": "import_error", "error": str(e)},
+                latency_ms=0,
+                streaming=False,
+                is_task=True,
+                is_json_format=True,
+                evidence_images=[],
+                evidence_image_urls=[],
+                q_ctrl=q_ctrl,
+                stop=stop,
+            )
+            return
+
+        try:
+            detector = YOLO(cv_config.model_path)
+        except Exception as e:
+            logger.error("[B-CV] model load failed: %s", e)
+            _emit_done(
+                q_vlm,
+                seg_idx=-1,
+                full_text="",
+                model=model_tag,
+                item={},
+                usage={"status": "model_load_error", "error": str(e)},
+                latency_ms=0,
+                streaming=False,
+                is_task=True,
+                is_json_format=True,
+                evidence_images=[],
+                evidence_image_urls=[],
+                q_ctrl=q_ctrl,
+                stop=stop,
+            )
+            return
 
     try:
-        detector = YOLO(cv_config.model_path)
-    except Exception as e:
-        logger.error("[B-CV] model load failed: %s", e)
-        _emit_done(
-            q_vlm,
-            seg_idx=-1,
-            full_text="",
-            model=model_tag,
-            item={},
-            usage={"status": "model_load_error", "error": str(e)},
-            latency_ms=0,
-            streaming=False,
-            is_task=True,
-            is_json_format=True,
-            evidence_images=[],
-            evidence_image_urls=[],
-            q_ctrl=q_ctrl,
-            stop=stop,
-        )
-        return
+        while True:
+            if (not running) or paused:
+                try:
+                    msg = q_ctrl.get(timeout=0.2)
+                except Empty:
+                    continue
 
-    while True:
-        if (not running) or paused:
+                if msg is stop:
+                    logger.info("[B-CV] STOP received, exit")
+                    return
+
+                if isinstance(msg, dict):
+                    typ = msg.get("type")
+                    if typ in ("START", "RESUME"):
+                        running, paused = True, False
+                        logger.info("[B-CV] started")
+                    elif typ == "PAUSE":
+                        paused = True
+                        logger.info("[B-CV] paused")
+                    elif typ in ("STOP", "SHUTDOWN"):
+                        logger.info("[B-CV] STOP received, exit")
+                        return
+                continue
+
             try:
-                msg = q_ctrl.get(timeout=0.2)
+                item = q_video.get(timeout=0.1)
             except Empty:
                 continue
 
-            if msg is stop:
-                logger.info("[B-CV] STOP received, exit")
-                return
-
-            if isinstance(msg, dict):
-                typ = msg.get("type")
-                if typ in ("START", "RESUME"):
-                    running, paused = True, False
-                    logger.info("[B-CV] started")
-                elif typ == "PAUSE":
-                    paused = True
-                    logger.info("[B-CV] paused")
-                elif typ in ("STOP", "SHUTDOWN"):
-                    logger.info("[B-CV] STOP received, exit")
-                    return
-            continue
-
-        try:
-            item = q_video.get(timeout=0.1)
-        except Empty:
-            continue
-
-        try:
-            if item is stop:
-                logger.info("[B-CV] data STOP received, exit")
-                return
-
-            if _ctrl_stop_requested(q_ctrl, stop):
-                continue
-
-            seg_idx = int(item.get("segment_index", -1))
-            keyframes = item.get("keyframes") or []
-            if not keyframes:
-                logger.warning("[B-CV] seg#%s no keyframes, skip", seg_idx)
-                continue
-
-            images = [p for p in keyframes if isinstance(p, str) and p and os.path.exists(p)]
-            if not images:
-                logger.warning("[B-CV] seg#%s no valid images, skip", seg_idx)
-                continue
-
-            t_start = time.time()
             try:
-                results = detector.predict(
-                    source=images,
-                    conf=cv_config.conf,
-                    iou=cv_config.iou,
-                    imgsz=cv_config.imgsz,
-                    max_det=cv_config.max_det,
-                    classes=cv_config.classes,
-                    device=cv_config.device,
-                    verbose=False,
-                )
-            except Exception as e:
-                logger.error("[B-CV] inference failed seg#%s: %s", seg_idx, e)
+                if item is stop:
+                    logger.info("[B-CV] data STOP received, exit")
+                    return
+
+                if _ctrl_stop_requested(q_ctrl, stop):
+                    continue
+
+                seg_idx = int(item.get("segment_index", -1))
+                keyframes = item.get("keyframes") or []
+                if not keyframes:
+                    logger.warning("[B-CV] seg#%s no keyframes, skip", seg_idx)
+                    continue
+
+                images = [p for p in keyframes if isinstance(p, str) and p and os.path.exists(p)]
+                if not images:
+                    logger.warning("[B-CV] seg#%s no valid images, skip", seg_idx)
+                    continue
+
+                t_start = time.time()
+                roi_cfg = _select_roi_config(cv_config, item.get("stream_rtsp_id"))
+                roi_norm = None
+                roi_mode = "center"
+
+                if om_detector is not None:
+                    try:
+                        objects: List[dict] = []
+                        for image_index, image_path in enumerate(images):
+                            w0, h0, boxes_xyxy, scores, cls = om_detector.predict_one(
+                                image_path,
+                                conf=cv_config.conf,
+                                iou=cv_config.iou,
+                                classes=cv_config.classes,
+                                max_det=cv_config.max_det,
+                            )
+                            if roi_cfg:
+                                roi_norm = _normalize_roi(roi_cfg, w0, h0)
+                                roi_mode = (roi_cfg.mode if roi_cfg else "center").strip().lower()
+
+                            for j in range(int(scores.shape[0])):
+                                box = boxes_xyxy[j]
+                                norm = _normalize_box_xyxy(
+                                    float(box[0]),
+                                    float(box[1]),
+                                    float(box[2]),
+                                    float(box[3]),
+                                    w0,
+                                    h0,
+                                )
+                                if not norm:
+                                    continue
+                                if roi_norm and not _roi_hit(norm, roi_norm, roi_mode):
+                                    continue
+
+                                cls_id = int(cls[j]) if j < cls.shape[0] else -1
+                                label = om_detector.label_name(cls_id)
+                                conf = float(scores[j]) if j < scores.shape[0] else 0.0
+                                objects.append(
+                                    {
+                                        "label": label,
+                                        "confidence": round(max(0.0, min(1.0, conf)), 2),
+                                        "box": norm,
+                                        "image_index": image_index,
+                                    }
+                                )
+
+                        objects.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
+                        if cv_config.max_boxes > 0 and len(objects) > cv_config.max_boxes:
+                            objects = objects[: cv_config.max_boxes]
+                    except Exception as e:
+                        logger.error("[B-CV] Ascend OM inference failed seg#%s: %s", seg_idx, e)
+                        _emit_done(
+                            q_vlm,
+                            seg_idx=seg_idx,
+                            full_text="",
+                            model=model_tag,
+                            item=item,
+                            usage={"status": "infer_error", "backend": "ascend_om", "error": str(e)},
+                            latency_ms=int((time.time() - t_start) * 1000),
+                            streaming=False,
+                            is_task=True,
+                            is_json_format=True,
+                            evidence_images=images,
+                            evidence_image_urls=_export_evidence_list_to_static(images, seg_idx, vlm_config),
+                            q_ctrl=q_ctrl,
+                            stop=stop,
+                        )
+                        continue
+                else:
+                    try:
+                        results = detector.predict(
+                            source=images,
+                            conf=cv_config.conf,
+                            iou=cv_config.iou,
+                            imgsz=cv_config.imgsz,
+                            max_det=cv_config.max_det,
+                            classes=cv_config.classes,
+                            device=cv_config.device,
+                            verbose=False,
+                        )
+                    except Exception as e:
+                        logger.error("[B-CV] inference failed seg#%s: %s", seg_idx, e)
+                        _emit_done(
+                            q_vlm,
+                            seg_idx=seg_idx,
+                            full_text="",
+                            model=model_tag,
+                            item=item,
+                            usage={"status": "infer_error", "error": str(e)},
+                            latency_ms=int((time.time() - t_start) * 1000),
+                            streaming=False,
+                            is_task=True,
+                            is_json_format=True,
+                            evidence_images=images,
+                            evidence_image_urls=_export_evidence_list_to_static(images, seg_idx, vlm_config),
+                            q_ctrl=q_ctrl,
+                            stop=stop,
+                        )
+                        continue
+
+                    if cv_config.task in {"fall", "smoke", "fight"}:
+                        objects = _coerce_pose_objects(
+                            list(results or []),
+                            cv_config.task,
+                            cv_config.max_boxes,
+                            cv_config.pose,
+                            roi_cfg,
+                        )
+                    else:
+                        objects = _coerce_objects(list(results or []), cv_config.max_boxes, roi_cfg)
+                evidence_urls = _export_evidence_list_to_static(images, seg_idx, vlm_config)
+
                 _emit_done(
                     q_vlm,
                     seg_idx=seg_idx,
-                    full_text="",
+                    full_text=objects,
                     model=model_tag,
                     item=item,
-                    usage={"status": "infer_error", "error": str(e)},
+                    usage={
+                        "backend": "cv",
+                        "engine": ("ascend_om" if om_detector is not None else "ultralytics"),
+                        "model": cv_config.model_path,
+                        "objects": len(objects),
+                    },
                     latency_ms=int((time.time() - t_start) * 1000),
                     streaming=False,
                     is_task=True,
                     is_json_format=True,
                     evidence_images=images,
-                    evidence_image_urls=_export_evidence_list_to_static(images, seg_idx, vlm_config),
+                    evidence_image_urls=evidence_urls,
                     q_ctrl=q_ctrl,
                     stop=stop,
                 )
-                continue
 
-            roi_cfg = _select_roi_config(cv_config, item.get("stream_rtsp_id"))
-
-            if cv_config.task in {"fall", "smoke", "fight"}:
-                objects = _coerce_pose_objects(
-                    list(results or []),
-                    cv_config.task,
-                    cv_config.max_boxes,
-                    cv_config.pose,
-                    roi_cfg,
-                )
-            else:
-                objects = _coerce_objects(list(results or []), cv_config.max_boxes, roi_cfg)
-            evidence_urls = _export_evidence_list_to_static(images, seg_idx, vlm_config)
-
-            _emit_done(
-                q_vlm,
-                seg_idx=seg_idx,
-                full_text=objects,
-                model=model_tag,
-                item=item,
-                usage={"backend": "cv", "model": cv_config.model_path, "objects": len(objects)},
-                latency_ms=int((time.time() - t_start) * 1000),
-                streaming=False,
-                is_task=True,
-                is_json_format=True,
-                evidence_images=images,
-                evidence_image_urls=evidence_urls,
-                q_ctrl=q_ctrl,
-                stop=stop,
-            )
-
-        finally:
+            finally:
+                try:
+                    q_video.task_done()
+                except Exception:
+                    pass
+    finally:
+        if om_detector is not None:
             try:
-                q_video.task_done()
+                om_detector.close()
             except Exception:
                 pass

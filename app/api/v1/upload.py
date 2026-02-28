@@ -30,7 +30,7 @@ ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.we
 ALLOWED_DOCUMENT_EXTENSIONS = {'.pdf', '.doc', '.docx', '.txt', '.md'}
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
 
-ALLOWED_CV_MODEL_EXTENSIONS = {".pt", ".onnx", ".engine", ".pth", ".torchscript"}
+ALLOWED_CV_MODEL_EXTENSIONS = {".pt", ".onnx", ".engine", ".pth", ".torchscript", ".om"}
 MAX_CV_MODEL_SIZE = 1024 * 1024 * 1024  # 1GB
 
 @router.post("/video")
@@ -212,12 +212,18 @@ async def list_cv_models() -> Dict[str, Any]:
     """
     model_dir = _get_cv_model_dir()
     models: List[Dict[str, Any]] = []
+    skipped_too_small = 0
     for item in model_dir.iterdir():
         if not item.is_file():
             continue
         if item.suffix.lower() not in ALLOWED_CV_MODEL_EXTENSIONS:
             continue
         stat = item.stat()
+        # Filter out obviously broken placeholder files (e.g. 0-byte / a few bytes).
+        # Real CV models are usually multiple MB, so this is safe for normal usage.
+        if stat.st_size < 1024:
+            skipped_too_small += 1
+            continue
         models.append({
             "name": item.name,
             "size": stat.st_size,
@@ -228,6 +234,7 @@ async def list_cv_models() -> Dict[str, Any]:
         "success": True,
         "model_dir": str(model_dir),
         "models": models,
+        "skipped_too_small": skipped_too_small,
         "allowed_extensions": sorted(ALLOWED_CV_MODEL_EXTENSIONS),
         "max_size_bytes": MAX_CV_MODEL_SIZE,
     }
