@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import acp, agents, artifacts, health, mcp, sandbox, skills
+from app.api import acp, agents, artifacts, health, mcp, sandbox, skills, workflows
 
 
 def create_app() -> FastAPI:
@@ -24,6 +24,7 @@ def create_app() -> FastAPI:
     app.include_router(artifacts.router)
     app.include_router(sandbox.router)
     app.include_router(skills.router)
+    app.include_router(workflows.router)
     app.include_router(mcp.router)
 
     static_dir = Path(__file__).resolve().parents[1] / "static"

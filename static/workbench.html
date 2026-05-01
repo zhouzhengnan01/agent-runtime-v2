@@ -2088,6 +2088,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 7l3 3-7 7H7v-3z"></path><path d="M16 5l3 3"></path><path d="M4 20h16"></path></svg>
           <span class="nav-label">Tools 工具</span>
         </button>
+        <button type="button" data-view="workflows">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7v7H4z"></path><path d="M13 11h7v7h-7z"></path><path d="M11 9l2 2"></path></svg>
+          <span class="nav-label">Workflows 插件</span>
+        </button>
       </nav>
 
       <section class="side-section">
@@ -2160,12 +2164,12 @@
               </button>
             </div>
             <div class="quick-row" aria-label="示例任务">
-              <button type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection" data-prompt="人员翻越围栏进入禁区">翻越进入禁区</button>
-              <button type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection" data-prompt="老人摔倒">老人摔倒</button>
-              <button type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection" data-prompt="人员在禁区长时间逗留">长时间逗留</button>
-              <button type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection" data-prompt="人员正常通行">正常通行</button>
-              <button type="button" data-agent-select="artifact-generator" data-workflow-select="artifact_workflow" data-prompt="生成一份 JetLinks IoT 平台架构 Draw.io 图，包含接入层、规则引擎、数据存储、告警和运维监控">Draw.io 架构图</button>
-              <button type="button" data-agent-select="artifact-generator" data-workflow-select="artifact_workflow" data-prompt="生成一份 JetLinks 项目汇报 PPT，包含封面、目录、架构、流程、计划、风险和总结">PPT 汇报</button>
+              <button type="button" data-agent-select="behavior-detector" data-prompt="人员翻越围栏进入禁区">翻越进入禁区</button>
+              <button type="button" data-agent-select="behavior-detector" data-prompt="老人摔倒">老人摔倒</button>
+              <button type="button" data-agent-select="behavior-detector" data-prompt="人员在禁区长时间逗留">长时间逗留</button>
+              <button type="button" data-agent-select="behavior-detector" data-prompt="人员正常通行">正常通行</button>
+              <button type="button" data-agent-select="artifact-generator" data-prompt="生成一份 JetLinks IoT 平台架构 Draw.io 图，包含接入层、规则引擎、数据存储、告警和运维监控">Draw.io 架构图</button>
+              <button type="button" data-agent-select="artifact-generator" data-prompt="生成一份 JetLinks 项目汇报 PPT，包含封面、目录、架构、流程、计划、风险和总结">PPT 汇报</button>
             </div>
           </div>
 
@@ -2224,6 +2228,31 @@
             </div>
           </section>
 
+          <section id="workflowManager" class="skill-manager" hidden>
+            <div class="skill-manager-head">
+              <div>
+                <h2>Workflow 插件</h2>
+                <p id="workflowSummary">加载 Workflow 插件中</p>
+              </div>
+              <div class="manager-actions">
+                <button id="refreshWorkflows" class="secondary-btn" type="button">刷新插件</button>
+              </div>
+            </div>
+            <div class="skill-manager-body">
+              <aside class="skill-list-pane">
+                <div class="skill-filter-row" aria-label="Workflow 筛选">
+                  <button class="active" type="button" data-workflow-filter="all">全部</button>
+                  <button type="button" data-workflow-filter="artifact">产物</button>
+                  <button type="button" data-workflow-filter="evidence">证据</button>
+                </div>
+                <div id="workflowList" class="skill-list"></div>
+              </aside>
+              <section class="skill-editor-pane">
+                <div id="workflowEditor" class="skill-editor"></div>
+              </section>
+            </div>
+          </section>
+
           <section id="chatFrame" class="chat-frame">
             <div id="messages" class="messages"></div>
           </section>
@@ -2247,7 +2276,11 @@
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 7l3 3-7 7H7v-3z"></path><path d="M16 5l3 3"></path><path d="M4 20h16"></path></svg>
                     <span>MCP</span>
                   </button>
-                  <button class="small-action" type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection">
+                  <button class="small-action" type="button" data-capability-open="workflows">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7v7H4z"></path><path d="M13 11h7v7h-7z"></path><path d="M11 9l2 2"></path></svg>
+                    <span>Workflow</span>
+                  </button>
+                  <button class="small-action" type="button" data-agent-select="behavior-detector">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                     <span>视觉证据</span>
                   </button>
@@ -2327,10 +2360,15 @@
       selectedMcpToolName: null,
       selectedMcpTool: null,
       mcpToolsLoaded: false,
+      workflows: [],
+      selectedWorkflowName: null,
+      workflowsLoaded: false,
       abilityMode: 'skills',
       toolFilter: 'all',
+      workflowFilter: 'all',
       selectedChatSkills: [],
       selectedChatMcpTools: [],
+      selectedChatWorkflow: null,
       capabilityPickerMode: null,
       view: 'chat',
       rpcId: 0,
@@ -2380,7 +2418,12 @@
       toolSummary: document.getElementById('toolSummary'),
       refreshTools: document.getElementById('refreshTools'),
       toolList: document.getElementById('toolList'),
-      toolEditor: document.getElementById('toolEditor')
+      toolEditor: document.getElementById('toolEditor'),
+      workflowManager: document.getElementById('workflowManager'),
+      workflowSummary: document.getElementById('workflowSummary'),
+      refreshWorkflows: document.getElementById('refreshWorkflows'),
+      workflowList: document.getElementById('workflowList'),
+      workflowEditor: document.getElementById('workflowEditor')
     };
 
     function ensureThread() {
@@ -2536,16 +2579,23 @@
     function renderComposerCapabilities() {
       const chips = [
         ...state.selectedChatSkills.map((name) => ({ type: 'skill', name })),
-        ...state.selectedChatMcpTools.map((name) => ({ type: 'mcp', name }))
+        ...state.selectedChatMcpTools.map((name) => ({ type: 'mcp', name })),
+        ...(state.selectedChatWorkflow ? [{ type: 'workflow', name: state.selectedChatWorkflow }] : [])
       ];
       els.capabilityTray.classList.toggle('active', chips.length > 0);
       els.capabilityTray.innerHTML = chips.map((chip) => `
         <span class="capability-chip ${chip.type}">
-          <span>${chip.type === 'skill' ? 'Skill' : 'MCP'} · ${escapeHtml(chip.name)}</span>
+          <span>${capabilityLabel(chip.type)} · ${escapeHtml(chip.name)}</span>
           <button type="button" title="移除" data-remove-capability="${escapeAttr(chip.type)}" data-name="${escapeAttr(chip.name)}">×</button>
         </span>
       `).join('');
       renderRouteHint();
+    }
+
+    function capabilityLabel(type) {
+      if (type === 'skill') return 'Skill';
+      if (type === 'mcp') return 'MCP';
+      return 'Workflow';
     }
 
     async function openCapabilityPicker(mode) {
@@ -2554,6 +2604,7 @@
       try {
         if (mode === 'skills' && !state.skillsLoaded) await loadSkills({ showLoading: false });
         if (mode === 'mcp' && !state.mcpToolsLoaded) await loadMcpTools({ showLoading: false });
+        if (mode === 'workflows' && !state.workflowsLoaded) await loadWorkflows({ showLoading: false });
         renderCapabilityPicker();
       } catch (err) {
         renderCapabilityPicker({ error: err.message });
@@ -2572,11 +2623,16 @@
         return;
       }
       const isSkills = state.capabilityPickerMode === 'skills';
-      const items = isSkills ? state.skills : state.mcpTools;
-      const selected = isSkills ? state.selectedChatSkills : state.selectedChatMcpTools;
-      const title = isSkills ? '添加 Skills' : '添加 MCP';
-      const subtitle = isSkills ? '选择本轮对话要使用的技能。' : '选择本轮对话要启用的 MCP 工具。';
-      const empty = status.loading ? '加载中' : status.error || (isSkills ? '暂无 Skills' : '暂无 MCP 工具');
+      const isWorkflows = state.capabilityPickerMode === 'workflows';
+      const items = isWorkflows ? state.workflows : isSkills ? state.skills : state.mcpTools;
+      const selected = isWorkflows
+        ? (state.selectedChatWorkflow ? [state.selectedChatWorkflow] : [])
+        : isSkills ? state.selectedChatSkills : state.selectedChatMcpTools;
+      const title = isWorkflows ? '选择 Workflow' : isSkills ? '添加 Skills' : '添加 MCP';
+      const subtitle = isWorkflows
+        ? 'Workflow 是显式插件流程；选择后本轮才会进入插件。'
+        : isSkills ? '选择本轮 agent loop 可参考的技能。' : '选择本轮 agent loop 可参考的 MCP 工具。';
+      const empty = status.loading ? '加载中' : status.error || (isWorkflows ? '暂无 Workflow 插件' : isSkills ? '暂无 Skills' : '暂无 MCP 工具');
       els.capabilityPicker.hidden = false;
       els.capabilityPicker.innerHTML = `
         <div class="capability-picker-head">
@@ -2587,22 +2643,26 @@
           <button class="secondary-btn" type="button" data-capability-close>关闭</button>
         </div>
         <div class="capability-picker-list">
-          ${items.length ? items.map((item) => renderCapabilityChoice(item, isSkills, selected.includes(item.name))).join('') : `<div class="empty-panel">${escapeHtml(empty)}</div>`}
+          ${items.length ? items.map((item) => renderCapabilityChoice(item, state.capabilityPickerMode, selected.includes(item.name))).join('') : `<div class="empty-panel">${escapeHtml(empty)}</div>`}
         </div>
         <div class="capability-picker-foot">
-          <button class="secondary-btn" type="button" ${isSkills ? 'data-compose-add-skill' : 'data-compose-add-mcp'}>${isSkills ? '上传 Skill 插件' : '新建 MCP 工具'}</button>
-          <button class="secondary-btn" type="button" data-compose-manage="${isSkills ? 'skills' : 'tools'}">${isSkills ? '管理 Skills' : '管理 Tools'}</button>
+          ${isWorkflows ? '<button class="secondary-btn" type="button" data-clear-workflow>不使用 Workflow</button>' : `<button class="secondary-btn" type="button" ${isSkills ? 'data-compose-add-skill' : 'data-compose-add-mcp'}>${isSkills ? '上传 Skill 插件' : '新建 MCP 工具'}</button>`}
+          <button class="secondary-btn" type="button" data-compose-manage="${isWorkflows ? 'workflows' : isSkills ? 'skills' : 'tools'}">${isWorkflows ? '管理 Workflows' : isSkills ? '管理 Skills' : '管理 Tools'}</button>
         </div>
       `;
     }
 
-    function renderCapabilityChoice(item, isSkill, active) {
+    function renderCapabilityChoice(item, mode, active) {
       const name = item.name || '';
-      const meta = isSkill
+      const isSkill = mode === 'skills';
+      const isWorkflow = mode === 'workflows';
+      const meta = isWorkflow
+        ? `${item.trigger || 'explicit'} · ${item.enabled ? 'enabled' : 'disabled'}`
+        : isSkill
         ? `${item.output_kind || 'json'} · ${item.sandbox?.enabled ? `Sandbox ${item.sandbox.profile || ''}` : 'Local'}`
         : `${item.source?.type || 'manual'} · ${item.enabled ? 'enabled' : 'disabled'}`;
       return `
-        <button class="capability-choice ${active ? 'active' : ''}" type="button" ${isSkill ? `data-chat-skill="${escapeAttr(name)}"` : `data-chat-mcp="${escapeAttr(name)}"`}>
+        <button class="capability-choice ${active ? 'active' : ''}" type="button" ${isWorkflow ? `data-chat-workflow="${escapeAttr(name)}"` : isSkill ? `data-chat-skill="${escapeAttr(name)}"` : `data-chat-mcp="${escapeAttr(name)}"`}>
           <span class="capability-choice-main">
             <strong>${escapeHtml(name)}</strong>
             <span>${escapeHtml(item.description || meta)}</span>
@@ -2614,6 +2674,12 @@
 
     function toggleCapability(kind, name) {
       if (!name) return;
+      if (kind === 'workflow') {
+        state.selectedChatWorkflow = state.selectedChatWorkflow === name ? null : name;
+        renderComposerCapabilities();
+        renderCapabilityPicker();
+        return;
+      }
       const list = kind === 'skill' ? state.selectedChatSkills : state.selectedChatMcpTools;
       const index = list.indexOf(name);
       if (index >= 0) list.splice(index, 1);
@@ -2624,6 +2690,12 @@
 
     function removeCapability(kind, name) {
       if (!name) return;
+      if (kind === 'workflow') {
+        if (state.selectedChatWorkflow === name) state.selectedChatWorkflow = null;
+        renderComposerCapabilities();
+        renderCapabilityPicker();
+        return;
+      }
       const list = kind === 'skill' ? state.selectedChatSkills : state.selectedChatMcpTools;
       const index = list.indexOf(name);
       if (index >= 0) list.splice(index, 1);
@@ -3224,10 +3296,11 @@
     }
 
     function setView(view) {
-      state.view = ['chat', 'skills', 'tools'].includes(view) ? view : 'chat';
+      state.view = ['chat', 'skills', 'tools', 'workflows'].includes(view) ? view : 'chat';
       const isChat = state.view === 'chat';
       const isSkills = state.view === 'skills';
       const isTools = state.view === 'tools';
+      const isWorkflows = state.view === 'workflows';
       els.centerPane.classList.toggle('skills-mode', !isChat);
       els.intro.hidden = !isChat;
       els.skillStrip.hidden = !isChat;
@@ -3235,6 +3308,7 @@
       els.composerWrap.hidden = !isChat;
       els.skillManager.hidden = !isSkills;
       els.toolsManager.hidden = !isTools;
+      els.workflowManager.hidden = !isWorkflows;
       document.querySelectorAll('[data-view]').forEach((item) => {
         item.classList.toggle('active', item.dataset.view === state.view);
       });
@@ -3256,14 +3330,39 @@
           renderToolEditor({ type: 'error', text: err.message });
           els.panel.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
         });
+      } else if (isWorkflows) {
+        state.activeTab = 'abilities';
+        state.abilityMode = 'workflows';
+        document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item.dataset.tab === 'abilities'));
+        renderPanel();
+        loadWorkflows().catch((err) => {
+          renderWorkflowEditor({ type: 'error', text: err.message });
+          els.panel.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
+        });
       }
     }
 
     async function loadAbilities() {
       await Promise.all([
         state.skillsLoaded ? Promise.resolve() : loadSkills({ showLoading: false }),
-        state.mcpToolsLoaded ? Promise.resolve() : loadMcpTools({ showLoading: false })
+        state.mcpToolsLoaded ? Promise.resolve() : loadMcpTools({ showLoading: false }),
+        state.workflowsLoaded ? Promise.resolve() : loadWorkflows()
       ]);
+      if (state.activeTab === 'abilities') renderAbilityPanel();
+    }
+
+    async function loadWorkflows() {
+      const res = await fetch('/api/workflows', { cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
+      state.workflows = data.workflows || [];
+      state.workflowsLoaded = true;
+      if (!state.selectedWorkflowName && state.workflows.length) {
+        state.selectedWorkflowName = state.workflows[0].name;
+      }
+      renderWorkflowList();
+      renderWorkflowSummary();
+      renderWorkflowEditor();
       if (state.activeTab === 'abilities') renderAbilityPanel();
     }
 
@@ -3347,6 +3446,74 @@
       return [...map.entries()].map(([key, items]) => ({ key, label: labels[key] || key, items }));
     }
 
+    function renderWorkflowSummary() {
+      if (!els.workflowSummary) return;
+      els.workflowSummary.textContent = `${state.workflows.length} 个注册插件 · 默认不自动触发 · 仅显式选择时运行`;
+    }
+
+    function renderWorkflowList() {
+      if (!els.workflowList) return;
+      const workflows = filteredWorkflows();
+      if (!workflows.length) {
+        els.workflowList.innerHTML = '<div class="empty-panel">暂无匹配 Workflow</div>';
+        return;
+      }
+      els.workflowList.innerHTML = workflows.map((workflow) => `
+        <button class="skill-row ${workflow.name === state.selectedWorkflowName ? 'active' : ''}" type="button" data-workflow-select-row="${escapeAttr(workflow.name)}">
+          <div class="skill-row-main">
+            <strong>${escapeHtml(workflow.name)}</strong>
+            <span class="skill-badge sandbox">explicit</span>
+          </div>
+          <p>${escapeHtml(workflow.description || '')}</p>
+          <div class="skill-badges">
+            <span class="skill-badge local">plugin</span>
+            <span class="skill-badge">${escapeHtml(workflow.enabled ? 'enabled' : 'disabled')}</span>
+          </div>
+        </button>
+      `).join('');
+    }
+
+    function filteredWorkflows() {
+      const sorted = [...state.workflows].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      if (state.workflowFilter === 'artifact') return sorted.filter((workflow) => workflow.name.includes('artifact'));
+      if (state.workflowFilter === 'evidence') return sorted.filter((workflow) => workflow.name.includes('evidence'));
+      return sorted;
+    }
+
+    function renderWorkflowEditor(status = {}) {
+      if (!els.workflowEditor) return;
+      const workflow = state.workflows.find((item) => item.name === state.selectedWorkflowName);
+      if (!workflow) {
+        els.workflowEditor.innerHTML = '<div class="empty-panel">选择左侧 Workflow 插件</div>';
+        return;
+      }
+      els.workflowEditor.innerHTML = `
+        <div class="skill-editor-head">
+          <div class="skill-editor-title">
+            <strong>${escapeHtml(workflow.name)}</strong>
+            <span>WorkflowRegistry builtin plugin</span>
+          </div>
+          <div class="skill-status ${status.type || ''}">${escapeHtml(status.text || '')}</div>
+        </div>
+        <section class="file-editor">
+          <div class="file-editor-head">
+            <div class="file-editor-title">
+              <strong>触发方式</strong>
+              <span>Workflow 不参与默认路由；只有请求显式带 runtime_options.workflow 才会运行。</span>
+            </div>
+            <div class="file-edit-meta">只读</div>
+          </div>
+          <div class="field">
+            <textarea class="code file-code" readonly>${escapeHtml(JSON.stringify(workflow, null, 2))}</textarea>
+          </div>
+          <div class="skill-form-actions">
+            <button class="secondary-btn" type="button" data-workflow-use="${escapeAttr(workflow.name)}">本轮使用</button>
+            <button class="secondary-btn" type="button" data-workflow-clear>本轮不使用 Workflow</button>
+          </div>
+        </section>
+      `;
+    }
+
     function mcpToolForSave(tool) {
       const { editable, ...payload } = tool || {};
       return payload;
@@ -3428,7 +3595,7 @@
     }
 
     function renderAbilityPanel(status = {}) {
-      if (!state.skillsLoaded || !state.mcpToolsLoaded) {
+      if (!state.skillsLoaded || !state.mcpToolsLoaded || !state.workflowsLoaded) {
         els.panel.innerHTML = '<div class="empty-panel">加载能力配置</div>';
         loadAbilities().catch((err) => {
           els.panel.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
@@ -3436,12 +3603,14 @@
         return;
       }
       const isSkills = state.abilityMode === 'skills';
+      const isWorkflows = state.abilityMode === 'workflows';
       els.panel.innerHTML = `
         <section class="ability-panel">
           <div class="ability-head">
             <div class="ability-mode">
               <button class="${isSkills ? 'active' : ''}" type="button" data-ability-mode="skills">Skills</button>
-              <button class="${!isSkills ? 'active' : ''}" type="button" data-ability-mode="mcp">MCP Tools</button>
+              <button class="${state.abilityMode === 'mcp' ? 'active' : ''}" type="button" data-ability-mode="mcp">MCP Tools</button>
+              <button class="${isWorkflows ? 'active' : ''}" type="button" data-ability-mode="workflows">Workflows</button>
             </div>
             <div class="ability-actions">
               <button class="secondary-btn" type="button" data-upload-skill-plugin>上传 Skill 插件</button>
@@ -3450,10 +3619,10 @@
             </div>
           </div>
           <div class="ability-list">
-            ${isSkills ? renderAbilitySkillItems() : renderAbilityMcpItems()}
+            ${isWorkflows ? renderAbilityWorkflowItems() : isSkills ? renderAbilitySkillItems() : renderAbilityMcpItems()}
           </div>
           <div class="ability-editor">
-            ${isSkills ? renderAbilitySkillEditor(status) : renderAbilityMcpEditor(status)}
+            ${isWorkflows ? renderAbilityWorkflowEditor(status) : isSkills ? renderAbilitySkillEditor(status) : renderAbilityMcpEditor(status)}
           </div>
         </section>
       `;
@@ -3475,6 +3644,16 @@
         <button class="ability-item ${tool.name === state.selectedMcpToolName ? 'active' : ''}" type="button" data-ability-mcp="${escapeAttr(tool.name)}">
           <strong>${escapeHtml(tool.name)}</strong>
           <span>${escapeHtml(tool.source?.type || 'manual')} · ${tool.enabled ? 'enabled' : 'disabled'}</span>
+        </button>
+      `).join('');
+    }
+
+    function renderAbilityWorkflowItems() {
+      if (!state.workflows.length) return '<div class="empty">暂无 Workflow 插件</div>';
+      return [...state.workflows].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((workflow) => `
+        <button class="ability-item ${workflow.name === state.selectedWorkflowName ? 'active' : ''}" type="button" data-ability-workflow="${escapeAttr(workflow.name)}">
+          <strong>${escapeHtml(workflow.name)}</strong>
+          <span>${escapeHtml(workflow.trigger || 'explicit')} · ${workflow.enabled ? 'enabled' : 'disabled'}</span>
         </button>
       `).join('');
     }
@@ -3571,6 +3750,31 @@
             ${tool.editable === false ? '<span class="empty">由 Skill 暴露的 MCP 工具需在 Skills 中编辑</span>' : '<button class="primary-btn" type="button" data-ability-save-mcp>保存 MCP 工具</button>'}
           </div>
         </form>
+      `;
+    }
+
+    function renderAbilityWorkflowEditor(status = {}) {
+      const workflow = state.workflows.find((item) => item.name === state.selectedWorkflowName);
+      if (!workflow) return '<div class="empty-panel">选择 Workflow 插件</div>';
+      return `
+        <div class="skill-status ${status.type || ''}">${escapeHtml(status.text || '')}</div>
+        <div class="file-editor">
+          <div class="file-editor-head">
+            <div class="file-editor-title">
+              <strong>${escapeHtml(workflow.name)}</strong>
+              <span>${escapeHtml(workflow.description || '')}</span>
+            </div>
+            <div class="file-edit-meta">显式插件</div>
+          </div>
+          <div class="field">
+            <label>请求示例</label>
+            <textarea class="code" readonly>${escapeHtml(JSON.stringify(workflow.request_example || { runtime_options: { workflow: workflow.name } }, null, 2))}</textarea>
+          </div>
+          <div class="skill-form-actions">
+            <button class="secondary-btn" type="button" data-workflow-use="${escapeAttr(workflow.name)}">本轮使用</button>
+            <button class="secondary-btn" type="button" data-workflow-clear>本轮不使用 Workflow</button>
+          </div>
+        </div>
       `;
     }
 
@@ -3921,12 +4125,6 @@
       return generationSkill ? 'artifact-generator' : null;
     }
 
-    function workflowFromSelectedCapabilities() {
-      if (state.selectedChatSkills.includes('behavior-detection')) return 'evidence_first_detection';
-      const generationSkill = state.selectedChatSkills.some((name) => /drawio|pptx|excel|xmind|markdown|deliverables|export|generation|rendering/.test(name));
-      return generationSkill ? 'artifact_workflow' : null;
-    }
-
     async function send() {
       const content = els.input.value.trim();
       if (!content || state.running) return;
@@ -3937,7 +4135,7 @@
         .map(({ role, content }) => ({ role, content })));
       beginAssistantMessage();
       const requestAgent = state.nextAgentOverride || agentFromSelectedCapabilities() || els.agent.value;
-      const requestWorkflow = state.nextWorkflowOverride || workflowFromSelectedCapabilities();
+      const requestWorkflow = state.nextWorkflowOverride || state.selectedChatWorkflow;
       state.timeline = [];
       state.artifacts = [];
       state.verification = null;
@@ -4340,7 +4538,7 @@
       const capabilityParts = [];
       if (state.selectedChatSkills.length) capabilityParts.push(`Skill ${state.selectedChatSkills.length}`);
       if (state.selectedChatMcpTools.length) capabilityParts.push(`MCP ${state.selectedChatMcpTools.length}`);
-      const selectedWorkflow = state.nextWorkflowOverride || workflowFromSelectedCapabilities();
+      const selectedWorkflow = state.nextWorkflowOverride || state.selectedChatWorkflow;
       if (selectedWorkflow) capabilityParts.push(`Workflow ${selectedWorkflow}`);
       if (capabilityParts.length) {
         els.routeHint.textContent = `能力：${capabilityParts.join(' · ')}`;
@@ -4578,6 +4776,7 @@
       state.files = [];
       state.selectedChatSkills = [];
       state.selectedChatMcpTools = [];
+      state.selectedChatWorkflow = null;
       state.nextAgentOverride = null;
       state.nextWorkflowOverride = null;
       closeCapabilityPicker();
@@ -4609,6 +4808,12 @@
       state.mcpToolsLoaded = false;
       loadMcpTools({ showLoading: false }).catch((err) => {
         renderToolEditor({ type: 'error', text: err.message });
+      });
+    });
+    els.refreshWorkflows.addEventListener('click', () => {
+      state.workflowsLoaded = false;
+      loadWorkflows().catch((err) => {
+        renderWorkflowEditor({ type: 'error', text: err.message });
       });
     });
     els.skillEditor.addEventListener('click', (event) => {
@@ -4708,6 +4913,17 @@
         toggleCapability('mcp', chatMcpButton.dataset.chatMcp || '');
         return;
       }
+      const chatWorkflowButton = event.target.closest('[data-chat-workflow]');
+      if (chatWorkflowButton) {
+        toggleCapability('workflow', chatWorkflowButton.dataset.chatWorkflow || '');
+        return;
+      }
+      if (event.target.closest('[data-clear-workflow]')) {
+        state.selectedChatWorkflow = null;
+        renderComposerCapabilities();
+        renderCapabilityPicker();
+        return;
+      }
       if (event.target.closest('[data-compose-add-skill]')) {
         closeCapabilityPicker();
         setView('skills');
@@ -4749,6 +4965,15 @@
         renderToolList();
         return;
       }
+      const workflowFilterButton = event.target.closest('[data-workflow-filter]');
+      if (workflowFilterButton) {
+        state.workflowFilter = workflowFilterButton.dataset.workflowFilter || 'all';
+        document.querySelectorAll('[data-workflow-filter]').forEach((item) => {
+          item.classList.toggle('active', item.dataset.workflowFilter === state.workflowFilter);
+        });
+        renderWorkflowList();
+        return;
+      }
       const skillButton = event.target.closest('[data-skill-select]');
       if (skillButton) {
         loadSkillDetail(skillButton.dataset.skillSelect).catch((err) => {
@@ -4764,6 +4989,31 @@
           || null;
         renderToolList();
         renderToolEditor();
+        return;
+      }
+      const workflowButton = event.target.closest('[data-workflow-select-row]');
+      if (workflowButton) {
+        state.selectedWorkflowName = workflowButton.dataset.workflowSelectRow;
+        renderWorkflowList();
+        renderWorkflowEditor();
+        return;
+      }
+      const useWorkflowButton = event.target.closest('[data-workflow-use]');
+      if (useWorkflowButton) {
+        state.selectedChatWorkflow = useWorkflowButton.dataset.workflowUse || null;
+        state.nextWorkflowOverride = null;
+        renderComposerCapabilities();
+        renderWorkflowEditor({ type: 'ok', text: '本轮将使用该 Workflow' });
+        if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'ok', text: '本轮将使用该 Workflow' });
+        setView('chat');
+        return;
+      }
+      if (event.target.closest('[data-workflow-clear]')) {
+        state.selectedChatWorkflow = null;
+        state.nextWorkflowOverride = null;
+        renderComposerCapabilities();
+        renderWorkflowEditor({ type: 'ok', text: '本轮不使用 Workflow' });
+        if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'ok', text: '本轮不使用 Workflow' });
         return;
       }
       const abilityModeButton = event.target.closest('[data-ability-mode]');
@@ -4789,6 +5039,14 @@
         renderAbilityPanel();
         return;
       }
+      const abilityWorkflowButton = event.target.closest('[data-ability-workflow]');
+      if (abilityWorkflowButton) {
+        state.selectedWorkflowName = abilityWorkflowButton.dataset.abilityWorkflow;
+        renderWorkflowList();
+        renderWorkflowEditor();
+        renderAbilityPanel();
+        return;
+      }
       if (event.target.closest('[data-upload-skill-plugin]')) {
         setView('skills');
         openSkillPluginUpload();
@@ -4801,6 +5059,7 @@
       if (event.target.closest('[data-refresh-abilities]')) {
         state.skillsLoaded = false;
         state.mcpToolsLoaded = false;
+        state.workflowsLoaded = false;
         loadAbilities().catch((err) => {
           els.panel.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
         });
@@ -4817,7 +5076,7 @@
       const promptButton = event.target.closest('[data-prompt]');
       if (promptButton) {
         els.input.value = promptButton.dataset.prompt;
-        setNextAgentOverride(promptButton.dataset.agentSelect || null, promptButton.dataset.workflowSelect || null);
+        setNextAgentOverride(promptButton.dataset.agentSelect || null);
         els.input.focus();
         return;
       }
