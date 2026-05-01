@@ -2106,11 +2106,11 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
           <span class="nav-label">进入聊天</span>
         </button>
-        <button type="button">
+        <button type="button" data-inspector-tab="timeline">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"></path><path d="M7 15l3-3 3 2 5-6"></path></svg>
           <span class="nav-label">运行详情</span>
         </button>
-        <button type="button">
+        <button type="button" data-inspector-tab="verification">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
           <span class="nav-label">评估</span>
           <span class="nav-badge">v2</span>
@@ -2757,6 +2757,20 @@
       }
     }
 
+    function activateInspectorTab(tabName) {
+      state.activeTab = ['artifacts', 'abilities', 'verification', 'spec', 'timeline'].includes(tabName) ? tabName : 'artifacts';
+      document.querySelectorAll('.tab').forEach((item) => {
+        item.classList.toggle('active', item.dataset.tab === state.activeTab);
+      });
+      updateNavigationState();
+      renderPanel();
+    }
+
+    function openInspectorTab(tabName) {
+      setView('chat');
+      activateInspectorTab(tabName);
+    }
+
     function renderArtifactPanel() {
       const timeline = state.timeline.length ? `
         <section class="timeline">
@@ -3342,6 +3356,18 @@
       }
     }
 
+    function updateNavigationState() {
+      let inspectorShortcutActive = false;
+      document.querySelectorAll('[data-inspector-tab]').forEach((item) => {
+        const isActive = state.view === 'chat' && item.dataset.inspectorTab === state.activeTab;
+        item.classList.toggle('active', isActive);
+        inspectorShortcutActive = inspectorShortcutActive || isActive;
+      });
+      document.querySelectorAll('[data-view]').forEach((item) => {
+        item.classList.toggle('active', item.dataset.view === state.view && !inspectorShortcutActive);
+      });
+    }
+
     function setView(view) {
       state.view = ['chat', 'skills', 'tools', 'workflows'].includes(view) ? view : 'chat';
       const isChat = state.view === 'chat';
@@ -3356,9 +3382,7 @@
       els.skillManager.hidden = !isSkills;
       els.toolsManager.hidden = !isTools;
       els.workflowManager.hidden = !isWorkflows;
-      document.querySelectorAll('[data-view]').forEach((item) => {
-        item.classList.toggle('active', item.dataset.view === state.view);
-      });
+      updateNavigationState();
       if (isSkills) {
         state.activeTab = 'abilities';
         state.abilityMode = 'skills';
@@ -5031,16 +5055,17 @@
 
     document.querySelectorAll('.tab').forEach((tab) => {
       tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach((item) => item.classList.remove('active'));
-        tab.classList.add('active');
-        state.activeTab = tab.dataset.tab;
-        renderPanel();
+        activateInspectorTab(tab.dataset.tab);
       });
     });
 
     document.querySelectorAll('[data-view]').forEach((button) => {
       button.addEventListener('click', (event) => {
         event.stopPropagation();
+        if ((button.dataset.view || 'chat') === 'chat') {
+          openInspectorTab('artifacts');
+          return;
+        }
         setView(button.dataset.view || 'chat');
       });
     });
@@ -5103,8 +5128,17 @@
         setView(composeManageButton.dataset.composeManage || 'chat');
         return;
       }
+      const inspectorButton = event.target.closest('[data-inspector-tab]');
+      if (inspectorButton) {
+        openInspectorTab(inspectorButton.dataset.inspectorTab || 'artifacts');
+        return;
+      }
       const viewButton = event.target.closest('[data-view]');
       if (viewButton) {
+        if ((viewButton.dataset.view || 'chat') === 'chat') {
+          openInspectorTab('artifacts');
+          return;
+        }
         setView(viewButton.dataset.view || 'chat');
         return;
       }
