@@ -76,7 +76,34 @@ def test_mcp_management_saves_custom_tool(tmp_path, monkeypatch) -> None:
 
     listed = client.get("/api/mcp/tools")
     assert listed.status_code == 200
-    assert "demo_status_tool" in {tool["name"] for tool in listed.json()["tools"]}
+    management_tool_names = {tool["name"] for tool in listed.json()["tools"]}
+    assert "demo_status_tool" in management_tool_names
+    assert "pptx-generation" not in management_tool_names
+
+    custom_detail = client.get("/api/mcp/tools/demo_status_tool")
+    assert custom_detail.status_code == 200
+    assert custom_detail.json()["name"] == "demo_status_tool"
+
+    skill_detail = client.get("/api/mcp/tools/pptx-generation")
+    assert skill_detail.status_code == 404
+
+    conflicting = client.put(
+        "/api/mcp/tools/pptx-generation",
+        json={
+            "title": "Conflicting",
+            "description": "Should not override skill tools.",
+            "enabled": True,
+            "input_schema": {"type": "object"},
+            "source": {"type": "manual"},
+        },
+    )
+    assert conflicting.status_code == 400
+
+    runtime_listed = client.get("/api/mcp/runtime-tools")
+    assert runtime_listed.status_code == 200
+    runtime_tool_names = {tool["name"] for tool in runtime_listed.json()["tools"]}
+    assert "demo_status_tool" in runtime_tool_names
+    assert "pptx-generation" in runtime_tool_names
 
 
 def _patch_mcp_runtime(tmp_path, monkeypatch) -> None:

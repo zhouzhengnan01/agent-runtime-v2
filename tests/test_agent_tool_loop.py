@@ -31,9 +31,9 @@ def test_agent_loop_executes_llm_tool_calls_through_unified_tool_service(
             return LlmChatResponse(
                 tool_calls=[
                     LlmToolCall(
-                        id="call_status",
-                        name="jetlinks_runtime_status",
-                        arguments='{"probe": true}',
+                        id="call_todo",
+                        name="local_todo",
+                        arguments='{"action": "add", "text": "检查运行时状态"}',
                     )
                 ],
                 finish_reason="tool_calls",
@@ -41,7 +41,7 @@ def test_agent_loop_executes_llm_tool_calls_through_unified_tool_service(
         tool_message = next(message for message in messages if message.get("role") == "tool")
         tool_payload = json.loads(tool_message["content"])
         assert tool_payload["isError"] is False
-        assert "JetLinks Agent Runtime v2 MCP endpoint is reachable." in tool_payload["content"][0]["text"]
+        assert tool_payload["structuredContent"]["todos"][0]["text"] == "检查运行时状态"
         return LlmChatResponse(content="运行时状态正常。", finish_reason="stop")
 
     monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
@@ -49,7 +49,7 @@ def test_agent_loop_executes_llm_tool_calls_through_unified_tool_service(
         name="tool-agent",
         display_name="Tool Agent",
         model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
-        tools=["jetlinks_runtime_status"],
+        tools=["local_todo"],
         skills=[],
         workflows={"default": "agent_loop"},
     )
@@ -67,7 +67,7 @@ def test_agent_loop_executes_llm_tool_calls_through_unified_tool_service(
     assert result.metadata["tool_rounds"] == 2
     assert result.metadata["tool_call_count"] == 1
     assert len(calls) == 2
-    assert [tool["function"]["name"] for tool in calls[0]["tools"]] == ["jetlinks_runtime_status"]
+    assert [tool["function"]["name"] for tool in calls[0]["tools"]] == ["local_todo"]
     event_types = [event.type for event in events]
     assert "tool.started" in event_types
     assert "tool.completed" in event_types
@@ -94,7 +94,7 @@ def test_agent_loop_exposes_only_agent_declared_tools(
         name="restricted-agent",
         display_name="Restricted Agent",
         model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
-        tools=["jetlinks_runtime_status"],
+        tools=["local_todo"],
         skills=[],
         workflows={"default": "agent_loop"},
     )
@@ -108,7 +108,7 @@ def test_agent_loop_exposes_only_agent_declared_tools(
     )
 
     assert result.status == "completed"
-    assert seen_tools == ["jetlinks_runtime_status"]
+    assert seen_tools == ["local_todo"]
 
 
 def test_agent_loop_skips_tools_when_model_tool_choice_is_none(
@@ -146,7 +146,7 @@ def test_agent_loop_skips_tools_when_model_tool_choice_is_none(
             model="tool-model",
             tool_choice="none",
         ),
-        tools=["jetlinks_runtime_status"],
+        tools=["local_todo"],
         skills=[],
         workflows={"default": "agent_loop"},
     )

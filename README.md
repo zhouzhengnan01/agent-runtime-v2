@@ -283,10 +283,15 @@ uv run uvicorn app.main:app --reload --port 8010
 
 ## 工具、Skill 与 MCP
 
-当前工具层是协议无关的：
+当前工具层是协议无关的，但页面语义做了区分：
+
+- **运行时工具能力**：Skill、本地 workspace 工具、记忆工具、手动 MCP 工具都会注册到
+  `ToolRegistry`，供 agent loop 和 MCP 协议端复用。
+- **手动 MCP 配置**：只有 `config/mcp/tools.json` 里显式添加的工具才算“你配置的 MCP 工具”。
+  默认配置为空，所以没有接入 MCP 时，工作台不会再显示 Skill、本地、记忆等内置能力为 MCP。
 
 ```text
-Skill manifests + config/mcp/tools.json + 内置 local tools
+Skill manifests + config/mcp/tools.json + 内置 local tools + memory tools
   -> ToolRegistry
   -> ToolInvocationService
   -> MCP tools/list 和 tools/call
@@ -295,8 +300,9 @@ Skill manifests + config/mcp/tools.json + 内置 local tools
 
 同一个 `ToolInvocationService` 被这些入口复用：
 
-- MCP JSON-RPC `tools/list` 和 `tools/call`
-- HTTP 管理接口 `/api/mcp/tools`
+- MCP JSON-RPC `tools/list` 和 `tools/call`：面向外部 MCP 客户端，暴露运行时可用工具能力。
+- HTTP 管理接口 `/api/mcp/tools`：只管理 `config/mcp/tools.json` 中的手动 MCP 工具。
+- HTTP 查看接口 `/api/mcp/runtime-tools`：查看运行时完整工具能力，包含 Skill、本地和记忆工具。
 - 通用 `ToolCallingAgentLoop`
 
 ### Skill 工具
@@ -324,10 +330,11 @@ config/mcp/tools.json
 工具接口：
 
 ```text
-GET  /api/mcp/tools
-GET  /api/mcp/tools/{tool_name}
-PUT  /api/mcp/tools/{tool_name}
-POST /mcp
+GET  /api/mcp/tools              -> 只列出手动 MCP 配置
+GET  /api/mcp/tools/{tool_name}  -> 只读取手动 MCP 配置
+PUT  /api/mcp/tools/{tool_name}  -> 新增或更新手动 MCP 配置
+GET  /api/mcp/runtime-tools      -> 查看运行时全部工具能力
+POST /mcp                        -> MCP 协议入口，tools/list 会暴露运行时工具能力
 ```
 
 ### 本地 Workspace 工具

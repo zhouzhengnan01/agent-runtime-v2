@@ -1537,6 +1537,25 @@
       align-content: start;
     }
 
+    .tool-note {
+      margin: 10px;
+      padding: 10px 12px;
+      border: 1px solid rgba(24, 104, 219, .16);
+      border-radius: var(--radius);
+      background: rgba(239, 246, 255, .72);
+      color: #38516f;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .tool-note strong {
+      display: block;
+      margin-bottom: 3px;
+      color: #14233a;
+      font-size: 13px;
+      font-weight: 760;
+    }
+
     .skill-group {
       padding: 12px 0 4px;
     }
@@ -2219,8 +2238,8 @@
           <section id="toolsManager" class="skill-manager" hidden>
             <div class="skill-manager-head">
               <div>
-                <h2>工具列表</h2>
-                <p id="toolSummary">加载 MCP 工具中</p>
+                <h2>MCP 工具</h2>
+                <p id="toolSummary">加载手动 MCP 配置中</p>
               </div>
               <div class="manager-actions">
                 <button class="secondary-btn" type="button" data-add-mcp-tool>添加 MCP 工具</button>
@@ -2231,8 +2250,6 @@
               <aside class="skill-list-pane">
                 <div class="skill-filter-row" aria-label="工具筛选">
                   <button class="active" type="button" data-tool-filter="all">全部</button>
-                  <button type="button" data-tool-filter="manual">手动</button>
-                  <button type="button" data-tool-filter="skill">Skill 来源</button>
                   <button type="button" data-tool-filter="enabled">启用</button>
                   <button type="button" data-tool-filter="disabled">停用</button>
                 </div>
@@ -2672,7 +2689,7 @@
     }
 
     function composerMcpTools() {
-      return state.mcpTools.filter((tool) => toolSourceType(tool) === 'manual' && tool.name !== 'jetlinks_runtime_status');
+      return state.mcpTools.filter((tool) => toolSourceType(tool) === 'manual');
     }
 
     function renderCapabilityChoice(item, mode, active) {
@@ -3395,6 +3412,10 @@
       if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
       state.mcpTools = data.tools || [];
       state.mcpToolsLoaded = true;
+      if (state.selectedMcpToolName && !state.mcpTools.some((tool) => tool.name === state.selectedMcpToolName)) {
+        state.selectedMcpToolName = null;
+        state.selectedMcpTool = null;
+      }
       if (!state.selectedMcpToolName && state.mcpTools.length) {
         state.selectedMcpToolName = state.mcpTools[0].name;
       }
@@ -3408,19 +3429,21 @@
 
     function renderToolSummary() {
       if (!els.toolSummary) return;
-      const manualCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'manual').length;
-      const skillCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'skill').length;
-      const localCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'local').length;
-      const memoryCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'memory').length;
       const enabledCount = state.mcpTools.filter((tool) => tool.enabled).length;
-      els.toolSummary.textContent = `${state.mcpTools.length} 个协议工具 · ${manualCount} 个手动 MCP · ${skillCount} 个 Skill 映射 · ${localCount} 个本地工具 · ${memoryCount} 个记忆工具 · ${enabledCount} 个启用`;
+      els.toolSummary.textContent = `${state.mcpTools.length} 个手动 MCP 配置 · ${enabledCount} 个启用。Skill、本地文件和记忆是 agent loop 内置能力，不算手动 MCP。`;
     }
 
     function renderToolList() {
       if (!els.toolList) return;
       const tools = filteredMcpTools();
       if (!tools.length) {
-        els.toolList.innerHTML = '<div class="empty-panel">暂无匹配工具</div>';
+        els.toolList.innerHTML = `
+          <div class="tool-note">
+            <strong>这里现在只显示你手动配置的 MCP 工具</strong>
+            Skill、本地文件、记忆等能力由 agent runtime 内置注册，不是你接入的外部 MCP Server。
+          </div>
+          <div class="empty-panel">${state.mcpTools.length ? '暂无匹配 MCP 工具' : '暂无手动 MCP 工具'}</div>
+        `;
         return;
       }
       const groups = groupMcpTools(tools);
@@ -3450,8 +3473,6 @@
         tools.push(state.selectedMcpTool);
       }
       const sorted = tools.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-      if (state.toolFilter === 'manual') return sorted.filter((tool) => toolSourceType(tool) === 'manual');
-      if (state.toolFilter === 'skill') return sorted.filter((tool) => toolSourceType(tool) === 'skill');
       if (state.toolFilter === 'enabled') return sorted.filter((tool) => tool.enabled);
       if (state.toolFilter === 'disabled') return sorted.filter((tool) => !tool.enabled);
       return sorted;
@@ -3459,10 +3480,7 @@
 
     function groupMcpTools(tools) {
       const labels = {
-        manual: '手动 MCP 工具',
-        skill: '由 Skill 暴露的工具',
-        local: '内置本地工具',
-        memory: '记忆工具'
+        manual: '手动 MCP 工具'
       };
       const map = new Map();
       tools.forEach((tool) => {
@@ -3479,10 +3497,7 @@
 
     function toolSourceLabel(tool) {
       const labels = {
-        manual: 'Manual MCP',
-        skill: 'Skill 来源',
-        local: '内置本地',
-        memory: '记忆工具'
+        manual: '手动 MCP'
       };
       return labels[toolSourceType(tool)] || toolSourceType(tool);
     }
@@ -3568,7 +3583,11 @@
       if (!els.toolEditor) return;
       const tool = state.selectedMcpTool || state.mcpTools.find((item) => item.name === state.selectedMcpToolName);
       if (!tool) {
-        els.toolEditor.innerHTML = '<div class="empty-panel">选择左侧工具</div>';
+        els.toolEditor.innerHTML = `
+          <div class="empty-panel">
+            暂无手动 MCP 工具。点击“添加 MCP 工具”后会写入 config/mcp/tools.json。
+          </div>
+        `;
         return;
       }
       const readonly = tool.editable === false;
@@ -3576,7 +3595,7 @@
         <div class="skill-editor-head">
           <div class="skill-editor-title">
             <strong>${escapeHtml(tool.name)}</strong>
-            <span>${readonly ? `Skill: ${tool.source?.skill_name || tool.name}` : 'config/mcp/tools.json'}</span>
+            <span>${readonly ? '运行时只读工具' : 'config/mcp/tools.json'}</span>
           </div>
           <div class="skill-status ${status.type || ''}">${escapeHtml(status.text || '')}</div>
         </div>
@@ -3584,7 +3603,7 @@
           <div class="file-editor-head">
             <div class="file-editor-title">
               <strong>工具 JSON</strong>
-              <span>${readonly ? '该 MCP 工具由 Skill 自动暴露' : '保存到 config/mcp/tools.json'}</span>
+              <span>${readonly ? '该工具来自运行时内置能力，只读展示' : '保存到 config/mcp/tools.json'}</span>
             </div>
             <div class="file-edit-meta">${readonly ? '只读' : '可编辑'}</div>
           </div>
@@ -3592,7 +3611,7 @@
             <textarea id="toolFileJson" class="code file-code" spellcheck="false" ${readonly ? 'disabled' : ''}>${escapeHtml(mcpToolSourceText(tool))}</textarea>
           </div>
           <div class="skill-form-actions">
-            ${readonly ? '<span class="empty">要修改这个 MCP 工具，请进入 Skills 页面编辑对应 Skill。</span>' : '<button class="secondary-btn" type="button" data-tool-format-file>格式化 JSON</button><button class="primary-btn" type="button" data-tool-save-file>保存文件</button>'}
+            ${readonly ? '<span class="empty">该工具来自运行时内置能力，不能在 MCP 配置页编辑。</span>' : '<button class="secondary-btn" type="button" data-tool-format-file>格式化 JSON</button><button class="primary-btn" type="button" data-tool-save-file>保存文件</button>'}
           </div>
         </section>
         <form id="toolForm" class="skill-form">
@@ -3650,7 +3669,7 @@
           <div class="ability-head">
             <div class="ability-mode">
               <button class="${isSkills ? 'active' : ''}" type="button" data-ability-mode="skills">Skills</button>
-              <button class="${state.abilityMode === 'mcp' ? 'active' : ''}" type="button" data-ability-mode="mcp">MCP Tools</button>
+              <button class="${state.abilityMode === 'mcp' ? 'active' : ''}" type="button" data-ability-mode="mcp">手动 MCP</button>
               <button class="${isWorkflows ? 'active' : ''}" type="button" data-ability-mode="workflows">Workflows</button>
             </div>
             <div class="ability-actions">
@@ -3680,11 +3699,11 @@
     }
 
     function renderAbilityMcpItems() {
-      if (!state.mcpTools.length) return '<div class="empty">暂无 MCP 工具</div>';
+      if (!state.mcpTools.length) return '<div class="empty">暂无手动 MCP 工具</div>';
       return [...state.mcpTools].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((tool) => `
         <button class="ability-item ${tool.name === state.selectedMcpToolName ? 'active' : ''}" type="button" data-ability-mcp="${escapeAttr(tool.name)}">
           <strong>${escapeHtml(tool.name)}</strong>
-          <span>${escapeHtml(tool.source?.type || 'manual')} · ${tool.enabled ? 'enabled' : 'disabled'}</span>
+          <span>manual · ${tool.enabled ? 'enabled' : 'disabled'}</span>
         </button>
       `).join('');
     }
@@ -3755,7 +3774,7 @@
 
     function renderAbilityMcpEditor(status = {}) {
       const tool = state.selectedMcpTool || state.mcpTools.find((item) => item.name === state.selectedMcpToolName);
-      if (!tool) return '<div class="empty-panel">选择或添加 MCP 工具</div>';
+      if (!tool) return '<div class="empty-panel">选择或添加手动 MCP 工具。Skill、本地和记忆能力请分别在 Skills 或 agent 配置里管理。</div>';
       return `
         <div class="skill-status ${status.type || ''}">${escapeHtml(status.text || '')}</div>
         <form id="abilityMcpForm" class="skill-form">
