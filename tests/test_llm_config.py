@@ -145,3 +145,98 @@ def test_complete_uses_json_model_config_without_authorization_header(monkeypatc
     assert seen["url"] == "http://llm.local/v1/chat/completions"
     assert seen["json"]["model"] == "json-model-name"
     assert seen["headers"] == {"Content-Type": "application/json"}
+
+
+def test_complete_with_tools_falls_back_when_auto_tool_choice_is_unsupported(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    payloads: list[dict[str, Any]] = []
+
+    async def fake_post(
+        self: httpx.AsyncClient,
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        del self, headers
+        payloads.append(json)
+        request = httpx.Request("POST", url)
+        if len(payloads) == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": '"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set'
+                    }
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "fallback ok"}, "finish_reason": "stop"}]},
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model=ModelConfig(
+            model="json-model-name",
+            base_url="http://llm.local/v1",
+            api_key="json-key",
+            tool_choice="auto",
+        ),
+    )
+
+    response = asyncio.run(
+        OpenAICompatibleClient(agent).complete_with_tools(
+            "system",
+            [Message(role="user", content="hi")],
+            [{"type": "function", "function": {"name": "demo", "parameters": {"type": "object"}}}],
+        )
+    )
+
+    assert response.content == "fallback ok"
+    assert len(payloads) == 2
+    assert payloads[0]["tool_choice"] == "auto"
+    assert "tools" in payloads[0]
+    assert "tool_choice" not in payloads[1]
+    assert "tools" not in payloads[1]
+
+
+def test_http_status_error_includes_upstream_response_body(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    async def fake_post(
+        self: httpx.AsyncClient,
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        del self, json, headers
+        return httpx.Response(
+            400,
+            json={"error": {"message": "unsupported parameter: response_format"}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model=ModelConfig(model="json-model-name", base_url="http://llm.local/v1", api_key="json-key"),
+    )
+
+    try:
+        asyncio.run(OpenAICompatibleClient(agent).complete("system", [Message(role="user", content="hi")]))
+    except httpx.HTTPStatusError as exc:
+        assert "response body:" in str(exc)
+        assert "unsupported parameter" in str(exc)
+    else:
+        raise AssertionError("expected HTTPStatusError")

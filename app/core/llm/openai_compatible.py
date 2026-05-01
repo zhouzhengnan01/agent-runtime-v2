@@ -77,7 +77,7 @@ class OpenAICompatibleClient:
         payload = self._chat_payload(system_prompt, messages)
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
-            response.raise_for_status()
+            self._raise_for_status(response)
             data = response.json()
         choices = data.get("choices") or []
         if not choices:
@@ -97,7 +97,14 @@ class OpenAICompatibleClient:
         payload = self._chat_payload(system_prompt, messages, tools=tools)
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
-            response.raise_for_status()
+            if tools and self._is_auto_tool_choice_unsupported(response):
+                fallback_payload = self._chat_payload(system_prompt, messages)
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    json=fallback_payload,
+                    headers=self._headers(),
+                )
+            self._raise_for_status(response)
             data = response.json()
         return self._parse_chat_response(data)
 
@@ -108,7 +115,7 @@ class OpenAICompatibleClient:
         payload = self._chat_payload(system_prompt, messages)
         with httpx.Client(timeout=120.0) as client:
             response = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
-            response.raise_for_status()
+            self._raise_for_status(response)
             data = response.json()
         choices = data.get("choices") or []
         if not choices:
@@ -129,7 +136,7 @@ class OpenAICompatibleClient:
                 json=payload,
                 headers=self._headers(),
             ) as response:
-                response.raise_for_status()
+                await self._raise_stream_for_status(response)
                 async for line in response.aiter_lines():
                     delta = self._delta_from_stream_line(line)
                     if delta == "[DONE]":
@@ -165,6 +172,44 @@ class OpenAICompatibleClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+    @staticmethod
+    def _raise_for_status(response: httpx.Response) -> None:
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            body = response.text.strip()
+            if not body:
+                raise
+            detail = body[:2000]
+            raise httpx.HTTPStatusError(
+                f"{exc}; response body: {detail}",
+                request=exc.request,
+                response=exc.response,
+            ) from exc
+
+    @staticmethod
+    async def _raise_stream_for_status(response: httpx.Response) -> None:
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raw_body = await response.aread()
+            body = raw_body.decode(errors="replace").strip()
+            if not body:
+                raise
+            detail = body[:2000]
+            raise httpx.HTTPStatusError(
+                f"{exc}; response body: {detail}",
+                request=exc.request,
+                response=exc.response,
+            ) from exc
+
+    @staticmethod
+    def _is_auto_tool_choice_unsupported(response: httpx.Response) -> bool:
+        if response.status_code != 400:
+            return False
+        body = response.text.lower()
+        return "tool choice" in body and "enable-auto-tool-choice" in body
 
     def _not_configured_message(self) -> str:
         if self.disabled:
