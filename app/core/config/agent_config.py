@@ -18,6 +18,7 @@ class ModelConfig(BaseModel):
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = None
+    api_key_enc: str | None = None
     model_env: str = "LLM_MODEL"
     default_model: str = "Qwen3.6-35B-A3B"
     base_url_env: str = "LLM_BASE_URL"

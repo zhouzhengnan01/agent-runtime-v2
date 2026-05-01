@@ -142,7 +142,8 @@ runtime_options -> 环境变量 -> agent JSON
 }
 ```
 
-如果配置会提交或共享，建议不要把真实 key 放进公开 JSON，而是使用本地覆盖文件。
+如果配置会提交或共享，建议不要把真实 key 放进公开 JSON，而是使用本地覆盖文件。运行时也支持
+`api_key_enc`，可以把 key 加密后写入本地覆盖文件。
 
 ## 本地私密配置
 
@@ -163,8 +164,53 @@ config/agents/default.local.json  # 本地私密覆盖，默认被 git 忽略
 }
 ```
 
-`config/agents/*.local.json` 已加入 `.gitignore`，不会上传到 GitHub。HTTP agent 详情接口和
-`python -m app.cli show-agent` 会把 `model.api_key` 脱敏为 `********`，运行时内部仍然使用真实值。
+也可以使用加密写入命令：
+
+```bash
+.venv/bin/python -m app.cli secrets set-api-key --agent default --value "your-key"
+# 或者
+uv run python -m app.cli secrets set-api-key --agent default --value "your-key"
+```
+
+命令会写入：
+
+```text
+config/agents/default.local.json
+.runtime/secrets/master.key
+```
+
+`default.local.json` 中保存的是 `model.api_key_enc`：
+
+```json
+{
+  "model": {
+    "api_key_enc": "enc.fernet.v1...."
+  }
+}
+```
+
+运行时加载 agent 配置时会自动解密成 `model.api_key`，之后再调用 OpenAI-compatible API。
+
+加密使用 `cryptography.Fernet`。解密主密钥来源优先级：
+
+```text
+JETLINKS_AGENT_SECRET_KEY -> .runtime/secrets/master.key
+```
+
+`config/agents/*.local.json` 和 `.runtime/` 都已加入 `.gitignore`，不会上传到 GitHub。HTTP agent
+详情接口和 `python -m app.cli show-agent` 会把 `model.api_key`、`model.api_key_enc` 脱敏为
+`********`，运行时内部仍然使用真实值。
+
+注意：如果把 `api_key_enc` 提交到 GitHub，就必须确保 `JETLINKS_AGENT_SECRET_KEY` 或
+`.runtime/secrets/master.key` 没有一起泄漏；加密串和主密钥同时泄漏就等同于明文泄漏。
+
+启用 `api_key_enc` 后，运行服务的 Python 环境必须安装 `cryptography`。建议使用项目虚拟环境或 uv 启动：
+
+```bash
+.venv/bin/python -m uvicorn app.main:app --reload --port 8010
+# 或者
+uv run uvicorn app.main:app --reload --port 8010
+```
 
 如果你遇到：
 
