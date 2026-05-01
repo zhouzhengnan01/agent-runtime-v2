@@ -7,6 +7,7 @@ from typing import Any, List
 
 from app.core.artifacts import ArtifactStore
 from app.core.skills import SkillRegistry, SkillRunner
+from app.core.tools.providers.local import local_tool_definitions
 from app.core.tools.providers.skill import SkillToolProvider
 from app.core.tools.schemas import ToolDefinition
 
@@ -33,7 +34,7 @@ class ToolRegistry:
         )
 
     def list(self, *, include_disabled: bool = False) -> List[ToolDefinition]:
-        tools = self._skill_tools()
+        tools = self._builtin_tools() + self._skill_tools()
         custom = self._custom_tools()
         skill_names = {tool.name for tool in tools}
         tools.extend(tool for tool in custom if tool.name not in skill_names)
@@ -61,6 +62,10 @@ class ToolRegistry:
 
     def _skill_tools(self) -> List[ToolDefinition]:
         return self.skill_provider.list()
+
+    @staticmethod
+    def _builtin_tools() -> List[ToolDefinition]:
+        return local_tool_definitions()
 
     def _custom_tools(self) -> List[ToolDefinition]:
         if not self.config_path.is_file():

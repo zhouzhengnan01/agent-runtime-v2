@@ -175,6 +175,24 @@ The same `ToolInvocationService` is used by:
 - HTTP management endpoints under `/api/mcp/tools`
 - the generic `ToolCallingAgentLoop`
 
+The default agent also exposes a first batch of Hermes-inspired local tools through the same registry:
+
+```text
+local_read_file     -> read UTF-8 text from the current thread workspace
+local_write_file    -> write UTF-8 text into the current thread workspace
+local_search_text   -> search text files in the current thread workspace
+local_todo          -> maintain a thread-scoped todo list
+local_shell_command -> run shell commands in the thread workspace, disabled by default
+```
+
+These local tools are intentionally scoped to `.runtime/threads/<thread_id>/user-data/workspace` so model-driven file
+operations do not get unrestricted host filesystem access. `local_shell_command` is only exposed when explicitly
+enabled:
+
+```bash
+export LOCAL_SHELL_TOOL_ENABLED=true
+```
+
 Useful tool endpoints:
 
 ```text

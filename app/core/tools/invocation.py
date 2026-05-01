@@ -4,7 +4,7 @@ from typing import Any, Protocol
 
 from app.core.artifacts import ArtifactStore
 from app.core.skills import SkillRunner
-from app.core.tools.providers import ManualToolProvider, SkillToolProvider
+from app.core.tools.providers import LocalToolProvider, ManualToolProvider, SkillToolProvider
 from app.core.tools.registry import ToolRegistry
 from app.core.tools.schemas import ToolDefinition, ToolInvocationResult
 
@@ -25,6 +25,7 @@ class ToolInvocationService:
         self.artifact_store = artifact_store or ArtifactStore()
         self.registry = registry or ToolRegistry(artifact_store=self.artifact_store, skill_runner=skill_runner)
         self.providers: dict[str, ToolProvider] = {
+            LocalToolProvider.source_type: LocalToolProvider(artifact_store=self.artifact_store),
             ManualToolProvider.source_type: ManualToolProvider(),
             SkillToolProvider.source_type: SkillToolProvider(
                 artifact_store=self.artifact_store,
