@@ -1,183 +1,258 @@
-# JetLinks Agent (Local)
+# JetLinks Agent Runtime v2
+
+Stateless agent runtime driven by built-in JSON agent configs.
+
+The v2 runtime is intentionally separate from `jetlinks-agent-runtime` v1. It treats the agent as stateless: each CLI or HTTP call supplies the full conversation context and runtime options, while server-side files are only artifact containers for uploads, workspaces, and outputs.
 
 ## Run
 
 ```bash
-# from repo root
-./deploy/jetlinks-agent/start_server.sh --reload
+export LLM_BASE_URL="http://124.132.152.75:62091/v1"
+# Optional if config/agents/<agent>.json already contains model.api_key
+export LLM_API_KEY="..."
+export LLM_MODEL="Qwen3.6-35B-A3B"
+
+uvicorn app.main:app --reload --port 8010
 ```
 
-- Health: `GET http://localhost:8005/health`
-- Web UI: `http://localhost:8005/` / `http://localhost:8005/review.html`
+Open:
 
-## Review Records (落盘 + 回放)
-
-When calling `POST /api/v1/agents/{agentId}/chat/json`, the server will:
-
-1. Write a call record to disk
-2. If the request contains a video in `context.files` (first `media_type=video`), record a **30s mp4 clip** via `ffmpeg`
-3. Keep only the latest **1000** records globally (oldest will be deleted)
-
-### ROI（可选裁剪区域）
-
-在 `context` 中可传 `roi`，仅把裁剪后的区域送入 VLM（图像/视频帧都生效）。
-
-支持格式（rect）：
-
-```json
-{
-  "context": {
-    "roi": {"rect": [120, 80, 1400, 900]}
-  }
-}
+```text
+http://127.0.0.1:8010/static/workbench.html
 ```
 
-```json
-{
-  "context": {
-    "roi": {"rect": [0.1, 0.1, 0.9, 0.9], "normalized": true}
-  }
-}
-```
-
-## .env 配置说明（中文）
-
-### 数据库
-- `DB_TYPE`: 数据库类型（postgresql / mysql）
-- `DB_HOST`: 数据库地址
-- `DB_PORT`: 数据库端口
-- `DB_USER`: 数据库用户名
-- `DB_PASSWORD`: 数据库密码
-- `DB_NAME`: 数据库名称
-
-### 模型服务
-- `OPENAI_BASE_URL`: OpenAI 兼容接口地址
-- `OPENAI_API_KEY`: OpenAI 兼容接口 Key
-- `LLM_BASE_URL`: LLM 服务地址
-- `LLM_API_KEY`: LLM 服务 Key
-- `VLM_BASE_URL`: 视觉模型服务地址
-- `VLM_API_KEY`: 视觉模型 Key
-- `EMBEDDING_BASE_URL`: 向量服务地址
-- `EMBEDDING_API_KEY`: 向量服务 Key
-- `LLM_MODEL`: 默认对话模型
-- `VLM_MODEL`: 默认视觉模型
-
-### 复判 -> 知识库同步
-- `REVIEW_KB_ENABLED`: 是否启用复判结果同步
-- `REVIEW_KB_BASE_URL`: 知识库服务地址（jetlinks-knowledge）
-- `REVIEW_KB_COLLECTION_ID`: 目标集合 ID（默认 video_search）
-- `REVIEW_KB_COLLECTION_NAME`: 目标集合名称（自动创建/更新时使用）
-- `REVIEW_KB_COLLECTION_TYPE`: 集合类型（text / multimodal）
-- `REVIEW_KB_INCLUDE_FAILED`: 是否同步失败复判
-- `REVIEW_KB_MIN_HIT`: 最小 hit 阈值（1=仅命中）
-- `REVIEW_KB_MAX_PAYLOAD_CHARS`: 单条同步 payload 长度上限
-
-### 工具（按需启用）
-- `SERPAPI_KEY`: Google/SerpAPI 搜索 key
-- `BAIDU_API_KEY`: 百度搜索 key
-- `GOOGLE_SEARCH_ENGINE`: 搜索引擎（google / bing / serpapi）
-- `GOOGLE_SEARCH_NUM_RESULTS`: 结果条数
-- `GOOGLE_SEARCH_LANGUAGE`: 语言
-- `GOOGLE_SEARCH_SAFE_SEARCH`: 安全等级
-- `BAIDU_SEARCH_ENGINE`: 百度引擎标识
-- `BAIDU_SEARCH_NUM_RESULTS`: 结果条数
-- `BAIDU_SEARCH_LANGUAGE`: 语言
-- `BAIDU_SEARCH_SAFE_SEARCH`: 安全等级
-- `BAIDU_DEFAULT_TIMEOUT`: 请求超时
-- `BAIDU_MAX_RESULTS`: 最大总结果
-- `USE_SEARCH_PROXY`: 是否启用搜索代理
-- `PROXY_HOST`: 代理地址
-- `PROXY_PORT`: 代理端口
-- `VIDEO_GENERATOR_API_BASE`: 视频生成服务地址
-- `VIDEO_GENERATOR_API_KEY`: 视频生成 key
-- `VIDEO_GENERATOR_TIMEOUT`: 视频生成超时
-- `VIDEO_GENERATOR_MAX_DURATION`: 最大时长（秒）
-- `VIDEO_GENERATOR_MAX_KEYFRAMES`: 最大关键帧数
-- `VIDEO_GENERATOR_DEFAULT_ASPECT_RATIO`: 默认比例
-- `VIDEO_GENERATOR_DEFAULT_IMAGE_SIZE`: 默认尺寸
-- `VIDEO_GENERATOR_ENABLE_MULTI_KEYFRAME`: 是否启用多关键帧
-- `VIDEO_GENERATOR_DEFAULT_MOTION_STRENGTH`: 运动强度
-- `SORA_VIDEO_DURATION`: Sora 视频时长
-- `SORA_VIDEO_ASPECT_RATIO`: Sora 视频比例
-- `GEMINI_API_KEY`: Gemini 画图 Key
-- `GEMINI_IMAGE_SIZE`: Gemini 图片尺寸
-- `GEMINI_ASPECT_RATIO`: Gemini 图片比例
-
-```json
-{
-  "context": {
-    "roi": [120, 80, 1400, 900]
-  }
-}
-```
-
-说明：
-- 坐标原点在左上角，`rect` 为 `[x1, y1, x2, y2]`
-- `normalized=true` 表示 0~1 归一化坐标；不传时会自动判断
-
-### Storage Layout
-
-```
-storage/review_records/
-  <record_id>/
-    record.json
-    video.mp4           # optional, recorded via ffmpeg
-```
-
-Recorded media is served as static files:
-
-- `GET /storage/review_records/<record_id>/video.mp4`
-
-### Query APIs
-
-- List (latest first): `GET /api/v1/review-records?pageIndex=0&pageSize=50&agentId=<agentId>`
-- Detail: `GET /api/v1/review-records/<record_id>`
-- `POST /api/v1/agents/{agentId}/chat/json` response includes a top-level `hit` field (0/1, generic match flag).
-
-### review.html
-
-Open `http://localhost:8005/review.html` → **调用记录** → switch to **服务器** mode to view persisted records and play recorded `mp4`.
-
-### Prerequisite
-
-`ffmpeg` must be available in `PATH` (otherwise `video.status=failed` in `record.json`).
-
-### Configuration (.env)
-
-配置文件已移到 `deploy/jetlinks-agent/.env`，可通过 `ENV_FILE` 指定路径（或在部署目录运行）。
+## CLI
 
 ```bash
-REVIEW_RECORDS_STORAGE_PATH=storage/review_records
-# Keep only latest N records (0 = keep all / disable retention cleanup)
-REVIEW_RECORDS_MAX_RECORDS=1000
-REVIEW_RECORDS_CLIP_SECONDS=30
-REVIEW_RECORDS_FFMPEG_BIN=ffmpeg
-REVIEW_RECORDS_FFMPEG_TIMEOUT=60
+python -m app.cli list-agents
+python -m app.cli show-agent artifact-generator
+python -m app.cli run --agent artifact-generator --message "生成一个 JetLinks IoT 平台架构图"
+python -m app.cli run --agent behavior-detector --message "人员翻越围栏进入禁区" --json
 ```
 
-### Local ASR（可选）
+## Stateless Contract
 
-当业务侧启用 `asr_backend=local` 时，会调用本地模型服务的 `/v1/audio/transcriptions`。
+- Agent configs are static inputs, not runtime state.
+- Requests must include the messages needed for the current turn.
+- The server does not recover hidden memory from previous turns.
+- `thread_id` only scopes files under `.runtime/threads/<thread_id>`.
+- To continue a conversation, the caller must send prior messages again.
+
+## Runtime Architecture
+
+The runtime has one common entrypoint, `AgentRuntime`, shared by HTTP, CLI, ACP WebSocket, and ACP stdio.
+ACP switches agents by `agentName`; the runtime then loads the corresponding JSON config and applies the same routing rules.
+
+```text
+AgentRuntime
+  ├─ WorkflowRouter
+  │    └─ selects a registered workflow only when agent JSON + skill metadata match
+  ├─ WorkflowRegistry
+  │    └─ optional workflow plugins such as artifact_workflow and evidence_first_detection
+  └─ ToolCallingAgentLoop
+       └─ OpenAI tools -> LLM tool_calls -> ToolInvocationService -> tool result -> next LLM turn
+```
+
+The default runtime registers built-in workflow plugins through `WorkflowRegistry.builtin(...)`:
+
+```text
+artifact_workflow          -> ArtifactWorkflow
+evidence_first_detection  -> ArtifactWorkflow with evidence-first behavior skill selection
+```
+
+Workflow plugins are optional. If a workflow name appears in agent JSON but is not registered in the current
+`WorkflowRegistry`, the request falls back to `agent_loop` instead of entering a hardcoded branch.
+This keeps deployment profiles flexible: a full runtime can enable specialized workflow plugins, while a lightweight
+runtime can run only the generic tool-calling loop.
+
+The generic agent loop is still capable of using tools and skills. It exposes only the tools/skills declared by the
+current agent JSON, asks the configured model to produce OpenAI-compatible `tool_calls`, executes them through the
+unified tool service, appends `role=tool` results to the conversation, and repeats up to
+`runtime.max_tool_rounds`.
+
+```text
+LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
+```
+
+## Agent Config
+
+Each agent is driven by `config/agents/*.json`. Put stable agent behavior and default model routing here:
+
+- `model.model`, `model.base_url`, `model.api_key`, `model.temperature`, `model.max_tokens`
+- `runtime.stateless`, `runtime.max_tool_rounds`, `runtime.max_retries`, `runtime.require_verification`
+- `tools`: named MCP/manual tools exposed to the model in `agent_loop`
+- `skills`: skill-backed tools exposed to the model and allowed for workflow skill selection
+- `workflows`: optional workflow plugin names such as `agent_loop`, `artifact_workflow`, or `evidence_first_detection`
+- `quality`
+- `prompts.system`
+
+Environment variables still work as runtime overrides:
+
+- `LLM_MODEL` overrides `model.model`
+- `LLM_BASE_URL` overrides `model.base_url`
+- `LLM_API_KEY` overrides `model.api_key`
+
+The model config resolution order is:
+
+```text
+runtime_options -> environment variables -> agent JSON
+```
+
+It is valid to put `api_key` directly in a private agent JSON file:
+
+```json
+{
+  "model": {
+    "provider": "openai_compatible",
+    "model": "Qwen3.6-35B-A3B",
+    "base_url": "http://124.132.152.75:62091/v1",
+    "api_key": "your-key"
+  }
+}
+```
+
+For committed or shared configs, prefer omitting `model.api_key` and using `LLM_API_KEY` so secrets are not checked in.
+If the OpenAI-compatible endpoint does not require authentication, `api_key` can be omitted.
+
+For local private credentials, use an ignored override file next to the public agent config:
+
+```text
+config/agents/default.json        # public default config
+config/agents/default.local.json  # private local overrides, ignored by git
+```
+
+The local file can be partial; it is deep-merged over the public agent JSON:
+
+```json
+{
+  "model": {
+    "api_key": "your-key"
+  }
+}
+```
+
+`config/agents/*.local.json` is ignored by `.gitignore`, so private model keys can stay on the machine without being
+uploaded with the shared config. Agent detail payloads and `python -m app.cli show-agent` redact `model.api_key` as
+`********`; the runtime still uses the real value from the merged config.
+
+Typical workflow configuration:
+
+```json
+{
+  "workflows": {
+    "default": "agent_loop",
+    "generation": "artifact_workflow",
+    "vision_behavior": "evidence_first_detection"
+  }
+}
+```
+
+`default: agent_loop` gives a Hermes-like general agent loop. Specialized agents can set
+`default: artifact_workflow` or `default: evidence_first_detection` when deterministic workflow behavior is preferred.
+
+## Tools, Skills, And MCP
+
+Skills and MCP/manual tools share one protocol-neutral tool layer:
+
+```text
+Skill manifests + config/mcp/tools.json
+  -> ToolRegistry
+  -> ToolInvocationService
+  -> MCP tools/list and tools/call
+  -> Agent tool-calling loop
+```
+
+Skill manifests from `config/skills/*.json` and plugin manifests are exposed as skill-backed tools through
+`SkillToolProvider`. Custom MCP/manual tools live in:
+
+```text
+config/mcp/tools.json
+```
+
+The same `ToolInvocationService` is used by:
+
+- MCP JSON-RPC `tools/list` and `tools/call`
+- HTTP management endpoints under `/api/mcp/tools`
+- the generic `ToolCallingAgentLoop`
+
+Useful tool endpoints:
+
+```text
+GET  /api/mcp/tools
+GET  /api/mcp/tools/{tool_name}
+PUT  /api/mcp/tools/{tool_name}
+POST /mcp
+```
+
+## Protocol Strategy
+
+The runtime core emits typed events once, then transports adapt those events for different clients.
+
+- Native Web Workbench: supports both HTTP POST plus SSE via `/api/agents/{agent}/runs/stream` and ACP-shaped WebSocket via `/api/acp/ws`.
+- A2A adapter: reuse the same event stream and map runtime events to A2A streaming task/status/artifact messages.
+- ACP adapter: keep the JSON-RPC lifecycle (`initialize`, `new_session`, `prompt`, `session/update`) and support WebSocket for browser clients.
+- ACP stdio: run `python -m app.cli acp-stdio --agent default` for editor-style stdio integrations.
+- WebSocket is the right transport for future bidirectional sessions, such as live cancellation, terminal input, approval prompts, or collaborative multi-agent control.
+
+This keeps the stateless agent core transport-agnostic: SSE, ACP WebSocket, ACP stdio, and A2A all adapt the same typed runtime events.
+
+## Sandbox Strategy
+
+Sandbox execution is selective. Normal chat, LLM spec planning, and behavior-detection text checks stay in the local runtime. Only skills mapped to a sandbox profile are eligible for OpenSandbox execution.
+
+Skill manifests live at:
+
+```text
+config/skills/*.json
+```
+
+Each manifest declares the platform-facing contract:
+
+- `input_schema` for the structured spec accepted by the skill
+- `output_schema` for expected artifacts or JSON results
+- `quality_template` for verifier/planner hints
+- `sandbox.enabled`, `sandbox.profile`, `sandbox.adapter_command`, and fallback behavior
+
+Reusable sandbox runtime profiles live at:
+
+```text
+config/sandbox/profiles.json
+```
+
+The default mappings are:
+
+```text
+drawio-generation -> drawio
+pptx-generation   -> office
+excel-generation  -> office
+```
+
+Useful environment variables:
 
 ```bash
-ASR_API_BASE=http://127.0.0.1:8007/v1
-ASR_API_KEY=local
-ASR_MODEL=damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch
-ASR_HTTP_TIMEOUT_SEC=120
+export SANDBOX_PROVIDER=local                 # local | opensandbox
+export SANDBOX_PROFILE_CONFIG=config/sandbox/profiles.json
+export SANDBOX_SKILLS=drawio-generation       # optional allowlist; omit to use all configured mappings
+export SANDBOX_FALLBACK_TO_LOCAL=true
+export SANDBOX_EXECUTOR_ENABLED=false         # default; set true only after OpenSandbox Server/images are ready
+export OPENSANDBOX_DOMAIN=127.0.0.1:8080
+export OPENSANDBOX_PROTOCOL=http
 ```
 
-### Monthly Cleanup (按月清理磁盘)
+OpenSandbox skill images use a single adapter entrypoint:
 
-清理脚本已从源码移出。建议用系统任务定期清理 `storage/review_records` 旧记录。
+```text
+/opt/jetlinks/skills/run_skill.py --request /mnt/user-data/workspace/request.json --outputs /mnt/user-data/outputs
+```
 
-### Other Disk Cleanup (其他可清理目录)
+The runtime writes a `skill-run.v1` request JSON, runs the manifest/profile `adapter_command`,
+then copies files from `/mnt/user-data/outputs` back into the thread artifact store.
 
-Video inspection will generate temporary files under `storage/`:
+The platform can read the skill contracts through:
 
-- `storage/out/`（临时切片/中间产物）
-- `storage/http_tmp/`（HTTP 离线下载的临时文件）
-- `storage/evidence_images/`、`storage/evidence_images_box/`（证据帧）
+```text
+GET /api/skills
+GET /api/skills/{skill_name}
+```
 
-可用系统任务按需清理以上目录。
-
-Session history storage is under `storage/sessions/` (optional). You can cleanup old files by your own scheduled job.
+Each workflow emits a `sandbox.policy` event after skill selection. This event records the resolved profile, whether the skill is eligible for sandbox execution, and why the current run uses local or sandbox execution.

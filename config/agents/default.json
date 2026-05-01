@@ -1,0 +1,51 @@
+{
+  "name": "default",
+  "display_name": "JetLinks 智能体",
+  "description": "General JetLinks assistant with chat, artifact generation, and evidence-first behavior detection.",
+  "model": {
+    "provider": "openai_compatible",
+    "model": "Qwen3.6-35B-A3B",
+    "base_url": "http://124.132.152.75:62091/v1",
+    "model_env": "LLM_MODEL",
+    "default_model": "Qwen3.6-35B-A3B",
+    "base_url_env": "LLM_BASE_URL",
+    "api_key_env": "LLM_API_KEY",
+    "temperature": 0.4,
+    "max_tokens": 2048
+  },
+  "runtime": {
+    "stateless": true,
+    "max_tool_rounds": 6,
+    "max_retries": 0,
+    "workspace_mode": "ephemeral_thread",
+    "require_verification": false
+  },
+  "tools": ["present_files", "artifact_workflow", "behavior_detection", "ask_clarification"],
+  "skills": [
+    "drawio-generation",
+    "pptx-generation",
+    "excel-generation",
+    "xmind-generation",
+    "markdown-rendering",
+    "deliverables-export",
+    "behavior-detection"
+  ],
+  "workflows": {
+    "default": "agent_loop",
+    "generation": "artifact_workflow",
+    "vision_behavior": "evidence_first_detection"
+  },
+  "routing": {
+    "llm_workflow_router": true,
+    "llm_workflow_router_env": "LLM_WORKFLOW_ROUTER"
+  },
+  "quality": {
+    "auto_repair": false,
+    "verify_outputs": false,
+    "fail_on_missing_artifact": false
+  },
+  "prompts": {
+    "system": "You are a stateless JetLinks agent. Use only the provided messages and attachments. Do not assume hidden memory.",
+    "response_language": "zh-CN"
+  }
+}

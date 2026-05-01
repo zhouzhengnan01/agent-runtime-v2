@@ -1,0 +1,65 @@
+{
+  "name": "pptx-generation",
+  "description": "Generate PowerPoint slide decks.",
+  "output_kind": "presentation",
+  "generation": true,
+  "routing": {
+    "summary": "Use for PowerPoint slide decks, presentations,方案汇报, and structured PPT materials.",
+    "keywords": ["ppt", "pptx", "powerpoint", "幻灯片", "演示文稿", "方案", "汇报"],
+    "examples": ["生成一份 ppt 方案", "做一个项目汇报 PPT", "输出演示文稿"]
+  },
+  "quality_template": ["cover", "agenda", "architecture", "process", "plan", "risks", "summary"],
+  "input_schema": {
+    "type": "object",
+    "required": ["skill_name", "title"],
+    "properties": {
+      "skill_name": { "const": "pptx-generation" },
+      "title": { "type": "string" },
+      "slides": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["title"],
+          "properties": {
+            "title": { "type": "string" },
+            "kind": {
+              "type": "string",
+              "enum": ["cover", "agenda", "architecture", "process", "plan", "risks", "summary", "content"]
+            },
+            "bullets": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["artifacts"],
+    "properties": {
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["name", "mime_type", "kind"],
+          "properties": {
+            "name": { "type": "string" },
+            "mime_type": { "type": "string" },
+            "kind": { "type": "string", "enum": ["binary", "image"] }
+          }
+        }
+      }
+    }
+  },
+  "sandbox": {
+    "enabled": true,
+    "profile": "office",
+    "request_schema_version": "skill-run.v1",
+    "adapter_command": "python /opt/jetlinks/skills/run_skill.py --request {request_path} --outputs {outputs_dir}",
+    "fallback_to_local": true
+  }
+}

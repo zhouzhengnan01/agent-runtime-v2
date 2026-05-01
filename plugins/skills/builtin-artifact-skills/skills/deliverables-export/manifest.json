@@ -1,0 +1,60 @@
+{
+  "name": "deliverables-export",
+  "description": "Export command notes and implementation steps as TXT and DOCX deliverables.",
+  "output_kind": "document",
+  "generation": true,
+  "routing": {
+    "summary": "Use for exporting implementation deliverables such as command notes, operation steps, TXT command files, and DOCX step documents.",
+    "keywords": ["交付物", "导出附件", "生成附件", "操作说明", "实施步骤", "命令说明", "docx", "word", "txt"],
+    "examples": ["导出操作说明和命令文件", "生成交付物附件", "把实施步骤输出成 docx"]
+  },
+  "quality_template": ["commands_txt", "steps_docx", "non_empty_files"],
+  "input_schema": {
+    "type": "object",
+    "required": ["commands", "steps"],
+    "properties": {
+      "skill_name": { "const": "deliverables-export" },
+      "commands": {
+        "type": "string",
+        "title": "Command notes"
+      },
+      "steps": {
+        "type": "string",
+        "title": "Implementation steps"
+      },
+      "commands_name": {
+        "type": "string",
+        "default": "commands.txt"
+      },
+      "steps_name": {
+        "type": "string",
+        "default": "steps.docx"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["artifacts"],
+    "properties": {
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["name", "mime_type", "kind"],
+          "properties": {
+            "name": { "type": "string" },
+            "mime_type": { "type": "string" },
+            "kind": { "type": "string", "enum": ["text", "binary"] }
+          }
+        }
+      }
+    }
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  }
+}

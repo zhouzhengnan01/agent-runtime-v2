@@ -1,0 +1,22 @@
+{
+  "tools": [
+    {
+      "name": "jetlinks_runtime_status",
+      "title": "JetLinks Runtime Status",
+      "description": "Return a simple status message for MCP connectivity checks.",
+      "enabled": true,
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "source": {
+        "type": "manual",
+        "response_template": "JetLinks Agent Runtime v2 MCP endpoint is reachable."
+      }
+    }
+  ]
+}

@@ -1,5 +1,2 @@
-"""
-JetLinks Agent 核心模块
-"""
+"""Core runtime modules."""
 
-__version__ = "1.0.0"
