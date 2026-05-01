@@ -118,7 +118,12 @@ class JetLinksAcpStdioAgent:
         text = _prompt_text(prompt)
         request = ChatRequest(
             messages=[Message(role="user", content=text)],
-            runtime_options=RuntimeOptions(thread_id=session.thread_id, workflow=_workflow_from_kwargs(kwargs)),
+            runtime_options=RuntimeOptions(
+                thread_id=session.thread_id,
+                workflow=_workflow_from_kwargs(kwargs),
+                selected_skills=_string_list_from_kwargs(kwargs, "selectedSkills", "selected_skills"),
+                selected_mcp_tools=_string_list_from_kwargs(kwargs, "selectedMcpTools", "selected_mcp_tools"),
+            ),
         )
         agent_config = self.loader.load(session.agent_name)
         result_status = "completed"
@@ -171,6 +176,22 @@ def _workflow_from_kwargs(kwargs: dict[str, Any]) -> str | None:
         or kwargs.get("workflow")
         or jetlinks_meta.get("workflow")
     )
+
+
+def _string_list_from_kwargs(kwargs: dict[str, Any], camel_name: str, snake_name: str) -> list[str]:
+    runtime_options = _params(kwargs.get("runtimeOptions") or kwargs.get("runtime_options"))
+    jetlinks_meta = _params(kwargs.get("jetlinks"))
+    raw_value = (
+        runtime_options.get(camel_name)
+        or runtime_options.get(snake_name)
+        or kwargs.get(camel_name)
+        or kwargs.get(snake_name)
+        or jetlinks_meta.get(camel_name)
+        or jetlinks_meta.get(snake_name)
+    )
+    if not isinstance(raw_value, list):
+        return []
+    return [item.strip() for item in raw_value if isinstance(item, str) and item.strip()]
 
 
 def _event_to_sdk_updates(event: ChatEvent, message_id: str | None) -> list[Any]:

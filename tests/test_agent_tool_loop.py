@@ -221,3 +221,59 @@ def test_agent_loop_can_execute_skill_backed_tools(
     assert result.status == "completed"
     assert result.reply == "Markdown 已生成。"
     assert [tool["function"]["name"] for tool in calls[0]["tools"]] == ["markdown-rendering"]
+
+
+def test_agent_loop_directly_executes_explicit_selected_generation_skill(
+    tmp_path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    tool_call_attempts: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        tool_call_attempts.append("called")
+        return LlmChatResponse(content="不应调用模型工具。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="direct-skill-agent",
+        display_name="Direct Skill Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=["drawio-generation"],
+        workflows={"default": "agent_loop"},
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    runtime = AgentRuntime(artifact_store=artifact_store)
+
+    result, events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="帮我画一个工作台原型图")],
+                runtime_options=RuntimeOptions(
+                    thread_id="direct-drawio",
+                    selected_skills=["drawio-generation"],
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.metadata["workflow"] == "agent_loop"
+    assert result.metadata["direct_skill"] is True
+    assert result.metadata["skill_name"] == "drawio-generation"
+    assert tool_call_attempts == []
+    artifact_names = {artifact.name for artifact in result.artifacts}
+    assert "prototype.drawio" in artifact_names
+    assert "prototype.png" in artifact_names
+    assert (tmp_path / "direct-drawio" / "user-data" / "outputs" / "prototype.drawio").is_file()
+    assert (tmp_path / "direct-drawio" / "user-data" / "outputs" / "prototype.png").is_file()
+    event_types = [event.type for event in events]
+    assert "direct_skill.started" in event_types
+    assert "artifact.created" in event_types

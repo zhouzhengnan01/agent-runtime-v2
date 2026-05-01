@@ -4184,8 +4184,28 @@
       return message.includes('code 1012') || message.includes('ACP WS 连接已关闭') || message.includes('ACP WS 连接异常');
     }
 
+    function buildRuntimeOptions(threadId, workflow) {
+      const runtimeOptions = {
+        thread_id: threadId,
+        selected_skills: [...state.selectedChatSkills],
+        selected_mcp_tools: [...state.selectedChatMcpTools]
+      };
+      if (workflow) runtimeOptions.workflow = workflow;
+      return runtimeOptions;
+    }
+
+    function buildAcpRuntimeOptions(threadId, workflow) {
+      const runtimeOptions = {
+        threadId,
+        selectedSkills: [...state.selectedChatSkills],
+        selectedMcpTools: [...state.selectedChatMcpTools]
+      };
+      if (workflow) runtimeOptions.workflow = workflow;
+      return runtimeOptions;
+    }
+
     async function sendViaSse(agentName, threadId, attachments, messages, workflow) {
-      const runtimeOptions = workflow ? { thread_id: threadId, workflow } : { thread_id: threadId };
+      const runtimeOptions = buildRuntimeOptions(threadId, workflow);
       const res = await fetch(`/api/agents/${agentName}/runs/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4267,7 +4287,7 @@
           agentName: agentName,
           threadId
         });
-        const runtimeOptions = workflow ? { threadId, workflow } : { threadId };
+        const runtimeOptions = buildAcpRuntimeOptions(threadId, workflow);
         const promptResult = await rpc('prompt', {
           sessionId: session.sessionId,
           agentName: agentName,

@@ -94,7 +94,12 @@ class AcpRuntimeAdapter:
         request = ChatRequest(
             messages=messages,
             attachments=attachments,
-            runtime_options=RuntimeOptions(thread_id=thread_id, workflow=workflow),
+            runtime_options=RuntimeOptions(
+                thread_id=thread_id,
+                workflow=workflow,
+                selected_skills=_resolve_string_list(params, "selectedSkills", "selected_skills"),
+                selected_mcp_tools=_resolve_string_list(params, "selectedMcpTools", "selected_mcp_tools"),
+            ),
         )
 
         result: AgentRunResult | None = None
@@ -181,6 +186,14 @@ def _resolve_thread_id(params: dict[str, Any], session: AcpWebSocketSession) -> 
 def _resolve_workflow(params: dict[str, Any]) -> str | None:
     runtime_options = _params(params.get("runtimeOptions") or params.get("runtime_options"))
     return _string(runtime_options.get("workflow") or params.get("workflow"))
+
+
+def _resolve_string_list(params: dict[str, Any], camel_name: str, snake_name: str) -> list[str]:
+    runtime_options = _params(params.get("runtimeOptions") or params.get("runtime_options"))
+    raw_value = runtime_options.get(camel_name) or runtime_options.get(snake_name) or params.get(camel_name) or params.get(snake_name)
+    if not isinstance(raw_value, list):
+        return []
+    return [item.strip() for item in raw_value if isinstance(item, str) and item.strip()]
 
 
 def _messages_from_params(params: dict[str, Any]) -> list[Message]:

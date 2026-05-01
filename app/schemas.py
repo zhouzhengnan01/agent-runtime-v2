@@ -24,6 +24,8 @@ class Attachment(BaseModel):
 class RuntimeOptions(BaseModel):
     thread_id: str | None = None
     workflow: str | None = None
+    selected_skills: list[str] = Field(default_factory=list)
+    selected_mcp_tools: list[str] = Field(default_factory=list)
     model_name: str | None = None
     model_env: str | None = None
     base_url: str | None = None

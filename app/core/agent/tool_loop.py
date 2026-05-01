@@ -4,10 +4,13 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
+from app.core.skills import SkillRegistry, SkillRunner
 from app.core.tools import ToolDefinition, ToolInvocationResult, ToolInvocationService
+from app.core.workflow.spec_builder import SpecBuilder
 from app.schemas import AgentRunResult, Message, RuntimeOptions
 
 
@@ -23,6 +26,10 @@ class ToolCallingAgentLoop:
 
     def __init__(self, tool_service: ToolInvocationService | None = None) -> None:
         self.tool_service = tool_service or ToolInvocationService()
+        self.artifact_store: ArtifactStore = self.tool_service.artifact_store
+        self.skill_registry = SkillRegistry()
+        self.spec_builder = SpecBuilder(self.skill_registry)
+        self.skill_runner = SkillRunner(self.artifact_store)
 
     async def run(
         self,
@@ -63,6 +70,18 @@ class ToolCallingAgentLoop:
                     "scope": agent_config.memory.scope,
                     "count": memory_context_count,
                 },
+            )
+        direct_skill = self._direct_selected_skill(agent_config, runtime_options)
+        if direct_skill is not None:
+            return self._run_direct_skill(
+                agent_config=agent_config,
+                messages=messages,
+                thread_id=thread_id,
+                recorder=recorder,
+                llm_metadata=llm_metadata,
+                conversation=conversation,
+                skill_name=direct_skill,
+                emit_message_delta=emit_message_delta,
             )
         tools = self._openai_tools(agent_config)
         if llm.tool_choice == "none":
@@ -282,3 +301,113 @@ class ToolCallingAgentLoop:
         )
         recorder.emit("run.completed" if completed_event else "run.failed", {"result": result.model_dump()})
         return ToolLoopResult(result=result, messages=messages, rounds=rounds)
+
+    def _direct_selected_skill(
+        self,
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions | None,
+    ) -> str | None:
+        selected = self._normalized_selected_skills(runtime_options)
+        if not selected:
+            return None
+        allowed_names = self._allowed_tool_names(agent_config)
+        for skill_name in selected:
+            if allowed_names and skill_name not in allowed_names:
+                continue
+            try:
+                skill = self.skill_registry.get(skill_name)
+            except KeyError:
+                continue
+            if skill.generation and skill.runner_path is not None:
+                return skill_name
+        return None
+
+    @staticmethod
+    def _normalized_selected_skills(runtime_options: RuntimeOptions | None) -> list[str]:
+        if runtime_options is None:
+            return []
+        return [name.strip() for name in runtime_options.selected_skills if name.strip()]
+
+    def _run_direct_skill(
+        self,
+        *,
+        agent_config: AgentConfig,
+        messages: list[Message],
+        thread_id: str,
+        recorder: EventRecorder,
+        llm_metadata: dict[str, Any],
+        conversation: list[dict[str, Any]],
+        skill_name: str,
+        emit_message_delta: bool,
+    ) -> ToolLoopResult:
+        allowed_skills = self._allowed_skill_names(agent_config)
+        recorder.emit(
+            "direct_skill.started",
+            {
+                "skill_name": skill_name,
+                "selected_skills": [skill_name],
+                "mode": "explicit_runtime_options",
+            },
+        )
+        spec = self.spec_builder.build(messages, [], allowed_skills)
+        spec["skill_name"] = skill_name
+        skill = self.skill_registry.get(skill_name)
+        recorder.emit("skill.selected", {"skill": skill.to_event_payload(), "direct": True})
+        recorder.emit("spec.completed", {"skill_name": skill_name, "spec": spec, "direct": True})
+        paths = self.artifact_store.prepare_thread(thread_id)
+        recorder.emit(
+            "skill.started",
+            {
+                "skill_name": skill_name,
+                "attempt": 0,
+                "execution_mode": "local",
+                "direct": True,
+            },
+        )
+        run_result = self.skill_runner.run(skill_name, spec, paths)
+        recorder.emit(
+            "skill.completed",
+            {
+                "skill_name": skill_name,
+                "attempt": 0,
+                "execution_mode": run_result.data.get("execution_mode", "local"),
+                "output_count": len(run_result.outputs),
+                "data": run_result.data,
+                "direct": True,
+            },
+        )
+        for artifact in run_result.outputs:
+            artifact_data = artifact.model_dump()
+            recorder.emit("artifact.created", {"artifact": artifact_data, "attempt": 0})
+            recorder.emit("preview.ready", {"artifact": artifact_data, "attempt": 0})
+        artifact_lines = [
+            f"- {artifact.name}（{artifact.kind}，{artifact.mime_type}，{artifact.path}）"
+            for artifact in run_result.outputs
+        ]
+        artifact_text = "\n".join(artifact_lines) if artifact_lines else "- 无文件产物"
+        reply = f"已按显式选择的 Skill 执行：{skill_name}。\n{artifact_text}\n可在右侧「文件」面板预览或下载。"
+        if emit_message_delta:
+            recorder.emit("agent.message.delta", {"text": reply})
+        recorder.emit("agent.message", {"text": reply})
+        result = AgentRunResult(
+            agent=agent_config.name,
+            thread_id=thread_id,
+            reply=reply,
+            artifacts=run_result.outputs,
+            spec=spec,
+            metadata={
+                "workflow": "agent_loop",
+                **llm_metadata,
+                "tool_rounds": 0,
+                "tool_call_count": 0,
+                "direct_skill": True,
+                "skill_name": skill_name,
+            },
+        )
+        recorder.emit("run.completed", {"result": result.model_dump()})
+        return ToolLoopResult(result=result, messages=conversation, rounds=0)
+
+    def _allowed_skill_names(self, agent_config: AgentConfig) -> list[str]:
+        if agent_config.skills:
+            return agent_config.skills
+        return [skill.name for skill in self.skill_registry.list(executable_only=True)]

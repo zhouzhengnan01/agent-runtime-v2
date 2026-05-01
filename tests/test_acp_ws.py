@@ -154,3 +154,56 @@ def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypa
         assert "agent.message.delta" in event_types
         assert "run.completed" in event_types
         assert chunks == [reply]
+
+
+def test_acp_websocket_passes_explicit_selected_skills_to_agent_loop() -> None:
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "new_session",
+                "params": {
+                    "agentName": "artifact-generator",
+                    "threadId": "acp-direct-drawio",
+                    "cwd": "/tmp",
+                },
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "agentName": "artifact-generator",
+                    "threadId": "acp-direct-drawio",
+                    "prompt": [{"type": "text", "text": "画一个工作台原型图"}],
+                    "runtimeOptions": {"selectedSkills": ["drawio-generation"]},
+                },
+            }
+        )
+
+        final: dict[str, Any] | None = None
+        for _ in range(30):
+            packet = websocket.receive_json()
+            if packet.get("id") == 3:
+                final = packet
+                break
+
+        assert final is not None
+        result = final["result"]["result"]
+        assert result["metadata"]["workflow"] == "agent_loop"
+        assert result["metadata"]["direct_skill"] is True
+        assert result["metadata"]["skill_name"] == "drawio-generation"
+        names = {artifact["name"] for artifact in result["artifacts"]}
+        assert any(name.startswith("prototype") and name.endswith(".drawio") for name in names)
+        assert any(name.startswith("prototype") and name.endswith(".png") for name in names)
