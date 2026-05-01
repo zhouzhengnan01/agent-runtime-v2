@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import acp, agents, artifacts, health, mcp, sandbox, skills, workflows
@@ -26,6 +27,10 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(workflows.router)
     app.include_router(mcp.router)
+
+    @app.get("/", include_in_schema=False)
+    async def workbench_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/static/workbench.html")
 
     static_dir = Path(__file__).resolve().parents[1] / "static"
     if static_dir.is_dir():
