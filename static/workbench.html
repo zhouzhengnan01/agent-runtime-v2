@@ -800,6 +800,8 @@
     }
 
     .composer-wrap {
+      position: relative;
+      z-index: 30;
       max-width: 920px;
       width: 100%;
       margin: 0 auto;
@@ -883,12 +885,12 @@
       left: 12px;
       right: 12px;
       bottom: 62px;
-      z-index: 20;
-      max-height: min(430px, 58vh);
+      z-index: 90;
+      max-height: min(390px, 52vh);
       border: 1px solid var(--line-strong);
       border-radius: var(--radius-lg);
       background: rgba(255, 255, 255, .98);
-      box-shadow: var(--shadow);
+      box-shadow: var(--shadow-soft);
       overflow: hidden;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
@@ -2648,6 +2650,7 @@
         <div class="capability-picker-foot">
           ${isWorkflows ? '<button class="secondary-btn" type="button" data-clear-workflow>不使用 Workflow</button>' : `<button class="secondary-btn" type="button" ${isSkills ? 'data-compose-add-skill' : 'data-compose-add-mcp'}>${isSkills ? '上传 Skill 插件' : '新建 MCP 工具'}</button>`}
           <button class="secondary-btn" type="button" data-compose-manage="${isWorkflows ? 'workflows' : isSkills ? 'skills' : 'tools'}">${isWorkflows ? '管理 Workflows' : isSkills ? '管理 Skills' : '管理 Tools'}</button>
+          <button class="secondary-btn" type="button" data-capability-close>完成</button>
         </div>
       `;
     }
@@ -2677,7 +2680,7 @@
       if (kind === 'workflow') {
         state.selectedChatWorkflow = state.selectedChatWorkflow === name ? null : name;
         renderComposerCapabilities();
-        renderCapabilityPicker();
+        closeCapabilityPicker();
         return;
       }
       const list = kind === 'skill' ? state.selectedChatSkills : state.selectedChatMcpTools;
@@ -2685,7 +2688,7 @@
       if (index >= 0) list.splice(index, 1);
       else list.push(name);
       renderComposerCapabilities();
-      renderCapabilityPicker();
+      closeCapabilityPicker();
     }
 
     function removeCapability(kind, name) {
