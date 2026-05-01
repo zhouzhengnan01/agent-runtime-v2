@@ -65,11 +65,14 @@ class ToolCallingAgentLoop:
                 },
             )
         tools = self._openai_tools(agent_config)
+        if llm.tool_choice == "none":
+            tools = []
         recorder.emit(
             "tools.available",
             {
                 "tool_count": len(tools),
                 "tools": [tool["function"]["name"] for tool in tools],
+                "tool_choice": llm.tool_choice,
             },
         )
 

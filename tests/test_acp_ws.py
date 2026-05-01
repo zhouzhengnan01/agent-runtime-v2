@@ -5,6 +5,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from app.core.llm.openai_compatible import LlmChatResponse, OpenAICompatibleClient
+from app.schemas import Message
 from app.main import create_app
 
 
@@ -69,6 +70,15 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
 
 
 def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypatch) -> None:
+    reply = "我可以处理 JetLinks 对话、文件生成和证据优先的行为识别。"
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Message],
+    ) -> str:
+        return reply
+
     async def fake_complete_with_tools(
         self: OpenAICompatibleClient,
         system_prompt: str,
@@ -76,8 +86,9 @@ def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypa
         tools: list[dict[str, Any]],
     ) -> LlmChatResponse:
         assert tools
-        return LlmChatResponse(content="我可以处理 JetLinks 对话、文件生成和证据优先的行为识别。")
+        return LlmChatResponse(content=reply)
 
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
     monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
     client = TestClient(create_app())
 
@@ -126,7 +137,7 @@ def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypa
 
         assert final is not None
         assert final["result"]["stopReason"] == "end_turn"
-        assert final["result"]["result"]["reply"] == "我可以处理 JetLinks 对话、文件生成和证据优先的行为识别。"
+        assert final["result"]["result"]["reply"] == reply
 
         event_types = [
             update["params"]["update"]["_meta"]["jetlinksRuntimeEvent"]["type"]
@@ -141,4 +152,4 @@ def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypa
 
         assert "agent.message.delta" in event_types
         assert "run.completed" in event_types
-        assert chunks == ["我可以处理 JetLinks 对话、文件生成和证据优先的行为识别。"]
+        assert chunks == [reply]

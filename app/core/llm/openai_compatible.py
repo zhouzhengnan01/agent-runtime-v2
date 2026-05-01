@@ -64,6 +64,7 @@ class OpenAICompatibleClient:
         self.temperature = runtime_options.temperature if runtime_options.temperature is not None else model_config.temperature
         self.top_p = runtime_options.top_p if runtime_options.top_p is not None else model_config.top_p
         self.max_tokens = runtime_options.max_tokens if runtime_options.max_tokens is not None else model_config.max_tokens
+        self.tool_choice = model_config.tool_choice
 
     @property
     def configured(self) -> bool:
@@ -152,7 +153,7 @@ class OpenAICompatibleClient:
         }
         if self.top_p is not None:
             payload["top_p"] = self.top_p
-        if tools:
+        if tools and self.tool_choice == "auto":
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         if stream:

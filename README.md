@@ -108,7 +108,7 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 
 每个智能体由 `config/agents/*.json` 驱动。稳定的智能体行为建议放在这里：
 
-- `model.model`、`model.base_url`、`model.api_key`、`model.temperature`、`model.max_tokens`
+- `model.model`、`model.base_url`、`model.api_key`、`model.api_key_enc`、`model.tool_choice`、`model.temperature`、`model.max_tokens`
 - `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_retries`、`runtime.require_verification`
 - `tools`：暴露给 `agent_loop` 的 MCP/manual/local 工具
 - `skills`：暴露给模型的 Skill-backed tools，同时也用于 Workflow Skill 选择
@@ -128,6 +128,27 @@ runtime_options -> 环境变量 -> agent JSON
 - `LLM_MODEL` 覆盖 `model.model`
 - `LLM_BASE_URL` 覆盖 `model.base_url`
 - `LLM_API_KEY` 覆盖 `model.api_key`
+
+`model.tool_choice` 用于控制是否向 OpenAI-compatible API 发送 `tools` 和 `tool_choice=auto`：
+
+```json
+{
+  "model": {
+    "tool_choice": "none"
+  }
+}
+```
+
+- `auto`：默认值，模型服务需要支持 tool calling。
+- `none`：不向模型发送 tools，适合当前只支持普通聊天或未开启 tool parser 的模型服务。
+
+如果模型服务返回：
+
+```text
+"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set
+```
+
+说明 provider 还没有开启自动工具调用解析，需要把当前 agent 的 `model.tool_choice` 设为 `none`，或者在模型服务侧开启 tool parser。当前 `default` agent 已设为 `none`。
 
 私有部署时可以直接把 `api_key` 放在本地 agent JSON 中：
 
