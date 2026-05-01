@@ -139,7 +139,8 @@ class AgentRuntime:
         yield recorder.emit("run.started", {"workflow": "agent_loop", "stateless": agent_config.runtime.stateless})
 
         llm = OpenAICompatibleClient(agent_config, runtime_options=request.runtime_options)
-        if not llm.configured:
+        should_run_loop = self.agent_loop.direct_selected_skill(agent_config, request.runtime_options) is not None
+        if not llm.configured and not should_run_loop:
             yield recorder.emit(
                 "llm.started",
                 {

@@ -4677,6 +4677,10 @@
           setAssistantProgress('正在理解需求并选择可用技能…');
           addTimeline('理解需求', `${data.allowed_skills?.length || 0} 个可用技能`);
           break;
+        case 'direct_skill.started':
+          setAssistantProgress('已锁定显式选择的 Skill，正在规划执行参数…');
+          addTimeline('显式 Skill', data.skill_name || '');
+          break;
         case 'spec.planner.started':
           setAssistantProgress('正在调用大模型规划图结构…');
           addTimeline('大模型规划', data.skill_name || '');

@@ -10,6 +10,7 @@ from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
 from app.core.skills import SkillRegistry, SkillRunner
 from app.core.tools import ToolDefinition, ToolInvocationResult, ToolInvocationService
+from app.core.workflow.llm_spec_planner import LlmSpecPlanner
 from app.core.workflow.spec_builder import SpecBuilder
 from app.schemas import AgentRunResult, Message, RuntimeOptions
 
@@ -29,6 +30,7 @@ class ToolCallingAgentLoop:
         self.artifact_store: ArtifactStore = self.tool_service.artifact_store
         self.skill_registry = SkillRegistry()
         self.spec_builder = SpecBuilder(self.skill_registry)
+        self.spec_planner = LlmSpecPlanner()
         self.skill_runner = SkillRunner(self.artifact_store)
 
     async def run(
@@ -71,7 +73,7 @@ class ToolCallingAgentLoop:
                     "count": memory_context_count,
                 },
             )
-        direct_skill = self._direct_selected_skill(agent_config, runtime_options)
+        direct_skill = self.direct_selected_skill(agent_config, runtime_options)
         if direct_skill is not None:
             return self._run_direct_skill(
                 agent_config=agent_config,
@@ -81,6 +83,7 @@ class ToolCallingAgentLoop:
                 llm_metadata=llm_metadata,
                 conversation=conversation,
                 skill_name=direct_skill,
+                runtime_options=runtime_options,
                 emit_message_delta=emit_message_delta,
             )
         tools = self._openai_tools(agent_config, runtime_options)
@@ -309,7 +312,7 @@ class ToolCallingAgentLoop:
         recorder.emit("run.completed" if completed_event else "run.failed", {"result": result.model_dump()})
         return ToolLoopResult(result=result, messages=messages, rounds=rounds)
 
-    def _direct_selected_skill(
+    def direct_selected_skill(
         self,
         agent_config: AgentConfig,
         runtime_options: RuntimeOptions | None,
@@ -351,6 +354,7 @@ class ToolCallingAgentLoop:
         llm_metadata: dict[str, Any],
         conversation: list[dict[str, Any]],
         skill_name: str,
+        runtime_options: RuntimeOptions | None,
         emit_message_delta: bool,
     ) -> ToolLoopResult:
         allowed_skills = self._allowed_skill_names(agent_config)
@@ -362,11 +366,16 @@ class ToolCallingAgentLoop:
                 "mode": "explicit_runtime_options",
             },
         )
-        spec = self.spec_builder.build(messages, [], allowed_skills)
-        spec["skill_name"] = skill_name
+        spec = self._plan_direct_skill_spec(
+            recorder=recorder,
+            agent_config=agent_config,
+            messages=messages,
+            allowed_skills=allowed_skills,
+            runtime_options=runtime_options,
+            skill_name=skill_name,
+        )
         skill = self.skill_registry.get(skill_name)
         recorder.emit("skill.selected", {"skill": skill.to_event_payload(), "direct": True})
-        recorder.emit("spec.completed", {"skill_name": skill_name, "spec": spec, "direct": True})
         paths = self.artifact_store.prepare_thread(thread_id)
         recorder.emit(
             "skill.started",
@@ -419,6 +428,53 @@ class ToolCallingAgentLoop:
         )
         recorder.emit("run.completed", {"result": result.model_dump()})
         return ToolLoopResult(result=result, messages=conversation, rounds=0)
+
+    def _plan_direct_skill_spec(
+        self,
+        *,
+        recorder: EventRecorder,
+        agent_config: AgentConfig,
+        messages: list[Message],
+        allowed_skills: list[str],
+        runtime_options: RuntimeOptions | None,
+        skill_name: str,
+    ) -> dict[str, Any]:
+        recorder.emit(
+            "spec.started",
+            {
+                "allowed_skills": allowed_skills,
+                "attachment_count": 0,
+                "direct": True,
+            },
+        )
+        selected_allowed_skills = [skill_name] if skill_name in allowed_skills else allowed_skills
+        base_spec = self.spec_builder.build(messages, [], selected_allowed_skills)
+        base_spec["skill_name"] = skill_name
+        recorder.emit("spec.planner.started", {"skill_name": skill_name, "mode": "llm", "direct": True})
+        try:
+            spec = self.spec_planner.plan(agent_config, messages, base_spec, runtime_options=runtime_options)
+        except Exception as exc:
+            spec = dict(base_spec)
+            spec["planner"] = {"mode": "local", "enabled": True, "fallback": True, "error": str(exc)}
+            recorder.emit("spec.planner.failed", {"skill_name": skill_name, "error": str(exc), "fallback": "local"})
+            recorder.emit("spec.completed", {"skill_name": skill_name, "spec": spec, "direct": True})
+            return spec
+
+        raw_planner = spec.get("planner")
+        planner: dict[str, Any] = raw_planner if isinstance(raw_planner, dict) else {}
+        recorder.emit(
+            "spec.planner.completed",
+            {
+                "skill_name": skill_name,
+                "mode": planner.get("mode"),
+                "enabled": planner.get("enabled"),
+                "model": planner.get("model"),
+                "reason": planner.get("reason"),
+                "fallback": planner.get("fallback", False),
+            },
+        )
+        recorder.emit("spec.completed", {"skill_name": skill_name, "spec": spec, "direct": True})
+        return spec
 
     def _allowed_skill_names(self, agent_config: AgentConfig) -> list[str]:
         if agent_config.skills:

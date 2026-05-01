@@ -293,6 +293,7 @@ def test_agent_loop_directly_executes_explicit_selected_generation_skill(
     monkeypatch: MonkeyPatch,
 ) -> None:
     tool_call_attempts: list[str] = []
+    planner_prompts: list[str] = []
 
     async def fake_complete_with_tools(
         self: OpenAICompatibleClient,
@@ -304,7 +305,42 @@ def test_agent_loop_directly_executes_explicit_selected_generation_skill(
         tool_call_attempts.append("called")
         return LlmChatResponse(content="不应调用模型工具。", finish_reason="stop")
 
+    def fake_complete_sync(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Message],
+    ) -> str:
+        del self, system_prompt
+        planner_prompts.append(messages[0].content)
+        return """
+        {
+          "diagram_type": "prototype_wireframe",
+          "visual_style": "polished",
+          "swimlanes": ["导航与入口", "任务编排", "输出预览", "质量反馈"],
+          "nodes": ["左侧导航", "Agent 列表", "聊天主区", "技能选择", "任务输入", "运行事件", "文件输出", "PNG 预览", "Spec 面板", "校验面板"],
+          "lane_nodes": {
+            "导航与入口": ["左侧导航", "Agent 列表"],
+            "任务编排": ["聊天主区", "技能选择", "任务输入", "运行事件"],
+            "输出预览": ["文件输出", "PNG 预览", "Spec 面板"],
+            "质量反馈": ["校验面板"]
+          },
+          "edges": [
+            ["左侧导航", "Agent 列表"],
+            ["Agent 列表", "聊天主区"],
+            ["聊天主区", "技能选择"],
+            ["技能选择", "任务输入"],
+            ["任务输入", "运行事件"],
+            ["运行事件", "文件输出"],
+            ["文件输出", "PNG 预览"],
+            ["运行事件", "Spec 面板"],
+            ["Spec 面板", "校验面板"]
+          ]
+        }
+        """
+
     monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setenv("LLM_SPEC_PLANNER", "1")
     agent = AgentConfig(
         name="direct-skill-agent",
         display_name="Direct Skill Agent",
@@ -334,6 +370,11 @@ def test_agent_loop_directly_executes_explicit_selected_generation_skill(
     assert result.metadata["direct_skill"] is True
     assert result.metadata["skill_name"] == "drawio-generation"
     assert tool_call_attempts == []
+    assert planner_prompts
+    assert result.spec is not None
+    assert result.spec["planner"]["mode"] == "llm"
+    assert result.spec["visual_style"] == "polished"
+    assert result.spec["swimlanes"] == ["导航与入口", "任务编排", "输出预览", "质量反馈"]
     artifact_names = {artifact.name for artifact in result.artifacts}
     assert "prototype.drawio" in artifact_names
     assert "prototype.png" in artifact_names
@@ -341,4 +382,51 @@ def test_agent_loop_directly_executes_explicit_selected_generation_skill(
     assert (tmp_path / "direct-drawio" / "user-data" / "outputs" / "prototype.png").is_file()
     event_types = [event.type for event in events]
     assert "direct_skill.started" in event_types
+    assert "spec.planner.started" in event_types
+    assert "spec.planner.completed" in event_types
     assert "artifact.created" in event_types
+
+
+def test_stream_agent_loop_runs_explicit_skill_when_llm_is_not_configured(
+    tmp_path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_SPEC_PLANNER", "1")
+    agent = AgentConfig(
+        name="direct-skill-agent",
+        display_name="Direct Skill Agent",
+        model=ModelConfig(base_url=None, api_key=None, model="tool-model"),
+        tools=[],
+        skills=["drawio-generation"],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    async def collect() -> list[Any]:
+        return [
+            event
+            async for event in runtime.iter_events(
+                agent,
+                ChatRequest(
+                    messages=[Message(role="user", content="帮我画一个工作台原型图")],
+                    runtime_options=RuntimeOptions(
+                        thread_id="direct-drawio-stream",
+                        selected_skills=["drawio-generation"],
+                    ),
+                ),
+            )
+        ]
+
+    events = asyncio.run(collect())
+    event_types = [event.type for event in events]
+    final = events[-1].data["result"]
+
+    assert event_types[:3] == ["run.started", "llm.started", "direct_skill.started"]
+    assert "spec.planner.completed" in event_types
+    assert "artifact.created" in event_types
+    assert final["metadata"]["direct_skill"] is True
+    assert final["metadata"]["llm_configured"] is False
+    assert final["spec"]["planner"]["reason"] == "llm_not_configured"
+    names = {artifact["name"] for artifact in final["artifacts"]}
+    assert "prototype.drawio" in names
+    assert "prototype.png" in names
