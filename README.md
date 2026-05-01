@@ -1,104 +1,131 @@
 # JetLinks Agent Runtime v2
 
-Stateless agent runtime driven by built-in JSON agent configs.
+JetLinks Agent Runtime v2 是一套轻量、无状态的智能体运行时。它以 `config/agents/*.json`
+里的智能体配置为入口，把模型调用、工具调用、Skill 执行、Workflow 插件、ACP/MCP 协议和
+文件产物管理串成一个统一的运行闭环。
 
-The v2 runtime is intentionally separate from `jetlinks-agent-runtime` v1. It treats the agent as stateless: each CLI or HTTP call supplies the full conversation context and runtime options, while server-side files are only artifact containers for uploads, workspaces, and outputs.
+v2 与原 `jetlinks-agent-runtime` v1 是不同架构：v2 默认不保存隐藏对话记忆，每次 CLI 或 HTTP
+请求都需要带上当前轮所需的完整上下文；服务端文件主要用于上传文件、线程工作区和输出产物。
 
-## Run
+## 快速启动
 
 ```bash
 export LLM_BASE_URL="http://124.132.152.75:62091/v1"
-# Optional if config/agents/<agent>.json already contains model.api_key
+# 如果 config/agents/<agent>.json 或 <agent>.local.json 已配置 model.api_key，这里可以不设置
 export LLM_API_KEY="..."
 export LLM_MODEL="Qwen3.6-35B-A3B"
 
 uvicorn app.main:app --reload --port 8010
 ```
 
-Open:
+打开工作台：
 
 ```text
 http://127.0.0.1:8010/static/workbench.html
 ```
 
-## CLI
+## 命令行
 
 ```bash
 python -m app.cli list-agents
 python -m app.cli show-agent artifact-generator
+python -m app.cli run --agent default --message "你能做什么"
 python -m app.cli run --agent artifact-generator --message "生成一个 JetLinks IoT 平台架构图"
 python -m app.cli run --agent behavior-detector --message "人员翻越围栏进入禁区" --json
+python -m app.cli acp-stdio --agent default
 ```
 
-## Stateless Contract
+## 当前能力边界
 
-- Agent configs are static inputs, not runtime state.
-- Requests must include the messages needed for the current turn.
-- The server does not recover hidden memory from previous turns.
-- `thread_id` only scopes files under `.runtime/threads/<thread_id>`.
-- To continue a conversation, the caller must send prior messages again.
+当前 `agent-v2` 已经具备轻量 agent runtime 的核心能力：
 
-## Runtime Architecture
+- 完整的基础 agent loop：模型输出 `tool_calls`，运行时执行工具，再把 `role=tool` 结果回填给模型继续推理。
+- JSON 配置驱动：不同 agent 通过 `config/agents/*.json` 定义模型、工具、Skill、Workflow 和运行参数。
+- 统一工具层：Skill、MCP/manual 工具、本地 workspace 工具都通过 `ToolRegistry` 和 `ToolInvocationService` 暴露。
+- Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection 等内置 Skill。
+- Workflow 插件：`artifact_workflow`、`evidence_first_detection` 通过 `WorkflowRegistry` 注册，可选启用。
+- 多协议入口：HTTP、SSE、CLI、ACP WebSocket、ACP stdio、MCP HTTP。
+- 线程级文件工作区：每个 `thread_id` 有自己的 workspace、uploads、outputs。
+- 本地私密配置：支持 `config/agents/*.local.json` 覆盖公开 agent JSON，并默认忽略上传。
 
-The runtime has one common entrypoint, `AgentRuntime`, shared by HTTP, CLI, ACP WebSocket, and ACP stdio.
-ACP switches agents by `agentName`; the runtime then loads the corresponding JSON config and applies the same routing rules.
+当前还没有完整实现这些 Hermes/OpenCode 级能力：
+
+- 多 provider 适配：目前主要是 OpenAI-compatible API，还没有 Anthropic、Gemini、Bedrock、OpenRouter 等独立 adapter。
+- 长期 Memory：v2 默认无状态，不保存跨会话长期记忆。
+- 完整 Session Resume：`thread_id` 只管理文件和产物，不恢复隐藏历史对话。
+- Cron/Gateway/Telegram/Discord/Slack/Email 等多平台常驻接入。
+- 子智能体 `delegate_task` 协作。
+- 浏览器自动化和网页抓取工具。
+- 上下文压缩、fallback model、stream 健康检查、复杂断流恢复等长任务增强能力。
+
+这些能力可以继续参考 `/Users/chenhao/Desktop/code/opencode/hermes-agent` 分批接入，但不建议一次性整包搬入。
+
+## 无状态约定
+
+- Agent 配置是静态输入，不是运行时状态。
+- 请求必须包含当前轮需要的 messages。
+- 服务端不会从隐藏记忆中恢复历史对话。
+- `thread_id` 只用于隔离 `.runtime/threads/<thread_id>` 下的文件。
+- 如果要继续一段对话，调用方需要把前文 messages 再次传入。
+
+## 运行时架构
+
+所有入口都共享同一个 `AgentRuntime`：
 
 ```text
-AgentRuntime
-  ├─ WorkflowRouter
-  │    └─ selects a registered workflow only when agent JSON + skill metadata match
-  ├─ WorkflowRegistry
-  │    └─ optional workflow plugins such as artifact_workflow and evidence_first_detection
-  └─ ToolCallingAgentLoop
-       └─ OpenAI tools -> LLM tool_calls -> ToolInvocationService -> tool result -> next LLM turn
+HTTP / CLI / ACP WebSocket / ACP stdio
+  -> AgentRuntime
+     ├─ WorkflowRouter
+     │    └─ 根据 agent JSON、已注册 Workflow、Skill 元信息选择可用 workflow
+     ├─ WorkflowRegistry
+     │    └─ 注册可选 workflow 插件，例如 artifact_workflow、evidence_first_detection
+     └─ ToolCallingAgentLoop
+          └─ LLM tools -> tool_calls -> ToolInvocationService -> role=tool result -> 下一轮 LLM
 ```
 
-The default runtime registers built-in workflow plugins through `WorkflowRegistry.builtin(...)`:
+默认运行时通过 `WorkflowRegistry.builtin(...)` 注册两个内置 workflow：
 
 ```text
 artifact_workflow          -> ArtifactWorkflow
-evidence_first_detection  -> ArtifactWorkflow with evidence-first behavior skill selection
+evidence_first_detection  -> 带 evidence-first 行为检测策略的 ArtifactWorkflow
 ```
 
-Workflow plugins are optional. If a workflow name appears in agent JSON but is not registered in the current
-`WorkflowRegistry`, the request falls back to `agent_loop` instead of entering a hardcoded branch.
-This keeps deployment profiles flexible: a full runtime can enable specialized workflow plugins, while a lightweight
-runtime can run only the generic tool-calling loop.
+Workflow 是插件，不是硬编码主流程。若 agent JSON 声明了某个 workflow，但当前 `WorkflowRegistry`
+没有注册它，请求会回退到通用 `agent_loop`，而不是进入固定分支。
 
-The generic agent loop is still capable of using tools and skills. It exposes only the tools/skills declared by the
-current agent JSON, asks the configured model to produce OpenAI-compatible `tool_calls`, executes them through the
-unified tool service, appends `role=tool` results to the conversation, and repeats up to
-`runtime.max_tool_rounds`.
+通用 agent loop 只会向模型暴露当前 agent JSON 声明的 `tools` 和 `skills`。模型返回
+OpenAI-compatible `tool_calls` 后，运行时通过统一工具服务执行工具，把工具结果以 `role=tool`
+消息追加回对话，并最多循环 `runtime.max_tool_rounds` 轮。
 
 ```text
 LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 ```
 
-## Agent Config
+## Agent 配置
 
-Each agent is driven by `config/agents/*.json`. Put stable agent behavior and default model routing here:
+每个智能体由 `config/agents/*.json` 驱动。稳定的智能体行为建议放在这里：
 
-- `model.model`, `model.base_url`, `model.api_key`, `model.temperature`, `model.max_tokens`
-- `runtime.stateless`, `runtime.max_tool_rounds`, `runtime.max_retries`, `runtime.require_verification`
-- `tools`: named MCP/manual tools exposed to the model in `agent_loop`
-- `skills`: skill-backed tools exposed to the model and allowed for workflow skill selection
-- `workflows`: optional workflow plugin names such as `agent_loop`, `artifact_workflow`, or `evidence_first_detection`
+- `model.model`、`model.base_url`、`model.api_key`、`model.temperature`、`model.max_tokens`
+- `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_retries`、`runtime.require_verification`
+- `tools`：暴露给 `agent_loop` 的 MCP/manual/local 工具
+- `skills`：暴露给模型的 Skill-backed tools，同时也用于 Workflow Skill 选择
+- `workflows`：可选 Workflow 插件名，例如 `agent_loop`、`artifact_workflow`、`evidence_first_detection`
 - `quality`
 - `prompts.system`
 
-Environment variables still work as runtime overrides:
-
-- `LLM_MODEL` overrides `model.model`
-- `LLM_BASE_URL` overrides `model.base_url`
-- `LLM_API_KEY` overrides `model.api_key`
-
-The model config resolution order is:
+运行时配置优先级如下：
 
 ```text
-runtime_options -> environment variables -> agent JSON
+runtime_options -> 环境变量 -> agent JSON
 ```
 
-It is valid to put `api_key` directly in a private agent JSON file:
+环境变量仍然可以覆盖 agent JSON：
+
+- `LLM_MODEL` 覆盖 `model.model`
+- `LLM_BASE_URL` 覆盖 `model.base_url`
+- `LLM_API_KEY` 覆盖 `model.api_key`
+
+私有部署时可以直接把 `api_key` 放在本地 agent JSON 中：
 
 ```json
 {
@@ -111,17 +138,18 @@ It is valid to put `api_key` directly in a private agent JSON file:
 }
 ```
 
-For committed or shared configs, prefer omitting `model.api_key` and using `LLM_API_KEY` so secrets are not checked in.
-If the OpenAI-compatible endpoint does not require authentication, `api_key` can be omitted.
+如果配置会提交或共享，建议不要把真实 key 放进公开 JSON，而是使用本地覆盖文件。
 
-For local private credentials, use an ignored override file next to the public agent config:
+## 本地私密配置
+
+公开配置和本地私密配置可以分开：
 
 ```text
-config/agents/default.json        # public default config
-config/agents/default.local.json  # private local overrides, ignored by git
+config/agents/default.json        # 公开默认配置，可以上传
+config/agents/default.local.json  # 本地私密覆盖，默认被 git 忽略
 ```
 
-The local file can be partial; it is deep-merged over the public agent JSON:
+`*.local.json` 可以只写需要覆盖的字段，加载时会深度合并到公开 agent JSON 上：
 
 ```json
 {
@@ -131,11 +159,20 @@ The local file can be partial; it is deep-merged over the public agent JSON:
 }
 ```
 
-`config/agents/*.local.json` is ignored by `.gitignore`, so private model keys can stay on the machine without being
-uploaded with the shared config. Agent detail payloads and `python -m app.cli show-agent` redact `model.api_key` as
-`********`; the runtime still uses the real value from the merged config.
+`config/agents/*.local.json` 已加入 `.gitignore`，不会上传到 GitHub。HTTP agent 详情接口和
+`python -m app.cli show-agent` 会把 `model.api_key` 脱敏为 `********`，运行时内部仍然使用真实值。
 
-Typical workflow configuration:
+如果你遇到：
+
+```text
+401 Unauthorized for /v1/chat/completions
+```
+
+通常说明模型服务要求鉴权，但当前运行时没有读到 `api_key`，或者 key 不正确。
+
+## Workflow 配置
+
+典型配置：
 
 ```json
 {
@@ -147,53 +184,50 @@ Typical workflow configuration:
 }
 ```
 
-`default: agent_loop` gives a Hermes-like general agent loop. Specialized agents can set
-`default: artifact_workflow` or `default: evidence_first_detection` when deterministic workflow behavior is preferred.
+`default: agent_loop` 表示默认走通用 Hermes-like 工具调用循环。更确定性的生成类智能体可以把
+`default` 设置成 `artifact_workflow`；行为检测智能体可以设置成 `evidence_first_detection`。
 
-## Tools, Skills, And MCP
+## 工具、Skill 与 MCP
 
-Skills and MCP/manual tools share one protocol-neutral tool layer:
+当前工具层是协议无关的：
 
 ```text
-Skill manifests + config/mcp/tools.json
+Skill manifests + config/mcp/tools.json + 内置 local tools
   -> ToolRegistry
   -> ToolInvocationService
-  -> MCP tools/list and tools/call
+  -> MCP tools/list 和 tools/call
   -> Agent tool-calling loop
 ```
 
-Skill manifests from `config/skills/*.json` and plugin manifests are exposed as skill-backed tools through
-`SkillToolProvider`. Custom MCP/manual tools live in:
+同一个 `ToolInvocationService` 被这些入口复用：
+
+- MCP JSON-RPC `tools/list` 和 `tools/call`
+- HTTP 管理接口 `/api/mcp/tools`
+- 通用 `ToolCallingAgentLoop`
+
+### Skill 工具
+
+`config/skills/*.json` 和插件 manifest 会通过 `SkillToolProvider` 暴露为工具。当前内置 Skill 包括：
+
+```text
+drawio-generation
+pptx-generation
+excel-generation
+xmind-generation
+markdown-rendering
+deliverables-export
+behavior-detection
+```
+
+### MCP/manual 工具
+
+自定义 MCP/manual 工具配置在：
 
 ```text
 config/mcp/tools.json
 ```
 
-The same `ToolInvocationService` is used by:
-
-- MCP JSON-RPC `tools/list` and `tools/call`
-- HTTP management endpoints under `/api/mcp/tools`
-- the generic `ToolCallingAgentLoop`
-
-The default agent also exposes a first batch of Hermes-inspired local tools through the same registry:
-
-```text
-local_read_file     -> read UTF-8 text from the current thread workspace
-local_write_file    -> write UTF-8 text into the current thread workspace
-local_search_text   -> search text files in the current thread workspace
-local_todo          -> maintain a thread-scoped todo list
-local_shell_command -> run shell commands in the thread workspace, disabled by default
-```
-
-These local tools are intentionally scoped to `.runtime/threads/<thread_id>/user-data/workspace` so model-driven file
-operations do not get unrestricted host filesystem access. `local_shell_command` is only exposed when explicitly
-enabled:
-
-```bash
-export LOCAL_SHELL_TOOL_ENABLED=true
-```
-
-Useful tool endpoints:
+工具接口：
 
 ```text
 GET  /api/mcp/tools
@@ -202,42 +236,77 @@ PUT  /api/mcp/tools/{tool_name}
 POST /mcp
 ```
 
-## Protocol Strategy
+### 本地 Workspace 工具
 
-The runtime core emits typed events once, then transports adapt those events for different clients.
+参考 Hermes 的 file/search/todo/terminal 工具后，v2 当前先接入了一批低风险本地工具。它们都限制在
+当前线程的 workspace 目录下：
 
-- Native Web Workbench: supports both HTTP POST plus SSE via `/api/agents/{agent}/runs/stream` and ACP-shaped WebSocket via `/api/acp/ws`.
-- A2A adapter: reuse the same event stream and map runtime events to A2A streaming task/status/artifact messages.
-- ACP adapter: keep the JSON-RPC lifecycle (`initialize`, `new_session`, `prompt`, `session/update`) and support WebSocket for browser clients.
-- ACP stdio: run `python -m app.cli acp-stdio --agent default` for editor-style stdio integrations.
-- WebSocket is the right transport for future bidirectional sessions, such as live cancellation, terminal input, approval prompts, or collaborative multi-agent control.
+```text
+.runtime/threads/<thread_id>/user-data/workspace
+```
 
-This keeps the stateless agent core transport-agnostic: SSE, ACP WebSocket, ACP stdio, and A2A all adapt the same typed runtime events.
+默认 agent 已声明这些工具：
 
-## Sandbox Strategy
+```text
+local_read_file     -> 读取当前线程 workspace 内的 UTF-8 文本文件
+local_write_file    -> 写入当前线程 workspace 内的 UTF-8 文本文件
+local_search_text   -> 搜索当前线程 workspace 内的文本文件
+local_todo          -> 维护当前线程的 todo 列表
+local_shell_command -> 在当前线程 workspace 内执行 shell 命令，默认关闭
+```
 
-Sandbox execution is selective. Normal chat, LLM spec planning, and behavior-detection text checks stay in the local runtime. Only skills mapped to a sandbox profile are eligible for OpenSandbox execution.
+`local_shell_command` 默认不暴露，只有显式启用后才会出现在工具列表中：
 
-Skill manifests live at:
+```bash
+export LOCAL_SHELL_TOOL_ENABLED=true
+```
+
+这样做是为了避免模型一上来就获得宿主机任意命令执行权限。后续如果要做更强能力，建议继续增加：
+
+- 权限审批
+- 命令 allowlist / blocklist
+- 超时与输出裁剪策略
+- 操作审计日志
+
+## 协议入口
+
+运行时核心只产生一套 typed events，不同协议负责适配这些事件：
+
+- Web Workbench：`/static/workbench.html`
+- HTTP：`POST /api/agents/{agent}/runs`
+- SSE：`POST /api/agents/{agent}/runs/stream`
+- ACP WebSocket：`/api/acp/ws`
+- ACP stdio：`python -m app.cli acp-stdio --agent default`
+- MCP HTTP：`POST /mcp`
+
+ACP WebSocket 支持通过 `agentName` 切换当前智能体。ACP stdio 用于编辑器或本地 agent 客户端的 stdio
+集成场景。
+
+## Sandbox 策略
+
+Sandbox 执行是选择性的。普通对话、LLM spec planning、行为检测文本判断默认在本地 runtime 中完成。
+只有 Skill manifest 显式映射到 sandbox profile 时，才会进入 OpenSandbox 执行路径。
+
+Skill manifest 位置：
 
 ```text
 config/skills/*.json
 ```
 
-Each manifest declares the platform-facing contract:
+每个 manifest 描述平台侧契约：
 
-- `input_schema` for the structured spec accepted by the skill
-- `output_schema` for expected artifacts or JSON results
-- `quality_template` for verifier/planner hints
-- `sandbox.enabled`, `sandbox.profile`, `sandbox.adapter_command`, and fallback behavior
+- `input_schema`：Skill 接收的结构化输入
+- `output_schema`：预期输出、产物或 JSON 结果
+- `quality_template`：给 planner/verifier 的质量提示
+- `sandbox.enabled`、`sandbox.profile`、`sandbox.adapter_command`、fallback 策略
 
-Reusable sandbox runtime profiles live at:
+Sandbox profile 位置：
 
 ```text
 config/sandbox/profiles.json
 ```
 
-The default mappings are:
+默认映射：
 
 ```text
 drawio-generation -> drawio
@@ -245,32 +314,64 @@ pptx-generation   -> office
 excel-generation  -> office
 ```
 
-Useful environment variables:
+相关环境变量：
 
 ```bash
 export SANDBOX_PROVIDER=local                 # local | opensandbox
 export SANDBOX_PROFILE_CONFIG=config/sandbox/profiles.json
-export SANDBOX_SKILLS=drawio-generation       # optional allowlist; omit to use all configured mappings
+export SANDBOX_SKILLS=drawio-generation       # 可选 allowlist；不设置则使用所有配置映射
 export SANDBOX_FALLBACK_TO_LOCAL=true
-export SANDBOX_EXECUTOR_ENABLED=false         # default; set true only after OpenSandbox Server/images are ready
+export SANDBOX_EXECUTOR_ENABLED=false         # 默认关闭；OpenSandbox Server/images 准备好后再设 true
 export OPENSANDBOX_DOMAIN=127.0.0.1:8080
 export OPENSANDBOX_PROTOCOL=http
 ```
 
-OpenSandbox skill images use a single adapter entrypoint:
+OpenSandbox Skill 镜像使用统一 adapter 入口：
 
 ```text
 /opt/jetlinks/skills/run_skill.py --request /mnt/user-data/workspace/request.json --outputs /mnt/user-data/outputs
 ```
 
-The runtime writes a `skill-run.v1` request JSON, runs the manifest/profile `adapter_command`,
-then copies files from `/mnt/user-data/outputs` back into the thread artifact store.
+运行时会写入 `skill-run.v1` 请求 JSON，执行 manifest/profile 中的 `adapter_command`，再把
+`/mnt/user-data/outputs` 中的文件复制回当前 thread 的 artifact store。
 
-The platform can read the skill contracts through:
+平台可以读取 Skill 契约：
 
 ```text
 GET /api/skills
 GET /api/skills/{skill_name}
 ```
 
-Each workflow emits a `sandbox.policy` event after skill selection. This event records the resolved profile, whether the skill is eligible for sandbox execution, and why the current run uses local or sandbox execution.
+每个 workflow 在 Skill 选择后都会发出 `sandbox.policy` 事件，记录解析出的 profile、是否具备 sandbox
+资格，以及本轮为何使用 local 或 sandbox 执行。
+
+## 与 Hermes Agent 的参考关系
+
+`/Users/chenhao/Desktop/code/opencode/hermes-agent` 可以作为后续增强参考，但当前 v2 不会直接整包照搬。
+已经参考并接入的第一批能力是 workspace 级本地工具：
+
+- 文件读写
+- 文本搜索
+- 线程 todo
+- 默认关闭的 workspace shell
+
+后续可继续参考 Hermes 分批补齐：
+
+1. 多 provider adapter 和统一 `NormalizedResponse`
+2. 长期 Memory 与 Session Resume
+3. Context 压缩和工具结果裁剪
+4. Browser/Web tools
+5. Cron/Gateway 和多平台消息接入
+6. 子智能体 delegation
+
+优先建议继续保持“可选、插件化、agent JSON 可控”的方式接入，避免把通用助手的高权限能力直接写进主流程。
+
+## 验证
+
+当前分支提交前使用以下命令验证：
+
+```bash
+python -m ruff check app tests
+python -m mypy app
+python -m pytest -q
+```
