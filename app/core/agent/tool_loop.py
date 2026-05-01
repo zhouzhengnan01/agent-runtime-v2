@@ -53,6 +53,17 @@ class ToolCallingAgentLoop:
         )
 
         conversation = [message.model_dump() for message in messages]
+        system_prompt, memory_context_count = self._system_prompt(agent_config)
+        if agent_config.memory.enabled:
+            recorder.emit(
+                "memory.context.loaded",
+                {
+                    "enabled": True,
+                    "inject_context": agent_config.memory.inject_context,
+                    "scope": agent_config.memory.scope,
+                    "count": memory_context_count,
+                },
+            )
         tools = self._openai_tools(agent_config)
         recorder.emit(
             "tools.available",
@@ -63,7 +74,7 @@ class ToolCallingAgentLoop:
         )
 
         if not tools:
-            reply = await llm.complete(agent_config.prompts.system, messages)
+            reply = await llm.complete(system_prompt, messages)
             return self._result(
                 agent_config,
                 thread_id,
@@ -82,7 +93,7 @@ class ToolCallingAgentLoop:
         max_rounds = max(1, agent_config.runtime.max_tool_rounds)
         for round_index in range(max_rounds):
             rounds = round_index + 1
-            final_response = await llm.complete_with_tools(agent_config.prompts.system, conversation, tools)
+            final_response = await llm.complete_with_tools(system_prompt, conversation, tools)
             assistant_message = self._assistant_message(final_response)
             conversation.append(assistant_message)
             if not final_response.tool_calls:
@@ -111,7 +122,7 @@ class ToolCallingAgentLoop:
             )
             for tool_call in final_response.tool_calls:
                 tool_call_count += 1
-                tool_result = self._execute_tool_call(tool_call, thread_id, recorder)
+                tool_result = self._execute_tool_call(tool_call, agent_config, thread_id, recorder)
                 conversation.append(
                     {
                         "role": "tool",
@@ -138,6 +149,8 @@ class ToolCallingAgentLoop:
     def _openai_tools(self, agent_config: AgentConfig) -> list[dict[str, Any]]:
         allowed_names = self._allowed_tool_names(agent_config)
         definitions = self.tool_service.list_tools()
+        if not agent_config.memory.enabled:
+            definitions = [tool for tool in definitions if tool.source.get("type") != "memory"]
         if allowed_names:
             definitions = [tool for tool in definitions if tool.name in allowed_names]
         return [self._openai_tool(tool) for tool in definitions]
@@ -167,6 +180,7 @@ class ToolCallingAgentLoop:
     def _execute_tool_call(
         self,
         tool_call: LlmToolCall,
+        agent_config: AgentConfig,
         thread_id: str,
         recorder: EventRecorder,
     ) -> ToolInvocationResult:
@@ -174,6 +188,8 @@ class ToolCallingAgentLoop:
         try:
             arguments = self._tool_arguments(tool_call.arguments)
             arguments.setdefault("_thread_id", thread_id)
+            arguments.setdefault("_agent_name", agent_config.name)
+            arguments.setdefault("_memory_scope", agent_config.memory.scope)
             result = self.tool_service.call_tool(tool_call.name, arguments)
         except Exception as exc:
             result = ToolInvocationResult(
@@ -200,6 +216,32 @@ class ToolCallingAgentLoop:
         if not isinstance(parsed, dict):
             raise ValueError("tool arguments must be a JSON object")
         return parsed
+
+    def _system_prompt(self, agent_config: AgentConfig) -> tuple[str, int]:
+        prompt = agent_config.prompts.system
+        if not agent_config.memory.enabled or not agent_config.memory.inject_context:
+            return prompt, 0
+        try:
+            memories = self.tool_service.memory_store.list(
+                agent_config.name,
+                limit=agent_config.memory.max_items,
+                scope=agent_config.memory.scope,
+            )
+        except Exception:
+            return prompt, 0
+        if not memories:
+            return prompt, 0
+        lines = []
+        for item in memories:
+            tag_text = f" tags={','.join(item.tags)}" if item.tags else ""
+            lines.append(f"- {item.text} (id={item.id}{tag_text})")
+        memory_prompt = "\n".join(
+            [
+                "可用长期记忆如下。仅在与当前请求相关时使用；不要编造未列出的记忆。",
+                *lines,
+            ]
+        )
+        return f"{prompt}\n\n{memory_prompt}", len(memories)
 
     @staticmethod
     def _tool_result_content(result: ToolInvocationResult) -> str:

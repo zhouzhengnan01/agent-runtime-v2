@@ -9,6 +9,7 @@ from app.core.agent.tool_loop import ToolCallingAgentLoop
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm import OpenAICompatibleClient
+from app.core.memory import MemoryStore
 from app.core.routing import WorkflowRouter
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
@@ -23,11 +24,15 @@ class AgentRuntime:
         artifact_store: ArtifactStore | None = None,
         workflow_router: WorkflowRouter | None = None,
         workflow_registry: WorkflowRegistry | None = None,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         self.artifact_store = artifact_store or ArtifactStore()
+        self.memory_store = memory_store or MemoryStore()
         self.workflow_registry = workflow_registry or WorkflowRegistry.builtin(self.artifact_store)
         self.workflow_router = workflow_router or WorkflowRouter(available_workflows=self.workflow_registry.names())
-        self.agent_loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=self.artifact_store))
+        self.agent_loop = ToolCallingAgentLoop(
+            ToolInvocationService(artifact_store=self.artifact_store, memory_store=self.memory_store)
+        )
 
     async def run(self, agent_config: AgentConfig, request: ChatRequest) -> AgentRunResult:
         result, _events = await self.run_with_events(agent_config, request)

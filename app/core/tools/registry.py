@@ -8,6 +8,7 @@ from typing import Any, List
 from app.core.artifacts import ArtifactStore
 from app.core.skills import SkillRegistry, SkillRunner
 from app.core.tools.providers.local import local_tool_definitions
+from app.core.tools.providers.memory import memory_tool_definitions
 from app.core.tools.providers.skill import SkillToolProvider
 from app.core.tools.schemas import ToolDefinition
 
@@ -65,7 +66,7 @@ class ToolRegistry:
 
     @staticmethod
     def _builtin_tools() -> List[ToolDefinition]:
-        return local_tool_definitions()
+        return local_tool_definitions() + memory_tool_definitions()
 
     def _custom_tools(self) -> List[ToolDefinition]:
         if not self.config_path.is_file():

@@ -29,7 +29,10 @@
     "local_write_file",
     "local_search_text",
     "local_todo",
-    "local_shell_command"
+    "local_shell_command",
+    "memory_remember",
+    "memory_search",
+    "memory_forget"
   ],
   "skills": [
     "drawio-generation",
@@ -49,13 +52,19 @@
     "llm_workflow_router": true,
     "llm_workflow_router_env": "LLM_WORKFLOW_ROUTER"
   },
+  "memory": {
+    "enabled": true,
+    "scope": "agent",
+    "max_items": 20,
+    "inject_context": true
+  },
   "quality": {
     "auto_repair": false,
     "verify_outputs": false,
     "fail_on_missing_artifact": false
   },
   "prompts": {
-    "system": "You are a stateless JetLinks agent. Use only the provided messages and attachments. Do not assume hidden memory.",
+    "system": "You are a JetLinks agent. Use only the provided messages, attachments, tools, and explicitly injected memories. Do not assume memories that were not provided.",
     "response_language": "zh-CN"
   }
 }

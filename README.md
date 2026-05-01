@@ -5,7 +5,8 @@ JetLinks Agent Runtime v2 是一套轻量、无状态的智能体运行时。它
 文件产物管理串成一个统一的运行闭环。
 
 v2 与原 `jetlinks-agent-runtime` v1 是不同架构：v2 默认不保存隐藏对话记忆，每次 CLI 或 HTTP
-请求都需要带上当前轮所需的完整上下文；服务端文件主要用于上传文件、线程工作区和输出产物。
+请求都需要带上当前轮所需的完整上下文；服务端文件主要用于上传文件、线程工作区、输出产物和可选
+长期记忆。
 
 ## 快速启动
 
@@ -46,12 +47,13 @@ python -m app.cli acp-stdio --agent default
 - Workflow 插件：`artifact_workflow`、`evidence_first_detection` 通过 `WorkflowRegistry` 注册，可选启用。
 - 多协议入口：HTTP、SSE、CLI、ACP WebSocket、ACP stdio、MCP HTTP。
 - 线程级文件工作区：每个 `thread_id` 有自己的 workspace、uploads、outputs。
+- 可选本地 Memory v1：通过 agent JSON 开关控制，提供记忆写入、搜索、删除和可选上下文注入。
 - 本地私密配置：支持 `config/agents/*.local.json` 覆盖公开 agent JSON，并默认忽略上传。
 
 当前还没有完整实现这些 Hermes/OpenCode 级能力：
 
 - 多 provider 适配：目前主要是 OpenAI-compatible API，还没有 Anthropic、Gemini、Bedrock、OpenRouter 等独立 adapter。
-- 长期 Memory：v2 默认无状态，不保存跨会话长期记忆。
+- 完整 Memory 系统：目前只有本地 JSON Memory v1，还没有向量检索、自动总结、权限隔离和外部存储后端。
 - 完整 Session Resume：`thread_id` 只管理文件和产物，不恢复隐藏历史对话。
 - Cron/Gateway/Telegram/Discord/Slack/Email 等多平台常驻接入。
 - 子智能体 `delegate_task` 协作。
@@ -64,9 +66,10 @@ python -m app.cli acp-stdio --agent default
 
 - Agent 配置是静态输入，不是运行时状态。
 - 请求必须包含当前轮需要的 messages。
-- 服务端不会从隐藏记忆中恢复历史对话。
+- 服务端不会从隐藏历史中恢复完整对话；只有 agent JSON 显式开启的 Memory 会参与运行。
 - `thread_id` 只用于隔离 `.runtime/threads/<thread_id>` 下的文件。
 - 如果要继续一段对话，调用方需要把前文 messages 再次传入。
+- Memory 是长期偏好和事实记录，不等同于 chat history 或 session resume。
 
 ## 运行时架构
 
@@ -110,6 +113,7 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 - `tools`：暴露给 `agent_loop` 的 MCP/manual/local 工具
 - `skills`：暴露给模型的 Skill-backed tools，同时也用于 Workflow Skill 选择
 - `workflows`：可选 Workflow 插件名，例如 `agent_loop`、`artifact_workflow`、`evidence_first_detection`
+- `memory`：是否启用长期记忆、记忆作用域、最大注入条数和是否注入系统提示
 - `quality`
 - `prompts.system`
 
@@ -268,6 +272,50 @@ export LOCAL_SHELL_TOOL_ENABLED=true
 - 超时与输出裁剪策略
 - 操作审计日志
 
+### 本地 Memory 工具
+
+Memory v1 是一个轻量本地持久化能力，不是完整会话恢复系统。它用于保存跨请求仍然有价值的用户偏好、
+项目事实和长期任务信息，存储位置为：
+
+```text
+.runtime/memory/<agent>.json
+.runtime/memory/global.json
+```
+
+默认 agent 已开启 Memory，并声明了这些工具：
+
+```text
+memory_remember -> 写入一条长期记忆
+memory_search   -> 搜索当前 agent 或 global 作用域下的记忆
+memory_forget   -> 按 id 删除一条记忆
+```
+
+`memory_clear` 已在工具层实现，但默认 agent 不暴露，避免模型误清空全部记忆。
+
+agent JSON 示例：
+
+```json
+{
+  "tools": ["memory_remember", "memory_search", "memory_forget"],
+  "memory": {
+    "enabled": true,
+    "scope": "agent",
+    "max_items": 20,
+    "inject_context": true
+  }
+}
+```
+
+字段说明：
+
+- `enabled`：是否启用 memory 工具；关闭时即使 `tools` 声明了 memory 工具，也不会暴露给模型。
+- `scope`：`agent` 表示每个智能体独立记忆；`global` 表示多个智能体共享 `.runtime/memory/global.json`。
+- `max_items`：注入系统提示时最多带入多少条最近记忆。
+- `inject_context`：是否在每次 agent loop 调用模型前，把最近记忆追加到系统提示中。
+
+建议把 Memory 当成“长期事实和偏好”，不要把完整聊天记录塞进去。完整 Session Resume 后续应单独设计，
+例如按 thread 保存 history、摘要压缩、工具结果裁剪和上下文恢复策略。
+
 ## 协议入口
 
 运行时核心只产生一套 typed events，不同协议负责适配这些事件：
@@ -354,11 +402,12 @@ GET /api/skills/{skill_name}
 - 文本搜索
 - 线程 todo
 - 默认关闭的 workspace shell
+- 本地 Memory v1 工具
 
 后续可继续参考 Hermes 分批补齐：
 
 1. 多 provider adapter 和统一 `NormalizedResponse`
-2. 长期 Memory 与 Session Resume
+2. Memory 增强和 Session Resume
 3. Context 压缩和工具结果裁剪
 4. Browser/Web tools
 5. Cron/Gateway 和多平台消息接入

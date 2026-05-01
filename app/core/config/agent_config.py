@@ -51,6 +51,13 @@ class RoutingConfig(BaseModel):
     llm_workflow_router_env: str = "LLM_WORKFLOW_ROUTER"
 
 
+class MemoryConfig(BaseModel):
+    enabled: bool = False
+    scope: Literal["agent", "global"] = "agent"
+    max_items: int = Field(default=20, ge=1, le=100)
+    inject_context: bool = False
+
+
 class AgentConfig(BaseModel):
     name: str
     display_name: str
@@ -62,5 +69,6 @@ class AgentConfig(BaseModel):
     skills: list[str] = Field(default_factory=list)
     workflows: dict[str, str] = Field(default_factory=dict)
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     quality: QualityConfig = Field(default_factory=QualityConfig)
     prompts: PromptConfig = Field(default_factory=PromptConfig)

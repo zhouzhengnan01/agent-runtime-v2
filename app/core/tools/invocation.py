@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from app.core.artifacts import ArtifactStore
+from app.core.memory import MemoryStore
 from app.core.skills import SkillRunner
-from app.core.tools.providers import LocalToolProvider, ManualToolProvider, SkillToolProvider
+from app.core.tools.providers import LocalToolProvider, ManualToolProvider, MemoryToolProvider, SkillToolProvider
 from app.core.tools.registry import ToolRegistry
 from app.core.tools.schemas import ToolDefinition, ToolInvocationResult
 
@@ -21,12 +22,18 @@ class ToolInvocationService:
         registry: ToolRegistry | None = None,
         artifact_store: ArtifactStore | None = None,
         skill_runner: SkillRunner | None = None,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         self.artifact_store = artifact_store or ArtifactStore()
-        self.registry = registry or ToolRegistry(artifact_store=self.artifact_store, skill_runner=skill_runner)
+        self.memory_store = memory_store or MemoryStore()
+        self.registry = registry or ToolRegistry(
+            artifact_store=self.artifact_store,
+            skill_runner=skill_runner,
+        )
         self.providers: dict[str, ToolProvider] = {
             LocalToolProvider.source_type: LocalToolProvider(artifact_store=self.artifact_store),
             ManualToolProvider.source_type: ManualToolProvider(),
+            MemoryToolProvider.source_type: MemoryToolProvider(memory_store=self.memory_store),
             SkillToolProvider.source_type: SkillToolProvider(
                 artifact_store=self.artifact_store,
                 skill_runner=skill_runner,
