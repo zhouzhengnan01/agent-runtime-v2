@@ -881,12 +881,19 @@
     }
 
     .capability-picker {
-      position: absolute;
-      left: 12px;
-      right: 12px;
-      bottom: 62px;
-      z-index: 90;
-      max-height: min(390px, 52vh);
+      position: fixed;
+      inset: 0;
+      z-index: 120;
+      padding: 0 24px max(24px, env(safe-area-inset-bottom));
+      background: rgba(15, 23, 42, .18);
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+    }
+
+    .capability-picker-panel {
+      width: min(920px, calc(100vw - 48px));
+      max-height: min(520px, 72vh);
       border: 1px solid var(--line-strong);
       border-radius: var(--radius-lg);
       background: rgba(255, 255, 255, .98);
@@ -2036,6 +2043,13 @@
       .composer-actions {
         justify-content: space-between;
       }
+      .capability-picker {
+        padding: 0 12px max(12px, env(safe-area-inset-bottom));
+      }
+      .capability-picker-panel {
+        width: calc(100vw - 24px);
+        max-height: 76vh;
+      }
       .skill-manager-head,
       .skill-editor-head,
       .file-editor-head {
@@ -2626,33 +2640,39 @@
       }
       const isSkills = state.capabilityPickerMode === 'skills';
       const isWorkflows = state.capabilityPickerMode === 'workflows';
-      const items = isWorkflows ? state.workflows : isSkills ? state.skills : state.mcpTools;
+      const items = isWorkflows ? state.workflows : isSkills ? state.skills : composerMcpTools();
       const selected = isWorkflows
         ? (state.selectedChatWorkflow ? [state.selectedChatWorkflow] : [])
         : isSkills ? state.selectedChatSkills : state.selectedChatMcpTools;
       const title = isWorkflows ? '选择 Workflow' : isSkills ? '添加 Skills' : '添加 MCP';
       const subtitle = isWorkflows
         ? 'Workflow 是显式插件流程；选择后本轮才会进入插件。'
-        : isSkills ? '选择本轮 agent loop 可参考的技能。' : '选择本轮 agent loop 可参考的 MCP 工具。';
-      const empty = status.loading ? '加载中' : status.error || (isWorkflows ? '暂无 Workflow 插件' : isSkills ? '暂无 Skills' : '暂无 MCP 工具');
+        : isSkills ? '选择本轮 agent loop 可参考的技能。' : '这里只显示手动添加的 MCP；Skill、内置和记忆工具在管理页查看。';
+      const empty = status.loading ? '加载中' : status.error || (isWorkflows ? '暂无 Workflow 插件' : isSkills ? '暂无 Skills' : '暂无手动 MCP 工具');
       els.capabilityPicker.hidden = false;
       els.capabilityPicker.innerHTML = `
-        <div class="capability-picker-head">
-          <div class="capability-picker-title">
-            <strong>${title}</strong>
-            <span>${subtitle}</span>
+        <div class="capability-picker-panel" role="dialog" aria-modal="true" aria-label="${escapeAttr(title)}">
+          <div class="capability-picker-head">
+            <div class="capability-picker-title">
+              <strong>${title}</strong>
+              <span>${subtitle}</span>
+            </div>
+            <button class="secondary-btn" type="button" data-capability-close>关闭</button>
           </div>
-          <button class="secondary-btn" type="button" data-capability-close>关闭</button>
-        </div>
-        <div class="capability-picker-list">
-          ${items.length ? items.map((item) => renderCapabilityChoice(item, state.capabilityPickerMode, selected.includes(item.name))).join('') : `<div class="empty-panel">${escapeHtml(empty)}</div>`}
-        </div>
-        <div class="capability-picker-foot">
-          ${isWorkflows ? '<button class="secondary-btn" type="button" data-clear-workflow>不使用 Workflow</button>' : `<button class="secondary-btn" type="button" ${isSkills ? 'data-compose-add-skill' : 'data-compose-add-mcp'}>${isSkills ? '上传 Skill 插件' : '新建 MCP 工具'}</button>`}
-          <button class="secondary-btn" type="button" data-compose-manage="${isWorkflows ? 'workflows' : isSkills ? 'skills' : 'tools'}">${isWorkflows ? '管理 Workflows' : isSkills ? '管理 Skills' : '管理 Tools'}</button>
-          <button class="secondary-btn" type="button" data-capability-close>完成</button>
+          <div class="capability-picker-list">
+            ${items.length ? items.map((item) => renderCapabilityChoice(item, state.capabilityPickerMode, selected.includes(item.name))).join('') : `<div class="empty-panel">${escapeHtml(empty)}</div>`}
+          </div>
+          <div class="capability-picker-foot">
+            ${isWorkflows ? '<button class="secondary-btn" type="button" data-clear-workflow>不使用 Workflow</button>' : `<button class="secondary-btn" type="button" ${isSkills ? 'data-compose-add-skill' : 'data-compose-add-mcp'}>${isSkills ? '上传 Skill 插件' : '新建 MCP 工具'}</button>`}
+            <button class="secondary-btn" type="button" data-compose-manage="${isWorkflows ? 'workflows' : isSkills ? 'skills' : 'tools'}">${isWorkflows ? '管理 Workflows' : isSkills ? '管理 Skills' : '管理 Tools'}</button>
+            <button class="secondary-btn" type="button" data-capability-close>完成</button>
+          </div>
         </div>
       `;
+    }
+
+    function composerMcpTools() {
+      return state.mcpTools.filter((tool) => toolSourceType(tool) === 'manual' && tool.name !== 'jetlinks_runtime_status');
     }
 
     function renderCapabilityChoice(item, mode, active) {
@@ -3388,10 +3408,12 @@
 
     function renderToolSummary() {
       if (!els.toolSummary) return;
-      const manualCount = state.mcpTools.filter((tool) => tool.source?.type !== 'skill').length;
-      const skillCount = state.mcpTools.filter((tool) => tool.source?.type === 'skill').length;
+      const manualCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'manual').length;
+      const skillCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'skill').length;
+      const localCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'local').length;
+      const memoryCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'memory').length;
       const enabledCount = state.mcpTools.filter((tool) => tool.enabled).length;
-      els.toolSummary.textContent = `${state.mcpTools.length} 个 MCP 工具 · ${manualCount} 个手动配置 · ${skillCount} 个由 Skill 暴露 · ${enabledCount} 个启用`;
+      els.toolSummary.textContent = `${state.mcpTools.length} 个协议工具 · ${manualCount} 个手动 MCP · ${skillCount} 个 Skill 映射 · ${localCount} 个本地工具 · ${memoryCount} 个记忆工具 · ${enabledCount} 个启用`;
     }
 
     function renderToolList() {
@@ -3413,7 +3435,7 @@
               </div>
               <p>${escapeHtml(tool.description || '')}</p>
               <div class="skill-badges">
-                <span class="skill-badge ${tool.source?.type === 'skill' ? 'sandbox' : ''}">${escapeHtml(tool.source?.type === 'skill' ? 'Skill 来源' : 'Manual')}</span>
+                <span class="skill-badge ${toolSourceType(tool) === 'skill' ? 'sandbox' : ''}">${escapeHtml(toolSourceLabel(tool))}</span>
                 ${tool.editable === false ? '<span class="skill-badge local">只读</span>' : '<span class="skill-badge">可编辑</span>'}
               </div>
             </button>
@@ -3428,8 +3450,8 @@
         tools.push(state.selectedMcpTool);
       }
       const sorted = tools.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-      if (state.toolFilter === 'manual') return sorted.filter((tool) => tool.source?.type !== 'skill');
-      if (state.toolFilter === 'skill') return sorted.filter((tool) => tool.source?.type === 'skill');
+      if (state.toolFilter === 'manual') return sorted.filter((tool) => toolSourceType(tool) === 'manual');
+      if (state.toolFilter === 'skill') return sorted.filter((tool) => toolSourceType(tool) === 'skill');
       if (state.toolFilter === 'enabled') return sorted.filter((tool) => tool.enabled);
       if (state.toolFilter === 'disabled') return sorted.filter((tool) => !tool.enabled);
       return sorted;
@@ -3438,15 +3460,31 @@
     function groupMcpTools(tools) {
       const labels = {
         manual: '手动 MCP 工具',
-        skill: '由 Skill 暴露的 MCP 工具'
+        skill: '由 Skill 暴露的工具',
+        local: '内置本地工具',
+        memory: '记忆工具'
       };
       const map = new Map();
       tools.forEach((tool) => {
-        const key = tool.source?.type === 'skill' ? 'skill' : 'manual';
+        const key = toolSourceType(tool);
         if (!map.has(key)) map.set(key, []);
         map.get(key).push(tool);
       });
       return [...map.entries()].map(([key, items]) => ({ key, label: labels[key] || key, items }));
+    }
+
+    function toolSourceType(tool) {
+      return tool?.source?.type || 'manual';
+    }
+
+    function toolSourceLabel(tool) {
+      const labels = {
+        manual: 'Manual MCP',
+        skill: 'Skill 来源',
+        local: '内置本地',
+        memory: '记忆工具'
+      };
+      return labels[toolSourceType(tool)] || toolSourceType(tool);
     }
 
     function renderWorkflowSummary() {
@@ -4912,6 +4950,10 @@
     });
 
     document.body.addEventListener('click', (event) => {
+      if (event.target === els.capabilityPicker) {
+        closeCapabilityPicker();
+        return;
+      }
       const capabilityOpenButton = event.target.closest('[data-capability-open]');
       if (capabilityOpenButton) {
         openCapabilityPicker(capabilityOpenButton.dataset.capabilityOpen || 'skills');
@@ -5111,6 +5153,12 @@
         } else {
           setAgent(agentButton.dataset.agentSelect);
         }
+      }
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && state.capabilityPickerMode) {
+        closeCapabilityPicker();
       }
     });
 
