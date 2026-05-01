@@ -35,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--agent", default="default")
     run.add_argument("--message", required=True)
     run.add_argument("--thread-id")
+    run.add_argument("--workflow", help="Explicit workflow plugin to run. Omit to use the agent loop.")
     run.add_argument("--file", action="append", default=[])
     run.add_argument("--json", action="store_true")
     run.add_argument("--stream", action="store_true", help="Print run events as JSONL.")
@@ -72,7 +73,7 @@ async def main_async(argv: list[str]) -> int:
         request = ChatRequest(
             messages=[Message(role="user", content=args.message)],
             attachments=attachments,
-            runtime_options=RuntimeOptions(thread_id=args.thread_id),
+            runtime_options=RuntimeOptions(thread_id=args.thread_id, workflow=args.workflow),
         )
         runtime = AgentRuntime()
         if args.stream:

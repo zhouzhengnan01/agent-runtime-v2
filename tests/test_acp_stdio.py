@@ -65,6 +65,7 @@ async def _run_acp_stdio_flow() -> None:
                 "params": {
                     "sessionId": session_id,
                     "prompt": [{"type": "text", "text": "人员翻越围栏进入禁区"}],
+                    "_meta": {"workflow": "evidence_first_detection"},
                 },
             },
         )

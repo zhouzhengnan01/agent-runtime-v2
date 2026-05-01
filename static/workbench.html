@@ -2160,12 +2160,12 @@
               </button>
             </div>
             <div class="quick-row" aria-label="示例任务">
-              <button type="button" data-agent-select="behavior-detector" data-prompt="人员翻越围栏进入禁区">翻越进入禁区</button>
-              <button type="button" data-agent-select="behavior-detector" data-prompt="老人摔倒">老人摔倒</button>
-              <button type="button" data-agent-select="behavior-detector" data-prompt="人员在禁区长时间逗留">长时间逗留</button>
-              <button type="button" data-agent-select="behavior-detector" data-prompt="人员正常通行">正常通行</button>
-              <button type="button" data-agent-select="artifact-generator" data-prompt="生成一份 JetLinks IoT 平台架构 Draw.io 图，包含接入层、规则引擎、数据存储、告警和运维监控">Draw.io 架构图</button>
-              <button type="button" data-agent-select="artifact-generator" data-prompt="生成一份 JetLinks 项目汇报 PPT，包含封面、目录、架构、流程、计划、风险和总结">PPT 汇报</button>
+              <button type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection" data-prompt="人员翻越围栏进入禁区">翻越进入禁区</button>
+              <button type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection" data-prompt="老人摔倒">老人摔倒</button>
+              <button type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection" data-prompt="人员在禁区长时间逗留">长时间逗留</button>
+              <button type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection" data-prompt="人员正常通行">正常通行</button>
+              <button type="button" data-agent-select="artifact-generator" data-workflow-select="artifact_workflow" data-prompt="生成一份 JetLinks IoT 平台架构 Draw.io 图，包含接入层、规则引擎、数据存储、告警和运维监控">Draw.io 架构图</button>
+              <button type="button" data-agent-select="artifact-generator" data-workflow-select="artifact_workflow" data-prompt="生成一份 JetLinks 项目汇报 PPT，包含封面、目录、架构、流程、计划、风险和总结">PPT 汇报</button>
             </div>
           </div>
 
@@ -2247,7 +2247,7 @@
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 7l3 3-7 7H7v-3z"></path><path d="M16 5l3 3"></path><path d="M4 20h16"></path></svg>
                     <span>MCP</span>
                   </button>
-                  <button class="small-action" type="button" data-agent-select="behavior-detector">
+                  <button class="small-action" type="button" data-agent-select="behavior-detector" data-workflow-select="evidence_first_detection">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                     <span>视觉证据</span>
                   </button>
@@ -2336,6 +2336,7 @@
       rpcId: 0,
       activeAssistantIndex: null,
       nextAgentOverride: null,
+      nextWorkflowOverride: null,
       finalResultApplied: false,
       messageSeq: 0,
       messageUpdateFrame: 0,
@@ -3920,6 +3921,12 @@
       return generationSkill ? 'artifact-generator' : null;
     }
 
+    function workflowFromSelectedCapabilities() {
+      if (state.selectedChatSkills.includes('behavior-detection')) return 'evidence_first_detection';
+      const generationSkill = state.selectedChatSkills.some((name) => /drawio|pptx|excel|xmind|markdown|deliverables|export|generation|rendering/.test(name));
+      return generationSkill ? 'artifact_workflow' : null;
+    }
+
     async function send() {
       const content = els.input.value.trim();
       if (!content || state.running) return;
@@ -3930,6 +3937,7 @@
         .map(({ role, content }) => ({ role, content })));
       beginAssistantMessage();
       const requestAgent = state.nextAgentOverride || agentFromSelectedCapabilities() || els.agent.value;
+      const requestWorkflow = state.nextWorkflowOverride || workflowFromSelectedCapabilities();
       state.timeline = [];
       state.artifacts = [];
       state.verification = null;
@@ -3944,7 +3952,7 @@
         const attachments = await Promise.all(state.files.map(fileToAttachment));
         if (els.transport.value === 'acp-ws') {
           try {
-            await sendViaAcpWs(requestAgent, content, threadId, attachments, outboundMessages);
+            await sendViaAcpWs(requestAgent, content, threadId, attachments, outboundMessages, requestWorkflow);
           } catch (err) {
             if (!shouldFallbackToSse(err)) throw err;
             addTimeline('连接降级', 'ACP WS 已断开，切换 SSE');
@@ -3953,16 +3961,17 @@
               state.messages[state.activeAssistantIndex].content = '';
               state.messages[state.activeAssistantIndex].progress = true;
             }
-            await sendViaSse(requestAgent, threadId, attachments, outboundMessages);
+            await sendViaSse(requestAgent, threadId, attachments, outboundMessages, requestWorkflow);
           }
           return;
         }
-        await sendViaSse(requestAgent, threadId, attachments, outboundMessages);
+        await sendViaSse(requestAgent, threadId, attachments, outboundMessages, requestWorkflow);
       } catch (err) {
         finishAssistantMessage(`请求失败：${err.message}`);
       } finally {
         if (state.activeAssistantIndex !== null) finishAssistantMessage();
         state.nextAgentOverride = null;
+        state.nextWorkflowOverride = null;
         state.running = false;
         state.files = [];
         setBusy(false);
@@ -3977,14 +3986,15 @@
       return message.includes('code 1012') || message.includes('ACP WS 连接已关闭') || message.includes('ACP WS 连接异常');
     }
 
-    async function sendViaSse(agentName, threadId, attachments, messages) {
+    async function sendViaSse(agentName, threadId, attachments, messages, workflow) {
+      const runtimeOptions = workflow ? { thread_id: threadId, workflow } : { thread_id: threadId };
       const res = await fetch(`/api/agents/${agentName}/runs/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages,
           attachments,
-          runtime_options: { thread_id: threadId }
+          runtime_options: runtimeOptions
         })
       });
       if (!res.ok || !res.body) {
@@ -3994,7 +4004,7 @@
       await readEventStream(res.body);
     }
 
-    async function sendViaAcpWs(agentName, content, threadId, attachments, messages) {
+    async function sendViaAcpWs(agentName, content, threadId, attachments, messages, workflow) {
       const ws = await openAcpSocket();
       const pending = new Map();
       let closeExpected = false;
@@ -4059,6 +4069,7 @@
           agentName: agentName,
           threadId
         });
+        const runtimeOptions = workflow ? { threadId, workflow } : { threadId };
         const promptResult = await rpc('prompt', {
           sessionId: session.sessionId,
           agentName: agentName,
@@ -4066,7 +4077,7 @@
           prompt: [{ type: 'text', text: content }],
           messages,
           attachments,
-          runtimeOptions: { threadId }
+          runtimeOptions
         });
         if (promptResult?.result && !state.finalResultApplied) {
           applyFinalResult(promptResult.result);
@@ -4314,11 +4325,13 @@
         els.agent.value = agentName;
       }
       state.nextAgentOverride = null;
+      state.nextWorkflowOverride = null;
       renderSelectedAgent();
     }
 
-    function setNextAgentOverride(agentName) {
+    function setNextAgentOverride(agentName, workflowName = null) {
       state.nextAgentOverride = agentName && agentName !== els.agent.value ? agentName : null;
+      state.nextWorkflowOverride = workflowName || null;
       renderRouteHint();
     }
 
@@ -4327,6 +4340,8 @@
       const capabilityParts = [];
       if (state.selectedChatSkills.length) capabilityParts.push(`Skill ${state.selectedChatSkills.length}`);
       if (state.selectedChatMcpTools.length) capabilityParts.push(`MCP ${state.selectedChatMcpTools.length}`);
+      const selectedWorkflow = state.nextWorkflowOverride || workflowFromSelectedCapabilities();
+      if (selectedWorkflow) capabilityParts.push(`Workflow ${selectedWorkflow}`);
       if (capabilityParts.length) {
         els.routeHint.textContent = `能力：${capabilityParts.join(' · ')}`;
         els.routeHint.classList.add('active');
@@ -4536,7 +4551,10 @@
 
     els.send.addEventListener('click', send);
     els.input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) send();
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        send();
+      }
     });
     els.attach.addEventListener('click', () => els.fileInput.click());
     els.fileInput.addEventListener('change', () => {
@@ -4560,6 +4578,8 @@
       state.files = [];
       state.selectedChatSkills = [];
       state.selectedChatMcpTools = [];
+      state.nextAgentOverride = null;
+      state.nextWorkflowOverride = null;
       closeCapabilityPicker();
       state.activeAssistantIndex = null;
       state.finalResultApplied = false;
@@ -4797,13 +4817,18 @@
       const promptButton = event.target.closest('[data-prompt]');
       if (promptButton) {
         els.input.value = promptButton.dataset.prompt;
-        setNextAgentOverride(promptButton.dataset.agentSelect || null);
+        setNextAgentOverride(promptButton.dataset.agentSelect || null, promptButton.dataset.workflowSelect || null);
         els.input.focus();
         return;
       }
       const agentButton = event.target.closest('[data-agent-select]');
       if (agentButton) {
-        setAgent(agentButton.dataset.agentSelect);
+        if (agentButton.dataset.workflowSelect) {
+          setNextAgentOverride(agentButton.dataset.agentSelect || null, agentButton.dataset.workflowSelect);
+          els.input.focus();
+        } else {
+          setAgent(agentButton.dataset.agentSelect);
+        }
       }
     });
 

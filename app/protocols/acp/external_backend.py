@@ -20,6 +20,7 @@ from acp.schema import (
     ImageContentBlock,
     NewSessionResponse,
     PromptResponse,
+    PromptRequest,
     ReadTextFileResponse,
     RequestPermissionResponse,
     ResourceContentBlock,
@@ -148,10 +149,28 @@ class ExternalAcpSession:
             backend_session_id=response.session_id,
         )
 
-    async def prompt(self, frontend_session_id: str, prompt: list[PromptBlock], send_update: AcpUpdateSender) -> PromptResponse:
+    async def prompt(
+        self,
+        frontend_session_id: str,
+        prompt: list[PromptBlock],
+        send_update: AcpUpdateSender,
+        workflow: str | None = None,
+    ) -> PromptResponse:
         self.client.frontend_session_id = frontend_session_id
         self.client.send_update = send_update
-        response = cast(PromptResponse, await self.connection.prompt(prompt=prompt, session_id=self.backend_session_id))
+        prompt_request: PromptRequest | None = None
+        if workflow:
+            prompt_request = PromptRequest(
+                prompt=prompt,
+                session_id=self.backend_session_id,
+                field_meta={"workflow": workflow, "jetlinks": {"workflow": workflow}},
+            )
+        response = cast(
+            PromptResponse,
+            await self.connection.prompt(prompt_request)
+            if prompt_request is not None
+            else await self.connection.prompt(prompt=prompt, session_id=self.backend_session_id),
+        )
         await asyncio.sleep(0.02)
         return response
 

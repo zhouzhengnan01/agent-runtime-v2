@@ -23,6 +23,7 @@ class Attachment(BaseModel):
 
 class RuntimeOptions(BaseModel):
     thread_id: str | None = None
+    workflow: str | None = None
     model_name: str | None = None
     model_env: str | None = None
     base_url: str | None = None

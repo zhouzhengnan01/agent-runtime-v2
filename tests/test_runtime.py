@@ -24,7 +24,7 @@ def test_artifact_generator_creates_verified_markdown(tmp_path) -> None:
     agent = AgentConfigLoader().load("artifact-generator")
     request = ChatRequest(
         messages=[Message(role="user", content="生成一份 markdown 架构说明")],
-        runtime_options=RuntimeOptions(thread_id="t1"),
+        runtime_options=RuntimeOptions(thread_id="t1", workflow="artifact_workflow"),
     )
     result = asyncio.run(runtime.run(agent, request))
     assert result.status == "completed"
@@ -44,7 +44,7 @@ def test_agent_with_no_configured_skills_uses_installed_skill_plugins(tmp_path) 
     )
     request = ChatRequest(
         messages=[Message(role="user", content="生成一份 markdown 插件说明")],
-        runtime_options=RuntimeOptions(thread_id="plugin-only-skills"),
+        runtime_options=RuntimeOptions(thread_id="plugin-only-skills", workflow="artifact_workflow"),
     )
 
     result = asyncio.run(runtime.run(agent, request))
@@ -60,7 +60,7 @@ def test_artifact_generator_emits_coded_events(tmp_path) -> None:
     agent = AgentConfigLoader().load("artifact-generator")
     request = ChatRequest(
         messages=[Message(role="user", content="生成一份 drawio 架构图")],
-        runtime_options=RuntimeOptions(thread_id="events"),
+        runtime_options=RuntimeOptions(thread_id="events", workflow="artifact_workflow"),
     )
     result, events = asyncio.run(runtime.run_with_events(agent, request))
     event_types = [event.type for event in events]
@@ -100,14 +100,11 @@ def test_default_agent_stream_emits_text_delta(tmp_path, monkeypatch) -> None:
     assert events[-1].type == "run.completed"
 
 
-def test_unregistered_workflow_config_falls_back_to_agent_loop(tmp_path, monkeypatch) -> None:
+def test_agent_workflow_config_does_not_auto_run_workflow(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
-    runtime = AgentRuntime(
-        artifact_store=ArtifactStore(root_dir=tmp_path),
-        workflow_registry=WorkflowRegistry(),
-    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("artifact-generator")
     agent.model.base_url = None
     agent.model.api_key = None
@@ -121,6 +118,21 @@ def test_unregistered_workflow_config_falls_back_to_agent_loop(tmp_path, monkeyp
     assert result.metadata["workflow"] == "agent_loop"
     assert result.artifacts == []
     assert "spec.started" not in [event.type for event in events]
+
+
+def test_unregistered_explicit_workflow_fails_fast(tmp_path) -> None:
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path),
+        workflow_registry=WorkflowRegistry(),
+    )
+    agent = AgentConfigLoader().load("artifact-generator")
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成一份 markdown 架构说明")],
+        runtime_options=RuntimeOptions(thread_id="workflow-plugin-disabled", workflow="artifact_workflow"),
+    )
+
+    with pytest.raises(ValueError, match="Workflow is not registered: artifact_workflow"):
+        asyncio.run(runtime.run_with_events(agent, request))
 
 
 def test_workflow_router_uses_skill_manifest_routing_metadata(monkeypatch) -> None:
@@ -247,7 +259,7 @@ def test_prototype_request_routes_to_drawio(tmp_path) -> None:
     agent = AgentConfigLoader().load("artifact-generator")
     request = ChatRequest(
         messages=[Message(role="user", content="可以帮我画一个原型图")],
-        runtime_options=RuntimeOptions(thread_id="prototype"),
+        runtime_options=RuntimeOptions(thread_id="prototype", workflow="artifact_workflow"),
     )
     result = asyncio.run(runtime.run(agent, request))
     assert result.status == "completed"
@@ -273,7 +285,7 @@ def test_drawio_dot_prompt_routes_to_drawio_with_png_preview(tmp_path) -> None:
                 content="生成一份 JetLinks IoT 平台架构 Draw.io 图，包含接入层、规则引擎、数据存储、告警和运维监控",
             )
         ],
-        runtime_options=RuntimeOptions(thread_id="drawio-dot-architecture"),
+        runtime_options=RuntimeOptions(thread_id="drawio-dot-architecture", workflow="artifact_workflow"),
     )
 
     result = asyncio.run(runtime.run(agent, request))
@@ -299,7 +311,7 @@ def test_drawio_refinement_followup_routes_to_real_artifacts(tmp_path, monkeypat
     )
     initial_request = ChatRequest(
         messages=[initial_user],
-        runtime_options=RuntimeOptions(thread_id="drawio-refinement"),
+        runtime_options=RuntimeOptions(thread_id="drawio-refinement", workflow="artifact_workflow"),
     )
     initial = asyncio.run(runtime.run(agent, initial_request))
 
@@ -309,7 +321,7 @@ def test_drawio_refinement_followup_routes_to_real_artifacts(tmp_path, monkeypat
             Message(role="assistant", content=initial.reply),
             Message(role="user", content="这个不是我想要的呢，太丑啦，能不能美化下呢"),
         ],
-        runtime_options=RuntimeOptions(thread_id="drawio-refinement"),
+        runtime_options=RuntimeOptions(thread_id="drawio-refinement", workflow="artifact_workflow"),
     )
 
     result, events = asyncio.run(runtime.run_with_events(agent, request))
@@ -343,7 +355,10 @@ def test_drawio_additive_followup_keeps_artifact_workflow_and_versions(
     first = asyncio.run(
         runtime.run(
             agent,
-            ChatRequest(messages=[first_user], runtime_options=RuntimeOptions(thread_id=thread_id)),
+            ChatRequest(
+                messages=[first_user],
+                runtime_options=RuntimeOptions(thread_id=thread_id, workflow="artifact_workflow"),
+            ),
         )
     )
     second_user = Message(role="user", content="不好看呢，再改改呢")
@@ -352,7 +367,7 @@ def test_drawio_additive_followup_keeps_artifact_workflow_and_versions(
             agent,
             ChatRequest(
                 messages=[first_user, Message(role="assistant", content=first.reply), second_user],
-                runtime_options=RuntimeOptions(thread_id=thread_id),
+                runtime_options=RuntimeOptions(thread_id=thread_id, workflow="artifact_workflow"),
             ),
         )
     )
@@ -369,7 +384,7 @@ def test_drawio_additive_followup_keeps_artifact_workflow_and_versions(
                     Message(role="assistant", content=second.reply),
                     third_user,
                 ],
-                runtime_options=RuntimeOptions(thread_id=thread_id),
+                runtime_options=RuntimeOptions(thread_id=thread_id, workflow="artifact_workflow"),
             ),
         )
     )
@@ -419,7 +434,7 @@ def test_generation_skills_use_llm_spec_planner_when_enabled(
     agent = AgentConfigLoader().load("default")
     request = ChatRequest(
         messages=[Message(role="user", content=prompt)],
-        runtime_options=RuntimeOptions(thread_id=f"llm-planner-{expected_skill}"),
+        runtime_options=RuntimeOptions(thread_id=f"llm-planner-{expected_skill}", workflow="artifact_workflow"),
     )
 
     result, events = asyncio.run(runtime.run_with_events(agent, request))
@@ -480,7 +495,7 @@ def test_drawio_llm_planner_can_enrich_architecture_spec(tmp_path, monkeypatch: 
                 content="生成一份 JetLinks IoT 平台架构 Draw.io 图，包含接入层、规则引擎、数据存储、告警和运维监控",
             )
         ],
-        runtime_options=RuntimeOptions(thread_id="llm-planner-drawio-enriched"),
+        runtime_options=RuntimeOptions(thread_id="llm-planner-drawio-enriched", workflow="artifact_workflow"),
     )
 
     result = asyncio.run(runtime.run(agent, request))
@@ -519,12 +534,33 @@ def test_drawio_llm_planner_can_enrich_architecture_spec(tmp_path, monkeypatch: 
         assert len(image.getcolors(maxcolors=1000000) or []) > 50
 
 
-def test_default_agent_can_route_generation_skills(tmp_path) -> None:
+def test_default_agent_does_not_auto_route_generation_workflow(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfigLoader().load("default")
+    agent.model.base_url = None
+    agent.model.api_key = None
+    request = ChatRequest(
+        messages=[Message(role="user", content="可以帮我画一个原型图")],
+        runtime_options=RuntimeOptions(thread_id="default-prototype"),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.status == "completed"
+    assert result.metadata["workflow"] == "agent_loop"
+    assert result.spec is None
+    assert result.artifacts == []
+
+
+def test_default_agent_runs_explicit_generation_workflow(tmp_path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("default")
     request = ChatRequest(
         messages=[Message(role="user", content="可以帮我画一个原型图")],
-        runtime_options=RuntimeOptions(thread_id="default-prototype"),
+        runtime_options=RuntimeOptions(thread_id="default-prototype-explicit", workflow="artifact_workflow"),
     )
 
     result = asyncio.run(runtime.run(agent, request))
@@ -546,7 +582,7 @@ def test_drawio_followup_keeps_previous_prototype_intent(tmp_path) -> None:
             Message(role="assistant", content="已生成文件"),
             Message(role="user", content="能不能是drawio格式的呢"),
         ],
-        runtime_options=RuntimeOptions(thread_id="prototype-followup"),
+        runtime_options=RuntimeOptions(thread_id="prototype-followup", workflow="artifact_workflow"),
     )
     result = asyncio.run(runtime.run(agent, request))
     assert result.status == "completed"
@@ -562,7 +598,7 @@ def test_behavior_detector_text_only_is_honest(tmp_path) -> None:
     agent = AgentConfigLoader().load("behavior-detector")
     request = ChatRequest(
         messages=[Message(role="user", content="人员翻越围栏进入禁区")],
-        runtime_options=RuntimeOptions(thread_id="t2"),
+        runtime_options=RuntimeOptions(thread_id="t2", workflow="evidence_first_detection"),
     )
     result = asyncio.run(runtime.run(agent, request))
     assert "待上传" in result.reply
@@ -577,7 +613,7 @@ def test_behavior_detector_with_attachment_can_emit_visual_score(tmp_path) -> No
     request = ChatRequest(
         messages=[Message(role="user", content="人员翻越围栏进入禁区")],
         attachments=[Attachment(name="evidence.jpg", mime_type="image/jpeg", data_base64="ZmFrZQ==")],
-        runtime_options=RuntimeOptions(thread_id="t3"),
+        runtime_options=RuntimeOptions(thread_id="t3", workflow="evidence_first_detection"),
     )
     result = asyncio.run(runtime.run(agent, request))
     assert result.verification is not None
@@ -598,7 +634,7 @@ def test_generation_skills_create_verified_binary_artifacts(tmp_path) -> None:
     ]:
         request = ChatRequest(
             messages=[Message(role="user", content=prompt)],
-            runtime_options=RuntimeOptions(thread_id=thread_id),
+            runtime_options=RuntimeOptions(thread_id=thread_id, workflow="artifact_workflow"),
         )
         result = asyncio.run(runtime.run(agent, request))
         assert result.status == "completed"

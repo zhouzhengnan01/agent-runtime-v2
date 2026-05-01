@@ -30,7 +30,7 @@
     "deliverables-export"
   ],
   "workflows": {
-    "default": "artifact_workflow",
+    "default": "agent_loop",
     "generation": "artifact_workflow"
   },
   "routing": {

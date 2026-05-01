@@ -44,18 +44,19 @@ class AgentRuntime:
         if not request.messages:
             raise ValueError("messages must not be empty")
 
-        workflow_name = self.workflow_router.select(agent_config, request)
+        workflow_name = self._explicit_workflow_name(request)
         if workflow_name is not None:
             workflow = self.workflow_registry.get(workflow_name)
-            if workflow is not None:
-                return workflow.run_with_events(
-                    agent_config=agent_config,
-                    messages=request.messages,
-                    attachments=request.attachments,
-                    thread_id=request.runtime_options.thread_id,
-                    workflow_name=workflow_name,
-                    runtime_options=request.runtime_options,
-                )
+            if workflow is None:
+                raise ValueError(f"Workflow is not registered: {workflow_name}")
+            return workflow.run_with_events(
+                agent_config=agent_config,
+                messages=request.messages,
+                attachments=request.attachments,
+                thread_id=request.runtime_options.thread_id,
+                workflow_name=workflow_name,
+                runtime_options=request.runtime_options,
+            )
 
         paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
         recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
@@ -80,8 +81,10 @@ class AgentRuntime:
         if not request.messages:
             raise ValueError("messages must not be empty")
 
-        workflow_name = self.workflow_router.select(agent_config, request)
-        if workflow_name is not None and self.workflow_registry.get(workflow_name) is not None:
+        workflow_name = self._explicit_workflow_name(request)
+        if workflow_name is not None:
+            if self.workflow_registry.get(workflow_name) is None:
+                raise ValueError(f"Workflow is not registered: {workflow_name}")
             async for event in self._stream_workflow_events(agent_config, request, workflow_name):
                 yield event
             return
@@ -186,14 +189,20 @@ class AgentRuntime:
 
     @staticmethod
     def _should_use_workflow(agent_config: AgentConfig, request: ChatRequest) -> bool:
-        return AgentRuntime._selected_workflow_name(agent_config, request) is not None
+        del agent_config
+        return AgentRuntime._explicit_workflow_name(request) is not None
 
     @staticmethod
     def _selected_workflow_name(agent_config: AgentConfig, request: ChatRequest) -> str | None:
-        return WorkflowRouter(available_workflows=WorkflowRegistry.builtin(ArtifactStore()).names()).select(
-            agent_config,
-            request,
-        )
+        del agent_config
+        return AgentRuntime._explicit_workflow_name(request)
+
+    @staticmethod
+    def _explicit_workflow_name(request: ChatRequest) -> str | None:
+        workflow_name = (request.runtime_options.workflow or "").strip()
+        if not workflow_name or workflow_name == "agent_loop":
+            return None
+        return workflow_name
 
     @staticmethod
     def _last_user_text(request: ChatRequest) -> str:

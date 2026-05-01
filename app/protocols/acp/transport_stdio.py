@@ -103,7 +103,7 @@ class JetLinksAcpStdioAgent:
         prompt: list[PromptBlock],
         session_id: str,
         message_id: str | None = None,
-        **_: Any,
+        **kwargs: Any,
     ) -> PromptResponse:
         session = self.sessions.get(session_id)
         if session is None:
@@ -118,7 +118,7 @@ class JetLinksAcpStdioAgent:
         text = _prompt_text(prompt)
         request = ChatRequest(
             messages=[Message(role="user", content=text)],
-            runtime_options=RuntimeOptions(thread_id=session.thread_id),
+            runtime_options=RuntimeOptions(thread_id=session.thread_id, workflow=_workflow_from_kwargs(kwargs)),
         )
         agent_config = self.loader.load(session.agent_name)
         result_status = "completed"
@@ -161,6 +161,16 @@ def _prompt_text(prompt: list[PromptBlock]) -> str:
         elif isinstance(block, ResourceContentBlock | EmbeddedResourceContentBlock):
             parts.append("[resource]")
     return "\n".join(part.strip() for part in parts if part.strip()) or " "
+
+
+def _workflow_from_kwargs(kwargs: dict[str, Any]) -> str | None:
+    runtime_options = _params(kwargs.get("runtimeOptions") or kwargs.get("runtime_options"))
+    jetlinks_meta = _params(kwargs.get("jetlinks"))
+    return _string(
+        runtime_options.get("workflow")
+        or kwargs.get("workflow")
+        or jetlinks_meta.get("workflow")
+    )
 
 
 def _event_to_sdk_updates(event: ChatEvent, message_id: str | None) -> list[Any]:

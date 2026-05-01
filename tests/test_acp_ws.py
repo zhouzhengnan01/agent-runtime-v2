@@ -42,6 +42,7 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
                     "agentName": "behavior-detector",
                     "threadId": "acp-ws-test",
                     "prompt": [{"type": "text", "text": "人员翻越围栏进入禁区"}],
+                    "runtimeOptions": {"workflow": "evidence_first_detection"},
                 },
             }
         )

@@ -31,8 +31,8 @@ http://127.0.0.1:8010/static/workbench.html
 python -m app.cli list-agents
 python -m app.cli show-agent artifact-generator
 python -m app.cli run --agent default --message "你能做什么"
-python -m app.cli run --agent artifact-generator --message "生成一个 JetLinks IoT 平台架构图"
-python -m app.cli run --agent behavior-detector --message "人员翻越围栏进入禁区" --json
+python -m app.cli run --agent artifact-generator --workflow artifact_workflow --message "生成一个 JetLinks IoT 平台架构图"
+python -m app.cli run --agent behavior-detector --workflow evidence_first_detection --message "人员翻越围栏进入禁区" --json
 python -m app.cli acp-stdio --agent default
 ```
 
@@ -78,12 +78,10 @@ python -m app.cli acp-stdio --agent default
 ```text
 HTTP / CLI / ACP WebSocket / ACP stdio
   -> AgentRuntime
-     ├─ WorkflowRouter
-     │    └─ 根据 agent JSON、已注册 Workflow、Skill 元信息选择可用 workflow
-     ├─ WorkflowRegistry
-     │    └─ 注册可选 workflow 插件，例如 artifact_workflow、evidence_first_detection
-     └─ ToolCallingAgentLoop
-          └─ LLM tools -> tool_calls -> ToolInvocationService -> role=tool result -> 下一轮 LLM
+     ├─ 默认：ToolCallingAgentLoop
+     │    └─ LLM tools -> tool_calls -> ToolInvocationService -> role=tool result -> 下一轮 LLM
+     └─ 显式 workflow：WorkflowRegistry.get(runtime_options.workflow)
+          └─ artifact_workflow、evidence_first_detection 等可选插件
 ```
 
 默认运行时通过 `WorkflowRegistry.builtin(...)` 注册两个内置 workflow：
@@ -93,8 +91,10 @@ artifact_workflow          -> ArtifactWorkflow
 evidence_first_detection  -> 带 evidence-first 行为检测策略的 ArtifactWorkflow
 ```
 
-Workflow 是插件，不是硬编码主流程。若 agent JSON 声明了某个 workflow，但当前 `WorkflowRegistry`
-没有注册它，请求会回退到通用 `agent_loop`，而不是进入固定分支。
+Workflow 是插件，不是硬编码主流程。默认请求不会根据用户文本、Skill 简介或 agent JSON 自动切换
+workflow；只有调用方显式传入 `runtime_options.workflow` 时，`AgentRuntime` 才会从
+`WorkflowRegistry` 中取出对应插件执行。如果显式指定的 workflow 没有注册，请求会直接失败并返回
+清晰错误，避免调用方误以为已经进入某个插件流程。
 
 通用 agent loop 只会向模型暴露当前 agent JSON 声明的 `tools` 和 `skills`。模型返回
 OpenAI-compatible `tool_calls` 后，运行时通过统一工具服务执行工具，把工具结果以 `role=tool`
@@ -112,7 +112,8 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 - `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_retries`、`runtime.require_verification`
 - `tools`：暴露给 `agent_loop` 的 MCP/manual/local 工具
 - `skills`：暴露给模型的 Skill-backed tools，同时也用于 Workflow Skill 选择
-- `workflows`：可选 Workflow 插件名，例如 `agent_loop`、`artifact_workflow`、`evidence_first_detection`
+- `workflows`：可选 Workflow 插件名声明，例如 `agent_loop`、`artifact_workflow`、`evidence_first_detection`。
+  该字段不再驱动默认自动路由，默认主流程始终是 `agent_loop`。
 - `memory`：是否启用长期记忆、记忆作用域、最大注入条数和是否注入系统提示
 - `quality`
 - `prompts.system`
@@ -255,8 +256,30 @@ uv run uvicorn app.main:app --reload --port 8010
 }
 ```
 
-`default: agent_loop` 表示默认走通用 Hermes-like 工具调用循环。更确定性的生成类智能体可以把
-`default` 设置成 `artifact_workflow`；行为检测智能体可以设置成 `evidence_first_detection`。
+`default: agent_loop` 表示默认走通用 Hermes-like 工具调用循环。`generation` 和
+`vision_behavior` 只是声明可选插件名，便于页面、CLI、ACP 或后续推荐器明确选择。
+
+真正触发 workflow 的方式是请求参数：
+
+```json
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "可以帮我画一个原型图吗"
+    }
+  ],
+  "runtime_options": {
+    "thread_id": "local-demo",
+    "workflow": "artifact_workflow"
+  }
+}
+```
+
+不传 `runtime_options.workflow` 时，即使用户文本里出现“原型图 / drawio / ppt / 摔倒 / 翻越”等词，
+运行时也不会自动进入 workflow，而是继续走主 `agent_loop`。如果模型服务支持 tool calling，模型可以
+在 agent loop 内根据已暴露的 Skill、MCP 和本地工具自主调用能力；如果模型服务暂时不支持 tool calling，
+可以通过页面能力按钮、CLI `--workflow` 或 ACP `runtimeOptions.workflow` 显式启用确定性 workflow。
 
 ## 工具、Skill 与 MCP
 
@@ -394,8 +417,20 @@ agent JSON 示例：
 - ACP stdio：`python -m app.cli acp-stdio --agent default`
 - MCP HTTP：`POST /mcp`
 
-ACP WebSocket 支持通过 `agentName` 切换当前智能体。ACP stdio 用于编辑器或本地 agent 客户端的 stdio
-集成场景。
+ACP WebSocket 支持通过 `agentName` 切换当前智能体，也支持通过 `runtimeOptions.workflow` 显式启用
+workflow。ACP stdio 用于编辑器或本地 agent 客户端的 stdio 集成场景，同样默认进入 `agent_loop`。
+
+agent backend 分两类：
+
+```text
+local:
+  backend.type = local
+  使用 JetLinks 自己的 ToolCallingAgentLoop 作为主智能体闭环。
+
+external:
+  backend.type = acp_stdio
+  代理 Codex 或其他 ACP stdio agent。
+```
 
 ## Sandbox 策略
 

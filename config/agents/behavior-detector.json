@@ -23,7 +23,7 @@
   "tools": ["behavior_detection", "ask_clarification"],
   "skills": ["behavior-detection"],
   "workflows": {
-    "default": "evidence_first_detection",
+    "default": "agent_loop",
     "vision_behavior": "evidence_first_detection"
   },
   "routing": {

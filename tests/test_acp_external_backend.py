@@ -73,6 +73,7 @@ def test_acp_websocket_can_proxy_external_acp_stdio_backend(
                 "params": {
                     "sessionId": session_id,
                     "prompt": [{"type": "text", "text": "人员翻越围栏进入禁区"}],
+                    "runtimeOptions": {"workflow": "evidence_first_detection"},
                 },
             }
         )

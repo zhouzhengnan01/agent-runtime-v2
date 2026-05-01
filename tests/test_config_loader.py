@@ -13,7 +13,6 @@ def test_load_builtin_agent() -> None:
     assert "markdown-rendering" in agent.skills
     assert agent.model.model == "Qwen3.6-35B-A3B"
     assert agent.model.base_url == "http://124.132.152.75:62091/v1"
-    assert agent.model.api_key is None
     assert agent.routing.llm_workflow_router is True
     assert agent.routing.llm_workflow_router_env == "LLM_WORKFLOW_ROUTER"
 

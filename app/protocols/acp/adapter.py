@@ -88,12 +88,13 @@ class AcpRuntimeAdapter:
             return await self._prompt_external(session, agent.backend, params, send_update)
 
         thread_id = _resolve_thread_id(params, session)
+        workflow = _resolve_workflow(params)
         messages = _messages_from_params(params)
         attachments = _attachments_from_params(params)
         request = ChatRequest(
             messages=messages,
             attachments=attachments,
-            runtime_options=RuntimeOptions(thread_id=thread_id),
+            runtime_options=RuntimeOptions(thread_id=thread_id, workflow=workflow),
         )
 
         result: AgentRunResult | None = None
@@ -140,7 +141,12 @@ class AcpRuntimeAdapter:
             backend = await ExternalAcpSession.create(backend_config, session.cwd)
             session.backend = backend
             session.backend_session_id = backend.backend_session_id
-        response = await backend.prompt(session.session_id, prompt_blocks_from_params(params), send_update)
+        response = await backend.prompt(
+            session.session_id,
+            prompt_blocks_from_params(params),
+            send_update,
+            workflow=_resolve_workflow(params),
+        )
         payload = prompt_response_payload(response)
         payload["threadId"] = session.thread_id
         payload["agentName"] = session.agent_name
@@ -170,6 +176,11 @@ def _resolve_thread_id(params: dict[str, Any], session: AcpWebSocketSession) -> 
         or _string(params.get("threadId") or params.get("thread_id"))
         or session.thread_id
     )
+
+
+def _resolve_workflow(params: dict[str, Any]) -> str | None:
+    runtime_options = _params(params.get("runtimeOptions") or params.get("runtime_options"))
+    return _string(runtime_options.get("workflow") or params.get("workflow"))
 
 
 def _messages_from_params(params: dict[str, Any]) -> list[Message]:
