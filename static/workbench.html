@@ -445,6 +445,10 @@
       gap: 0;
     }
 
+    .workbench.manager-mode {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
     .center {
       min-width: 0;
       min-height: 0;
@@ -1146,6 +1150,10 @@
       overflow: hidden;
     }
 
+    .workbench.manager-mode .inspector {
+      display: none;
+    }
+
     .inspector-head {
       min-height: 58px;
       display: flex;
@@ -1442,29 +1450,36 @@
 
     .skill-manager {
       min-height: 0;
-      max-width: 1180px;
+      max-width: 1320px;
       width: 100%;
       margin: 0 auto;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
-      gap: 16px;
+      gap: 14px;
       overflow: hidden;
     }
 
     .skill-manager-head {
       display: flex;
-      align-items: flex-end;
+      align-items: center;
       justify-content: space-between;
       gap: 18px;
-      padding-bottom: 14px;
+      padding: 2px 2px 14px;
       border-bottom: 1px solid var(--line);
     }
 
+    .skill-manager-head > div:first-child {
+      min-width: 0;
+      display: grid;
+      gap: 5px;
+    }
+
     .skill-manager-head h2 {
-      margin: 0 0 5px;
-      font-size: 26px;
-      line-height: 1.1;
-      font-weight: 780;
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.12;
+      font-weight: 800;
+      letter-spacing: 0;
     }
 
     .skill-manager-head p {
@@ -1480,44 +1495,47 @@
       justify-content: flex-end;
       gap: 8px;
       flex-wrap: wrap;
+      flex: 0 0 auto;
     }
 
     .skill-manager-body {
       min-height: 0;
       display: grid;
-      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-      gap: 18px;
+      grid-template-columns: minmax(340px, 410px) minmax(0, 1fr);
+      gap: 16px;
       overflow: hidden;
     }
 
     .skill-list-pane,
     .skill-editor-pane {
       min-height: 0;
-      background: rgba(255, 255, 255, .62);
+      background: rgba(255, 255, 255, .82);
       border: 1px solid var(--line);
-      border-radius: var(--radius);
+      border-radius: var(--radius-lg);
       overflow: hidden;
     }
 
     .skill-list-pane {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
+      box-shadow: 0 10px 28px rgba(24, 27, 31, .04);
     }
 
     .skill-filter-row {
       display: flex;
       gap: 6px;
-      padding: 10px;
+      padding: 10px 12px;
       border-bottom: 1px solid var(--line);
       overflow-x: auto;
+      background: rgba(248, 250, 252, .88);
     }
 
     .skill-filter-row button {
-      min-height: 30px;
-      border-radius: var(--radius-full);
+      min-height: 28px;
+      border-radius: var(--radius);
       border: 1px solid transparent;
       color: var(--muted);
-      padding: 0 10px;
+      padding: 0 9px;
       font-size: 12px;
       font-weight: 720;
       white-space: nowrap;
@@ -1535,6 +1553,8 @@
       overflow: auto;
       display: grid;
       align-content: start;
+      padding: 8px;
+      gap: 8px;
     }
 
     .tool-note {
@@ -1557,30 +1577,45 @@
     }
 
     .skill-group {
-      padding: 12px 0 4px;
+      display: grid;
+      gap: 6px;
     }
 
     .skill-group-title {
-      padding: 0 14px 8px;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 7px 8px 5px;
+      background: rgba(255, 255, 255, .92);
       color: var(--muted);
       font-size: 11px;
       font-weight: 780;
+      letter-spacing: .03em;
       text-transform: uppercase;
     }
 
     .skill-row {
       width: 100%;
       display: grid;
-      gap: 6px;
-      padding: 11px 14px;
+      gap: 8px;
+      padding: 12px;
       text-align: left;
-      border-top: 1px solid rgba(223, 227, 234, .72);
-      transition: background 120ms;
+      border: 1px solid transparent;
+      border-radius: var(--radius);
+      background: transparent;
+      transition: background 140ms, border-color 140ms, transform 140ms, box-shadow 140ms;
     }
 
-    .skill-row:hover,
+    .skill-row:hover {
+      background: #fff;
+      border-color: var(--line);
+      box-shadow: 0 8px 20px rgba(24, 27, 31, .04);
+    }
+
     .skill-row.active {
       background: #fff;
+      border-color: rgba(21, 91, 212, .3);
+      box-shadow: inset 3px 0 0 var(--accent), 0 8px 24px rgba(21, 91, 212, .07);
     }
 
     .skill-row-main {
@@ -1605,7 +1640,7 @@
       margin: 0;
       color: var(--muted);
       font-size: 12px;
-      line-height: 1.4;
+      line-height: 1.48;
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
@@ -1613,9 +1648,9 @@
     }
 
     .skill-file-line {
-      color: var(--muted-2);
+      color: #7c8794;
       font-size: 11px;
-      line-height: 1.35;
+      line-height: 1.4;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -1640,6 +1675,12 @@
       white-space: nowrap;
     }
 
+    .skill-badge.kind {
+      background: #111317;
+      border-color: #111317;
+      color: #fff;
+    }
+
     .skill-badge.sandbox {
       background: var(--accent-soft);
       border-color: rgba(21, 91, 212, .18);
@@ -1656,13 +1697,14 @@
       min-width: 0;
       overflow: auto;
       background: var(--surface);
+      box-shadow: 0 10px 28px rgba(24, 27, 31, .04);
     }
 
     .skill-editor {
       min-width: 0;
       display: grid;
-      gap: 16px;
-      padding: 16px;
+      gap: 18px;
+      padding: 18px;
     }
 
     .skill-editor-head {
@@ -1670,14 +1712,15 @@
       align-items: flex-start;
       justify-content: space-between;
       gap: 16px;
-      padding-bottom: 14px;
+      padding: 2px 2px 16px;
       border-bottom: 1px solid var(--line);
     }
 
     .skill-editor-title {
       min-width: 0;
-      display: grid;
-      gap: 5px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
     }
 
     .skill-editor-title strong {
@@ -1693,6 +1736,32 @@
       overflow-wrap: anywhere;
     }
 
+    .skill-editor-title-main {
+      min-width: 0;
+      display: grid;
+      gap: 5px;
+    }
+
+    .skill-avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: var(--radius);
+      display: grid;
+      place-items: center;
+      background: #111317;
+      color: #fff;
+      font-size: 13px;
+      font-weight: 800;
+      flex: 0 0 auto;
+    }
+
+    .skill-meta-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
     .skill-status {
       color: var(--muted);
       font-size: 12px;
@@ -1705,16 +1774,32 @@
 
     .skill-form {
       display: grid;
-      gap: 14px;
+      gap: 16px;
+    }
+
+    .skill-form-section {
+      display: grid;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: rgba(248, 250, 252, .56);
+    }
+
+    .skill-form-section-title {
+      margin: 0;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
     }
 
     .file-editor {
       display: grid;
-      gap: 10px;
-      padding: 12px;
+      gap: 12px;
+      padding: 14px;
       border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: rgba(246, 248, 251, .78);
+      border-radius: var(--radius-lg);
+      background: linear-gradient(180deg, rgba(248, 250, 252, .94), rgba(255, 255, 255, .98));
     }
 
     .file-editor-head {
@@ -1727,11 +1812,11 @@
     .file-editor-title {
       min-width: 0;
       display: grid;
-      gap: 3px;
+      gap: 4px;
     }
 
     .file-editor-title strong {
-      font-size: 13px;
+      font-size: 14px;
       font-weight: 780;
       color: var(--text);
     }
@@ -1746,16 +1831,19 @@
 
     .package-file-tabs {
       display: flex;
-      gap: 6px;
+      gap: 4px;
       overflow-x: auto;
-      padding-bottom: 2px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #eef2f7;
     }
 
     .package-file-tabs button {
-      min-height: 30px;
-      border-radius: var(--radius-full);
-      border: 1px solid var(--line);
-      background: var(--surface);
+      min-height: 28px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      background: transparent;
       color: var(--muted);
       padding: 0 10px;
       font-size: 12px;
@@ -1765,9 +1853,9 @@
 
     .package-file-tabs button.active,
     .package-file-tabs button:hover {
-      color: var(--accent);
-      border-color: rgba(21, 91, 212, .22);
-      background: var(--accent-soft);
+      color: var(--text);
+      border-color: rgba(184, 192, 204, .58);
+      background: #fff;
     }
 
     .field-grid {
@@ -1795,7 +1883,7 @@
       width: 100%;
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      background: var(--surface-soft);
+      background: #fff;
       color: var(--text);
       padding: 9px 10px;
       outline: none;
@@ -1813,10 +1901,12 @@
       font-family: var(--mono);
       font-size: 12px;
       line-height: 1.5;
+      color: #162033;
+      background: #f8fafc;
     }
 
     .field textarea.file-code {
-      min-height: 360px;
+      min-height: 330px;
     }
 
     .field input:focus,
@@ -1831,7 +1921,10 @@
       align-items: center;
       gap: 9px;
       min-height: 38px;
-      padding: 0 2px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
     }
 
     .check-field input {
@@ -1986,6 +2079,9 @@
         grid-template-columns: 1fr;
         grid-template-rows: minmax(620px, 1fr) minmax(420px, 48svh);
       }
+      .workbench.manager-mode {
+        grid-template-rows: minmax(0, 1fr);
+      }
       .inspector {
         border-left: 0;
         border-top: 1px solid var(--line);
@@ -1999,6 +2095,9 @@
       .skill-manager-body {
         grid-template-columns: 1fr;
         grid-template-rows: minmax(230px, 34svh) minmax(520px, 1fr);
+      }
+      .workbench.manager-mode .center {
+        overflow: hidden;
       }
     }
 
@@ -2034,14 +2133,24 @@
         flex-direction: column;
         padding: 10px 12px;
       }
+      .main {
+        grid-template-rows: auto minmax(0, 1fr);
+      }
       .topbar-left,
       .topbar-right {
         width: 100%;
       }
       .topbar-right select,
       .topbar-right input {
-        flex: 1 1 140px;
+        flex: 1 1 calc(50% - 6px);
         min-width: 0;
+      }
+      .topbar-right input {
+        flex-basis: 100%;
+        width: 100%;
+      }
+      .topbar-right .ghost-btn {
+        flex: 0 0 auto;
       }
       .center {
         padding: 18px 14px 16px;
@@ -2073,6 +2182,13 @@
       .skill-editor-head,
       .file-editor-head {
         display: grid;
+      }
+      .skill-editor-title {
+        display: grid;
+      }
+      .skill-avatar {
+        width: 34px;
+        height: 34px;
       }
       .field-grid {
         grid-template-columns: 1fr;
@@ -2437,6 +2553,7 @@
       refreshTop: document.getElementById('refreshTop'),
       runStatus: document.getElementById('runStatus'),
       routeHint: document.getElementById('routeHint'),
+      workbench: document.querySelector('.workbench'),
       centerPane: document.getElementById('centerPane'),
       intro: document.getElementById('intro'),
       skillStrip: document.getElementById('skillStrip'),
@@ -2991,7 +3108,7 @@
             <button class="skill-row ${skill.name === state.selectedSkillName ? 'active' : ''}" type="button" data-skill-select="${escapeAttr(skill.name)}">
               <div class="skill-row-main">
                 <strong>${escapeHtml(skill.name)}</strong>
-                <span class="skill-badge">${escapeHtml(skill.output_kind || 'json')}</span>
+                <span class="skill-badge kind">${escapeHtml(skill.output_kind || 'json')}</span>
               </div>
               <p>${escapeHtml(skill.description || '')}</p>
               <div class="skill-file-line">${escapeHtml(skill.source?.plugin_id ? `插件 · ${skill.source.plugin_id}` : 'Manifest 草稿')} · ${escapeHtml(displaySourcePath(skill.source_path, `config/skills/${skill.name}.json`))} · ${skill.editable ? '可编辑' : '只读'}</div>
@@ -3110,11 +3227,23 @@
       const packageFiles = skill.package_files || [];
       const packageFile = selectedPackageFile(skill);
       const fileContent = selectedPackageFileContent(skill, packageFile);
+      const skillInitial = String(skill.name || 'S').slice(0, 1).toUpperCase();
       els.skillEditor.innerHTML = `
         <div class="skill-editor-head">
           <div class="skill-editor-title">
-            <strong>${escapeHtml(skill.name)}</strong>
-            <span>${escapeHtml(displaySourcePath(skill.source_path, `config/skills/${skill.name}.json`))}</span>
+            <div class="skill-avatar">${escapeHtml(skillInitial)}</div>
+            <div class="skill-editor-title-main">
+              <strong>${escapeHtml(skill.name)}</strong>
+              <span>${escapeHtml(displaySourcePath(skill.source_path, `config/skills/${skill.name}.json`))}</span>
+              <div class="skill-meta-row">
+                <span class="skill-badge kind">${escapeHtml(skill.output_kind || 'json')}</span>
+                <span class="skill-badge ${skill.executable === false ? 'local' : 'sandbox'}">${skill.executable === false ? '未安装 runner' : '插件可执行'}</span>
+                <span class="skill-badge ${skill.generation ? '' : 'local'}">${skill.generation ? '生成型' : '判断型'}</span>
+                ${sandbox.enabled
+                  ? `<span class="skill-badge sandbox">Sandbox · ${escapeHtml(sandbox.profile || '-')}</span>`
+                  : '<span class="skill-badge local">Local</span>'}
+              </div>
+            </div>
           </div>
           <div id="skillEditStatus" class="skill-status ${status.type || ''}">${escapeHtml(status.text || '')}</div>
         </div>
@@ -3144,62 +3273,71 @@
           </div>
         </section>
         <form id="skillForm" class="skill-form">
-          <div class="field">
-            <label for="skillDescription">描述</label>
-            <input id="skillDescription" name="description" value="${escapeAttr(skill.description || '')}">
-          </div>
-          <div class="field-grid">
+          <section class="skill-form-section">
+            <h3 class="skill-form-section-title">基础信息</h3>
             <div class="field">
-              <label for="skillOutputKind">输出类型</label>
-              <input id="skillOutputKind" name="output_kind" value="${escapeAttr(skill.output_kind || 'json')}">
+              <label for="skillDescription">描述</label>
+              <input id="skillDescription" name="description" value="${escapeAttr(skill.description || '')}">
             </div>
-            <label class="check-field">
-              <input name="generation" type="checkbox" ${skill.generation ? 'checked' : ''}>
-              <span>生成型技能</span>
-            </label>
-          </div>
-          <div class="field">
-            <label for="skillQuality">质量模板</label>
-            <textarea id="skillQuality" name="quality_template">${escapeHtml((skill.quality_template || []).join('\n'))}</textarea>
-          </div>
-          <div class="field-grid">
-            <label class="check-field">
-              <input name="sandbox_enabled" type="checkbox" ${sandbox.enabled ? 'checked' : ''}>
-              <span>启用沙盒执行</span>
-            </label>
-            <div class="field">
-              <label for="skillSandboxProfile">沙盒 Profile</label>
-              <input id="skillSandboxProfile" name="sandbox_profile" value="${escapeAttr(sandbox.profile || '')}">
-            </div>
-          </div>
-          <div class="field-grid">
-            <div class="field">
-              <label for="skillRequestSchema">请求协议</label>
-              <input id="skillRequestSchema" name="request_schema_version" value="${escapeAttr(sandbox.request_schema_version || 'skill-run.v1')}">
+            <div class="field-grid">
+              <div class="field">
+                <label for="skillOutputKind">输出类型</label>
+                <input id="skillOutputKind" name="output_kind" value="${escapeAttr(skill.output_kind || 'json')}">
+              </div>
+              <label class="check-field">
+                <input name="generation" type="checkbox" ${skill.generation ? 'checked' : ''}>
+                <span>生成型技能</span>
+              </label>
             </div>
             <div class="field">
-              <label for="skillFallback">失败回退</label>
-              <select id="skillFallback" name="fallback_to_local">
-                <option value="true" ${sandbox.fallback_to_local === true ? 'selected' : ''}>true</option>
-                <option value="false" ${sandbox.fallback_to_local === false ? 'selected' : ''}>false</option>
-                <option value="null" ${sandbox.fallback_to_local == null ? 'selected' : ''}>null</option>
-              </select>
+              <label for="skillQuality">质量模板</label>
+              <textarea id="skillQuality" name="quality_template">${escapeHtml((skill.quality_template || []).join('\n'))}</textarea>
             </div>
-          </div>
-          <div class="field">
-            <label for="skillAdapterCommand">Adapter Command</label>
-            <input id="skillAdapterCommand" name="adapter_command" value="${escapeAttr(sandbox.adapter_command || '')}">
-          </div>
-          <div class="field-grid">
+          </section>
+          <section class="skill-form-section">
+            <h3 class="skill-form-section-title">运行策略</h3>
+            <div class="field-grid">
+              <label class="check-field">
+                <input name="sandbox_enabled" type="checkbox" ${sandbox.enabled ? 'checked' : ''}>
+                <span>启用沙盒执行</span>
+              </label>
+              <div class="field">
+                <label for="skillSandboxProfile">沙盒 Profile</label>
+                <input id="skillSandboxProfile" name="sandbox_profile" value="${escapeAttr(sandbox.profile || '')}">
+              </div>
+            </div>
+            <div class="field-grid">
+              <div class="field">
+                <label for="skillRequestSchema">请求协议</label>
+                <input id="skillRequestSchema" name="request_schema_version" value="${escapeAttr(sandbox.request_schema_version || 'skill-run.v1')}">
+              </div>
+              <div class="field">
+                <label for="skillFallback">失败回退</label>
+                <select id="skillFallback" name="fallback_to_local">
+                  <option value="true" ${sandbox.fallback_to_local === true ? 'selected' : ''}>true</option>
+                  <option value="false" ${sandbox.fallback_to_local === false ? 'selected' : ''}>false</option>
+                  <option value="null" ${sandbox.fallback_to_local == null ? 'selected' : ''}>null</option>
+                </select>
+              </div>
+            </div>
             <div class="field">
-              <label for="skillInputSchema">Input Schema</label>
-              <textarea id="skillInputSchema" class="code" name="input_schema">${escapeHtml(JSON.stringify(skill.input_schema || {}, null, 2))}</textarea>
+              <label for="skillAdapterCommand">Adapter Command</label>
+              <input id="skillAdapterCommand" name="adapter_command" value="${escapeAttr(sandbox.adapter_command || '')}">
             </div>
-            <div class="field">
-              <label for="skillOutputSchema">Output Schema</label>
-              <textarea id="skillOutputSchema" class="code" name="output_schema">${escapeHtml(JSON.stringify(skill.output_schema || {}, null, 2))}</textarea>
+          </section>
+          <section class="skill-form-section">
+            <h3 class="skill-form-section-title">Schema</h3>
+            <div class="field-grid">
+              <div class="field">
+                <label for="skillInputSchema">Input Schema</label>
+                <textarea id="skillInputSchema" class="code" name="input_schema">${escapeHtml(JSON.stringify(skill.input_schema || {}, null, 2))}</textarea>
+              </div>
+              <div class="field">
+                <label for="skillOutputSchema">Output Schema</label>
+                <textarea id="skillOutputSchema" class="code" name="output_schema">${escapeHtml(JSON.stringify(skill.output_schema || {}, null, 2))}</textarea>
+              </div>
             </div>
-          </div>
+          </section>
           <div class="skill-form-actions">
             <button class="secondary-btn" type="button" data-skill-reset>重置</button>
             <button class="primary-btn" type="button" data-skill-save>保存</button>
@@ -3374,6 +3512,7 @@
       const isSkills = state.view === 'skills';
       const isTools = state.view === 'tools';
       const isWorkflows = state.view === 'workflows';
+      els.workbench?.classList.toggle('manager-mode', !isChat);
       els.centerPane.classList.toggle('skills-mode', !isChat);
       els.intro.hidden = !isChat;
       els.skillStrip.hidden = !isChat;
@@ -3382,6 +3521,7 @@
       els.skillManager.hidden = !isSkills;
       els.toolsManager.hidden = !isTools;
       els.workflowManager.hidden = !isWorkflows;
+      els.refresh.hidden = !isChat;
       updateNavigationState();
       if (isSkills) {
         state.activeTab = 'abilities';
@@ -5312,6 +5452,10 @@
     renderAttachments();
     renderComposerCapabilities();
     renderPanel();
+    const initialView = new URLSearchParams(window.location.search).get('view');
+    if (['skills', 'tools', 'workflows'].includes(initialView)) {
+      setView(initialView);
+    }
   </script>
 </body>
 </html>
