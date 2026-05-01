@@ -288,7 +288,7 @@ uv run uvicorn app.main:app --reload --port 8010
 - **运行时工具能力**：Skill、本地 workspace 工具、记忆工具、手动 MCP 工具都会注册到
   `ToolRegistry`，供 agent loop 和 MCP 协议端复用。
 - **手动 MCP 配置**：只有 `config/mcp/tools.json` 里显式添加的工具才算“你配置的 MCP 工具”。
-  默认配置为空，所以没有接入 MCP 时，工作台不会再显示 Skill、本地、记忆等内置能力为 MCP。
+  工作台不会再把 Skill、本地、记忆等内置能力显示成 MCP。
 
 ```text
 Skill manifests + config/mcp/tools.json + 内置 local tools + memory tools
@@ -319,13 +319,36 @@ deliverables-export
 behavior-detection
 ```
 
-### MCP/manual 工具
+### MCP/manual 工具与开源 MCP 示例
 
 自定义 MCP/manual 工具配置在：
 
 ```text
 config/mcp/tools.json
 ```
+
+仓库默认内置了 3 个测试用 MCP stdio 工具，来自官方开源 MCP filesystem server：
+
+```text
+mcp_fs_list_directory
+mcp_fs_write_file
+mcp_fs_read_text_file
+```
+
+它们会按需启动：
+
+```bash
+npx -y @modelcontextprotocol/server-filesystem {workspace}
+```
+
+`{workspace}` 会被替换为当前线程 workspace：
+
+```text
+.runtime/threads/<thread_id>/user-data/workspace
+```
+
+因此这个开源 MCP 示例只能访问当前线程的临时测试目录，不会访问项目根目录或系统目录。页面里显式选择这些
+MCP 工具后，本轮 agent loop 才会把它们暴露给模型；不选择时不影响默认主流程。
 
 工具接口：
 

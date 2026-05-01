@@ -111,6 +111,71 @@ def test_agent_loop_exposes_only_agent_declared_tools(
     assert seen_tools == ["local_todo"]
 
 
+def test_agent_loop_exposes_explicit_selected_mcp_tools(
+    tmp_path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="已看到显式 MCP 工具。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    config_dir = tmp_path / "config" / "mcp"
+    config_dir.mkdir(parents=True)
+    (config_dir / "tools.json").write_text(
+        """
+{
+  "tools": [
+    {
+      "name": "mcp_demo_status",
+      "title": "MCP Demo Status",
+      "description": "A selected MCP demo tool.",
+      "enabled": true,
+      "input_schema": {"type": "object"},
+      "source": {"type": "manual", "response_template": "ok"}
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path / "runtime")
+    runtime = AgentRuntime(artifact_store=artifact_store)
+    runtime.agent_loop.tool_service.registry.root_dir = tmp_path
+    runtime.agent_loop.tool_service.registry.config_path = config_dir / "tools.json"
+    agent = AgentConfig(
+        name="selected-mcp-agent",
+        display_name="Selected MCP Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="使用我显式选择的 MCP 工具")],
+                runtime_options=RuntimeOptions(
+                    thread_id="selected-mcp",
+                    selected_mcp_tools=["mcp_demo_status"],
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert seen_tools == ["mcp_demo_status"]
+
+
 def test_agent_loop_skips_tools_when_model_tool_choice_is_none(
     tmp_path,
     monkeypatch: MonkeyPatch,

@@ -5,7 +5,13 @@ from typing import Any, Protocol
 from app.core.artifacts import ArtifactStore
 from app.core.memory import MemoryStore
 from app.core.skills import SkillRunner
-from app.core.tools.providers import LocalToolProvider, ManualToolProvider, MemoryToolProvider, SkillToolProvider
+from app.core.tools.providers import (
+    LocalToolProvider,
+    ManualToolProvider,
+    McpStdioToolProvider,
+    MemoryToolProvider,
+    SkillToolProvider,
+)
 from app.core.tools.registry import ToolRegistry
 from app.core.tools.schemas import ToolDefinition, ToolInvocationResult
 
@@ -33,6 +39,7 @@ class ToolInvocationService:
         self.providers: dict[str, ToolProvider] = {
             LocalToolProvider.source_type: LocalToolProvider(artifact_store=self.artifact_store),
             ManualToolProvider.source_type: ManualToolProvider(),
+            McpStdioToolProvider.source_type: McpStdioToolProvider(artifact_store=self.artifact_store),
             MemoryToolProvider.source_type: MemoryToolProvider(memory_store=self.memory_store),
             SkillToolProvider.source_type: SkillToolProvider(
                 artifact_store=self.artifact_store,

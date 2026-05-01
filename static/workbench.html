@@ -3227,6 +3227,13 @@
         .filter(Boolean);
     }
 
+    function splitLines(value) {
+      return String(value || '')
+        .split('\n')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+
     function nullableText(value) {
       const text = String(value || '').trim();
       return text || null;
@@ -3579,6 +3586,82 @@
       return `${JSON.stringify(mcpToolForSave(tool), null, 2)}\n`;
     }
 
+    function mcpToolSourceKind(tool) {
+      return tool?.source?.type === 'mcp_stdio' ? 'mcp_stdio' : 'manual';
+    }
+
+    function mcpSourceFromForm(formData) {
+      const sourceType = String(formData.get('source_type') || 'manual').trim();
+      if (sourceType === 'mcp_stdio') {
+        return {
+          type: 'mcp_stdio',
+          server: String(formData.get('server') || '').trim(),
+          command: String(formData.get('command') || '').trim(),
+          args: splitLines(String(formData.get('args') || '')),
+          server_tool: String(formData.get('server_tool') || '').trim(),
+          cwd: String(formData.get('cwd') || '').trim() || '.',
+          timeout_seconds: Number.parseInt(String(formData.get('timeout_seconds') || '20'), 10) || 20
+        };
+      }
+      return { type: 'manual', response_template: String(formData.get('response_template') || '').trim() };
+    }
+
+    function renderMcpSourceFields(tool, readonly) {
+      const sourceType = mcpToolSourceKind(tool);
+      if (sourceType === 'mcp_stdio') {
+        return `
+          <div class="field">
+            <label>Source 类型</label>
+            <select name="source_type" ${readonly ? 'disabled' : ''}>
+              <option value="manual">manual</option>
+              <option value="mcp_stdio" selected>mcp_stdio</option>
+            </select>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label>MCP Server</label>
+              <input name="server" value="${escapeAttr(tool.source?.server || '')}" ${readonly ? 'disabled' : ''}>
+            </div>
+            <div class="field">
+              <label>Server Tool</label>
+              <input name="server_tool" value="${escapeAttr(tool.source?.server_tool || '')}" ${readonly ? 'disabled' : ''}>
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label>Command</label>
+              <input name="command" value="${escapeAttr(tool.source?.command || '')}" ${readonly ? 'disabled' : ''}>
+            </div>
+            <div class="field">
+              <label>CWD</label>
+              <input name="cwd" value="${escapeAttr(tool.source?.cwd || '.')}" ${readonly ? 'disabled' : ''}>
+            </div>
+          </div>
+          <div class="field">
+            <label>Args（每行一个）</label>
+            <textarea class="code" name="args" ${readonly ? 'disabled' : ''}>${escapeHtml((tool.source?.args || []).join('\n'))}</textarea>
+          </div>
+          <div class="field">
+            <label>Timeout 秒</label>
+            <input name="timeout_seconds" type="number" min="1" max="120" value="${escapeAttr(tool.source?.timeout_seconds || 20)}" ${readonly ? 'disabled' : ''}>
+          </div>
+        `;
+      }
+      return `
+        <div class="field">
+          <label>Source 类型</label>
+          <select name="source_type" ${readonly ? 'disabled' : ''}>
+            <option value="manual" selected>manual</option>
+            <option value="mcp_stdio">mcp_stdio</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>响应模板</label>
+          <textarea name="response_template" ${readonly ? 'disabled' : ''}>${escapeHtml(tool.source?.response_template || '')}</textarea>
+        </div>
+      `;
+    }
+
     function renderToolEditor(status = {}) {
       if (!els.toolEditor) return;
       const tool = state.selectedMcpTool || state.mcpTools.find((item) => item.name === state.selectedMcpToolName);
@@ -3643,12 +3726,9 @@
               <textarea id="toolOutputSchema" class="code" name="output_schema" ${readonly ? 'disabled' : ''}>${escapeHtml(JSON.stringify(tool.output_schema || {}, null, 2))}</textarea>
             </div>
           </div>
-          <div class="field">
-            <label for="toolResponseTemplate">响应模板</label>
-            <textarea id="toolResponseTemplate" name="response_template" ${readonly ? 'disabled' : ''}>${escapeHtml(tool.source?.response_template || '')}</textarea>
-          </div>
+          ${renderMcpSourceFields(tool, readonly)}
           <div class="skill-form-actions">
-            ${readonly ? '<button class="secondary-btn" type="button" data-open-tool-skill>打开对应 Skill</button>' : '<button class="secondary-btn" type="button" data-tool-reset>重置</button><button class="primary-btn" type="button" data-tool-save>保存工具</button>'}
+            ${readonly ? '<span class="empty">运行时只读工具不能在这里编辑。</span>' : '<button class="secondary-btn" type="button" data-tool-reset>重置</button><button class="primary-btn" type="button" data-tool-save>保存工具</button>'}
           </div>
         </form>
       `;
@@ -3802,12 +3882,9 @@
             <label>Output Schema</label>
             <textarea class="code" name="output_schema" ${tool.editable === false ? 'disabled' : ''}>${escapeHtml(JSON.stringify(tool.output_schema || {}, null, 2))}</textarea>
           </div>
-          <div class="field">
-            <label>响应模板</label>
-            <textarea name="response_template" ${tool.editable === false ? 'disabled' : ''}>${escapeHtml(tool.source?.response_template || '')}</textarea>
-          </div>
+          ${renderMcpSourceFields(tool, tool.editable === false)}
           <div class="skill-form-actions">
-            ${tool.editable === false ? '<span class="empty">由 Skill 暴露的 MCP 工具需在 Skills 中编辑</span>' : '<button class="primary-btn" type="button" data-ability-save-mcp>保存 MCP 工具</button>'}
+            ${tool.editable === false ? '<span class="empty">运行时只读工具不能在这里编辑。</span>' : '<button class="primary-btn" type="button" data-ability-save-mcp>保存 MCP 工具</button>'}
           </div>
         </form>
       `;
@@ -3986,7 +4063,7 @@
           enabled: formData.get('enabled') === 'on',
           input_schema: parseJsonField(String(formData.get('input_schema') || '{}'), 'Input Schema'),
           output_schema: parseJsonField(String(formData.get('output_schema') || '{}'), 'Output Schema'),
-          source: { type: 'manual', response_template: String(formData.get('response_template') || '').trim() }
+          source: mcpSourceFromForm(formData)
         };
       } catch (err) {
         renderAbilityPanel({ type: 'error', text: err.message });
@@ -4026,7 +4103,7 @@
         enabled: formData.get('enabled') === 'on',
         input_schema: parseJsonField(String(formData.get('input_schema') || '{}'), 'Input Schema'),
         output_schema: parseJsonField(String(formData.get('output_schema') || '{}'), 'Output Schema'),
-        source: { type: 'manual', response_template: String(formData.get('response_template') || '').trim() }
+        source: mcpSourceFromForm(formData)
       };
     }
 

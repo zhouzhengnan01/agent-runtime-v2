@@ -1,3 +1,117 @@
 {
-  "tools": []
+  "tools": [
+    {
+      "name": "mcp_fs_list_directory",
+      "title": "MCP Filesystem List Directory",
+      "description": "Use the official @modelcontextprotocol/server-filesystem server to list files inside the thread workspace.",
+      "enabled": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": "{workspace}"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "source": {
+        "type": "mcp_stdio",
+        "server": "official-filesystem",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "{workspace}"
+        ],
+        "server_tool": "list_directory",
+        "cwd": ".",
+        "timeout_seconds": 20
+      }
+    },
+    {
+      "name": "mcp_fs_write_file",
+      "title": "MCP Filesystem Write File",
+      "description": "Use the official @modelcontextprotocol/server-filesystem server to write a text file inside the thread workspace.",
+      "enabled": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "source": {
+        "type": "mcp_stdio",
+        "server": "official-filesystem",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "{workspace}"
+        ],
+        "server_tool": "write_file",
+        "cwd": ".",
+        "timeout_seconds": 20
+      }
+    },
+    {
+      "name": "mcp_fs_read_text_file",
+      "title": "MCP Filesystem Read Text File",
+      "description": "Use the official @modelcontextprotocol/server-filesystem server to read a text file inside the thread workspace.",
+      "enabled": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "head": {
+            "type": "number"
+          },
+          "tail": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "source": {
+        "type": "mcp_stdio",
+        "server": "official-filesystem",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "{workspace}"
+        ],
+        "server_tool": "read_text_file",
+        "cwd": ".",
+        "timeout_seconds": 20
+      }
+    }
+  ]
 }

@@ -83,7 +83,7 @@ class ToolCallingAgentLoop:
                 skill_name=direct_skill,
                 emit_message_delta=emit_message_delta,
             )
-        tools = self._openai_tools(agent_config)
+        tools = self._openai_tools(agent_config, runtime_options)
         if llm.tool_choice == "none":
             tools = []
         recorder.emit(
@@ -168,8 +168,15 @@ class ToolCallingAgentLoop:
             emit_message_delta=emit_message_delta,
         )
 
-    def _openai_tools(self, agent_config: AgentConfig) -> list[dict[str, Any]]:
+    def _openai_tools(
+        self,
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions | None = None,
+    ) -> list[dict[str, Any]]:
         allowed_names = self._allowed_tool_names(agent_config)
+        selected_mcp_tools = self._normalized_selected_mcp_tools(runtime_options)
+        if selected_mcp_tools:
+            allowed_names = allowed_names | set(selected_mcp_tools)
         definitions = self.tool_service.list_tools()
         if not agent_config.memory.enabled:
             definitions = [tool for tool in definitions if tool.source.get("type") != "memory"]
@@ -327,6 +334,12 @@ class ToolCallingAgentLoop:
         if runtime_options is None:
             return []
         return [name.strip() for name in runtime_options.selected_skills if name.strip()]
+
+    @staticmethod
+    def _normalized_selected_mcp_tools(runtime_options: RuntimeOptions | None) -> list[str]:
+        if runtime_options is None:
+            return []
+        return [name.strip() for name in runtime_options.selected_mcp_tools if name.strip()]
 
     def _run_direct_skill(
         self,
