@@ -393,6 +393,42 @@ export RUNTIME_API_TOKEN="your-runtime-token"
 和 `GET /api/acp/ws` 需要携带 `Authorization: Bearer <token>`，WebSocket 也支持
 `/api/acp/ws?token=<token>` 便于浏览器客户端接入。
 
+
+### Cron 定时任务
+
+运行时内置轻量 Cron 任务配置，任务保存在：
+
+```text
+config/cron/jobs.json
+```
+
+接口：
+
+```text
+GET    /api/cron/jobs
+GET    /api/cron/jobs/{job_name}
+PUT    /api/cron/jobs/{job_name}
+DELETE /api/cron/jobs/{job_name}
+POST   /api/cron/jobs/{job_name}/run
+GET    /api/cron/scheduler/status
+```
+
+写入、删除和手动运行接口复用 `RUNTIME_API_TOKEN` 管理鉴权。Cron 表达式使用 5 字段格式：
+
+```text
+minute hour day-of-month month day-of-week
+```
+
+支持 `*`、`*/n`、范围、列表，以及英文月份/星期缩写。任务会按配置的 `timezone` 计算下一次运行时间，
+并通过现有 `AgentRuntime` 执行指定 `agent_name`、`prompt` 和 `runtime_options`。
+
+Workbench 左侧新增 **Cron 计划** 页面，可创建、编辑、启停、删除和立即运行任务。内置调度器默认启用；
+如需只保留配置管理和手动运行，可以设置：
+
+```bash
+export CRON_SCHEDULER_ENABLED=false
+```
+
 ### 本地 Workspace 工具
 
 参考 Hermes 的 file/search/todo/terminal 工具后，v2 当前先接入了一批低风险本地工具。它们都限制在
