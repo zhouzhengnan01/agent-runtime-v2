@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 
+from app.api.auth import require_admin_token
 from app.core.artifacts import ArtifactStore
 from app.core.mcp import McpToolRegistry
 from app.core.skills import SkillRunner
@@ -32,23 +33,18 @@ __all__ = [
 
 @router.get("/api/mcp/tools")
 async def list_mcp_tools() -> dict[str, list[dict[str, Any]]]:
-    return {"tools": [tool.to_payload() for tool in registry.list_custom(include_disabled=True)]}
-
-
-@router.get("/api/mcp/runtime-tools")
-async def list_mcp_runtime_tools() -> dict[str, list[dict[str, Any]]]:
     return {"tools": [tool.to_payload() for tool in registry.list(include_disabled=True)]}
 
 
 @router.get("/api/mcp/tools/{tool_name}")
 async def get_mcp_tool(tool_name: str) -> dict[str, Any]:
     try:
-        return registry.get_custom(tool_name).to_payload()
+        return registry.get(tool_name).to_payload()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.put("/api/mcp/tools/{tool_name}")
+@router.put("/api/mcp/tools/{tool_name}", dependencies=[Depends(require_admin_token)])
 async def save_mcp_tool(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     manifest = payload.get("tool") if isinstance(payload.get("tool"), dict) else payload
     if not isinstance(manifest, dict):

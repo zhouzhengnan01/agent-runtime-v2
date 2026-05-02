@@ -20,7 +20,9 @@
     "workspace_mode": "ephemeral_thread",
     "require_verification": true
   },
-  "tools": ["present_files", "artifact_workflow", "ask_clarification"],
+  "tools": [
+    "present_files"
+  ],
   "skills": [
     "drawio-generation",
     "pptx-generation",

@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
+from app.api.auth import require_admin_token
 from app.core.skills import SkillDefinition, SkillRegistry
 from app.core.skills.plugins import SkillPluginManager
 
@@ -24,7 +25,7 @@ async def list_skill_plugins() -> dict[str, list[dict[str, object]]]:
     return {"plugins": [plugin.to_payload() for plugin in plugin_manager.list_plugins()]}
 
 
-@router.post("/plugins")
+@router.post("/plugins", dependencies=[Depends(require_admin_token)])
 async def upload_skill_plugin(file: UploadFile = File(...)) -> dict[str, object]:
     content = await file.read()
     try:
@@ -52,7 +53,7 @@ async def get_skill_file(skill_name: str, file_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.put("/{skill_name}/files/{file_id}")
+@router.put("/{skill_name}/files/{file_id}", dependencies=[Depends(require_admin_token)])
 async def update_skill_file(skill_name: str, file_id: str, payload: dict[str, Any]) -> dict[str, object]:
     content = payload.get("content")
     if not isinstance(content, str):
@@ -81,7 +82,7 @@ async def get_skill(skill_name: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.put("/{skill_name}")
+@router.put("/{skill_name}", dependencies=[Depends(require_admin_token)])
 async def update_skill(skill_name: str, payload: dict[str, Any]) -> dict[str, object]:
     manifest = payload.get("manifest") if isinstance(payload.get("manifest"), dict) else payload
     if not isinstance(manifest, dict):

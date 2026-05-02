@@ -288,6 +288,35 @@ def test_skills_api_updates_manifest_without_touching_real_config(
     assert '"description": "Edited skill"' in saved
 
 
+def test_skills_api_update_requires_admin_token_when_configured(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RUNTIME_API_TOKEN", "admin-secret")
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    client = TestClient(create_app())
+    payload = {
+        "description": "Protected skill",
+        "output_kind": "markdown",
+        "generation": True,
+        "quality_template": ["summary"],
+        "input_schema": {"type": "object"},
+        "output_schema": {"type": "object"},
+        "sandbox": {"enabled": False, "profile": None, "request_schema_version": "skill-run.v1"},
+    }
+
+    denied = client.put("/api/skills/protected-skill", json=payload)
+    allowed = client.put(
+        "/api/skills/protected-skill",
+        headers={"Authorization": "Bearer admin-secret"},
+        json=payload,
+    )
+
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    assert allowed.json()["name"] == "protected-skill"
+
+
 def test_skills_api_creates_new_manifest(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
     client = TestClient(create_app())

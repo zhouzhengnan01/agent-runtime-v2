@@ -16,6 +16,7 @@ LOCAL_TOOL_NAMES = {
     "local_search_text",
     "local_todo",
     "local_shell_command",
+    "present_files",
 }
 
 
@@ -42,6 +43,8 @@ class LocalToolProvider:
                 return self._todo(paths, arguments)
             if operation == "shell_command":
                 return self._shell_command(paths, arguments)
+            if operation == "present_files":
+                return self._present_files(paths, arguments)
         except Exception as exc:
             return ToolInvocationResult(
                 content=[{"type": "text", "text": f"{tool.name} failed: {exc}"}],
@@ -204,6 +207,56 @@ class LocalToolProvider:
             is_error=completed.returncode != 0,
         )
 
+    def _present_files(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
+        include_workspace = bool(arguments.get("include_workspace", False))
+        max_results = self._bounded_int(arguments.get("max_results"), default=100, minimum=1, maximum=500)
+        outputs = self._file_entries(paths, paths.outputs, "outputs", max_results)
+        remaining = max(0, max_results - len(outputs))
+        workspace = self._file_entries(paths, paths.workspace, "workspace", remaining) if include_workspace and remaining else []
+        files = outputs + workspace
+        text = "\n".join(f"- {item['scope']}/{item['path']} ({item['size']} bytes)" for item in files) or "No files."
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": text}],
+            structured_content={
+                "thread_id": paths.thread_id,
+                "files": files,
+                "truncated": len(files) >= max_results,
+            },
+            is_error=False,
+        )
+
+    def _file_entries(
+        self,
+        paths: ThreadPaths,
+        root: Path,
+        scope: str,
+        max_results: int,
+    ) -> list[dict[str, Any]]:
+        if max_results <= 0:
+            return []
+        entries: list[dict[str, Any]] = []
+        for file_path in sorted(root.rglob("*")):
+            if len(entries) >= max_results:
+                break
+            if not file_path.is_file():
+                continue
+            try:
+                relative = file_path.resolve().relative_to(root.resolve()).as_posix()
+                size = file_path.stat().st_size
+            except OSError:
+                continue
+            virtual_path = f"/mnt/user-data/{scope}/{relative}"
+            entry: dict[str, Any] = {
+                "scope": scope,
+                "path": relative,
+                "virtual_path": virtual_path,
+                "size": size,
+            }
+            if scope == "workspace":
+                entry["workspace_path"] = self._display_path(paths, file_path)
+            entries.append(entry)
+        return entries
+
     @staticmethod
     def _read_todos(path: Path) -> list[dict[str, Any]]:
         if not path.is_file():
@@ -340,6 +393,20 @@ def local_tool_definitions() -> list[ToolDefinition]:
             },
             enabled=shell_enabled,
             source={"type": LocalToolProvider.source_type, "operation": "shell_command"},
+            editable=False,
+        ),
+        ToolDefinition(
+            name="present_files",
+            title="Present Thread Files",
+            description="List files generated in the current thread outputs, and optionally workspace files.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "include_workspace": {"type": "boolean", "default": False},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 500},
+                },
+            },
+            source={"type": LocalToolProvider.source_type, "operation": "present_files"},
             editable=False,
         ),
     ]

@@ -86,9 +86,15 @@ class ArtifactWorkflow:
             {
                 "allowed_skills": self._allowed_skills(agent_config),
                 "attachment_count": len(attachments),
+                "selected_skill": self._selected_skill(agent_config, runtime_options),
             },
         )
-        base_spec = self.spec_builder.build(messages, attachments, self._allowed_skills(agent_config))
+        base_spec = self.spec_builder.build(
+            messages,
+            attachments,
+            self._allowed_skills(agent_config),
+            selected_skill=self._selected_skill(agent_config, runtime_options),
+        )
         skill_name = str(base_spec["skill_name"])
         spec = self._plan_spec(recorder, agent_config, messages, base_spec, runtime_options)
         skill_name = str(spec["skill_name"])
@@ -328,3 +334,21 @@ class ArtifactWorkflow:
         if agent_config.skills:
             return agent_config.skills
         return [skill.name for skill in self.skill_registry.list(executable_only=True)]
+
+    def _selected_skill(self, agent_config: AgentConfig, runtime_options: RuntimeOptions | None) -> str | None:
+        if runtime_options is None:
+            return None
+        allowed_skills = self._allowed_skills(agent_config)
+        for raw_name in runtime_options.selected_skills:
+            skill_name = raw_name.strip()
+            if not skill_name:
+                continue
+            if allowed_skills and skill_name not in allowed_skills:
+                continue
+            try:
+                skill = self.skill_registry.get(skill_name)
+            except KeyError:
+                continue
+            if skill.runner_path is not None:
+                return skill.name
+        return None

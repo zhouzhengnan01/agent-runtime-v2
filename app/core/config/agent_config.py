@@ -27,12 +27,12 @@ class ModelConfig(BaseModel):
     temperature: float = 0.3
     top_p: float | None = None
     max_tokens: int = 4096
-    request_timeout_seconds: float = 120.0
 
 
 class RuntimeConfig(BaseModel):
     stateless: bool = True
     max_tool_rounds: int = 8
+    max_tool_result_chars: int = Field(default=20000, ge=1000, le=500000)
     max_retries: int = 1
     workspace_mode: Literal["ephemeral_thread"] = "ephemeral_thread"
     require_verification: bool = True
@@ -54,11 +54,21 @@ class RoutingConfig(BaseModel):
     llm_workflow_router_env: str = "LLM_WORKFLOW_ROUTER"
 
 
+MarkdownMemoryScope = Literal["session", "project", "user", "global"]
+
+
+def _default_markdown_writable_scopes() -> list[MarkdownMemoryScope]:
+    return ["session"]
+
+
 class MemoryConfig(BaseModel):
     enabled: bool = False
     scope: Literal["agent", "global"] = "agent"
     max_items: int = Field(default=20, ge=1, le=100)
     inject_context: bool = False
+    markdown_enabled: bool = False
+    markdown_writable_scopes: list[MarkdownMemoryScope] = Field(default_factory=_default_markdown_writable_scopes)
+    markdown_max_chars: int = Field(default=12000, ge=1000, le=100000)
 
 
 class AgentConfig(BaseModel):

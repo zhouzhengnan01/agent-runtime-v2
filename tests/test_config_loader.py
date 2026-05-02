@@ -4,6 +4,7 @@ from pathlib import Path
 from app.cli import set_encrypted_api_key
 from app.core.config import AgentConfigLoader
 from app.core.config.secrets import SecretCodec
+from app.core.tools import ToolInvocationService
 
 
 def test_load_builtin_agent() -> None:
@@ -20,6 +21,26 @@ def test_load_builtin_agent() -> None:
 def test_list_agents() -> None:
     names = {agent.name for agent in AgentConfigLoader().list_agents()}
     assert {"default", "artifact-generator", "behavior-detector"} <= names
+
+
+def test_builtin_agent_tool_names_resolve_to_registered_tools() -> None:
+    service = ToolInvocationService()
+    registered_tools = {tool.name for tool in service.list_tools(include_disabled=True)}
+    for agent in AgentConfigLoader().list_agents():
+        missing = set(agent.tools) - registered_tools
+        assert not missing, f"{agent.name} declares unknown tools: {sorted(missing)}"
+
+
+def test_default_agent_declares_markdown_memory_tools() -> None:
+    agent = AgentConfigLoader().load("default")
+
+    assert {
+        "memory_md_list",
+        "memory_md_read",
+        "memory_md_append",
+        "memory_md_search",
+        "memory_md_compress",
+    } <= set(agent.tools)
 
 
 def test_local_agent_config_overrides_base_config(tmp_path: Path) -> None:

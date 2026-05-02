@@ -445,10 +445,6 @@
       gap: 0;
     }
 
-    .workbench.manager-mode {
-      grid-template-columns: minmax(0, 1fr);
-    }
-
     .center {
       min-width: 0;
       min-height: 0;
@@ -1150,10 +1146,6 @@
       overflow: hidden;
     }
 
-    .workbench.manager-mode .inspector {
-      display: none;
-    }
-
     .inspector-head {
       min-height: 58px;
       display: flex;
@@ -1450,36 +1442,29 @@
 
     .skill-manager {
       min-height: 0;
-      max-width: 1320px;
+      max-width: 1180px;
       width: 100%;
       margin: 0 auto;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
-      gap: 14px;
+      gap: 16px;
       overflow: hidden;
     }
 
     .skill-manager-head {
       display: flex;
-      align-items: center;
+      align-items: flex-end;
       justify-content: space-between;
       gap: 18px;
-      padding: 2px 2px 14px;
+      padding-bottom: 14px;
       border-bottom: 1px solid var(--line);
     }
 
-    .skill-manager-head > div:first-child {
-      min-width: 0;
-      display: grid;
-      gap: 5px;
-    }
-
     .skill-manager-head h2 {
-      margin: 0;
-      font-size: 22px;
-      line-height: 1.12;
-      font-weight: 800;
-      letter-spacing: 0;
+      margin: 0 0 5px;
+      font-size: 26px;
+      line-height: 1.1;
+      font-weight: 780;
     }
 
     .skill-manager-head p {
@@ -1495,47 +1480,44 @@
       justify-content: flex-end;
       gap: 8px;
       flex-wrap: wrap;
-      flex: 0 0 auto;
     }
 
     .skill-manager-body {
       min-height: 0;
       display: grid;
-      grid-template-columns: minmax(340px, 410px) minmax(0, 1fr);
-      gap: 16px;
+      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      gap: 18px;
       overflow: hidden;
     }
 
     .skill-list-pane,
     .skill-editor-pane {
       min-height: 0;
-      background: rgba(255, 255, 255, .82);
+      background: rgba(255, 255, 255, .62);
       border: 1px solid var(--line);
-      border-radius: var(--radius-lg);
+      border-radius: var(--radius);
       overflow: hidden;
     }
 
     .skill-list-pane {
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
-      box-shadow: 0 10px 28px rgba(24, 27, 31, .04);
     }
 
     .skill-filter-row {
       display: flex;
       gap: 6px;
-      padding: 10px 12px;
+      padding: 10px;
       border-bottom: 1px solid var(--line);
       overflow-x: auto;
-      background: rgba(248, 250, 252, .88);
     }
 
     .skill-filter-row button {
-      min-height: 28px;
-      border-radius: var(--radius);
+      min-height: 30px;
+      border-radius: var(--radius-full);
       border: 1px solid transparent;
       color: var(--muted);
-      padding: 0 9px;
+      padding: 0 10px;
       font-size: 12px;
       font-weight: 720;
       white-space: nowrap;
@@ -1553,69 +1535,33 @@
       overflow: auto;
       display: grid;
       align-content: start;
-      padding: 8px;
-      gap: 8px;
-    }
-
-    .tool-note {
-      margin: 10px;
-      padding: 10px 12px;
-      border: 1px solid rgba(24, 104, 219, .16);
-      border-radius: var(--radius);
-      background: rgba(239, 246, 255, .72);
-      color: #38516f;
-      font-size: 12px;
-      line-height: 1.55;
-    }
-
-    .tool-note strong {
-      display: block;
-      margin-bottom: 3px;
-      color: #14233a;
-      font-size: 13px;
-      font-weight: 760;
     }
 
     .skill-group {
-      display: grid;
-      gap: 6px;
+      padding: 12px 0 4px;
     }
 
     .skill-group-title {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      padding: 7px 8px 5px;
-      background: rgba(255, 255, 255, .92);
+      padding: 0 14px 8px;
       color: var(--muted);
       font-size: 11px;
       font-weight: 780;
-      letter-spacing: .03em;
       text-transform: uppercase;
     }
 
     .skill-row {
       width: 100%;
       display: grid;
-      gap: 8px;
-      padding: 12px;
+      gap: 6px;
+      padding: 11px 14px;
       text-align: left;
-      border: 1px solid transparent;
-      border-radius: var(--radius);
-      background: transparent;
-      transition: background 140ms, border-color 140ms, transform 140ms, box-shadow 140ms;
+      border-top: 1px solid rgba(223, 227, 234, .72);
+      transition: background 120ms;
     }
 
-    .skill-row:hover {
-      background: #fff;
-      border-color: var(--line);
-      box-shadow: 0 8px 20px rgba(24, 27, 31, .04);
-    }
-
+    .skill-row:hover,
     .skill-row.active {
       background: #fff;
-      border-color: rgba(21, 91, 212, .3);
-      box-shadow: inset 3px 0 0 var(--accent), 0 8px 24px rgba(21, 91, 212, .07);
     }
 
     .skill-row-main {
@@ -1640,7 +1586,7 @@
       margin: 0;
       color: var(--muted);
       font-size: 12px;
-      line-height: 1.48;
+      line-height: 1.4;
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
@@ -1648,9 +1594,9 @@
     }
 
     .skill-file-line {
-      color: #7c8794;
+      color: var(--muted-2);
       font-size: 11px;
-      line-height: 1.4;
+      line-height: 1.35;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -1675,12 +1621,6 @@
       white-space: nowrap;
     }
 
-    .skill-badge.kind {
-      background: #111317;
-      border-color: #111317;
-      color: #fff;
-    }
-
     .skill-badge.sandbox {
       background: var(--accent-soft);
       border-color: rgba(21, 91, 212, .18);
@@ -1697,14 +1637,13 @@
       min-width: 0;
       overflow: auto;
       background: var(--surface);
-      box-shadow: 0 10px 28px rgba(24, 27, 31, .04);
     }
 
     .skill-editor {
       min-width: 0;
       display: grid;
-      gap: 18px;
-      padding: 18px;
+      gap: 16px;
+      padding: 16px;
     }
 
     .skill-editor-head {
@@ -1712,15 +1651,14 @@
       align-items: flex-start;
       justify-content: space-between;
       gap: 16px;
-      padding: 2px 2px 16px;
+      padding-bottom: 14px;
       border-bottom: 1px solid var(--line);
     }
 
     .skill-editor-title {
       min-width: 0;
-      display: flex;
-      align-items: flex-start;
-      gap: 12px;
+      display: grid;
+      gap: 5px;
     }
 
     .skill-editor-title strong {
@@ -1736,32 +1674,6 @@
       overflow-wrap: anywhere;
     }
 
-    .skill-editor-title-main {
-      min-width: 0;
-      display: grid;
-      gap: 5px;
-    }
-
-    .skill-avatar {
-      width: 38px;
-      height: 38px;
-      border-radius: var(--radius);
-      display: grid;
-      place-items: center;
-      background: #111317;
-      color: #fff;
-      font-size: 13px;
-      font-weight: 800;
-      flex: 0 0 auto;
-    }
-
-    .skill-meta-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-
     .skill-status {
       color: var(--muted);
       font-size: 12px;
@@ -1774,32 +1686,16 @@
 
     .skill-form {
       display: grid;
-      gap: 16px;
-    }
-
-    .skill-form-section {
-      display: grid;
-      gap: 12px;
-      padding: 14px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-lg);
-      background: rgba(248, 250, 252, .56);
-    }
-
-    .skill-form-section-title {
-      margin: 0;
-      color: var(--text);
-      font-size: 13px;
-      font-weight: 800;
+      gap: 14px;
     }
 
     .file-editor {
       display: grid;
-      gap: 12px;
-      padding: 14px;
+      gap: 10px;
+      padding: 12px;
       border: 1px solid var(--line);
-      border-radius: var(--radius-lg);
-      background: linear-gradient(180deg, rgba(248, 250, 252, .94), rgba(255, 255, 255, .98));
+      border-radius: var(--radius);
+      background: rgba(246, 248, 251, .78);
     }
 
     .file-editor-head {
@@ -1812,11 +1708,11 @@
     .file-editor-title {
       min-width: 0;
       display: grid;
-      gap: 4px;
+      gap: 3px;
     }
 
     .file-editor-title strong {
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 780;
       color: var(--text);
     }
@@ -1831,19 +1727,16 @@
 
     .package-file-tabs {
       display: flex;
-      gap: 4px;
+      gap: 6px;
       overflow-x: auto;
-      padding: 4px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: #eef2f7;
+      padding-bottom: 2px;
     }
 
     .package-file-tabs button {
-      min-height: 28px;
-      border-radius: 6px;
-      border: 1px solid transparent;
-      background: transparent;
+      min-height: 30px;
+      border-radius: var(--radius-full);
+      border: 1px solid var(--line);
+      background: var(--surface);
       color: var(--muted);
       padding: 0 10px;
       font-size: 12px;
@@ -1853,9 +1746,9 @@
 
     .package-file-tabs button.active,
     .package-file-tabs button:hover {
-      color: var(--text);
-      border-color: rgba(184, 192, 204, .58);
-      background: #fff;
+      color: var(--accent);
+      border-color: rgba(21, 91, 212, .22);
+      background: var(--accent-soft);
     }
 
     .field-grid {
@@ -1883,7 +1776,7 @@
       width: 100%;
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      background: #fff;
+      background: var(--surface-soft);
       color: var(--text);
       padding: 9px 10px;
       outline: none;
@@ -1901,12 +1794,10 @@
       font-family: var(--mono);
       font-size: 12px;
       line-height: 1.5;
-      color: #162033;
-      background: #f8fafc;
     }
 
     .field textarea.file-code {
-      min-height: 330px;
+      min-height: 360px;
     }
 
     .field input:focus,
@@ -1921,10 +1812,7 @@
       align-items: center;
       gap: 9px;
       min-height: 38px;
-      padding: 9px 10px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: #fff;
+      padding: 0 2px;
     }
 
     .check-field input {
@@ -2079,9 +1967,6 @@
         grid-template-columns: 1fr;
         grid-template-rows: minmax(620px, 1fr) minmax(420px, 48svh);
       }
-      .workbench.manager-mode {
-        grid-template-rows: minmax(0, 1fr);
-      }
       .inspector {
         border-left: 0;
         border-top: 1px solid var(--line);
@@ -2095,9 +1980,6 @@
       .skill-manager-body {
         grid-template-columns: 1fr;
         grid-template-rows: minmax(230px, 34svh) minmax(520px, 1fr);
-      }
-      .workbench.manager-mode .center {
-        overflow: hidden;
       }
     }
 
@@ -2133,24 +2015,14 @@
         flex-direction: column;
         padding: 10px 12px;
       }
-      .main {
-        grid-template-rows: auto minmax(0, 1fr);
-      }
       .topbar-left,
       .topbar-right {
         width: 100%;
       }
       .topbar-right select,
       .topbar-right input {
-        flex: 1 1 calc(50% - 6px);
+        flex: 1 1 140px;
         min-width: 0;
-      }
-      .topbar-right input {
-        flex-basis: 100%;
-        width: 100%;
-      }
-      .topbar-right .ghost-btn {
-        flex: 0 0 auto;
       }
       .center {
         padding: 18px 14px 16px;
@@ -2182,13 +2054,6 @@
       .skill-editor-head,
       .file-editor-head {
         display: grid;
-      }
-      .skill-editor-title {
-        display: grid;
-      }
-      .skill-avatar {
-        width: 34px;
-        height: 34px;
       }
       .field-grid {
         grid-template-columns: 1fr;
@@ -2222,11 +2087,11 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
           <span class="nav-label">进入聊天</span>
         </button>
-        <button type="button" data-inspector-tab="timeline">
+        <button type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"></path><path d="M7 15l3-3 3 2 5-6"></path></svg>
           <span class="nav-label">运行详情</span>
         </button>
-        <button type="button" data-inspector-tab="verification">
+        <button type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
           <span class="nav-label">评估</span>
           <span class="nav-badge">v2</span>
@@ -2354,8 +2219,8 @@
           <section id="toolsManager" class="skill-manager" hidden>
             <div class="skill-manager-head">
               <div>
-                <h2>MCP 工具</h2>
-                <p id="toolSummary">加载手动 MCP 配置中</p>
+                <h2>工具列表</h2>
+                <p id="toolSummary">加载 MCP 工具中</p>
               </div>
               <div class="manager-actions">
                 <button class="secondary-btn" type="button" data-add-mcp-tool>添加 MCP 工具</button>
@@ -2366,6 +2231,8 @@
               <aside class="skill-list-pane">
                 <div class="skill-filter-row" aria-label="工具筛选">
                   <button class="active" type="button" data-tool-filter="all">全部</button>
+                  <button type="button" data-tool-filter="manual">手动</button>
+                  <button type="button" data-tool-filter="skill">Skill 来源</button>
                   <button type="button" data-tool-filter="enabled">启用</button>
                   <button type="button" data-tool-filter="disabled">停用</button>
                 </div>
@@ -2470,34 +2337,6 @@
   </div>
 
   <script>
-    const BASE_PATH = (() => {
-      const marker = '/chat';
-      const path = window.location.pathname || '/';
-      return path === marker || path.startsWith(`${marker}/`) ? marker : '';
-    })();
-
-    function prefixedPath(path) {
-      const normalized = path.startsWith('/') ? path : `/${path}`;
-      return `${BASE_PATH}${normalized}`;
-    }
-
-    function apiUrl(path) {
-      return prefixedPath(path);
-    }
-
-    function websocketUrl(path) {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      return `${protocol}//${window.location.host}${prefixedPath(path)}`;
-    }
-
-    function artifactUrl(url) {
-      if (!url || url === '#') return url || '#';
-      if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(url) || url.startsWith('data:') || url.startsWith('blob:')) {
-        return url;
-      }
-      return BASE_PATH && url.startsWith('/') && !url.startsWith(`${BASE_PATH}/`) ? `${BASE_PATH}${url}` : url;
-    }
-
     const skillCatalog = [
       { name: 'drawio-generation', agent: 'artifact-generator', detail: '节点、连线、泳道、分层' },
       { name: 'pptx-generation', agent: 'artifact-generator', detail: '封面、目录、架构、计划' },
@@ -2581,7 +2420,6 @@
       refreshTop: document.getElementById('refreshTop'),
       runStatus: document.getElementById('runStatus'),
       routeHint: document.getElementById('routeHint'),
-      workbench: document.querySelector('.workbench'),
       centerPane: document.getElementById('centerPane'),
       intro: document.getElementById('intro'),
       skillStrip: document.getElementById('skillStrip'),
@@ -2834,7 +2672,7 @@
     }
 
     function composerMcpTools() {
-      return state.mcpTools.filter((tool) => toolSourceType(tool) === 'manual');
+      return state.mcpTools.filter((tool) => toolSourceType(tool) === 'manual' && tool.name !== 'jetlinks_runtime_status');
     }
 
     function renderCapabilityChoice(item, mode, active) {
@@ -2902,20 +2740,6 @@
       }
     }
 
-    function activateInspectorTab(tabName) {
-      state.activeTab = ['artifacts', 'abilities', 'verification', 'spec', 'timeline'].includes(tabName) ? tabName : 'artifacts';
-      document.querySelectorAll('.tab').forEach((item) => {
-        item.classList.toggle('active', item.dataset.tab === state.activeTab);
-      });
-      updateNavigationState();
-      renderPanel();
-    }
-
-    function openInspectorTab(tabName) {
-      setView('chat');
-      activateInspectorTab(tabName);
-    }
-
     function renderArtifactPanel() {
       const timeline = state.timeline.length ? `
         <section class="timeline">
@@ -2942,11 +2766,11 @@
               <div class="artifact-name">${escapeHtml(artifact.name)}</div>
               <div class="artifact-meta">${escapeHtml(artifact.kind)} · ${escapeHtml(artifact.mime_type)} · ${formatBytes(artifact.size)}</div>
               <div class="artifact-actions">
-                <button type="button" data-preview="${escapeAttr(artifactUrl(artifact.preview_url))}" data-kind="${escapeAttr(artifact.kind)}" data-id="${safeId(artifact.path)}">预览</button>
-                <button type="button" data-download="${escapeAttr(artifactUrl(artifact.download_url))}">下载</button>
+                <button type="button" data-preview="${escapeAttr(artifact.preview_url)}" data-kind="${escapeAttr(artifact.kind)}" data-id="${safeId(artifact.path)}">预览</button>
+                <button type="button" data-download="${escapeAttr(artifact.download_url)}">下载</button>
               </div>
               <div class="preview ${artifact.kind === 'image' ? 'image-preview' : ''}" id="preview-${safeId(artifact.path)}" ${artifact.kind === 'image' ? '' : 'hidden'}>
-                ${artifact.kind === 'image' ? `<img src="${escapeAttr(artifactUrl(artifact.preview_url))}" alt="${escapeAttr(artifact.name)}">` : ''}
+                ${artifact.kind === 'image' ? `<img src="${escapeAttr(artifact.preview_url)}" alt="${escapeAttr(artifact.name)}">` : ''}
               </div>
             </div>
           `).join('')}
@@ -3023,7 +2847,7 @@
     }
 
     async function loadAgents() {
-      const res = await fetch(apiUrl('/api/agents'));
+      const res = await fetch('/api/agents');
       const data = await res.json();
       state.agents = data.agents || [];
       els.agent.innerHTML = state.agents.map((agent) => `<option value="${escapeHtml(agent.name)}">${escapeHtml(agent.display_name || agent.name)}</option>`).join('');
@@ -3036,7 +2860,7 @@
 
     async function loadSkills(options = {}) {
       if (els.skillSummary) els.skillSummary.textContent = '加载技能中';
-      const res = await fetch(apiUrl('/api/skills'), { cache: 'no-store' });
+      const res = await fetch('/api/skills', { cache: 'no-store' });
       if (!res.ok) throw new Error(res.statusText || `HTTP ${res.status}`);
       const data = await res.json();
       state.skills = data.skills || [];
@@ -3059,7 +2883,7 @@
       if (els.skillEditor && options.showLoading !== false) {
         els.skillEditor.innerHTML = '<div class="empty-panel">加载技能配置</div>';
       }
-      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(skillName)}`), { cache: 'no-store' });
+      const res = await fetch(`/api/skills/${encodeURIComponent(skillName)}`, { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
@@ -3136,7 +2960,7 @@
             <button class="skill-row ${skill.name === state.selectedSkillName ? 'active' : ''}" type="button" data-skill-select="${escapeAttr(skill.name)}">
               <div class="skill-row-main">
                 <strong>${escapeHtml(skill.name)}</strong>
-                <span class="skill-badge kind">${escapeHtml(skill.output_kind || 'json')}</span>
+                <span class="skill-badge">${escapeHtml(skill.output_kind || 'json')}</span>
               </div>
               <p>${escapeHtml(skill.description || '')}</p>
               <div class="skill-file-line">${escapeHtml(skill.source?.plugin_id ? `插件 · ${skill.source.plugin_id}` : 'Manifest 草稿')} · ${escapeHtml(displaySourcePath(skill.source_path, `config/skills/${skill.name}.json`))} · ${skill.editable ? '可编辑' : '只读'}</div>
@@ -3218,7 +3042,7 @@
         state.selectedSkillFileContent = '加载文件中';
         renderSkillEditor();
       }
-      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(skillName)}/files/${encodeURIComponent(state.selectedSkillFileId)}`), { cache: 'no-store' });
+      const res = await fetch(`/api/skills/${encodeURIComponent(skillName)}/files/${encodeURIComponent(state.selectedSkillFileId)}`, { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
@@ -3255,23 +3079,11 @@
       const packageFiles = skill.package_files || [];
       const packageFile = selectedPackageFile(skill);
       const fileContent = selectedPackageFileContent(skill, packageFile);
-      const skillInitial = String(skill.name || 'S').slice(0, 1).toUpperCase();
       els.skillEditor.innerHTML = `
         <div class="skill-editor-head">
           <div class="skill-editor-title">
-            <div class="skill-avatar">${escapeHtml(skillInitial)}</div>
-            <div class="skill-editor-title-main">
-              <strong>${escapeHtml(skill.name)}</strong>
-              <span>${escapeHtml(displaySourcePath(skill.source_path, `config/skills/${skill.name}.json`))}</span>
-              <div class="skill-meta-row">
-                <span class="skill-badge kind">${escapeHtml(skill.output_kind || 'json')}</span>
-                <span class="skill-badge ${skill.executable === false ? 'local' : 'sandbox'}">${skill.executable === false ? '未安装 runner' : '插件可执行'}</span>
-                <span class="skill-badge ${skill.generation ? '' : 'local'}">${skill.generation ? '生成型' : '判断型'}</span>
-                ${sandbox.enabled
-                  ? `<span class="skill-badge sandbox">Sandbox · ${escapeHtml(sandbox.profile || '-')}</span>`
-                  : '<span class="skill-badge local">Local</span>'}
-              </div>
-            </div>
+            <strong>${escapeHtml(skill.name)}</strong>
+            <span>${escapeHtml(displaySourcePath(skill.source_path, `config/skills/${skill.name}.json`))}</span>
           </div>
           <div id="skillEditStatus" class="skill-status ${status.type || ''}">${escapeHtml(status.text || '')}</div>
         </div>
@@ -3301,71 +3113,62 @@
           </div>
         </section>
         <form id="skillForm" class="skill-form">
-          <section class="skill-form-section">
-            <h3 class="skill-form-section-title">基础信息</h3>
+          <div class="field">
+            <label for="skillDescription">描述</label>
+            <input id="skillDescription" name="description" value="${escapeAttr(skill.description || '')}">
+          </div>
+          <div class="field-grid">
             <div class="field">
-              <label for="skillDescription">描述</label>
-              <input id="skillDescription" name="description" value="${escapeAttr(skill.description || '')}">
+              <label for="skillOutputKind">输出类型</label>
+              <input id="skillOutputKind" name="output_kind" value="${escapeAttr(skill.output_kind || 'json')}">
             </div>
-            <div class="field-grid">
-              <div class="field">
-                <label for="skillOutputKind">输出类型</label>
-                <input id="skillOutputKind" name="output_kind" value="${escapeAttr(skill.output_kind || 'json')}">
-              </div>
-              <label class="check-field">
-                <input name="generation" type="checkbox" ${skill.generation ? 'checked' : ''}>
-                <span>生成型技能</span>
-              </label>
-            </div>
+            <label class="check-field">
+              <input name="generation" type="checkbox" ${skill.generation ? 'checked' : ''}>
+              <span>生成型技能</span>
+            </label>
+          </div>
+          <div class="field">
+            <label for="skillQuality">质量模板</label>
+            <textarea id="skillQuality" name="quality_template">${escapeHtml((skill.quality_template || []).join('\n'))}</textarea>
+          </div>
+          <div class="field-grid">
+            <label class="check-field">
+              <input name="sandbox_enabled" type="checkbox" ${sandbox.enabled ? 'checked' : ''}>
+              <span>启用沙盒执行</span>
+            </label>
             <div class="field">
-              <label for="skillQuality">质量模板</label>
-              <textarea id="skillQuality" name="quality_template">${escapeHtml((skill.quality_template || []).join('\n'))}</textarea>
+              <label for="skillSandboxProfile">沙盒 Profile</label>
+              <input id="skillSandboxProfile" name="sandbox_profile" value="${escapeAttr(sandbox.profile || '')}">
             </div>
-          </section>
-          <section class="skill-form-section">
-            <h3 class="skill-form-section-title">运行策略</h3>
-            <div class="field-grid">
-              <label class="check-field">
-                <input name="sandbox_enabled" type="checkbox" ${sandbox.enabled ? 'checked' : ''}>
-                <span>启用沙盒执行</span>
-              </label>
-              <div class="field">
-                <label for="skillSandboxProfile">沙盒 Profile</label>
-                <input id="skillSandboxProfile" name="sandbox_profile" value="${escapeAttr(sandbox.profile || '')}">
-              </div>
-            </div>
-            <div class="field-grid">
-              <div class="field">
-                <label for="skillRequestSchema">请求协议</label>
-                <input id="skillRequestSchema" name="request_schema_version" value="${escapeAttr(sandbox.request_schema_version || 'skill-run.v1')}">
-              </div>
-              <div class="field">
-                <label for="skillFallback">失败回退</label>
-                <select id="skillFallback" name="fallback_to_local">
-                  <option value="true" ${sandbox.fallback_to_local === true ? 'selected' : ''}>true</option>
-                  <option value="false" ${sandbox.fallback_to_local === false ? 'selected' : ''}>false</option>
-                  <option value="null" ${sandbox.fallback_to_local == null ? 'selected' : ''}>null</option>
-                </select>
-              </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="skillRequestSchema">请求协议</label>
+              <input id="skillRequestSchema" name="request_schema_version" value="${escapeAttr(sandbox.request_schema_version || 'skill-run.v1')}">
             </div>
             <div class="field">
-              <label for="skillAdapterCommand">Adapter Command</label>
-              <input id="skillAdapterCommand" name="adapter_command" value="${escapeAttr(sandbox.adapter_command || '')}">
+              <label for="skillFallback">失败回退</label>
+              <select id="skillFallback" name="fallback_to_local">
+                <option value="true" ${sandbox.fallback_to_local === true ? 'selected' : ''}>true</option>
+                <option value="false" ${sandbox.fallback_to_local === false ? 'selected' : ''}>false</option>
+                <option value="null" ${sandbox.fallback_to_local == null ? 'selected' : ''}>null</option>
+              </select>
             </div>
-          </section>
-          <section class="skill-form-section">
-            <h3 class="skill-form-section-title">Schema</h3>
-            <div class="field-grid">
-              <div class="field">
-                <label for="skillInputSchema">Input Schema</label>
-                <textarea id="skillInputSchema" class="code" name="input_schema">${escapeHtml(JSON.stringify(skill.input_schema || {}, null, 2))}</textarea>
-              </div>
-              <div class="field">
-                <label for="skillOutputSchema">Output Schema</label>
-                <textarea id="skillOutputSchema" class="code" name="output_schema">${escapeHtml(JSON.stringify(skill.output_schema || {}, null, 2))}</textarea>
-              </div>
+          </div>
+          <div class="field">
+            <label for="skillAdapterCommand">Adapter Command</label>
+            <input id="skillAdapterCommand" name="adapter_command" value="${escapeAttr(sandbox.adapter_command || '')}">
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="skillInputSchema">Input Schema</label>
+              <textarea id="skillInputSchema" class="code" name="input_schema">${escapeHtml(JSON.stringify(skill.input_schema || {}, null, 2))}</textarea>
             </div>
-          </section>
+            <div class="field">
+              <label for="skillOutputSchema">Output Schema</label>
+              <textarea id="skillOutputSchema" class="code" name="output_schema">${escapeHtml(JSON.stringify(skill.output_schema || {}, null, 2))}</textarea>
+            </div>
+          </div>
           <div class="skill-form-actions">
             <button class="secondary-btn" type="button" data-skill-reset>重置</button>
             <button class="primary-btn" type="button" data-skill-save>保存</button>
@@ -3407,13 +3210,6 @@
         .filter(Boolean);
     }
 
-    function splitLines(value) {
-      return String(value || '')
-        .split('\n')
-        .map((item) => item.trim())
-        .filter(Boolean);
-    }
-
     function nullableText(value) {
       const text = String(value || '').trim();
       return text || null;
@@ -3441,7 +3237,7 @@
         return;
       }
       renderSkillEditor({ text: '保存中' });
-      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(state.selectedSkillName)}`), {
+      const res = await fetch(`/api/skills/${encodeURIComponent(state.selectedSkillName)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(manifest)
@@ -3478,7 +3274,7 @@
       }
       state.selectedSkillFileContent = file.content;
       renderSkillEditor({ text: '保存文件中' });
-      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(state.selectedSkillName)}/files/${encodeURIComponent(file.fileId)}`), {
+      const res = await fetch(`/api/skills/${encodeURIComponent(state.selectedSkillName)}/files/${encodeURIComponent(file.fileId)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: file.content })
@@ -3522,25 +3318,12 @@
       }
     }
 
-    function updateNavigationState() {
-      let inspectorShortcutActive = false;
-      document.querySelectorAll('[data-inspector-tab]').forEach((item) => {
-        const isActive = state.view === 'chat' && item.dataset.inspectorTab === state.activeTab;
-        item.classList.toggle('active', isActive);
-        inspectorShortcutActive = inspectorShortcutActive || isActive;
-      });
-      document.querySelectorAll('[data-view]').forEach((item) => {
-        item.classList.toggle('active', item.dataset.view === state.view && !inspectorShortcutActive);
-      });
-    }
-
     function setView(view) {
       state.view = ['chat', 'skills', 'tools', 'workflows'].includes(view) ? view : 'chat';
       const isChat = state.view === 'chat';
       const isSkills = state.view === 'skills';
       const isTools = state.view === 'tools';
       const isWorkflows = state.view === 'workflows';
-      els.workbench?.classList.toggle('manager-mode', !isChat);
       els.centerPane.classList.toggle('skills-mode', !isChat);
       els.intro.hidden = !isChat;
       els.skillStrip.hidden = !isChat;
@@ -3549,8 +3332,9 @@
       els.skillManager.hidden = !isSkills;
       els.toolsManager.hidden = !isTools;
       els.workflowManager.hidden = !isWorkflows;
-      els.refresh.hidden = !isChat;
-      updateNavigationState();
+      document.querySelectorAll('[data-view]').forEach((item) => {
+        item.classList.toggle('active', item.dataset.view === state.view);
+      });
       if (isSkills) {
         state.activeTab = 'abilities';
         state.abilityMode = 'skills';
@@ -3591,7 +3375,7 @@
     }
 
     async function loadWorkflows() {
-      const res = await fetch(apiUrl('/api/workflows'), { cache: 'no-store' });
+      const res = await fetch('/api/workflows', { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
       state.workflows = data.workflows || [];
@@ -3606,15 +3390,11 @@
     }
 
     async function loadMcpTools() {
-      const res = await fetch(apiUrl('/api/mcp/tools'), { cache: 'no-store' });
+      const res = await fetch('/api/mcp/tools', { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
       state.mcpTools = data.tools || [];
       state.mcpToolsLoaded = true;
-      if (state.selectedMcpToolName && !state.mcpTools.some((tool) => tool.name === state.selectedMcpToolName)) {
-        state.selectedMcpToolName = null;
-        state.selectedMcpTool = null;
-      }
       if (!state.selectedMcpToolName && state.mcpTools.length) {
         state.selectedMcpToolName = state.mcpTools[0].name;
       }
@@ -3628,21 +3408,19 @@
 
     function renderToolSummary() {
       if (!els.toolSummary) return;
+      const manualCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'manual').length;
+      const skillCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'skill').length;
+      const localCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'local').length;
+      const memoryCount = state.mcpTools.filter((tool) => toolSourceType(tool) === 'memory').length;
       const enabledCount = state.mcpTools.filter((tool) => tool.enabled).length;
-      els.toolSummary.textContent = `${state.mcpTools.length} 个手动 MCP 配置 · ${enabledCount} 个启用。Skill、本地文件和记忆是 agent loop 内置能力，不算手动 MCP。`;
+      els.toolSummary.textContent = `${state.mcpTools.length} 个协议工具 · ${manualCount} 个手动 MCP · ${skillCount} 个 Skill 映射 · ${localCount} 个本地工具 · ${memoryCount} 个记忆工具 · ${enabledCount} 个启用`;
     }
 
     function renderToolList() {
       if (!els.toolList) return;
       const tools = filteredMcpTools();
       if (!tools.length) {
-        els.toolList.innerHTML = `
-          <div class="tool-note">
-            <strong>这里现在只显示你手动配置的 MCP 工具</strong>
-            Skill、本地文件、记忆等能力由 agent runtime 内置注册，不是你接入的外部 MCP Server。
-          </div>
-          <div class="empty-panel">${state.mcpTools.length ? '暂无匹配 MCP 工具' : '暂无手动 MCP 工具'}</div>
-        `;
+        els.toolList.innerHTML = '<div class="empty-panel">暂无匹配工具</div>';
         return;
       }
       const groups = groupMcpTools(tools);
@@ -3672,6 +3450,8 @@
         tools.push(state.selectedMcpTool);
       }
       const sorted = tools.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      if (state.toolFilter === 'manual') return sorted.filter((tool) => toolSourceType(tool) === 'manual');
+      if (state.toolFilter === 'skill') return sorted.filter((tool) => toolSourceType(tool) === 'skill');
       if (state.toolFilter === 'enabled') return sorted.filter((tool) => tool.enabled);
       if (state.toolFilter === 'disabled') return sorted.filter((tool) => !tool.enabled);
       return sorted;
@@ -3679,7 +3459,10 @@
 
     function groupMcpTools(tools) {
       const labels = {
-        manual: '手动 MCP 工具'
+        manual: '手动 MCP 工具',
+        skill: '由 Skill 暴露的工具',
+        local: '内置本地工具',
+        memory: '记忆工具'
       };
       const map = new Map();
       tools.forEach((tool) => {
@@ -3696,7 +3479,10 @@
 
     function toolSourceLabel(tool) {
       const labels = {
-        manual: '手动 MCP'
+        manual: 'Manual MCP',
+        skill: 'Skill 来源',
+        local: '内置本地',
+        memory: '记忆工具'
       };
       return labels[toolSourceType(tool)] || toolSourceType(tool);
     }
@@ -3778,91 +3564,11 @@
       return `${JSON.stringify(mcpToolForSave(tool), null, 2)}\n`;
     }
 
-    function mcpToolSourceKind(tool) {
-      return tool?.source?.type === 'mcp_stdio' ? 'mcp_stdio' : 'manual';
-    }
-
-    function mcpSourceFromForm(formData) {
-      const sourceType = String(formData.get('source_type') || 'manual').trim();
-      if (sourceType === 'mcp_stdio') {
-        return {
-          type: 'mcp_stdio',
-          server: String(formData.get('server') || '').trim(),
-          command: String(formData.get('command') || '').trim(),
-          args: splitLines(String(formData.get('args') || '')),
-          server_tool: String(formData.get('server_tool') || '').trim(),
-          cwd: String(formData.get('cwd') || '').trim() || '.',
-          timeout_seconds: Number.parseInt(String(formData.get('timeout_seconds') || '20'), 10) || 20
-        };
-      }
-      return { type: 'manual', response_template: String(formData.get('response_template') || '').trim() };
-    }
-
-    function renderMcpSourceFields(tool, readonly) {
-      const sourceType = mcpToolSourceKind(tool);
-      if (sourceType === 'mcp_stdio') {
-        return `
-          <div class="field">
-            <label>Source 类型</label>
-            <select name="source_type" ${readonly ? 'disabled' : ''}>
-              <option value="manual">manual</option>
-              <option value="mcp_stdio" selected>mcp_stdio</option>
-            </select>
-          </div>
-          <div class="field-grid">
-            <div class="field">
-              <label>MCP Server</label>
-              <input name="server" value="${escapeAttr(tool.source?.server || '')}" ${readonly ? 'disabled' : ''}>
-            </div>
-            <div class="field">
-              <label>Server Tool</label>
-              <input name="server_tool" value="${escapeAttr(tool.source?.server_tool || '')}" ${readonly ? 'disabled' : ''}>
-            </div>
-          </div>
-          <div class="field-grid">
-            <div class="field">
-              <label>Command</label>
-              <input name="command" value="${escapeAttr(tool.source?.command || '')}" ${readonly ? 'disabled' : ''}>
-            </div>
-            <div class="field">
-              <label>CWD</label>
-              <input name="cwd" value="${escapeAttr(tool.source?.cwd || '.')}" ${readonly ? 'disabled' : ''}>
-            </div>
-          </div>
-          <div class="field">
-            <label>Args（每行一个）</label>
-            <textarea class="code" name="args" ${readonly ? 'disabled' : ''}>${escapeHtml((tool.source?.args || []).join('\n'))}</textarea>
-          </div>
-          <div class="field">
-            <label>Timeout 秒</label>
-            <input name="timeout_seconds" type="number" min="1" max="120" value="${escapeAttr(tool.source?.timeout_seconds || 20)}" ${readonly ? 'disabled' : ''}>
-          </div>
-        `;
-      }
-      return `
-        <div class="field">
-          <label>Source 类型</label>
-          <select name="source_type" ${readonly ? 'disabled' : ''}>
-            <option value="manual" selected>manual</option>
-            <option value="mcp_stdio">mcp_stdio</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>响应模板</label>
-          <textarea name="response_template" ${readonly ? 'disabled' : ''}>${escapeHtml(tool.source?.response_template || '')}</textarea>
-        </div>
-      `;
-    }
-
     function renderToolEditor(status = {}) {
       if (!els.toolEditor) return;
       const tool = state.selectedMcpTool || state.mcpTools.find((item) => item.name === state.selectedMcpToolName);
       if (!tool) {
-        els.toolEditor.innerHTML = `
-          <div class="empty-panel">
-            暂无手动 MCP 工具。点击“添加 MCP 工具”后会写入 config/mcp/tools.json。
-          </div>
-        `;
+        els.toolEditor.innerHTML = '<div class="empty-panel">选择左侧工具</div>';
         return;
       }
       const readonly = tool.editable === false;
@@ -3870,7 +3576,7 @@
         <div class="skill-editor-head">
           <div class="skill-editor-title">
             <strong>${escapeHtml(tool.name)}</strong>
-            <span>${readonly ? '运行时只读工具' : 'config/mcp/tools.json'}</span>
+            <span>${readonly ? `Skill: ${tool.source?.skill_name || tool.name}` : 'config/mcp/tools.json'}</span>
           </div>
           <div class="skill-status ${status.type || ''}">${escapeHtml(status.text || '')}</div>
         </div>
@@ -3878,7 +3584,7 @@
           <div class="file-editor-head">
             <div class="file-editor-title">
               <strong>工具 JSON</strong>
-              <span>${readonly ? '该工具来自运行时内置能力，只读展示' : '保存到 config/mcp/tools.json'}</span>
+              <span>${readonly ? '该 MCP 工具由 Skill 自动暴露' : '保存到 config/mcp/tools.json'}</span>
             </div>
             <div class="file-edit-meta">${readonly ? '只读' : '可编辑'}</div>
           </div>
@@ -3886,7 +3592,7 @@
             <textarea id="toolFileJson" class="code file-code" spellcheck="false" ${readonly ? 'disabled' : ''}>${escapeHtml(mcpToolSourceText(tool))}</textarea>
           </div>
           <div class="skill-form-actions">
-            ${readonly ? '<span class="empty">该工具来自运行时内置能力，不能在 MCP 配置页编辑。</span>' : '<button class="secondary-btn" type="button" data-tool-format-file>格式化 JSON</button><button class="primary-btn" type="button" data-tool-save-file>保存文件</button>'}
+            ${readonly ? '<span class="empty">要修改这个 MCP 工具，请进入 Skills 页面编辑对应 Skill。</span>' : '<button class="secondary-btn" type="button" data-tool-format-file>格式化 JSON</button><button class="primary-btn" type="button" data-tool-save-file>保存文件</button>'}
           </div>
         </section>
         <form id="toolForm" class="skill-form">
@@ -3918,9 +3624,12 @@
               <textarea id="toolOutputSchema" class="code" name="output_schema" ${readonly ? 'disabled' : ''}>${escapeHtml(JSON.stringify(tool.output_schema || {}, null, 2))}</textarea>
             </div>
           </div>
-          ${renderMcpSourceFields(tool, readonly)}
+          <div class="field">
+            <label for="toolResponseTemplate">响应模板</label>
+            <textarea id="toolResponseTemplate" name="response_template" ${readonly ? 'disabled' : ''}>${escapeHtml(tool.source?.response_template || '')}</textarea>
+          </div>
           <div class="skill-form-actions">
-            ${readonly ? '<span class="empty">运行时只读工具不能在这里编辑。</span>' : '<button class="secondary-btn" type="button" data-tool-reset>重置</button><button class="primary-btn" type="button" data-tool-save>保存工具</button>'}
+            ${readonly ? '<button class="secondary-btn" type="button" data-open-tool-skill>打开对应 Skill</button>' : '<button class="secondary-btn" type="button" data-tool-reset>重置</button><button class="primary-btn" type="button" data-tool-save>保存工具</button>'}
           </div>
         </form>
       `;
@@ -3941,7 +3650,7 @@
           <div class="ability-head">
             <div class="ability-mode">
               <button class="${isSkills ? 'active' : ''}" type="button" data-ability-mode="skills">Skills</button>
-              <button class="${state.abilityMode === 'mcp' ? 'active' : ''}" type="button" data-ability-mode="mcp">手动 MCP</button>
+              <button class="${state.abilityMode === 'mcp' ? 'active' : ''}" type="button" data-ability-mode="mcp">MCP Tools</button>
               <button class="${isWorkflows ? 'active' : ''}" type="button" data-ability-mode="workflows">Workflows</button>
             </div>
             <div class="ability-actions">
@@ -3971,11 +3680,11 @@
     }
 
     function renderAbilityMcpItems() {
-      if (!state.mcpTools.length) return '<div class="empty">暂无手动 MCP 工具</div>';
+      if (!state.mcpTools.length) return '<div class="empty">暂无 MCP 工具</div>';
       return [...state.mcpTools].sort((a, b) => String(a.name).localeCompare(String(b.name))).map((tool) => `
         <button class="ability-item ${tool.name === state.selectedMcpToolName ? 'active' : ''}" type="button" data-ability-mcp="${escapeAttr(tool.name)}">
           <strong>${escapeHtml(tool.name)}</strong>
-          <span>manual · ${tool.enabled ? 'enabled' : 'disabled'}</span>
+          <span>${escapeHtml(tool.source?.type || 'manual')} · ${tool.enabled ? 'enabled' : 'disabled'}</span>
         </button>
       `).join('');
     }
@@ -4046,7 +3755,7 @@
 
     function renderAbilityMcpEditor(status = {}) {
       const tool = state.selectedMcpTool || state.mcpTools.find((item) => item.name === state.selectedMcpToolName);
-      if (!tool) return '<div class="empty-panel">选择或添加手动 MCP 工具。Skill、本地和记忆能力请分别在 Skills 或 agent 配置里管理。</div>';
+      if (!tool) return '<div class="empty-panel">选择或添加 MCP 工具</div>';
       return `
         <div class="skill-status ${status.type || ''}">${escapeHtml(status.text || '')}</div>
         <form id="abilityMcpForm" class="skill-form">
@@ -4074,9 +3783,12 @@
             <label>Output Schema</label>
             <textarea class="code" name="output_schema" ${tool.editable === false ? 'disabled' : ''}>${escapeHtml(JSON.stringify(tool.output_schema || {}, null, 2))}</textarea>
           </div>
-          ${renderMcpSourceFields(tool, tool.editable === false)}
+          <div class="field">
+            <label>响应模板</label>
+            <textarea name="response_template" ${tool.editable === false ? 'disabled' : ''}>${escapeHtml(tool.source?.response_template || '')}</textarea>
+          </div>
           <div class="skill-form-actions">
-            ${tool.editable === false ? '<span class="empty">运行时只读工具不能在这里编辑。</span>' : '<button class="primary-btn" type="button" data-ability-save-mcp>保存 MCP 工具</button>'}
+            ${tool.editable === false ? '<span class="empty">由 Skill 暴露的 MCP 工具需在 Skills 中编辑</span>' : '<button class="primary-btn" type="button" data-ability-save-mcp>保存 MCP 工具</button>'}
           </div>
         </form>
       `;
@@ -4117,7 +3829,7 @@
       const formData = new FormData();
       formData.append('file', file);
       renderSkillEditor({ type: '', text: '正在上传 Skill 插件...' });
-      const res = await fetch(apiUrl('/api/skills/plugins'), {
+      const res = await fetch('/api/skills/plugins', {
         method: 'POST',
         body: formData
       });
@@ -4221,7 +3933,7 @@
         renderAbilityPanel({ type: 'error', text: err.message });
         return;
       }
-      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(manifest.name)}`), {
+      const res = await fetch(`/api/skills/${encodeURIComponent(manifest.name)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(manifest)
@@ -4255,13 +3967,13 @@
           enabled: formData.get('enabled') === 'on',
           input_schema: parseJsonField(String(formData.get('input_schema') || '{}'), 'Input Schema'),
           output_schema: parseJsonField(String(formData.get('output_schema') || '{}'), 'Output Schema'),
-          source: mcpSourceFromForm(formData)
+          source: { type: 'manual', response_template: String(formData.get('response_template') || '').trim() }
         };
       } catch (err) {
         renderAbilityPanel({ type: 'error', text: err.message });
         return;
       }
-      const res = await fetch(apiUrl(`/api/mcp/tools/${encodeURIComponent(tool.name)}`), {
+      const res = await fetch(`/api/mcp/tools/${encodeURIComponent(tool.name)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tool)
@@ -4295,7 +4007,7 @@
         enabled: formData.get('enabled') === 'on',
         input_schema: parseJsonField(String(formData.get('input_schema') || '{}'), 'Input Schema'),
         output_schema: parseJsonField(String(formData.get('output_schema') || '{}'), 'Output Schema'),
-        source: mcpSourceFromForm(formData)
+        source: { type: 'manual', response_template: String(formData.get('response_template') || '').trim() }
       };
     }
 
@@ -4332,7 +4044,7 @@
 
     async function saveToolManifest(tool, renderStatus, okText = '工具已保存') {
       renderStatus({ text: '保存中' });
-      const res = await fetch(apiUrl(`/api/mcp/tools/${encodeURIComponent(tool.name)}`), {
+      const res = await fetch(`/api/mcp/tools/${encodeURIComponent(tool.name)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tool)
@@ -4372,7 +4084,7 @@
         message: 'Checking sandbox status.'
       }, true);
       try {
-        const res = await fetch(apiUrl('/api/sandbox/status'), { cache: 'no-store' });
+        const res = await fetch('/api/sandbox/status', { cache: 'no-store' });
         if (!res.ok) throw new Error(res.statusText || `HTTP ${res.status}`);
         state.sandboxStatus = await res.json();
       } catch (err) {
@@ -4535,7 +4247,7 @@
 
     async function sendViaSse(agentName, threadId, attachments, messages, workflow) {
       const runtimeOptions = buildRuntimeOptions(threadId, workflow);
-      const res = await fetch(apiUrl(`/api/agents/${agentName}/runs/stream`), {
+      const res = await fetch(`/api/agents/${agentName}/runs/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -4638,7 +4350,8 @@
     }
 
     function openAcpSocket() {
-      const url = websocketUrl('/api/acp/ws');
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${protocol}//${window.location.host}/api/acp/ws`;
       return new Promise((resolve, reject) => {
         const ws = new WebSocket(url, 'acp.v1');
         let settled = false;
@@ -4703,10 +4416,6 @@
         case 'spec.started':
           setAssistantProgress('正在理解需求并选择可用技能…');
           addTimeline('理解需求', `${data.allowed_skills?.length || 0} 个可用技能`);
-          break;
-        case 'direct_skill.started':
-          setAssistantProgress('已锁定显式选择的 Skill，正在规划执行参数…');
-          addTimeline('显式 Skill', data.skill_name || '');
           break;
         case 'spec.planner.started':
           setAssistantProgress('正在调用大模型规划图结构…');
@@ -4816,7 +4525,7 @@
 
     async function refreshArtifacts() {
       const threadId = ensureThread();
-      const res = await fetch(apiUrl(`/api/artifacts/${threadId}`));
+      const res = await fetch(`/api/artifacts/${threadId}`);
       const data = await res.json();
       state.artifacts = data.artifacts || [];
       renderPanel();
@@ -4834,7 +4543,7 @@
         target.innerHTML = '<pre>该文件为二进制产物，请下载后查看。</pre>';
         return;
       }
-      const res = await fetch(artifactUrl(url));
+      const res = await fetch(url);
       const text = await res.text();
       const clipped = text.slice(0, 24000);
       target.innerHTML = kind === 'markdown'
@@ -5226,17 +4935,16 @@
 
     document.querySelectorAll('.tab').forEach((tab) => {
       tab.addEventListener('click', () => {
-        activateInspectorTab(tab.dataset.tab);
+        document.querySelectorAll('.tab').forEach((item) => item.classList.remove('active'));
+        tab.classList.add('active');
+        state.activeTab = tab.dataset.tab;
+        renderPanel();
       });
     });
 
     document.querySelectorAll('[data-view]').forEach((button) => {
       button.addEventListener('click', (event) => {
         event.stopPropagation();
-        if ((button.dataset.view || 'chat') === 'chat') {
-          openInspectorTab('artifacts');
-          return;
-        }
         setView(button.dataset.view || 'chat');
       });
     });
@@ -5299,17 +5007,8 @@
         setView(composeManageButton.dataset.composeManage || 'chat');
         return;
       }
-      const inspectorButton = event.target.closest('[data-inspector-tab]');
-      if (inspectorButton) {
-        openInspectorTab(inspectorButton.dataset.inspectorTab || 'artifacts');
-        return;
-      }
       const viewButton = event.target.closest('[data-view]');
       if (viewButton) {
-        if ((viewButton.dataset.view || 'chat') === 'chat') {
-          openInspectorTab('artifacts');
-          return;
-        }
         setView(viewButton.dataset.view || 'chat');
         return;
       }
@@ -5467,12 +5166,12 @@
       const button = event.target.closest('button');
       if (!button) return;
       if (button.dataset.download) {
-        window.open(artifactUrl(button.dataset.download), '_blank');
+        window.open(button.dataset.download, '_blank');
         return;
       }
       if (button.dataset.preview) {
         const container = document.getElementById(`preview-${button.dataset.id}`);
-        preview(artifactUrl(button.dataset.preview), button.dataset.kind, container);
+        preview(button.dataset.preview, button.dataset.kind, container);
       }
     });
 
@@ -5483,10 +5182,6 @@
     renderAttachments();
     renderComposerCapabilities();
     renderPanel();
-    const initialView = new URLSearchParams(window.location.search).get('view');
-    if (['skills', 'tools', 'workflows'].includes(initialView)) {
-      setView(initialView);
-    }
   </script>
 </body>
 </html>

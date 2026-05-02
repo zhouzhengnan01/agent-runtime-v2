@@ -43,6 +43,24 @@ def test_local_tools_write_read_search_and_todo(tmp_path) -> None:
     assert complete_result.structured_content["todos"][0]["done"] is True
 
 
+def test_present_files_lists_thread_outputs_and_optional_workspace(tmp_path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("present-files")
+    store.write_text_artifact(paths, "result.md", "# Result")
+    service = ToolInvocationService(artifact_store=store)
+
+    outputs_only = service.call_tool("present_files", {"_thread_id": "present-files"})
+    with_workspace = service.call_tool(
+        "present_files",
+        {"_thread_id": "present-files", "include_workspace": True},
+    )
+
+    assert outputs_only.is_error is False
+    assert outputs_only.structured_content["files"][0]["scope"] == "outputs"
+    assert outputs_only.structured_content["files"][0]["path"] == "result.md"
+    assert with_workspace.is_error is False
+
+
 def test_local_tools_block_path_traversal(tmp_path) -> None:
     service = ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path))
 

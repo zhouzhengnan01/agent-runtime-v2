@@ -4,14 +4,10 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
-from app.core.skills import SkillRegistry, SkillRunner
 from app.core.tools import ToolDefinition, ToolInvocationResult, ToolInvocationService
-from app.core.workflow.llm_spec_planner import LlmSpecPlanner
-from app.core.workflow.spec_builder import SpecBuilder
 from app.schemas import AgentRunResult, Message, RuntimeOptions
 
 
@@ -27,11 +23,6 @@ class ToolCallingAgentLoop:
 
     def __init__(self, tool_service: ToolInvocationService | None = None) -> None:
         self.tool_service = tool_service or ToolInvocationService()
-        self.artifact_store: ArtifactStore = self.tool_service.artifact_store
-        self.skill_registry = SkillRegistry()
-        self.spec_builder = SpecBuilder(self.skill_registry)
-        self.spec_planner = LlmSpecPlanner()
-        self.skill_runner = SkillRunner(self.artifact_store)
 
     async def run(
         self,
@@ -72,19 +63,6 @@ class ToolCallingAgentLoop:
                     "scope": agent_config.memory.scope,
                     "count": memory_context_count,
                 },
-            )
-        direct_skill = self.direct_selected_skill(agent_config, runtime_options)
-        if direct_skill is not None:
-            return self._run_direct_skill(
-                agent_config=agent_config,
-                messages=messages,
-                thread_id=thread_id,
-                recorder=recorder,
-                llm_metadata=llm_metadata,
-                conversation=conversation,
-                skill_name=direct_skill,
-                runtime_options=runtime_options,
-                emit_message_delta=emit_message_delta,
             )
         tools = self._openai_tools(agent_config, runtime_options)
         if llm.tool_choice == "none":
@@ -147,12 +125,21 @@ class ToolCallingAgentLoop:
             )
             for tool_call in final_response.tool_calls:
                 tool_call_count += 1
-                tool_result = self._execute_tool_call(tool_call, agent_config, thread_id, recorder)
+                tool_result = self._execute_tool_call(
+                    tool_call,
+                    agent_config,
+                    thread_id,
+                    recorder,
+                    runtime_options=runtime_options,
+                )
                 conversation.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": self._tool_result_content(tool_result),
+                        "content": self._tool_result_content(
+                            tool_result,
+                            max_chars=agent_config.runtime.max_tool_result_chars,
+                        ),
                     }
                 )
 
@@ -177,19 +164,38 @@ class ToolCallingAgentLoop:
         runtime_options: RuntimeOptions | None = None,
     ) -> list[dict[str, Any]]:
         allowed_names = self._allowed_tool_names(agent_config)
-        selected_mcp_tools = self._normalized_selected_mcp_tools(runtime_options)
-        if selected_mcp_tools:
-            allowed_names = allowed_names | set(selected_mcp_tools)
+        selected_mcp_tool_names = self._selected_mcp_tool_names(runtime_options)
+        if not allowed_names and not selected_mcp_tool_names:
+            return []
+
         definitions = self.tool_service.list_tools()
         if not agent_config.memory.enabled:
-            definitions = [tool for tool in definitions if tool.source.get("type") != "memory"]
-        if allowed_names:
-            definitions = [tool for tool in definitions if tool.name in allowed_names]
+            definitions = [
+                tool for tool in definitions if tool.source.get("type") not in {"memory", "markdown_memory"}
+            ]
+        elif not agent_config.memory.markdown_enabled:
+            definitions = [tool for tool in definitions if tool.source.get("type") != "markdown_memory"]
+        definitions = [
+            tool
+            for tool in definitions
+            if tool.name in allowed_names
+            or (tool.name in selected_mcp_tool_names and self._runtime_selectable_mcp_tool(tool))
+        ]
         return [self._openai_tool(tool) for tool in definitions]
 
     @staticmethod
     def _allowed_tool_names(agent_config: AgentConfig) -> set[str]:
         return {name for name in [*agent_config.tools, *agent_config.skills] if name}
+
+    @staticmethod
+    def _selected_mcp_tool_names(runtime_options: RuntimeOptions | None) -> set[str]:
+        if runtime_options is None:
+            return set()
+        return {name.strip() for name in runtime_options.selected_mcp_tools if name.strip()}
+
+    @staticmethod
+    def _runtime_selectable_mcp_tool(tool: ToolDefinition) -> bool:
+        return tool.source.get("type") in {"manual", "memory", "markdown_memory", "local", "skill"}
 
     @staticmethod
     def _openai_tool(tool: ToolDefinition) -> dict[str, Any]:
@@ -215,6 +221,7 @@ class ToolCallingAgentLoop:
         agent_config: AgentConfig,
         thread_id: str,
         recorder: EventRecorder,
+        runtime_options: RuntimeOptions | None = None,
     ) -> ToolInvocationResult:
         recorder.emit("tool.started", {"tool_name": tool_call.name, "tool_call_id": tool_call.id})
         try:
@@ -222,6 +229,11 @@ class ToolCallingAgentLoop:
             arguments.setdefault("_thread_id", thread_id)
             arguments.setdefault("_agent_name", agent_config.name)
             arguments.setdefault("_memory_scope", agent_config.memory.scope)
+            arguments.setdefault("_markdown_writable_scopes", agent_config.memory.markdown_writable_scopes)
+            arguments.setdefault("_markdown_max_chars", agent_config.memory.markdown_max_chars)
+            if runtime_options is not None:
+                arguments.setdefault("_user_id", runtime_options.user_id)
+                arguments.setdefault("_project_id", runtime_options.project_id)
             result = self.tool_service.call_tool(tool_call.name, arguments)
         except Exception as exc:
             result = ToolInvocationResult(
@@ -275,10 +287,55 @@ class ToolCallingAgentLoop:
         )
         return f"{prompt}\n\n{memory_prompt}", len(memories)
 
-    @staticmethod
-    def _tool_result_content(result: ToolInvocationResult) -> str:
+    @classmethod
+    def _tool_result_content(cls, result: ToolInvocationResult, *, max_chars: int) -> str:
         payload = result.to_mcp_result()
-        return json.dumps(payload, ensure_ascii=False)
+        rendered = json.dumps(payload, ensure_ascii=False)
+        if len(rendered) <= max_chars:
+            return rendered
+        return cls._truncated_tool_result_content(result, original_json=rendered, max_chars=max_chars)
+
+    @classmethod
+    def _truncated_tool_result_content(
+        cls,
+        result: ToolInvocationResult,
+        *,
+        original_json: str,
+        max_chars: int,
+    ) -> str:
+        source_text = cls._tool_result_text(result) or original_json
+        marker = (
+            "\n\n[tool result truncated before returning to model context; "
+            f"original_json_chars={len(original_json)}, max_tool_result_chars={max_chars}. "
+            "Use a narrower query, smaller file range, or follow-up tool call if more detail is needed.]"
+        )
+        clipped = source_text[: max(0, max_chars - len(marker) - 256)]
+        while True:
+            payload = {
+                "content": [{"type": "text", "text": f"{clipped}{marker}"}],
+                "structuredContent": {
+                    "_truncated": True,
+                    "original_json_chars": len(original_json),
+                    "max_tool_result_chars": max_chars,
+                },
+                "isError": result.is_error,
+            }
+            rendered = json.dumps(payload, ensure_ascii=False)
+            if len(rendered) <= max_chars or not clipped:
+                return rendered
+            overflow = len(rendered) - max_chars
+            clipped = clipped[: max(0, len(clipped) - overflow - 16)]
+
+    @staticmethod
+    def _tool_result_text(result: ToolInvocationResult) -> str:
+        texts: list[str] = []
+        for item in result.content:
+            raw_text = item.get("text")
+            if isinstance(raw_text, str):
+                texts.append(raw_text)
+            else:
+                texts.append(json.dumps(item, ensure_ascii=False))
+        return "\n".join(texts).strip()
 
     @staticmethod
     def _result(
@@ -311,172 +368,3 @@ class ToolCallingAgentLoop:
         )
         recorder.emit("run.completed" if completed_event else "run.failed", {"result": result.model_dump()})
         return ToolLoopResult(result=result, messages=messages, rounds=rounds)
-
-    def direct_selected_skill(
-        self,
-        agent_config: AgentConfig,
-        runtime_options: RuntimeOptions | None,
-    ) -> str | None:
-        selected = self._normalized_selected_skills(runtime_options)
-        if not selected:
-            return None
-        allowed_names = self._allowed_tool_names(agent_config)
-        for skill_name in selected:
-            if allowed_names and skill_name not in allowed_names:
-                continue
-            try:
-                skill = self.skill_registry.get(skill_name)
-            except KeyError:
-                continue
-            if skill.generation and skill.runner_path is not None:
-                return skill_name
-        return None
-
-    @staticmethod
-    def _normalized_selected_skills(runtime_options: RuntimeOptions | None) -> list[str]:
-        if runtime_options is None:
-            return []
-        return [name.strip() for name in runtime_options.selected_skills if name.strip()]
-
-    @staticmethod
-    def _normalized_selected_mcp_tools(runtime_options: RuntimeOptions | None) -> list[str]:
-        if runtime_options is None:
-            return []
-        return [name.strip() for name in runtime_options.selected_mcp_tools if name.strip()]
-
-    def _run_direct_skill(
-        self,
-        *,
-        agent_config: AgentConfig,
-        messages: list[Message],
-        thread_id: str,
-        recorder: EventRecorder,
-        llm_metadata: dict[str, Any],
-        conversation: list[dict[str, Any]],
-        skill_name: str,
-        runtime_options: RuntimeOptions | None,
-        emit_message_delta: bool,
-    ) -> ToolLoopResult:
-        allowed_skills = self._allowed_skill_names(agent_config)
-        recorder.emit(
-            "direct_skill.started",
-            {
-                "skill_name": skill_name,
-                "selected_skills": [skill_name],
-                "mode": "explicit_runtime_options",
-            },
-        )
-        spec = self._plan_direct_skill_spec(
-            recorder=recorder,
-            agent_config=agent_config,
-            messages=messages,
-            allowed_skills=allowed_skills,
-            runtime_options=runtime_options,
-            skill_name=skill_name,
-        )
-        skill = self.skill_registry.get(skill_name)
-        recorder.emit("skill.selected", {"skill": skill.to_event_payload(), "direct": True})
-        paths = self.artifact_store.prepare_thread(thread_id)
-        recorder.emit(
-            "skill.started",
-            {
-                "skill_name": skill_name,
-                "attempt": 0,
-                "execution_mode": "local",
-                "direct": True,
-            },
-        )
-        run_result = self.skill_runner.run(skill_name, spec, paths)
-        recorder.emit(
-            "skill.completed",
-            {
-                "skill_name": skill_name,
-                "attempt": 0,
-                "execution_mode": run_result.data.get("execution_mode", "local"),
-                "output_count": len(run_result.outputs),
-                "data": run_result.data,
-                "direct": True,
-            },
-        )
-        for artifact in run_result.outputs:
-            artifact_data = artifact.model_dump()
-            recorder.emit("artifact.created", {"artifact": artifact_data, "attempt": 0})
-            recorder.emit("preview.ready", {"artifact": artifact_data, "attempt": 0})
-        artifact_lines = [
-            f"- {artifact.name}（{artifact.kind}，{artifact.mime_type}，{artifact.path}）"
-            for artifact in run_result.outputs
-        ]
-        artifact_text = "\n".join(artifact_lines) if artifact_lines else "- 无文件产物"
-        reply = f"已按显式选择的 Skill 执行：{skill_name}。\n{artifact_text}\n可在右侧「文件」面板预览或下载。"
-        if emit_message_delta:
-            recorder.emit("agent.message.delta", {"text": reply})
-        recorder.emit("agent.message", {"text": reply})
-        result = AgentRunResult(
-            agent=agent_config.name,
-            thread_id=thread_id,
-            reply=reply,
-            artifacts=run_result.outputs,
-            spec=spec,
-            metadata={
-                "workflow": "agent_loop",
-                **llm_metadata,
-                "tool_rounds": 0,
-                "tool_call_count": 0,
-                "direct_skill": True,
-                "skill_name": skill_name,
-            },
-        )
-        recorder.emit("run.completed", {"result": result.model_dump()})
-        return ToolLoopResult(result=result, messages=conversation, rounds=0)
-
-    def _plan_direct_skill_spec(
-        self,
-        *,
-        recorder: EventRecorder,
-        agent_config: AgentConfig,
-        messages: list[Message],
-        allowed_skills: list[str],
-        runtime_options: RuntimeOptions | None,
-        skill_name: str,
-    ) -> dict[str, Any]:
-        recorder.emit(
-            "spec.started",
-            {
-                "allowed_skills": allowed_skills,
-                "attachment_count": 0,
-                "direct": True,
-            },
-        )
-        selected_allowed_skills = [skill_name] if skill_name in allowed_skills else allowed_skills
-        base_spec = self.spec_builder.build(messages, [], selected_allowed_skills)
-        base_spec["skill_name"] = skill_name
-        recorder.emit("spec.planner.started", {"skill_name": skill_name, "mode": "llm", "direct": True})
-        try:
-            spec = self.spec_planner.plan(agent_config, messages, base_spec, runtime_options=runtime_options)
-        except Exception as exc:
-            spec = dict(base_spec)
-            spec["planner"] = {"mode": "local", "enabled": True, "fallback": True, "error": str(exc)}
-            recorder.emit("spec.planner.failed", {"skill_name": skill_name, "error": str(exc), "fallback": "local"})
-            recorder.emit("spec.completed", {"skill_name": skill_name, "spec": spec, "direct": True})
-            return spec
-
-        raw_planner = spec.get("planner")
-        planner: dict[str, Any] = raw_planner if isinstance(raw_planner, dict) else {}
-        recorder.emit(
-            "spec.planner.completed",
-            {
-                "skill_name": skill_name,
-                "mode": planner.get("mode"),
-                "enabled": planner.get("enabled"),
-                "model": planner.get("model"),
-                "reason": planner.get("reason"),
-                "fallback": planner.get("fallback", False),
-            },
-        )
-        recorder.emit("spec.completed", {"skill_name": skill_name, "spec": spec, "direct": True})
-        return spec
-
-    def _allowed_skill_names(self, agent_config: AgentConfig) -> list[str]:
-        if agent_config.skills:
-            return agent_config.skills
-        return [skill.name for skill in self.skill_registry.list(executable_only=True)]

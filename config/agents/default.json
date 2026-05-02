@@ -23,9 +23,7 @@
   },
   "tools": [
     "present_files",
-    "artifact_workflow",
-    "behavior_detection",
-    "ask_clarification",
+    "behavior-detection",
     "local_read_file",
     "local_write_file",
     "local_search_text",
@@ -33,7 +31,12 @@
     "local_shell_command",
     "memory_remember",
     "memory_search",
-    "memory_forget"
+    "memory_forget",
+    "memory_md_list",
+    "memory_md_read",
+    "memory_md_append",
+    "memory_md_search",
+    "memory_md_compress"
   ],
   "skills": [
     "drawio-generation",
@@ -57,7 +60,12 @@
     "enabled": true,
     "scope": "agent",
     "max_items": 20,
-    "inject_context": true
+    "inject_context": true,
+    "markdown_enabled": true,
+    "markdown_writable_scopes": [
+      "session"
+    ],
+    "markdown_max_chars": 12000
   },
   "quality": {
     "auto_repair": false,

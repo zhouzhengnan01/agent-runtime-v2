@@ -9,7 +9,7 @@ from app.core.agent.tool_loop import ToolCallingAgentLoop
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm import OpenAICompatibleClient
-from app.core.memory import MemoryStore
+from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.routing import WorkflowRouter
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
@@ -25,13 +25,19 @@ class AgentRuntime:
         workflow_router: WorkflowRouter | None = None,
         workflow_registry: WorkflowRegistry | None = None,
         memory_store: MemoryStore | None = None,
+        markdown_memory_store: MarkdownMemoryStore | None = None,
     ) -> None:
         self.artifact_store = artifact_store or ArtifactStore()
         self.memory_store = memory_store or MemoryStore()
+        self.markdown_memory_store = markdown_memory_store or MarkdownMemoryStore()
         self.workflow_registry = workflow_registry or WorkflowRegistry.builtin(self.artifact_store)
         self.workflow_router = workflow_router or WorkflowRouter(available_workflows=self.workflow_registry.names())
         self.agent_loop = ToolCallingAgentLoop(
-            ToolInvocationService(artifact_store=self.artifact_store, memory_store=self.memory_store)
+            ToolInvocationService(
+                artifact_store=self.artifact_store,
+                memory_store=self.memory_store,
+                markdown_memory_store=self.markdown_memory_store,
+            )
         )
 
     async def run(self, agent_config: AgentConfig, request: ChatRequest) -> AgentRunResult:
@@ -44,7 +50,7 @@ class AgentRuntime:
         if not request.messages:
             raise ValueError("messages must not be empty")
 
-        workflow_name = self._explicit_workflow_name(request)
+        workflow_name = self._selected_workflow_name(agent_config, request)
         if workflow_name is not None:
             workflow = self.workflow_registry.get(workflow_name)
             if workflow is None:
@@ -81,7 +87,7 @@ class AgentRuntime:
         if not request.messages:
             raise ValueError("messages must not be empty")
 
-        workflow_name = self._explicit_workflow_name(request)
+        workflow_name = self._selected_workflow_name(agent_config, request)
         if workflow_name is not None:
             if self.workflow_registry.get(workflow_name) is None:
                 raise ValueError(f"Workflow is not registered: {workflow_name}")
@@ -139,8 +145,7 @@ class AgentRuntime:
         yield recorder.emit("run.started", {"workflow": "agent_loop", "stateless": agent_config.runtime.stateless})
 
         llm = OpenAICompatibleClient(agent_config, runtime_options=request.runtime_options)
-        should_run_loop = self.agent_loop.direct_selected_skill(agent_config, request.runtime_options) is not None
-        if not llm.configured and not should_run_loop:
+        if not llm.configured:
             yield recorder.emit(
                 "llm.started",
                 {
@@ -188,15 +193,14 @@ class AgentRuntime:
         for event in recorder.events[emitted:]:
             yield event
 
-    @staticmethod
-    def _should_use_workflow(agent_config: AgentConfig, request: ChatRequest) -> bool:
-        del agent_config
-        return AgentRuntime._explicit_workflow_name(request) is not None
+    def _should_use_workflow(self, agent_config: AgentConfig, request: ChatRequest) -> bool:
+        return self._selected_workflow_name(agent_config, request) is not None
 
-    @staticmethod
-    def _selected_workflow_name(agent_config: AgentConfig, request: ChatRequest) -> str | None:
-        del agent_config
-        return AgentRuntime._explicit_workflow_name(request)
+    def _selected_workflow_name(self, agent_config: AgentConfig, request: ChatRequest) -> str | None:
+        return self._explicit_workflow_name(request) or self._workflow_for_selected_skills(
+            agent_config,
+            request,
+        )
 
     @staticmethod
     def _explicit_workflow_name(request: ChatRequest) -> str | None:
@@ -204,6 +208,29 @@ class AgentRuntime:
         if not workflow_name or workflow_name == "agent_loop":
             return None
         return workflow_name
+
+    @staticmethod
+    def _workflow_for_selected_skills(agent_config: AgentConfig, request: ChatRequest) -> str | None:
+        selected_skills = [name.strip() for name in request.runtime_options.selected_skills if name.strip()]
+        if not selected_skills:
+            return None
+        skill_registry = WorkflowRouter().skill_registry
+        for skill_name in selected_skills:
+            if agent_config.skills and skill_name not in agent_config.skills:
+                continue
+            try:
+                skill = skill_registry.get(skill_name)
+            except KeyError:
+                continue
+            if skill.runner_path is None:
+                continue
+            if skill.generation:
+                workflow_name = agent_config.workflows.get("generation", "artifact_workflow")
+            else:
+                workflow_name = agent_config.workflows.get("vision_behavior", "evidence_first_detection")
+            if workflow_name and workflow_name != "agent_loop":
+                return workflow_name
+        return None
 
     @staticmethod
     def _last_user_text(request: ChatRequest) -> str:

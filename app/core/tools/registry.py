@@ -8,6 +8,7 @@ from typing import Any, List
 from app.core.artifacts import ArtifactStore
 from app.core.skills import SkillRegistry, SkillRunner
 from app.core.tools.providers.local import local_tool_definitions
+from app.core.tools.providers.markdown_memory import markdown_memory_tool_definitions
 from app.core.tools.providers.memory import memory_tool_definitions
 from app.core.tools.providers.skill import SkillToolProvider
 from app.core.tools.schemas import ToolDefinition
@@ -36,14 +37,9 @@ class ToolRegistry:
 
     def list(self, *, include_disabled: bool = False) -> List[ToolDefinition]:
         tools = self._builtin_tools() + self._skill_tools()
-        custom = self.list_custom(include_disabled=True)
+        custom = self._custom_tools()
         skill_names = {tool.name for tool in tools}
         tools.extend(tool for tool in custom if tool.name not in skill_names)
-        result = tools if include_disabled else [tool for tool in tools if tool.enabled]
-        return sorted(result, key=lambda tool: tool.name)
-
-    def list_custom(self, *, include_disabled: bool = False) -> List[ToolDefinition]:
-        tools = self._custom_tools()
         result = tools if include_disabled else [tool for tool in tools if tool.enabled]
         return sorted(result, key=lambda tool: tool.name)
 
@@ -53,17 +49,10 @@ class ToolRegistry:
                 return tool
         raise KeyError(f"Unknown tool: {name}")
 
-    def get_custom(self, name: str) -> ToolDefinition:
-        for tool in self.list_custom(include_disabled=True):
-            if tool.name == name:
-                return tool
-        raise KeyError(f"Unknown custom tool: {name}")
-
     def save_custom_tool(self, name: str, data: dict[str, Any]) -> ToolDefinition:
         _validate_tool_name(name)
-        reserved_names = {tool.name for tool in [*self._builtin_tools(), *self._skill_tools()]}
-        if name in reserved_names:
-            raise ValueError(f"Tool name conflicts with a runtime tool: {name}")
+        if name in {tool.name for tool in self._skill_tools()}:
+            raise ValueError(f"Tool name conflicts with a skill-backed tool: {name}")
         tool = _tool_from_data({**data, "name": name}, editable=True)
         tools = [item.to_payload() for item in self._custom_tools() if item.name != name]
         tools.append(tool.to_payload())
@@ -78,7 +67,7 @@ class ToolRegistry:
 
     @staticmethod
     def _builtin_tools() -> List[ToolDefinition]:
-        return local_tool_definitions() + memory_tool_definitions()
+        return local_tool_definitions() + memory_tool_definitions() + markdown_memory_tool_definitions()
 
     def _custom_tools(self) -> List[ToolDefinition]:
         if not self.config_path.is_file():

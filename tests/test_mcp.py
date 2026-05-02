@@ -76,34 +76,36 @@ def test_mcp_management_saves_custom_tool(tmp_path, monkeypatch) -> None:
 
     listed = client.get("/api/mcp/tools")
     assert listed.status_code == 200
-    management_tool_names = {tool["name"] for tool in listed.json()["tools"]}
-    assert "demo_status_tool" in management_tool_names
-    assert "pptx-generation" not in management_tool_names
+    assert "demo_status_tool" in {tool["name"] for tool in listed.json()["tools"]}
 
-    custom_detail = client.get("/api/mcp/tools/demo_status_tool")
-    assert custom_detail.status_code == 200
-    assert custom_detail.json()["name"] == "demo_status_tool"
 
-    skill_detail = client.get("/api/mcp/tools/pptx-generation")
-    assert skill_detail.status_code == 404
+def test_mcp_management_requires_admin_token_when_configured(tmp_path, monkeypatch) -> None:
+    _patch_mcp_runtime(tmp_path, monkeypatch)
+    monkeypatch.setenv("RUNTIME_API_TOKEN", "admin-secret")
+    client = TestClient(create_app())
 
-    conflicting = client.put(
-        "/api/mcp/tools/pptx-generation",
+    denied = client.put(
+        "/api/mcp/tools/demo_status_tool",
         json={
-            "title": "Conflicting",
-            "description": "Should not override skill tools.",
+            "title": "Demo Status",
+            "description": "A custom MCP status tool.",
             "enabled": True,
-            "input_schema": {"type": "object"},
-            "source": {"type": "manual"},
+            "source": {"type": "manual", "response_template": "demo ok"},
         },
     )
-    assert conflicting.status_code == 400
+    allowed = client.put(
+        "/api/mcp/tools/demo_status_tool",
+        headers={"Authorization": "Bearer admin-secret"},
+        json={
+            "title": "Demo Status",
+            "description": "A custom MCP status tool.",
+            "enabled": True,
+            "source": {"type": "manual", "response_template": "demo ok"},
+        },
+    )
 
-    runtime_listed = client.get("/api/mcp/runtime-tools")
-    assert runtime_listed.status_code == 200
-    runtime_tool_names = {tool["name"] for tool in runtime_listed.json()["tools"]}
-    assert "demo_status_tool" in runtime_tool_names
-    assert "pptx-generation" in runtime_tool_names
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
 
 
 def _patch_mcp_runtime(tmp_path, monkeypatch) -> None:

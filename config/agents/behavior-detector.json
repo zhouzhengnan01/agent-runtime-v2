@@ -20,8 +20,12 @@
     "workspace_mode": "ephemeral_thread",
     "require_verification": true
   },
-  "tools": ["behavior_detection", "ask_clarification"],
-  "skills": ["behavior-detection"],
+  "tools": [
+    "behavior-detection"
+  ],
+  "skills": [
+    "behavior-detection"
+  ],
   "workflows": {
     "default": "agent_loop",
     "vision_behavior": "evidence_first_detection"

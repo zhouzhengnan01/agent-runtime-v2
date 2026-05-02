@@ -22,11 +22,21 @@ class SpecBuilder:
         self.skill_registry = skill_registry or SkillRegistry()
         self.plugin_manager = plugin_manager or SkillPluginManager(self.skill_registry.root_dir)
 
-    def build(self, messages: list[Message], attachments: list[Attachment], allowed_skills: list[str]) -> dict[str, Any]:
+    def build(
+        self,
+        messages: list[Message],
+        attachments: list[Attachment],
+        allowed_skills: list[str],
+        selected_skill: str | None = None,
+    ) -> dict[str, Any]:
         user_text = self._last_user_text(messages)
         context_text = self._user_text_context(messages)
         routing_text = self._routing_text(user_text, context_text)
-        skill_name = self.plugin_manager.select_skill(routing_text, attachments, allowed_skills)
+        skill_name = self._selected_skill(selected_skill, allowed_skills) or self.plugin_manager.select_skill(
+            routing_text,
+            attachments,
+            allowed_skills,
+        )
         skill = self.skill_registry.get(skill_name) if skill_name else None
         quality = list(skill.quality_template) if skill is not None else []
         refinement_requested = self._is_artifact_refinement_followup(user_text)
@@ -41,6 +51,18 @@ class SpecBuilder:
             "verification_rules": quality,
         }
         return self.plugin_manager.build_spec(skill_name, user_text, routing_text, attachments, base)
+
+    def _selected_skill(self, selected_skill: str | None, allowed_skills: list[str]) -> str | None:
+        skill_name = (selected_skill or "").strip()
+        if not skill_name:
+            return None
+        if allowed_skills and skill_name not in allowed_skills:
+            return None
+        try:
+            skill = self.skill_registry.get(skill_name)
+        except KeyError:
+            return None
+        return skill.name if skill.runner_path is not None else None
 
     @staticmethod
     def _last_user_text(messages: list[Message]) -> str:

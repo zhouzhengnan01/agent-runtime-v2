@@ -92,13 +92,22 @@ evidence_first_detection  -> 带 evidence-first 行为检测策略的 ArtifactWo
 ```
 
 Workflow 是插件，不是硬编码主流程。默认请求不会根据用户文本、Skill 简介或 agent JSON 自动切换
-workflow；只有调用方显式传入 `runtime_options.workflow` 时，`AgentRuntime` 才会从
-`WorkflowRegistry` 中取出对应插件执行。如果显式指定的 workflow 没有注册，请求会直接失败并返回
-清晰错误，避免调用方误以为已经进入某个插件流程。
+workflow；调用方显式传入 `runtime_options.workflow` 时，`AgentRuntime` 会从 `WorkflowRegistry`
+中取出对应插件执行。如果显式指定的 workflow 没有注册，请求会直接失败并返回清晰错误，避免调用方
+误以为已经进入某个插件流程。
+
+另外，页面或协议层如果显式传入 `runtime_options.selected_skills`，运行时会把它视为一次用户确认的
+能力选择：generation Skill 会进入 `artifact_workflow`，非 generation Skill 会进入
+`evidence_first_detection`，并继续走 Spec 构建、Sandbox 策略、Skill 执行、Verifier 和可选 retry
+闭环，而不是绕过 workflow 直接执行 Skill。`runtime_options.workflow` 的优先级仍然最高。
 
 通用 agent loop 只会向模型暴露当前 agent JSON 声明的 `tools` 和 `skills`。模型返回
 OpenAI-compatible `tool_calls` 后，运行时通过统一工具服务执行工具，把工具结果以 `role=tool`
 消息追加回对话，并最多循环 `runtime.max_tool_rounds` 轮。
+
+为避免文件读取、搜索、Skill 输出等大结果撑爆模型上下文，工具结果回填给模型前会按
+`runtime.max_tool_result_chars` 裁剪（默认 20000 字符）。裁剪只影响进入下一轮 LLM 的
+`role=tool` JSON；运行时事件里的 `structured_content` 仍保留工具执行层返回的结构化信息，便于审计和调试。
 
 ```text
 LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
@@ -108,12 +117,14 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 
 每个智能体由 `config/agents/*.json` 驱动。稳定的智能体行为建议放在这里：
 
-- `model.model`、`model.base_url`、`model.api_key`、`model.api_key_enc`、`model.tool_choice`、`model.temperature`、`model.max_tokens`、`model.request_timeout_seconds`
-- `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_retries`、`runtime.require_verification`
+- `model.model`、`model.base_url`、`model.api_key`、`model.api_key_enc`、`model.tool_choice`、`model.temperature`、`model.max_tokens`
+- `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_tool_result_chars`、`runtime.max_retries`、`runtime.require_verification`
 - `tools`：暴露给 `agent_loop` 的 MCP/manual/local 工具
 - `skills`：暴露给模型的 Skill-backed tools，同时也用于 Workflow Skill 选择
 - `workflows`：可选 Workflow 插件名声明，例如 `agent_loop`、`artifact_workflow`、`evidence_first_detection`。
-  该字段不再驱动默认自动路由，默认主流程始终是 `agent_loop`。
+  该字段不再驱动默认文本自动路由，默认主流程始终是 `agent_loop`；但显式 `selected_skills` 会使用
+  `generation` / `vision_behavior` 映射，未配置时分别回落到内置 `artifact_workflow` /
+  `evidence_first_detection`。
 - `memory`：是否启用长期记忆、记忆作用域、最大注入条数和是否注入系统提示
 - `quality`
 - `prompts.system`
@@ -129,7 +140,6 @@ runtime_options -> 环境变量 -> agent JSON
 - `LLM_MODEL` 覆盖 `model.model`
 - `LLM_BASE_URL` 覆盖 `model.base_url`
 - `LLM_API_KEY` 覆盖 `model.api_key`
-- `LLM_REQUEST_TIMEOUT_SECONDS` 覆盖模型请求超时时间，默认 120 秒，取值会限制在 1 到 600 秒之间
 
 `model.tool_choice` 用于控制是否向 OpenAI-compatible API 发送 `tools` 和 `tool_choice=auto`：
 
@@ -260,7 +270,9 @@ uv run uvicorn app.main:app --reload --port 8010
 `default: agent_loop` 表示默认走通用 Hermes-like 工具调用循环。`generation` 和
 `vision_behavior` 只是声明可选插件名，便于页面、CLI、ACP 或后续推荐器明确选择。
 
-真正触发 workflow 的方式是请求参数：
+真正触发 workflow 的方式有两种。
+
+第一种是直接指定 workflow：
 
 ```json
 {
@@ -278,21 +290,37 @@ uv run uvicorn app.main:app --reload --port 8010
 ```
 
 不传 `runtime_options.workflow` 时，即使用户文本里出现“原型图 / drawio / ppt / 摔倒 / 翻越”等词，
-运行时也不会自动进入 workflow，而是继续走主 `agent_loop`。如果模型服务支持 tool calling，模型可以
-在 agent loop 内根据已暴露的 Skill、MCP 和本地工具自主调用能力；如果模型服务暂时不支持 tool calling，
-可以通过页面能力按钮、CLI `--workflow` 或 ACP `runtimeOptions.workflow` 显式启用确定性 workflow。
+运行时也不会仅凭文本自动进入 workflow，而是继续走主 `agent_loop`。如果模型服务支持 tool calling，
+模型可以在 agent loop 内根据已暴露的 Skill、MCP 和本地工具自主调用能力；如果模型服务暂时不支持
+tool calling，可以通过页面能力按钮、CLI `--workflow` 或 ACP `runtimeOptions.workflow` 显式启用
+确定性 workflow。
+
+第二种是本轮显式选择 Skill：
+
+```json
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "生成一份项目汇报材料"
+    }
+  ],
+  "runtime_options": {
+    "thread_id": "local-demo",
+    "selected_skills": ["pptx-generation"]
+  }
+}
+```
+
+这种情况下，运行时会使用该 Skill 对应的 workflow 闭环执行。这样页面上的“选择 Skill”按钮可以做到
+所选即所用，同时不会绕过校验、Sandbox 和 retry 逻辑。
 
 ## 工具、Skill 与 MCP
 
-当前工具层是协议无关的，但页面语义做了区分：
-
-- **运行时工具能力**：Skill、本地 workspace 工具、记忆工具、手动 MCP 工具都会注册到
-  `ToolRegistry`，供 agent loop 和 MCP 协议端复用。
-- **手动 MCP 配置**：只有 `config/mcp/tools.json` 里显式添加的工具才算“你配置的 MCP 工具”。
-  工作台不会再把 Skill、本地、记忆等内置能力显示成 MCP。
+当前工具层是协议无关的：
 
 ```text
-Skill manifests + config/mcp/tools.json + 内置 local tools + memory tools
+Skill manifests + config/mcp/tools.json + 内置 local tools
   -> ToolRegistry
   -> ToolInvocationService
   -> MCP tools/list 和 tools/call
@@ -301,9 +329,8 @@ Skill manifests + config/mcp/tools.json + 内置 local tools + memory tools
 
 同一个 `ToolInvocationService` 被这些入口复用：
 
-- MCP JSON-RPC `tools/list` 和 `tools/call`：面向外部 MCP 客户端，暴露运行时可用工具能力。
-- HTTP 管理接口 `/api/mcp/tools`：只管理 `config/mcp/tools.json` 中的手动 MCP 工具。
-- HTTP 查看接口 `/api/mcp/runtime-tools`：查看运行时完整工具能力，包含 Skill、本地和记忆工具。
+- MCP JSON-RPC `tools/list` 和 `tools/call`
+- HTTP 管理接口 `/api/mcp/tools`
 - 通用 `ToolCallingAgentLoop`
 
 ### Skill 工具
@@ -320,7 +347,7 @@ deliverables-export
 behavior-detection
 ```
 
-### MCP/manual 工具与开源 MCP 示例
+### MCP/manual 工具
 
 自定义 MCP/manual 工具配置在：
 
@@ -328,38 +355,31 @@ behavior-detection
 config/mcp/tools.json
 ```
 
-仓库默认内置了 3 个测试用 MCP stdio 工具，来自官方开源 MCP filesystem server：
-
-```text
-mcp_fs_list_directory
-mcp_fs_write_file
-mcp_fs_read_text_file
-```
-
-它们会按需启动：
-
-```bash
-npx -y @modelcontextprotocol/server-filesystem {workspace}
-```
-
-`{workspace}` 会被替换为当前线程 workspace：
-
-```text
-.runtime/threads/<thread_id>/user-data/workspace
-```
-
-因此这个开源 MCP 示例只能访问当前线程的临时测试目录，不会访问项目根目录或系统目录。页面里显式选择这些
-MCP 工具后，本轮 agent loop 才会把它们暴露给模型；不选择时不影响默认主流程。
-
 工具接口：
 
 ```text
-GET  /api/mcp/tools              -> 只列出手动 MCP 配置
-GET  /api/mcp/tools/{tool_name}  -> 只读取手动 MCP 配置
-PUT  /api/mcp/tools/{tool_name}  -> 新增或更新手动 MCP 配置
-GET  /api/mcp/runtime-tools      -> 查看运行时全部工具能力
-POST /mcp                        -> MCP 协议入口，tools/list 会暴露运行时工具能力
+GET  /api/mcp/tools
+GET  /api/mcp/tools/{tool_name}
+PUT  /api/mcp/tools/{tool_name}
+POST /mcp
 ```
+
+管理类写接口可以通过环境变量开启轻量鉴权：
+
+```bash
+export RUNTIME_API_TOKEN="your-admin-token"
+```
+
+设置后，下列接口需要请求头 `Authorization: Bearer <token>`：
+
+```text
+PUT  /api/mcp/tools/{tool_name}
+POST /api/skills/plugins
+PUT  /api/skills/{skill_name}
+PUT  /api/skills/{skill_name}/files/{file_id}
+```
+
+未设置 `RUNTIME_API_TOKEN` 时保持本地开发兼容，不强制鉴权。
 
 ### 本地 Workspace 工具
 
@@ -378,6 +398,7 @@ local_write_file    -> 写入当前线程 workspace 内的 UTF-8 文本文件
 local_search_text   -> 搜索当前线程 workspace 内的文本文件
 local_todo          -> 维护当前线程的 todo 列表
 local_shell_command -> 在当前线程 workspace 内执行 shell 命令，默认关闭
+present_files       -> 列出当前线程 outputs 文件，可选列出 workspace 文件
 ```
 
 `local_shell_command` 默认不暴露，只有显式启用后才会出现在工具列表中：
@@ -392,6 +413,18 @@ export LOCAL_SHELL_TOOL_ENABLED=true
 - 命令 allowlist / blocklist
 - 超时与输出裁剪策略
 - 操作审计日志
+
+### 运行时选择工具策略
+
+`runtime_options.selected_mcp_tools` 用于“本轮临时把某些已注册工具暴露给 agent loop”。它不是任意工具
+执行入口，只影响本轮发给模型的 OpenAI-compatible `tools` 列表：
+
+- 只会暴露已经注册且 `enabled=true` 的工具；未知工具会被忽略。
+- 当前允许临时选择 `manual`、`local`、`memory`、`skill` 来源的工具。
+- 如果 agent 关闭了 `memory.enabled`，memory 工具仍不会暴露。
+- `local_shell_command` 默认 disabled；只有 `LOCAL_SHELL_TOOL_ENABLED=true` 后才会进入可选列表。
+- 当 agent JSON 的 `model.tool_choice` 为 `none`，但本轮选择了 MCP 工具时，运行时会把本轮
+  `tool_choice` 临时切到 `auto`，避免“用户选了工具但模型完全看不到工具”的问题。
 
 ### 本地 Memory 工具
 
@@ -422,7 +455,10 @@ agent JSON 示例：
     "enabled": true,
     "scope": "agent",
     "max_items": 20,
-    "inject_context": true
+    "inject_context": true,
+    "markdown_enabled": true,
+    "markdown_writable_scopes": ["session"],
+    "markdown_max_chars": 12000
   }
 }
 ```
@@ -433,9 +469,78 @@ agent JSON 示例：
 - `scope`：`agent` 表示每个智能体独立记忆；`global` 表示多个智能体共享 `.runtime/memory/global.json`。
 - `max_items`：注入系统提示时最多带入多少条最近记忆。
 - `inject_context`：是否在每次 agent loop 调用模型前，把最近记忆追加到系统提示中。
+- `markdown_enabled`：是否允许该 agent 暴露 Markdown 文件夹记忆工具。
+- `markdown_writable_scopes`：Markdown 记忆允许写入的 scope。默认建议只开放 `session`，避免模型误写项目级、
+  用户级或全局长期记忆。
+- `markdown_max_chars`：Markdown 记忆默认读取裁剪长度。
 
 建议把 Memory 当成“长期事实和偏好”，不要把完整聊天记录塞进去。完整 Session Resume 后续应单独设计，
 例如按 thread 保存 history、摘要压缩、工具结果裁剪和上下文恢复策略。
+
+### Markdown 文件夹记忆
+
+除 JSON Memory v1 外，运行时还提供一套人类可读的 Markdown 文件夹记忆系统。它适合保存会话摘要、
+项目背景、决策记录、用户偏好说明和可人工编辑的长期知识。目录按 scope 分层，方便直接定位对应记忆：
+
+```text
+.runtime/memory-md/
+  global/
+  users/
+    <user_id 或 agent-<agent_name>>/
+      *.md
+      projects/
+        <project_id>/
+          **/*.md
+      sessions/
+        <thread_id>/
+          **/*.md
+```
+
+请求可通过 `runtime_options.user_id`、`runtime_options.project_id` 和 `runtime_options.thread_id` 控制隔离：
+
+- `global`：全局 Markdown 记忆。
+- `user`：用户级 Markdown 记忆；未传 `user_id` 时回落到 `agent-<agent_name>`。
+- `project`：用户下的项目级 Markdown 记忆。
+- `session`：用户下的会话级 Markdown 记忆，天然按 `thread_id` 隔离。
+
+内置工具：
+
+```text
+memory_md_list     -> 列出某个 scope/目录下的 .md 记忆
+memory_md_read     -> 读取 .md 记忆，支持 max_chars 裁剪
+memory_md_append   -> 追加写入 .md 记忆，适合会话工作记录
+memory_md_search   -> 跨 global/user/project/session 搜索 .md 记忆
+memory_md_compress -> 把较大的 .md 记忆抽取压缩成 summary.md
+```
+
+安全边界：
+
+- 只允许访问 `.md` 文件。
+- 禁止 `../`、绝对路径、home-relative 路径等路径穿越。
+- 所有路径都会被限制在当前 `scope` 对应目录内。
+- 默认 agent 只允许写入 `session` 级 Markdown 记忆；`project`、`user`、`global` 建议在用户确认或管理员授权后
+  再加入 `memory.markdown_writable_scopes`。
+- `memory_md_compress` 是本地抽取式压缩，不依赖 LLM；它会保留标题、重要 bullet、包含关键词的段落、
+  “决定 / 结论 / TODO / 问题 / 风险 / 偏好”等高价值行，并强制遵守 `max_chars`。
+
+典型请求：
+
+```json
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "把这次讨论追加到会话记忆"
+    }
+  ],
+  "runtime_options": {
+    "user_id": "u_chenhao",
+    "project_id": "jetlinks-agent-runtime-v2",
+    "thread_id": "memory-design",
+    "selected_mcp_tools": ["memory_md_append", "memory_md_search", "memory_md_compress"]
+  }
+}
+```
 
 ## 协议入口
 
@@ -541,7 +646,7 @@ GET /api/skills/{skill_name}
 
 1. 多 provider adapter 和统一 `NormalizedResponse`
 2. Memory 增强和 Session Resume
-3. Context 压缩和工具结果裁剪
+3. Context 压缩（工具结果裁剪已具备基础版本）
 4. Browser/Web tools
 5. Cron/Gateway 和多平台消息接入
 6. 子智能体 delegation

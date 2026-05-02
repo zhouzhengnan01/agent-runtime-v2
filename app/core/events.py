@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.schemas import ChatEvent
@@ -23,7 +23,7 @@ class EventRecorder:
             "agent": self.agent,
             "thread_id": self.thread_id,
             "sequence": self._sequence,
-            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         }
         if data:
             payload.update(data)

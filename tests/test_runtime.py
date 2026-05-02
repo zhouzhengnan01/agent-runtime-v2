@@ -573,6 +573,88 @@ def test_default_agent_runs_explicit_generation_workflow(tmp_path) -> None:
     assert result.artifacts[1].name == "prototype.png"
 
 
+def test_selected_generation_skill_routes_through_artifact_workflow(tmp_path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfigLoader().load("default")
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成一份项目汇报材料")],
+        runtime_options=RuntimeOptions(
+            thread_id="selected-skill-workflow",
+            selected_skills=["pptx-generation"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+    event_types = [event.type for event in events]
+
+    assert result.status == "completed"
+    assert result.metadata["workflow"] == "artifact_workflow"
+    assert result.spec is not None
+    assert result.spec["skill_name"] == "pptx-generation"
+    assert result.verification is not None
+    assert result.verification.passed is True
+    assert result.artifacts[0].name.endswith(".pptx")
+    assert "direct_skill.started" not in event_types
+    assert "verifier.completed" in event_types
+
+
+def test_selected_generation_skill_uses_default_artifact_workflow_without_agent_mapping(tmp_path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="minimal-skill-agent",
+        display_name="Minimal Skill Agent",
+        skills=["markdown-rendering"],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成一份 markdown 项目说明")],
+        runtime_options=RuntimeOptions(
+            thread_id="selected-skill-default-workflow",
+            selected_skills=["markdown-rendering"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+    event_types = [event.type for event in events]
+
+    assert result.status == "completed"
+    assert result.metadata["workflow"] == "artifact_workflow"
+    assert result.spec is not None
+    assert result.spec["skill_name"] == "markdown-rendering"
+    assert result.verification is not None
+    assert result.verification.passed is True
+    assert "direct_skill.started" not in event_types
+    assert "verifier.completed" in event_types
+
+
+def test_selected_behavior_skill_uses_default_evidence_workflow_without_agent_mapping(tmp_path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="minimal-behavior-agent",
+        display_name="Minimal Behavior Agent",
+        skills=["behavior-detection"],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="人员翻越围栏进入禁区")],
+        runtime_options=RuntimeOptions(
+            thread_id="selected-behavior-default-workflow",
+            selected_skills=["behavior-detection"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+    event_types = [event.type for event in events]
+
+    assert result.status == "completed"
+    assert result.metadata["workflow"] == "evidence_first_detection"
+    assert result.metadata["skill_name"] == "behavior-detection"
+    assert result.verification is not None
+    assert result.verification.passed is True
+    assert "direct_skill.started" not in event_types
+    assert "verifier.completed" in event_types
+
+
 def test_drawio_followup_keeps_previous_prototype_intent(tmp_path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("artifact-generator")

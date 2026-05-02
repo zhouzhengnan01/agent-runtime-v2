@@ -23,6 +23,8 @@ class Attachment(BaseModel):
 
 class RuntimeOptions(BaseModel):
     thread_id: str | None = None
+    user_id: str | None = None
+    project_id: str | None = None
     workflow: str | None = None
     selected_skills: list[str] = Field(default_factory=list)
     selected_mcp_tools: list[str] = Field(default_factory=list)
@@ -35,7 +37,6 @@ class RuntimeOptions(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
-    request_timeout_seconds: float | None = None
     response_format: Literal["text", "json"] = "text"
 
 

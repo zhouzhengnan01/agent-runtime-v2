@@ -156,7 +156,7 @@ def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypa
         assert chunks == [reply]
 
 
-def test_acp_websocket_passes_explicit_selected_skills_to_agent_loop() -> None:
+def test_acp_websocket_routes_explicit_selected_skills_through_workflow() -> None:
     client = TestClient(create_app())
 
     with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
@@ -201,9 +201,10 @@ def test_acp_websocket_passes_explicit_selected_skills_to_agent_loop() -> None:
 
         assert final is not None
         result = final["result"]["result"]
-        assert result["metadata"]["workflow"] == "agent_loop"
-        assert result["metadata"]["direct_skill"] is True
+        assert result["metadata"]["workflow"] == "artifact_workflow"
         assert result["metadata"]["skill_name"] == "drawio-generation"
+        assert result["verification"]["passed"] is True
+        assert result["spec"]["skill_name"] == "drawio-generation"
         names = {artifact["name"] for artifact in result["artifacts"]}
         assert any(name.startswith("prototype") and name.endswith(".drawio") for name in names)
         assert any(name.startswith("prototype") and name.endswith(".png") for name in names)

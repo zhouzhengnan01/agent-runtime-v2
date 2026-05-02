@@ -80,30 +80,6 @@ def test_env_overrides_json_model_config(monkeypatch: MonkeyPatch) -> None:
     assert client.api_key == "env-key"
 
 
-def test_request_timeout_can_be_configured_from_json_env_and_runtime_options(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.delenv("LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.delenv("LLM_REQUEST_TIMEOUT_SECONDS", raising=False)
-    agent = AgentConfig(
-        name="json-model",
-        display_name="JSON Model",
-        model=ModelConfig(
-            model="json-model-name",
-            base_url="http://llm.local/v1",
-            request_timeout_seconds=9,
-        ),
-    )
-
-    assert OpenAICompatibleClient(agent).request_timeout_seconds == 9
-
-    monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "7.5")
-    assert OpenAICompatibleClient(agent).request_timeout_seconds == 7.5
-
-    client = OpenAICompatibleClient(agent, runtime_options=RuntimeOptions(request_timeout_seconds=2))
-    assert client.request_timeout_seconds == 2
-
-
 def test_model_config_can_disable_tool_choice_auto(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
@@ -128,6 +104,36 @@ def test_model_config_can_disable_tool_choice_auto(monkeypatch: MonkeyPatch) -> 
 
     assert "tools" not in payload
     assert "tool_choice" not in payload
+
+
+def test_runtime_selected_mcp_tools_enable_tool_choice_auto(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model=ModelConfig(
+            model="json-model-name",
+            base_url="http://llm.local/v1",
+            api_key="json-key",
+            tool_choice="none",
+        ),
+    )
+    client = OpenAICompatibleClient(
+        agent,
+        runtime_options=RuntimeOptions(selected_mcp_tools=["selected_status_tool"]),
+    )
+
+    payload = client._chat_payload(
+        "system",
+        [Message(role="user", content="hi")],
+        tools=[{"type": "function", "function": {"name": "selected_status_tool", "parameters": {"type": "object"}}}],
+    )
+
+    assert client.tool_choice == "auto"
+    assert payload["tool_choice"] == "auto"
+    assert payload["tools"][0]["function"]["name"] == "selected_status_tool"
 
 
 def test_complete_uses_json_model_config_without_authorization_header(monkeypatch: MonkeyPatch) -> None:

@@ -78,7 +78,7 @@ def test_agent_loop_exposes_memory_tools_only_when_enabled(tmp_path, monkeypatch
         name="memory-disabled",
         display_name="Memory Disabled",
         model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
-        tools=["memory_remember", "memory_search", "local_todo"],
+        tools=["memory_remember", "memory_search", "memory_md_search", "local_todo"],
         memory=MemoryConfig(enabled=False),
     )
     runtime = AgentRuntime(
@@ -90,6 +90,41 @@ def test_agent_loop_exposes_memory_tools_only_when_enabled(tmp_path, monkeypatch
 
     assert result.status == "completed"
     assert seen_tools == ["local_todo"]
+
+
+def test_agent_loop_exposes_markdown_memory_tools_only_when_markdown_enabled(
+    tmp_path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="ok", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="markdown-memory-disabled",
+        display_name="Markdown Memory Disabled",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["memory_search", "memory_md_search"],
+        memory=MemoryConfig(enabled=True, markdown_enabled=False),
+    )
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        memory_store=MemoryStore(root_dir=tmp_path / "memory"),
+    )
+
+    result = asyncio.run(runtime.run(agent, ChatRequest(messages=[Message(role="user", content="test")])))
+
+    assert result.status == "completed"
+    assert seen_tools == ["memory_search"]
 
 
 def test_agent_loop_can_remember_and_search(tmp_path, monkeypatch: MonkeyPatch) -> None:
