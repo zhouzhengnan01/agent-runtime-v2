@@ -8,7 +8,7 @@ from pytest import MonkeyPatch
 
 from app.core.config.agent_config import AgentConfig, ModelConfig
 from app.core.llm import OpenAICompatibleClient
-from app.schemas import Message
+from app.schemas import Message, RuntimeOptions
 
 
 def test_model_config_can_use_json_values_without_model_env(monkeypatch: MonkeyPatch) -> None:
@@ -78,6 +78,30 @@ def test_env_overrides_json_model_config(monkeypatch: MonkeyPatch) -> None:
     assert client.model == "env-model"
     assert client.base_url == "http://env.local/v1"
     assert client.api_key == "env-key"
+
+
+def test_request_timeout_can_be_configured_from_json_env_and_runtime_options(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_REQUEST_TIMEOUT_SECONDS", raising=False)
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model=ModelConfig(
+            model="json-model-name",
+            base_url="http://llm.local/v1",
+            request_timeout_seconds=9,
+        ),
+    )
+
+    assert OpenAICompatibleClient(agent).request_timeout_seconds == 9
+
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "7.5")
+    assert OpenAICompatibleClient(agent).request_timeout_seconds == 7.5
+
+    client = OpenAICompatibleClient(agent, runtime_options=RuntimeOptions(request_timeout_seconds=2))
+    assert client.request_timeout_seconds == 2
 
 
 def test_model_config_can_disable_tool_choice_auto(monkeypatch: MonkeyPatch) -> None:

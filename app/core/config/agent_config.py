@@ -27,6 +27,7 @@ class ModelConfig(BaseModel):
     temperature: float = 0.3
     top_p: float | None = None
     max_tokens: int = 4096
+    request_timeout_seconds: float = 120.0
 
 
 class RuntimeConfig(BaseModel):

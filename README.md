@@ -108,7 +108,7 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 
 每个智能体由 `config/agents/*.json` 驱动。稳定的智能体行为建议放在这里：
 
-- `model.model`、`model.base_url`、`model.api_key`、`model.api_key_enc`、`model.tool_choice`、`model.temperature`、`model.max_tokens`
+- `model.model`、`model.base_url`、`model.api_key`、`model.api_key_enc`、`model.tool_choice`、`model.temperature`、`model.max_tokens`、`model.request_timeout_seconds`
 - `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_retries`、`runtime.require_verification`
 - `tools`：暴露给 `agent_loop` 的 MCP/manual/local 工具
 - `skills`：暴露给模型的 Skill-backed tools，同时也用于 Workflow Skill 选择
@@ -129,6 +129,7 @@ runtime_options -> 环境变量 -> agent JSON
 - `LLM_MODEL` 覆盖 `model.model`
 - `LLM_BASE_URL` 覆盖 `model.base_url`
 - `LLM_API_KEY` 覆盖 `model.api_key`
+- `LLM_REQUEST_TIMEOUT_SECONDS` 覆盖模型请求超时时间，默认 120 秒，取值会限制在 1 到 600 秒之间
 
 `model.tool_choice` 用于控制是否向 OpenAI-compatible API 发送 `tools` 和 `tool_choice=auto`：
 

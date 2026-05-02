@@ -64,6 +64,12 @@ class OpenAICompatibleClient:
         self.temperature = runtime_options.temperature if runtime_options.temperature is not None else model_config.temperature
         self.top_p = runtime_options.top_p if runtime_options.top_p is not None else model_config.top_p
         self.max_tokens = runtime_options.max_tokens if runtime_options.max_tokens is not None else model_config.max_tokens
+        raw_timeout = (
+            runtime_options.request_timeout_seconds
+            if runtime_options.request_timeout_seconds is not None
+            else os.getenv("LLM_REQUEST_TIMEOUT_SECONDS") or model_config.request_timeout_seconds
+        )
+        self.request_timeout_seconds = _bounded_timeout(raw_timeout)
         self.tool_choice = model_config.tool_choice
 
     @property
@@ -75,7 +81,7 @@ class OpenAICompatibleClient:
             return self._not_configured_message()
 
         payload = self._chat_payload(system_prompt, messages)
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
             response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
             self._raise_for_status(response)
             data = response.json()
@@ -95,7 +101,7 @@ class OpenAICompatibleClient:
             return LlmChatResponse(content=self._not_configured_message())
 
         payload = self._chat_payload(system_prompt, messages, tools=tools)
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
             response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
             if tools and self._is_auto_tool_choice_unsupported(response):
                 fallback_payload = self._chat_payload(system_prompt, messages)
@@ -113,7 +119,7 @@ class OpenAICompatibleClient:
             return self._not_configured_message()
 
         payload = self._chat_payload(system_prompt, messages)
-        with httpx.Client(timeout=120.0) as client:
+        with httpx.Client(timeout=self.request_timeout_seconds) as client:
             response = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
             self._raise_for_status(response)
             data = response.json()
@@ -129,7 +135,7 @@ class OpenAICompatibleClient:
             return
 
         payload = self._chat_payload(system_prompt, messages, stream=True)
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
             async with client.stream(
                 "POST",
                 f"{self.base_url}/chat/completions",
@@ -301,3 +307,13 @@ class OpenAICompatibleClient:
                 return content
 
         return None
+
+
+def _bounded_timeout(value: str | int | float | None) -> float:
+    if value is None:
+        return 120.0
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return 120.0
+    return max(1.0, min(600.0, timeout))
