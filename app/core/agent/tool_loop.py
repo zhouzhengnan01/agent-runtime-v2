@@ -40,6 +40,7 @@ class ToolCallingAgentLoop:
             "temperature": llm.temperature,
             "top_p": llm.top_p,
             "max_tokens": llm.max_tokens,
+            "request_timeout_seconds": llm.request_timeout_seconds,
         }
         recorder.emit(
             "llm.started",
@@ -48,6 +49,7 @@ class ToolCallingAgentLoop:
                 "temperature": llm_metadata["temperature"],
                 "top_p": llm_metadata["top_p"],
                 "max_tokens": llm_metadata["max_tokens"],
+                "request_timeout_seconds": llm_metadata["request_timeout_seconds"],
                 "configured": llm_metadata["llm_configured"],
             },
         )

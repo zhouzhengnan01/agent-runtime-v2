@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 from pytest import MonkeyPatch
@@ -16,7 +17,7 @@ from app.core.tools import ToolInvocationService
 from app.schemas import ChatRequest, Message, RuntimeOptions
 
 
-def test_memory_store_crud_and_query(tmp_path) -> None:
+def test_memory_store_crud_and_query(tmp_path: Path) -> None:
     store = MemoryStore(root_dir=tmp_path)
 
     first = store.remember("default", "用户喜欢中文回答", tags=["preference", "语言"])
@@ -32,7 +33,7 @@ def test_memory_store_crud_and_query(tmp_path) -> None:
     assert store.list("default", limit=10) == []
 
 
-def test_memory_store_global_scope_is_shared(tmp_path) -> None:
+def test_memory_store_global_scope_is_shared(tmp_path: Path) -> None:
     store = MemoryStore(root_dir=tmp_path)
 
     item = store.remember("agent-a", "全局偏好", scope="global")
@@ -42,7 +43,7 @@ def test_memory_store_global_scope_is_shared(tmp_path) -> None:
     assert store.list("agent-b", scope="agent", limit=10) == []
 
 
-def test_memory_tools_through_unified_tool_service(tmp_path) -> None:
+def test_memory_tools_through_unified_tool_service(tmp_path: Path) -> None:
     service = ToolInvocationService(memory_store=MemoryStore(root_dir=tmp_path))
 
     remember_result = service.call_tool(
@@ -61,7 +62,7 @@ def test_memory_tools_through_unified_tool_service(tmp_path) -> None:
     assert forget_result.structured_content["removed"] is True
 
 
-def test_agent_loop_exposes_memory_tools_only_when_enabled(tmp_path, monkeypatch: MonkeyPatch) -> None:
+def test_agent_loop_exposes_memory_tools_only_when_enabled(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     seen_tools: list[str] = []
 
     async def fake_complete_with_tools(
@@ -93,7 +94,7 @@ def test_agent_loop_exposes_memory_tools_only_when_enabled(tmp_path, monkeypatch
 
 
 def test_agent_loop_exposes_markdown_memory_tools_only_when_markdown_enabled(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     seen_tools: list[str] = []
@@ -127,7 +128,7 @@ def test_agent_loop_exposes_markdown_memory_tools_only_when_markdown_enabled(
     assert seen_tools == ["memory_search"]
 
 
-def test_agent_loop_can_remember_and_search(tmp_path, monkeypatch: MonkeyPatch) -> None:
+def test_agent_loop_can_remember_and_search(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
     async def fake_complete_with_tools(
@@ -196,7 +197,7 @@ def test_agent_loop_can_remember_and_search(tmp_path, monkeypatch: MonkeyPatch) 
     assert MemoryStore(root_dir=tmp_path / "memory").list("memory-agent", query="中文", limit=10)
 
 
-def test_agent_loop_injects_memory_context_when_enabled(tmp_path, monkeypatch: MonkeyPatch) -> None:
+def test_agent_loop_injects_memory_context_when_enabled(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     store = MemoryStore(root_dir=tmp_path / "memory")
     store.remember("memory-context-agent", "用户偏好：所有 README 用中文。", tags=["preference"])
     seen_prompt = ""

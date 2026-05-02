@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.core.llm.openai_compatible import LlmChatResponse, OpenAICompatibleClient
@@ -70,7 +71,7 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
         assert "agent.message" in event_types
 
 
-def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypatch) -> None:
+def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypatch: pytest.MonkeyPatch) -> None:
     reply = "我可以处理 JetLinks 对话、文件生成和证据优先的行为识别。"
 
     async def fake_complete(

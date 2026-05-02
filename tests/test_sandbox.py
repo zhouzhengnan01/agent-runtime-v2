@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -224,7 +225,7 @@ def test_skills_api_exposes_manifest_for_platform() -> None:
 
 
 def test_skills_api_updates_manifest_without_touching_real_config(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_dir = tmp_path / "config" / "skills"
@@ -289,7 +290,7 @@ def test_skills_api_updates_manifest_without_touching_real_config(
 
 
 def test_skills_api_update_requires_admin_token_when_configured(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RUNTIME_API_TOKEN", "admin-secret")
@@ -317,7 +318,7 @@ def test_skills_api_update_requires_admin_token_when_configured(
     assert allowed.json()["name"] == "protected-skill"
 
 
-def test_skills_api_creates_new_manifest(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_skills_api_creates_new_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
     client = TestClient(create_app())
 

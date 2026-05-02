@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.core.memory import MarkdownMemoryContext, MarkdownMemoryStore
 
 
-def test_markdown_memory_store_uses_hierarchical_user_project_session_dirs(tmp_path) -> None:
+def test_markdown_memory_store_uses_hierarchical_user_project_session_dirs(tmp_path: Path) -> None:
     store = MarkdownMemoryStore(root_dir=tmp_path)
     first = MarkdownMemoryContext(
         agent_name="default",
@@ -49,7 +51,7 @@ def test_markdown_memory_store_uses_hierarchical_user_project_session_dirs(tmp_p
     assert store.search(second, ["session", "project", "user"], "记忆", max_results=10) == []
 
 
-def test_markdown_memory_store_blocks_path_traversal_and_non_markdown(tmp_path) -> None:
+def test_markdown_memory_store_blocks_path_traversal_and_non_markdown(tmp_path: Path) -> None:
     store = MarkdownMemoryStore(root_dir=tmp_path)
     context = MarkdownMemoryContext(agent_name="default", user_id="u1", thread_id="t1")
 
@@ -63,7 +65,7 @@ def test_markdown_memory_store_blocks_path_traversal_and_non_markdown(tmp_path) 
         store.append(context, "session", "~/notes.md", "bad")
 
 
-def test_markdown_memory_store_compresses_large_memory_with_keywords(tmp_path) -> None:
+def test_markdown_memory_store_compresses_large_memory_with_keywords(tmp_path: Path) -> None:
     store = MarkdownMemoryStore(root_dir=tmp_path)
     context = MarkdownMemoryContext(agent_name="default", user_id="u1", project_id="p1", thread_id="t1")
     content = "\n".join(

@@ -117,7 +117,7 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 
 每个智能体由 `config/agents/*.json` 驱动。稳定的智能体行为建议放在这里：
 
-- `model.model`、`model.base_url`、`model.api_key`、`model.api_key_enc`、`model.tool_choice`、`model.temperature`、`model.max_tokens`
+- `model.model`、`model.base_url`、`model.api_key`、`model.api_key_enc`、`model.tool_choice`、`model.temperature`、`model.max_tokens`、`model.request_timeout_seconds`
 - `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_tool_result_chars`、`runtime.max_retries`、`runtime.require_verification`
 - `tools`：暴露给 `agent_loop` 的 MCP/manual/local 工具
 - `skills`：暴露给模型的 Skill-backed tools，同时也用于 Workflow Skill 选择
@@ -140,6 +140,7 @@ runtime_options -> 环境变量 -> agent JSON
 - `LLM_MODEL` 覆盖 `model.model`
 - `LLM_BASE_URL` 覆盖 `model.base_url`
 - `LLM_API_KEY` 覆盖 `model.api_key`
+- `LLM_REQUEST_TIMEOUT_SECONDS` 覆盖模型请求超时时间，默认 120 秒，取值会限制在 1 到 3600 秒之间
 
 `model.tool_choice` 用于控制是否向 OpenAI-compatible API 发送 `tools` 和 `tool_choice=auto`：
 
@@ -380,6 +381,17 @@ PUT  /api/skills/{skill_name}/files/{file_id}
 ```
 
 未设置 `RUNTIME_API_TOKEN` 时保持本地开发兼容，不强制鉴权。
+
+运行类接口默认保留开发模式的无鉴权行为；生产部署可显式启用 runtime 鉴权：
+
+```bash
+export RUNTIME_AUTH_MODE=production
+export RUNTIME_API_TOKEN="your-runtime-token"
+```
+
+启用后，`POST /api/agents/{agent_name}/runs`、`POST /api/agents/{agent_name}/runs/stream`
+和 `GET /api/acp/ws` 需要携带 `Authorization: Bearer <token>`，WebSocket 也支持
+`/api/acp/ws?token=<token>` 便于浏览器客户端接入。
 
 ### 本地 Workspace 工具
 

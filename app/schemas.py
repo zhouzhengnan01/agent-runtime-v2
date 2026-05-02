@@ -37,6 +37,7 @@ class RuntimeOptions(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
+    request_timeout_seconds: float | None = None
     response_format: Literal["text", "json"] = "text"
 
 

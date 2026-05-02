@@ -27,6 +27,15 @@ class ModelConfig(BaseModel):
     temperature: float = 0.3
     top_p: float | None = None
     max_tokens: int = 4096
+    request_timeout_seconds: float = Field(default=120.0, ge=1.0, le=3600.0)
+    request_timeout_env: str = "LLM_REQUEST_TIMEOUT_SECONDS"
+
+
+class BillingConfig(BaseModel):
+    enabled: bool = True
+    prompt_token_rate: float = Field(default=0.0, ge=0.0)
+    completion_token_rate: float = Field(default=0.0, ge=0.0)
+    currency: str = "CNY"
 
 
 class RuntimeConfig(BaseModel):
@@ -77,6 +86,7 @@ class AgentConfig(BaseModel):
     description: str = ""
     backend: AgentBackendConfig = Field(default_factory=AgentBackendConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
+    billing: BillingConfig = Field(default_factory=BillingConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     tools: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)

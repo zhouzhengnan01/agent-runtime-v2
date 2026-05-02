@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 from app.cli import set_encrypted_api_key
-from app.core.config import AgentConfigLoader
+from app.core.config import AgentConfig, AgentConfigLoader
+from app.core.config.agent_config import BillingConfig
 from app.core.config.secrets import SecretCodec
 from app.core.tools import ToolInvocationService
 
@@ -41,6 +42,21 @@ def test_default_agent_declares_markdown_memory_tools() -> None:
         "memory_md_search",
         "memory_md_compress",
     } <= set(agent.tools)
+
+
+def test_agent_config_accepts_billing_metadata() -> None:
+    agent = AgentConfig(
+        name="billing-agent",
+        display_name="Billing Agent",
+        billing=BillingConfig(enabled=True, prompt_token_rate=0.001, completion_token_rate=0.002, currency="CNY"),
+    )
+    payload = AgentConfigLoader.public_payload(agent)
+
+    assert agent.billing.enabled is True
+    assert agent.billing.prompt_token_rate == 0.001
+    assert agent.billing.completion_token_rate == 0.002
+    assert agent.billing.currency == "CNY"
+    assert payload["billing"]["currency"] == "CNY"
 
 
 def test_local_agent_config_overrides_base_config(tmp_path: Path) -> None:

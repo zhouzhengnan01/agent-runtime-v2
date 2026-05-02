@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.core.memory import MarkdownMemoryStore
 from app.core.tools import ToolInvocationService
 
 
-def test_markdown_memory_tools_append_list_read_search_and_compress(tmp_path) -> None:
+def test_markdown_memory_tools_append_list_read_search_and_compress(tmp_path: Path) -> None:
     service = ToolInvocationService(markdown_memory_store=MarkdownMemoryStore(root_dir=tmp_path))
     base_args = {
         "_agent_name": "default",
@@ -62,7 +64,7 @@ def test_markdown_memory_tools_append_list_read_search_and_compress(tmp_path) ->
     assert compression["compressed_chars"] <= 700
 
 
-def test_markdown_memory_tool_context_isolation_by_user_and_thread(tmp_path) -> None:
+def test_markdown_memory_tool_context_isolation_by_user_and_thread(tmp_path: Path) -> None:
     service = ToolInvocationService(markdown_memory_store=MarkdownMemoryStore(root_dir=tmp_path))
     service.call_tool(
         "memory_md_append",
@@ -103,7 +105,7 @@ def test_markdown_memory_tool_context_isolation_by_user_and_thread(tmp_path) -> 
     assert same_user_other_thread.structured_content["matches"] == []
 
 
-def test_markdown_memory_tools_default_to_session_only_writes(tmp_path) -> None:
+def test_markdown_memory_tools_default_to_session_only_writes(tmp_path: Path) -> None:
     service = ToolInvocationService(markdown_memory_store=MarkdownMemoryStore(root_dir=tmp_path))
 
     denied = service.call_tool(

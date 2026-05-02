@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api import mcp as mcp_api
@@ -9,7 +12,7 @@ from app.core.skills import SkillRunner
 from app.main import create_app
 
 
-def test_mcp_initialize_and_list_tools(tmp_path, monkeypatch) -> None:
+def test_mcp_initialize_and_list_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_mcp_runtime(tmp_path, monkeypatch)
     client = TestClient(create_app())
 
@@ -32,7 +35,7 @@ def test_mcp_initialize_and_list_tools(tmp_path, monkeypatch) -> None:
     assert "jetlinks_runtime_status" in tool_names
 
 
-def test_mcp_call_manual_tool(tmp_path, monkeypatch) -> None:
+def test_mcp_call_manual_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_mcp_runtime(tmp_path, monkeypatch)
     client = TestClient(create_app())
 
@@ -53,7 +56,7 @@ def test_mcp_call_manual_tool(tmp_path, monkeypatch) -> None:
     assert "MCP endpoint is reachable" in result["content"][0]["text"]
 
 
-def test_mcp_management_saves_custom_tool(tmp_path, monkeypatch) -> None:
+def test_mcp_management_saves_custom_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_mcp_runtime(tmp_path, monkeypatch)
     client = TestClient(create_app())
 
@@ -79,7 +82,7 @@ def test_mcp_management_saves_custom_tool(tmp_path, monkeypatch) -> None:
     assert "demo_status_tool" in {tool["name"] for tool in listed.json()["tools"]}
 
 
-def test_mcp_management_requires_admin_token_when_configured(tmp_path, monkeypatch) -> None:
+def test_mcp_management_requires_admin_token_when_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_mcp_runtime(tmp_path, monkeypatch)
     monkeypatch.setenv("RUNTIME_API_TOKEN", "admin-secret")
     client = TestClient(create_app())
@@ -108,7 +111,7 @@ def test_mcp_management_requires_admin_token_when_configured(tmp_path, monkeypat
     assert allowed.status_code == 200
 
 
-def _patch_mcp_runtime(tmp_path, monkeypatch) -> None:
+def _patch_mcp_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_dir = tmp_path / "config" / "mcp"
     config_dir.mkdir(parents=True)
     (config_dir / "tools.json").write_text(

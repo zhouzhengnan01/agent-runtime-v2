@@ -153,6 +153,7 @@ class AgentRuntime:
                     "temperature": llm.temperature,
                     "top_p": llm.top_p,
                     "max_tokens": llm.max_tokens,
+                    "request_timeout_seconds": llm.request_timeout_seconds,
                     "configured": llm.configured,
                 },
             )
@@ -174,6 +175,7 @@ class AgentRuntime:
                     "temperature": llm.temperature,
                     "top_p": llm.top_p,
                     "max_tokens": llm.max_tokens,
+                    "request_timeout_seconds": llm.request_timeout_seconds,
                     "tool_rounds": 0,
                     "tool_call_count": 0,
                 },

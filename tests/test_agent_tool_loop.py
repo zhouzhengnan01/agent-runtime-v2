@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 from pytest import MonkeyPatch
@@ -19,7 +20,7 @@ from app.schemas import ChatRequest, Message, RuntimeOptions
 
 
 def test_agent_loop_executes_llm_tool_calls_through_unified_tool_service(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     calls: list[dict[str, Any]] = []
@@ -79,7 +80,7 @@ def test_agent_loop_executes_llm_tool_calls_through_unified_tool_service(
 
 
 def test_agent_loop_exposes_only_agent_declared_tools(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     seen_tools: list[str] = []
@@ -116,7 +117,7 @@ def test_agent_loop_exposes_only_agent_declared_tools(
 
 
 def test_agent_loop_skips_tools_when_model_tool_choice_is_none(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     complete_calls: list[str] = []
@@ -170,7 +171,7 @@ def test_agent_loop_skips_tools_when_model_tool_choice_is_none(
 
 
 def test_agent_loop_can_execute_skill_backed_tools(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     calls: list[dict[str, Any]] = []
@@ -228,7 +229,7 @@ def test_agent_loop_can_execute_skill_backed_tools(
 
 
 def test_agent_loop_treats_selected_skill_as_tool_when_no_workflow_mapping(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     seen_tools: list[str] = []
@@ -282,7 +283,7 @@ def test_agent_loop_treats_selected_skill_as_tool_when_no_workflow_mapping(
 
 
 def test_agent_loop_exposes_runtime_selected_mcp_tools(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     config_dir = tmp_path / "config" / "mcp"
@@ -356,7 +357,7 @@ def test_agent_loop_exposes_runtime_selected_mcp_tools(
 
 
 def test_agent_loop_ignores_unknown_runtime_selected_mcp_tools(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     complete_calls: list[str] = []
@@ -422,7 +423,7 @@ def test_agent_loop_ignores_unknown_runtime_selected_mcp_tools(
 
 
 def test_agent_loop_runtime_selected_mcp_tools_respect_registered_tool_safety(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LOCAL_SHELL_TOOL_ENABLED", raising=False)
@@ -469,7 +470,7 @@ def test_agent_loop_runtime_selected_mcp_tools_respect_registered_tool_safety(
 
 
 def test_agent_loop_truncates_large_tool_results_before_returning_to_model(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
     store = ArtifactStore(root_dir=tmp_path)

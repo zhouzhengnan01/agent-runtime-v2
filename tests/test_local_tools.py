@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 from pytest import MonkeyPatch
@@ -15,7 +16,7 @@ from app.core.tools import ToolInvocationService
 from app.schemas import ChatRequest, Message, RuntimeOptions
 
 
-def test_local_tools_write_read_search_and_todo(tmp_path) -> None:
+def test_local_tools_write_read_search_and_todo(tmp_path: Path) -> None:
     service = ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path))
     thread_args = {"_thread_id": "local-tools"}
 
@@ -43,7 +44,7 @@ def test_local_tools_write_read_search_and_todo(tmp_path) -> None:
     assert complete_result.structured_content["todos"][0]["done"] is True
 
 
-def test_present_files_lists_thread_outputs_and_optional_workspace(tmp_path) -> None:
+def test_present_files_lists_thread_outputs_and_optional_workspace(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path)
     paths = store.prepare_thread("present-files")
     store.write_text_artifact(paths, "result.md", "# Result")
@@ -61,7 +62,7 @@ def test_present_files_lists_thread_outputs_and_optional_workspace(tmp_path) -> 
     assert with_workspace.is_error is False
 
 
-def test_local_tools_block_path_traversal(tmp_path) -> None:
+def test_local_tools_block_path_traversal(tmp_path: Path) -> None:
     service = ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path))
 
     result = service.call_tool(
@@ -73,7 +74,7 @@ def test_local_tools_block_path_traversal(tmp_path) -> None:
     assert "path traversal" in result.content[0]["text"].lower()
 
 
-def test_agent_loop_can_use_local_workspace_tools(tmp_path, monkeypatch: MonkeyPatch) -> None:
+def test_agent_loop_can_use_local_workspace_tools(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
     async def fake_complete_with_tools(

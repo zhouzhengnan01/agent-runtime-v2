@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from collections.abc import AsyncIterator
 import xml.etree.ElementTree as ET
 
@@ -19,7 +20,7 @@ async def _collect_events(source: AsyncIterator[ChatEvent]) -> list[ChatEvent]:
     return [event async for event in source]
 
 
-def test_artifact_generator_creates_verified_markdown(tmp_path) -> None:
+def test_artifact_generator_creates_verified_markdown(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("artifact-generator")
     request = ChatRequest(
@@ -33,7 +34,7 @@ def test_artifact_generator_creates_verified_markdown(tmp_path) -> None:
     assert result.verification.passed is True
 
 
-def test_agent_with_no_configured_skills_uses_installed_skill_plugins(tmp_path) -> None:
+def test_agent_with_no_configured_skills_uses_installed_skill_plugins(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfig(
         name="plugin-only-agent",
@@ -55,7 +56,7 @@ def test_agent_with_no_configured_skills_uses_installed_skill_plugins(tmp_path) 
     assert result.artifacts[0].name == "result.md"
 
 
-def test_artifact_generator_emits_coded_events(tmp_path) -> None:
+def test_artifact_generator_emits_coded_events(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("artifact-generator")
     request = ChatRequest(
@@ -79,7 +80,7 @@ def test_artifact_generator_emits_coded_events(tmp_path) -> None:
     assert "architecture.drawio" in result.reply
 
 
-def test_default_agent_stream_emits_text_delta(tmp_path, monkeypatch) -> None:
+def test_default_agent_stream_emits_text_delta(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -100,7 +101,7 @@ def test_default_agent_stream_emits_text_delta(tmp_path, monkeypatch) -> None:
     assert events[-1].type == "run.completed"
 
 
-def test_agent_workflow_config_does_not_auto_run_workflow(tmp_path, monkeypatch) -> None:
+def test_agent_workflow_config_does_not_auto_run_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -120,7 +121,7 @@ def test_agent_workflow_config_does_not_auto_run_workflow(tmp_path, monkeypatch)
     assert "spec.started" not in [event.type for event in events]
 
 
-def test_unregistered_explicit_workflow_fails_fast(tmp_path) -> None:
+def test_unregistered_explicit_workflow_fails_fast(tmp_path: Path) -> None:
     runtime = AgentRuntime(
         artifact_store=ArtifactStore(root_dir=tmp_path),
         workflow_registry=WorkflowRegistry(),
@@ -135,7 +136,7 @@ def test_unregistered_explicit_workflow_fails_fast(tmp_path) -> None:
         asyncio.run(runtime.run_with_events(agent, request))
 
 
-def test_workflow_router_uses_skill_manifest_routing_metadata(monkeypatch) -> None:
+def test_workflow_router_uses_skill_manifest_routing_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_WORKFLOW_ROUTER", "0")
     router = WorkflowRouter(available_workflows={"artifact_workflow", "evidence_first_detection"})
     agent = AgentConfigLoader().load("default")
@@ -152,7 +153,7 @@ def test_workflow_router_uses_skill_manifest_routing_metadata(monkeypatch) -> No
     assert selection.reason == "plugin_score_match"
 
 
-def test_workflow_router_llm_can_select_from_skill_descriptions(monkeypatch) -> None:
+def test_workflow_router_llm_can_select_from_skill_descriptions(monkeypatch: pytest.MonkeyPatch) -> None:
     seen_clients: list[tuple[str, str]] = []
 
     def fake_complete_sync(
@@ -180,7 +181,7 @@ def test_workflow_router_llm_can_select_from_skill_descriptions(monkeypatch) -> 
     assert seen_clients == [(agent.model.model, agent.model.base_url)]
 
 
-def test_workflow_router_respects_agent_json_routing_switch(monkeypatch) -> None:
+def test_workflow_router_respects_agent_json_routing_switch(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     def fake_complete_sync(
@@ -205,7 +206,7 @@ def test_workflow_router_respects_agent_json_routing_switch(monkeypatch) -> None
     assert selection.workflow_name is None
 
 
-def test_capability_question_ignores_previous_behavior_intent(tmp_path, monkeypatch) -> None:
+def test_capability_question_ignores_previous_behavior_intent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -230,7 +231,7 @@ def test_capability_question_ignores_previous_behavior_intent(tmp_path, monkeypa
     assert "agent.message.delta" in event_types
 
 
-def test_behavior_detector_capability_question_bypasses_detection_workflow(tmp_path, monkeypatch) -> None:
+def test_behavior_detector_capability_question_bypasses_detection_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -253,7 +254,7 @@ def test_behavior_detector_capability_question_bypasses_detection_workflow(tmp_p
     assert "待上传" not in result.reply
 
 
-def test_prototype_request_routes_to_drawio(tmp_path) -> None:
+def test_prototype_request_routes_to_drawio(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path)
     runtime = AgentRuntime(artifact_store=store)
     agent = AgentConfigLoader().load("artifact-generator")
@@ -275,7 +276,7 @@ def test_prototype_request_routes_to_drawio(tmp_path) -> None:
     assert "prototype.png" in result.reply
 
 
-def test_drawio_dot_prompt_routes_to_drawio_with_png_preview(tmp_path) -> None:
+def test_drawio_dot_prompt_routes_to_drawio_with_png_preview(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("default")
     request = ChatRequest(
@@ -300,7 +301,7 @@ def test_drawio_dot_prompt_routes_to_drawio_with_png_preview(tmp_path) -> None:
     assert result.artifacts[1].mime_type == "image/png"
 
 
-def test_drawio_refinement_followup_routes_to_real_artifacts(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_drawio_refinement_followup_routes_to_real_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_SPEC_PLANNER", "0")
     store = ArtifactStore(root_dir=tmp_path)
     runtime = AgentRuntime(artifact_store=store)
@@ -341,7 +342,7 @@ def test_drawio_refinement_followup_routes_to_real_artifacts(tmp_path, monkeypat
 
 
 def test_drawio_additive_followup_keeps_artifact_workflow_and_versions(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LLM_SPEC_PLANNER", "0")
@@ -412,7 +413,7 @@ def test_drawio_additive_followup_keeps_artifact_workflow_and_versions(
     ],
 )
 def test_generation_skills_use_llm_spec_planner_when_enabled(
-    tmp_path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     prompt: str,
     expected_skill: str,
@@ -451,7 +452,7 @@ def test_generation_skills_use_llm_spec_planner_when_enabled(
     assert "spec.planner.completed" in event_types
 
 
-def test_drawio_llm_planner_can_enrich_architecture_spec(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_drawio_llm_planner_can_enrich_architecture_spec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_complete_sync(
         self: OpenAICompatibleClient,
         system_prompt: str,
@@ -534,7 +535,7 @@ def test_drawio_llm_planner_can_enrich_architecture_spec(tmp_path, monkeypatch: 
         assert len(image.getcolors(maxcolors=1000000) or []) > 50
 
 
-def test_default_agent_does_not_auto_route_generation_workflow(tmp_path, monkeypatch) -> None:
+def test_default_agent_does_not_auto_route_generation_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -555,7 +556,7 @@ def test_default_agent_does_not_auto_route_generation_workflow(tmp_path, monkeyp
     assert result.artifacts == []
 
 
-def test_default_agent_runs_explicit_generation_workflow(tmp_path) -> None:
+def test_default_agent_runs_explicit_generation_workflow(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("default")
     request = ChatRequest(
@@ -573,7 +574,7 @@ def test_default_agent_runs_explicit_generation_workflow(tmp_path) -> None:
     assert result.artifacts[1].name == "prototype.png"
 
 
-def test_selected_generation_skill_routes_through_artifact_workflow(tmp_path) -> None:
+def test_selected_generation_skill_routes_through_artifact_workflow(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("default")
     request = ChatRequest(
@@ -598,7 +599,7 @@ def test_selected_generation_skill_routes_through_artifact_workflow(tmp_path) ->
     assert "verifier.completed" in event_types
 
 
-def test_selected_generation_skill_uses_default_artifact_workflow_without_agent_mapping(tmp_path) -> None:
+def test_selected_generation_skill_uses_default_artifact_workflow_without_agent_mapping(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfig(
         name="minimal-skill-agent",
@@ -627,7 +628,7 @@ def test_selected_generation_skill_uses_default_artifact_workflow_without_agent_
     assert "verifier.completed" in event_types
 
 
-def test_selected_behavior_skill_uses_default_evidence_workflow_without_agent_mapping(tmp_path) -> None:
+def test_selected_behavior_skill_uses_default_evidence_workflow_without_agent_mapping(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfig(
         name="minimal-behavior-agent",
@@ -655,7 +656,7 @@ def test_selected_behavior_skill_uses_default_evidence_workflow_without_agent_ma
     assert "verifier.completed" in event_types
 
 
-def test_drawio_followup_keeps_previous_prototype_intent(tmp_path) -> None:
+def test_drawio_followup_keeps_previous_prototype_intent(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("artifact-generator")
     request = ChatRequest(
@@ -675,7 +676,7 @@ def test_drawio_followup_keeps_previous_prototype_intent(tmp_path) -> None:
     assert result.artifacts[1].name == "prototype.png"
 
 
-def test_behavior_detector_text_only_is_honest(tmp_path) -> None:
+def test_behavior_detector_text_only_is_honest(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("behavior-detector")
     request = ChatRequest(
@@ -689,7 +690,7 @@ def test_behavior_detector_text_only_is_honest(tmp_path) -> None:
     assert result.metadata["skill_name"] == "behavior-detection"
 
 
-def test_behavior_detector_with_attachment_can_emit_visual_score(tmp_path) -> None:
+def test_behavior_detector_with_attachment_can_emit_visual_score(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("behavior-detector")
     request = ChatRequest(
@@ -705,7 +706,7 @@ def test_behavior_detector_with_attachment_can_emit_visual_score(tmp_path) -> No
     assert "critical" in result.reply
 
 
-def test_generation_skills_create_verified_binary_artifacts(tmp_path) -> None:
+def test_generation_skills_create_verified_binary_artifacts(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("artifact-generator")
 
