@@ -2470,6 +2470,34 @@
   </div>
 
   <script>
+    const BASE_PATH = (() => {
+      const marker = '/chat';
+      const path = window.location.pathname || '/';
+      return path === marker || path.startsWith(`${marker}/`) ? marker : '';
+    })();
+
+    function prefixedPath(path) {
+      const normalized = path.startsWith('/') ? path : `/${path}`;
+      return `${BASE_PATH}${normalized}`;
+    }
+
+    function apiUrl(path) {
+      return prefixedPath(path);
+    }
+
+    function websocketUrl(path) {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${window.location.host}${prefixedPath(path)}`;
+    }
+
+    function artifactUrl(url) {
+      if (!url || url === '#') return url || '#';
+      if (/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(url) || url.startsWith('data:') || url.startsWith('blob:')) {
+        return url;
+      }
+      return BASE_PATH && url.startsWith('/') && !url.startsWith(`${BASE_PATH}/`) ? `${BASE_PATH}${url}` : url;
+    }
+
     const skillCatalog = [
       { name: 'drawio-generation', agent: 'artifact-generator', detail: '节点、连线、泳道、分层' },
       { name: 'pptx-generation', agent: 'artifact-generator', detail: '封面、目录、架构、计划' },
@@ -2914,11 +2942,11 @@
               <div class="artifact-name">${escapeHtml(artifact.name)}</div>
               <div class="artifact-meta">${escapeHtml(artifact.kind)} · ${escapeHtml(artifact.mime_type)} · ${formatBytes(artifact.size)}</div>
               <div class="artifact-actions">
-                <button type="button" data-preview="${escapeAttr(artifact.preview_url)}" data-kind="${escapeAttr(artifact.kind)}" data-id="${safeId(artifact.path)}">预览</button>
-                <button type="button" data-download="${escapeAttr(artifact.download_url)}">下载</button>
+                <button type="button" data-preview="${escapeAttr(artifactUrl(artifact.preview_url))}" data-kind="${escapeAttr(artifact.kind)}" data-id="${safeId(artifact.path)}">预览</button>
+                <button type="button" data-download="${escapeAttr(artifactUrl(artifact.download_url))}">下载</button>
               </div>
               <div class="preview ${artifact.kind === 'image' ? 'image-preview' : ''}" id="preview-${safeId(artifact.path)}" ${artifact.kind === 'image' ? '' : 'hidden'}>
-                ${artifact.kind === 'image' ? `<img src="${escapeAttr(artifact.preview_url)}" alt="${escapeAttr(artifact.name)}">` : ''}
+                ${artifact.kind === 'image' ? `<img src="${escapeAttr(artifactUrl(artifact.preview_url))}" alt="${escapeAttr(artifact.name)}">` : ''}
               </div>
             </div>
           `).join('')}
@@ -2995,7 +3023,7 @@
     }
 
     async function loadAgents() {
-      const res = await fetch('/api/agents');
+      const res = await fetch(apiUrl('/api/agents'));
       const data = await res.json();
       state.agents = data.agents || [];
       els.agent.innerHTML = state.agents.map((agent) => `<option value="${escapeHtml(agent.name)}">${escapeHtml(agent.display_name || agent.name)}</option>`).join('');
@@ -3008,7 +3036,7 @@
 
     async function loadSkills(options = {}) {
       if (els.skillSummary) els.skillSummary.textContent = '加载技能中';
-      const res = await fetch('/api/skills', { cache: 'no-store' });
+      const res = await fetch(apiUrl('/api/skills'), { cache: 'no-store' });
       if (!res.ok) throw new Error(res.statusText || `HTTP ${res.status}`);
       const data = await res.json();
       state.skills = data.skills || [];
@@ -3031,7 +3059,7 @@
       if (els.skillEditor && options.showLoading !== false) {
         els.skillEditor.innerHTML = '<div class="empty-panel">加载技能配置</div>';
       }
-      const res = await fetch(`/api/skills/${encodeURIComponent(skillName)}`, { cache: 'no-store' });
+      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(skillName)}`), { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
@@ -3190,7 +3218,7 @@
         state.selectedSkillFileContent = '加载文件中';
         renderSkillEditor();
       }
-      const res = await fetch(`/api/skills/${encodeURIComponent(skillName)}/files/${encodeURIComponent(state.selectedSkillFileId)}`, { cache: 'no-store' });
+      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(skillName)}/files/${encodeURIComponent(state.selectedSkillFileId)}`), { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
@@ -3413,7 +3441,7 @@
         return;
       }
       renderSkillEditor({ text: '保存中' });
-      const res = await fetch(`/api/skills/${encodeURIComponent(state.selectedSkillName)}`, {
+      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(state.selectedSkillName)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(manifest)
@@ -3450,7 +3478,7 @@
       }
       state.selectedSkillFileContent = file.content;
       renderSkillEditor({ text: '保存文件中' });
-      const res = await fetch(`/api/skills/${encodeURIComponent(state.selectedSkillName)}/files/${encodeURIComponent(file.fileId)}`, {
+      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(state.selectedSkillName)}/files/${encodeURIComponent(file.fileId)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: file.content })
@@ -3563,7 +3591,7 @@
     }
 
     async function loadWorkflows() {
-      const res = await fetch('/api/workflows', { cache: 'no-store' });
+      const res = await fetch(apiUrl('/api/workflows'), { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
       state.workflows = data.workflows || [];
@@ -3578,7 +3606,7 @@
     }
 
     async function loadMcpTools() {
-      const res = await fetch('/api/mcp/tools', { cache: 'no-store' });
+      const res = await fetch(apiUrl('/api/mcp/tools'), { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
       state.mcpTools = data.tools || [];
@@ -4089,7 +4117,7 @@
       const formData = new FormData();
       formData.append('file', file);
       renderSkillEditor({ type: '', text: '正在上传 Skill 插件...' });
-      const res = await fetch('/api/skills/plugins', {
+      const res = await fetch(apiUrl('/api/skills/plugins'), {
         method: 'POST',
         body: formData
       });
@@ -4193,7 +4221,7 @@
         renderAbilityPanel({ type: 'error', text: err.message });
         return;
       }
-      const res = await fetch(`/api/skills/${encodeURIComponent(manifest.name)}`, {
+      const res = await fetch(apiUrl(`/api/skills/${encodeURIComponent(manifest.name)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(manifest)
@@ -4233,7 +4261,7 @@
         renderAbilityPanel({ type: 'error', text: err.message });
         return;
       }
-      const res = await fetch(`/api/mcp/tools/${encodeURIComponent(tool.name)}`, {
+      const res = await fetch(apiUrl(`/api/mcp/tools/${encodeURIComponent(tool.name)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tool)
@@ -4304,7 +4332,7 @@
 
     async function saveToolManifest(tool, renderStatus, okText = '工具已保存') {
       renderStatus({ text: '保存中' });
-      const res = await fetch(`/api/mcp/tools/${encodeURIComponent(tool.name)}`, {
+      const res = await fetch(apiUrl(`/api/mcp/tools/${encodeURIComponent(tool.name)}`), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tool)
@@ -4344,7 +4372,7 @@
         message: 'Checking sandbox status.'
       }, true);
       try {
-        const res = await fetch('/api/sandbox/status', { cache: 'no-store' });
+        const res = await fetch(apiUrl('/api/sandbox/status'), { cache: 'no-store' });
         if (!res.ok) throw new Error(res.statusText || `HTTP ${res.status}`);
         state.sandboxStatus = await res.json();
       } catch (err) {
@@ -4507,7 +4535,7 @@
 
     async function sendViaSse(agentName, threadId, attachments, messages, workflow) {
       const runtimeOptions = buildRuntimeOptions(threadId, workflow);
-      const res = await fetch(`/api/agents/${agentName}/runs/stream`, {
+      const res = await fetch(apiUrl(`/api/agents/${agentName}/runs/stream`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -4610,8 +4638,7 @@
     }
 
     function openAcpSocket() {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.host}/api/acp/ws`;
+      const url = websocketUrl('/api/acp/ws');
       return new Promise((resolve, reject) => {
         const ws = new WebSocket(url, 'acp.v1');
         let settled = false;
@@ -4789,7 +4816,7 @@
 
     async function refreshArtifacts() {
       const threadId = ensureThread();
-      const res = await fetch(`/api/artifacts/${threadId}`);
+      const res = await fetch(apiUrl(`/api/artifacts/${threadId}`));
       const data = await res.json();
       state.artifacts = data.artifacts || [];
       renderPanel();
@@ -4807,7 +4834,7 @@
         target.innerHTML = '<pre>该文件为二进制产物，请下载后查看。</pre>';
         return;
       }
-      const res = await fetch(url);
+      const res = await fetch(artifactUrl(url));
       const text = await res.text();
       const clipped = text.slice(0, 24000);
       target.innerHTML = kind === 'markdown'
@@ -5440,12 +5467,12 @@
       const button = event.target.closest('button');
       if (!button) return;
       if (button.dataset.download) {
-        window.open(button.dataset.download, '_blank');
+        window.open(artifactUrl(button.dataset.download), '_blank');
         return;
       }
       if (button.dataset.preview) {
         const container = document.getElementById(`preview-${button.dataset.id}`);
-        preview(button.dataset.preview, button.dataset.kind, container);
+        preview(artifactUrl(button.dataset.preview), button.dataset.kind, container);
       }
     });
 
