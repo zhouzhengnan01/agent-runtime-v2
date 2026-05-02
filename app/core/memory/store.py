@@ -5,7 +5,7 @@ import json
 import re
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -172,4 +172,4 @@ class MemoryStore:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(tz=UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+        return datetime.now(tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
