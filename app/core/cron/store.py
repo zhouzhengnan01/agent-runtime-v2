@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.core.cron.models import CronJob, CronJobInput, CronRunStatus, utc_now
+from app.core.cron.models import CronJob, CronJobInput, CronRunRecord, CronRunStatus, utc_now
 from app.core.cron.schedule import CronExpression
 
 
@@ -18,6 +18,7 @@ class CronJobStore:
     def __init__(self, root_dir: Path | None = None) -> None:
         self.root_dir = root_dir or Path(__file__).resolve().parents[3]
         self.path = self.root_dir / "config" / "cron" / "jobs.json"
+        self.runs_dir = self.root_dir / "config" / "cron" / "runs"
 
     def list(self) -> builtins.list[CronJob]:
         return sorted(self._read_jobs().values(), key=lambda job: job.name)
@@ -109,6 +110,28 @@ class CronJobStore:
         self._replace(updated)
         return updated
 
+    def append_run(self, record: CronRunRecord) -> None:
+        path = self._runs_path(record.job_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record.to_payload(), ensure_ascii=False) + "\n")
+
+    def list_runs(self, name: str, *, limit: int = 50) -> builtins.list[CronRunRecord]:
+        self.get(name)
+        path = self._runs_path(name)
+        if not path.is_file():
+            return []
+        records: list[CronRunRecord] = []
+        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+            if len(records) >= limit:
+                break
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            if isinstance(item, dict):
+                records.append(CronRunRecord.model_validate(item))
+        return records
+
     def _replace(self, job: CronJob) -> None:
         jobs = self._read_jobs()
         jobs[job.name] = job
@@ -135,6 +158,10 @@ class CronJobStore:
         tmp_path = self.path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         tmp_path.replace(self.path)
+
+    def _runs_path(self, name: str) -> Path:
+        safe_name = self._safe_name(name)
+        return self.runs_dir / f"{safe_name}.jsonl"
 
     @staticmethod
     def _safe_name(name: str) -> str:

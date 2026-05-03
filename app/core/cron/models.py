@@ -80,6 +80,22 @@ class CronRunPayload(BaseModel):
     error: str = ""
 
 
+class CronRunRecord(BaseModel):
+    run_id: str
+    job_name: str
+    trigger: Literal["cron", "manual"]
+    started_at: datetime
+    finished_at: datetime | None = None
+    status: CronRunStatus = "running"
+    thread_id: str = ""
+    reply: str = ""
+    error: str = ""
+    result: dict[str, Any] | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
 class CronSchedulerStatus(BaseModel):
     enabled: bool
     running: bool

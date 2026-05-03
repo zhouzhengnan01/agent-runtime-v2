@@ -86,6 +86,11 @@ def test_cron_service_runs_job_and_updates_status(tmp_path: Path) -> None:
     assert payload.job["last_status"] == "completed"
     assert payload.job["run_count"] == 1
     assert payload.job["last_reply"] == "ran: 执行巡检"
+    runs = store.list_runs("manual-job")
+    assert len(runs) == 1
+    assert runs[0].trigger == "manual"
+    assert runs[0].status == "completed"
+    assert runs[0].reply == "ran: 执行巡检"
 
 
 def test_cron_api_crud_and_manual_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,15 +111,21 @@ def test_cron_api_crud_and_manual_run(tmp_path: Path, monkeypatch: pytest.Monkey
         json={"schedule": "0 1 * * *", "agent_name": "default", "prompt": "夜间巡检"},
     )
     listed = client.get("/api/cron/jobs")
+    preview = client.post("/api/cron/preview", json={"schedule": "0 9 * * *", "timezone": "Asia/Shanghai", "count": 3})
     run = client.post("/api/cron/jobs/nightly/run?token=admin-secret")
+    runs = client.get("/api/cron/jobs/nightly/runs")
     deleted = client.delete("/api/cron/jobs/nightly?token=admin-secret")
 
     assert denied.status_code == 401
     assert saved.status_code == 200
     assert saved.json()["name"] == "nightly"
     assert listed.json()["jobs"][0]["name"] == "nightly"
+    assert preview.status_code == 200
+    assert len(preview.json()["runs"]) == 3
     assert run.status_code == 200
     assert run.json()["job"]["last_status"] == "completed"
+    assert runs.status_code == 200
+    assert runs.json()["runs"][0]["trigger"] == "manual"
     assert deleted.status_code == 200
 
 

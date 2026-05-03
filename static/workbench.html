@@ -310,6 +310,61 @@
       white-space: nowrap;
     }
 
+    .admin-token-panel {
+      display: grid;
+      gap: 7px;
+    }
+
+    .admin-token-panel label {
+      color: var(--sidebar-muted);
+      font-size: 11px;
+      font-weight: 760;
+      letter-spacing: .02em;
+    }
+
+    .admin-token-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 5px;
+    }
+
+    .admin-token-row input {
+      min-width: 0;
+      height: 30px;
+      border: 1px solid rgba(255, 255, 255, .08);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .055);
+      color: #fff;
+      padding: 0 8px;
+      outline: none;
+      font-size: 11px;
+    }
+
+    .admin-token-row button {
+      height: 30px;
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .07);
+      color: #d6d9de;
+      padding: 0 8px;
+      font-size: 11px;
+      font-weight: 720;
+    }
+
+    .admin-token-row button:hover {
+      background: rgba(255, 255, 255, .11);
+      color: #fff;
+    }
+
+    .admin-token-status {
+      min-height: 15px;
+      color: var(--sidebar-muted);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    .admin-token-status.ok { color: #9ddfc7; }
+    .admin-token-status.error { color: #ffb4aa; }
+
     .main {
       min-width: 0;
       min-height: 100svh;
@@ -1725,6 +1780,40 @@
       overflow-wrap: anywhere;
     }
 
+    .cron-run-list,
+    .cron-preview-list {
+      display: grid;
+      gap: 7px;
+    }
+
+    .cron-run-row,
+    .cron-preview-row {
+      display: grid;
+      gap: 4px;
+      padding: 8px 9px;
+      border: 1px solid rgba(223, 227, 234, .78);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .62);
+    }
+
+    .cron-run-row-main,
+    .cron-preview-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 720;
+    }
+
+    .cron-run-row-meta {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
     .package-file-tabs {
       display: flex;
       gap: 6px;
@@ -2120,6 +2209,15 @@
       </section>
 
       <div class="side-foot">
+        <div class="admin-token-panel">
+          <label for="adminToken">Admin Token</label>
+          <div class="admin-token-row">
+            <input id="adminToken" type="password" placeholder="RUNTIME_API_TOKEN" autocomplete="off">
+            <button id="saveAdminToken" type="button">保存</button>
+            <button id="clearAdminToken" type="button">清除</button>
+          </div>
+          <div id="adminTokenStatus" class="admin-token-status">未设置时仅可使用未加锁环境</div>
+        </div>
         <div>当前线程</div>
         <div id="threadMini" class="thread-mini">local</div>
       </div>
@@ -2413,8 +2511,11 @@
       cronJobs: [],
       selectedCronJobName: null,
       selectedCronJob: null,
+      selectedCronRuns: [],
+      cronPreviewRuns: [],
       cronLoaded: false,
       cronFilter: 'all',
+      adminToken: '',
       abilityMode: 'skills',
       toolFilter: 'all',
       workflowFilter: 'all',
@@ -2439,6 +2540,10 @@
       agentList: document.getElementById('agentList'),
       activeAgentLabel: document.getElementById('activeAgentLabel'),
       sandboxStatus: document.getElementById('sandboxStatus'),
+      adminToken: document.getElementById('adminToken'),
+      saveAdminToken: document.getElementById('saveAdminToken'),
+      clearAdminToken: document.getElementById('clearAdminToken'),
+      adminTokenStatus: document.getElementById('adminTokenStatus'),
       thread: document.getElementById('thread'),
       threadMini: document.getElementById('threadMini'),
       newThread: document.getElementById('newThread'),
@@ -2482,6 +2587,50 @@
       cronList: document.getElementById('cronList'),
       cronEditor: document.getElementById('cronEditor')
     };
+
+    function loadAdminToken() {
+      state.adminToken = localStorage.getItem('jetlinks.runtime.adminToken') || '';
+      if (els.adminToken) els.adminToken.value = state.adminToken;
+      renderAdminTokenStatus();
+    }
+
+    function saveAdminToken() {
+      state.adminToken = (els.adminToken?.value || '').trim();
+      if (state.adminToken) {
+        localStorage.setItem('jetlinks.runtime.adminToken', state.adminToken);
+      } else {
+        localStorage.removeItem('jetlinks.runtime.adminToken');
+      }
+      renderAdminTokenStatus({ type: 'ok', text: state.adminToken ? 'Admin Token 已保存' : 'Admin Token 已清除' });
+    }
+
+    function clearAdminToken() {
+      state.adminToken = '';
+      localStorage.removeItem('jetlinks.runtime.adminToken');
+      if (els.adminToken) els.adminToken.value = '';
+      renderAdminTokenStatus({ text: 'Admin Token 已清除' });
+    }
+
+    function renderAdminTokenStatus(status = {}) {
+      if (!els.adminTokenStatus) return;
+      els.adminTokenStatus.className = `admin-token-status ${status.type || ''}`;
+      els.adminTokenStatus.textContent = status.text || (state.adminToken ? '将自动附加到管理接口请求' : '未设置时仅可使用未加锁环境');
+    }
+
+    function fetchOptions(options = {}) {
+      const next = { ...options };
+      const headers = new Headers(options.headers || {});
+      if (state.adminToken && !headers.has('Authorization')) {
+        headers.set('Authorization', `Bearer ${state.adminToken}`);
+      }
+      if ([...headers.keys()].length) next.headers = headers;
+      return next;
+    }
+
+    function acpUrl(path) {
+      const token = state.adminToken ? `?token=${encodeURIComponent(state.adminToken)}` : '';
+      return `${path}${token}`;
+    }
 
     function ensureThread() {
       if (!els.thread.value.trim()) {
@@ -3278,11 +3427,11 @@
         return;
       }
       renderSkillEditor({ text: '保存中' });
-      const res = await fetch(`/api/skills/${encodeURIComponent(state.selectedSkillName)}`, {
+      const res = await fetch(`/api/skills/${encodeURIComponent(state.selectedSkillName)}`, fetchOptions({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(manifest)
-      });
+      }));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         renderSkillEditor({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
@@ -3315,11 +3464,11 @@
       }
       state.selectedSkillFileContent = file.content;
       renderSkillEditor({ text: '保存文件中' });
-      const res = await fetch(`/api/skills/${encodeURIComponent(state.selectedSkillName)}/files/${encodeURIComponent(file.fileId)}`, {
+      const res = await fetch(`/api/skills/${encodeURIComponent(state.selectedSkillName)}/files/${encodeURIComponent(file.fileId)}`, fetchOptions({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: file.content })
-      });
+      }));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         renderSkillEditor({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
@@ -3437,9 +3586,48 @@
       if (state.selectedCronJobName) {
         state.selectedCronJob = state.cronJobs.find((job) => job.name === state.selectedCronJobName) || null;
       }
+      if (state.selectedCronJobName && state.selectedCronJob) {
+        await Promise.all([
+          loadCronRuns(state.selectedCronJobName),
+          previewSelectedCronJob()
+        ]);
+      } else {
+        state.selectedCronRuns = [];
+        state.cronPreviewRuns = [];
+      }
       renderCronList();
       renderCronSummary();
       renderCronEditor();
+    }
+
+    async function loadCronRuns(jobName) {
+      if (!jobName) {
+        state.selectedCronRuns = [];
+        return;
+      }
+      const res = await fetch(`/api/cron/jobs/${encodeURIComponent(jobName)}/runs?limit=20`, { cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
+      state.selectedCronRuns = data.runs || [];
+    }
+
+    async function previewSelectedCronJob() {
+      const job = state.selectedCronJob || state.cronJobs.find((item) => item.name === state.selectedCronJobName);
+      if (!job?.schedule) {
+        state.cronPreviewRuns = [];
+        return;
+      }
+      const res = await fetch('/api/cron/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedule: job.schedule, timezone: job.timezone || 'Asia/Shanghai', count: 5 })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.cronPreviewRuns = [];
+        throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
+      }
+      state.cronPreviewRuns = data.runs || [];
     }
 
     function renderCronSummary() {
@@ -3502,9 +3690,16 @@
         run_count: 0
       };
       if (!state.cronJobs.some((job) => job.name === name)) state.cronJobs.push(state.selectedCronJob);
+      state.selectedCronRuns = [];
+      state.cronPreviewRuns = [];
       renderCronList();
       renderCronSummary();
       renderCronEditor({ text: '填写 Cron 任务后保存' });
+      previewSelectedCronJob().then(() => {
+        renderCronEditor({ text: '填写 Cron 任务后保存' });
+      }).catch((err) => {
+        renderCronEditor({ type: 'error', text: err.message });
+      });
     }
 
     function renderCronEditor(status = {}) {
@@ -3514,6 +3709,27 @@
         els.cronEditor.innerHTML = '<div class="empty-panel">选择或添加 Cron 计划</div>';
         return;
       }
+      const previewRows = state.cronPreviewRuns.length
+        ? state.cronPreviewRuns.map((runAt, index) => `
+            <div class="cron-preview-row">
+              <span>#${index + 1}</span>
+              <span>${escapeHtml(formatDateTime(runAt))}</span>
+            </div>
+          `).join('')
+        : '<div class="empty">保存或刷新后显示接下来 5 次触发时间</div>';
+      const runRows = state.selectedCronRuns.length
+        ? state.selectedCronRuns.map((run) => `
+            <div class="cron-run-row">
+              <div class="cron-run-row-main">
+                <span>${escapeHtml(run.trigger || 'cron')} · ${escapeHtml(run.status || 'idle')}</span>
+                <span>${escapeHtml(formatDateTime(run.started_at))}</span>
+              </div>
+              <div class="cron-run-row-meta">thread=${escapeHtml(run.thread_id || '-')} · finished=${escapeHtml(formatDateTime(run.finished_at) || '-')}</div>
+              ${run.error ? `<div class="skill-status error">${escapeHtml(run.error)}</div>` : ''}
+              ${run.reply ? `<div class="cron-run-row-meta">${escapeHtml(run.reply)}</div>` : ''}
+            </div>
+          `).join('')
+        : '<div class="empty">暂无运行历史</div>';
       els.cronEditor.innerHTML = `
         <div class="skill-editor-head">
           <div class="skill-editor-title">
@@ -3579,6 +3795,26 @@
             ${job.last_error ? `<div class="skill-status error">${escapeHtml(job.last_error)}</div>` : ''}
             ${job.last_reply ? `<div class="empty">${escapeHtml(job.last_reply)}</div>` : ''}
           </section>
+          <section class="file-editor">
+            <div class="file-editor-head">
+              <div class="file-editor-title">
+                <strong>下次触发预览</strong>
+                <span>${escapeHtml(job.schedule || '')} · ${escapeHtml(job.timezone || 'UTC')}</span>
+              </div>
+              <button class="secondary-btn" type="button" data-cron-preview>刷新预览</button>
+            </div>
+            <div class="cron-preview-list">${previewRows}</div>
+          </section>
+          <section class="file-editor">
+            <div class="file-editor-head">
+              <div class="file-editor-title">
+                <strong>运行历史</strong>
+                <span>最近 ${Number(state.selectedCronRuns.length || 0)} 条</span>
+              </div>
+              <button class="secondary-btn" type="button" data-cron-refresh-runs>刷新历史</button>
+            </div>
+            <div class="cron-run-list">${runRows}</div>
+          </section>
           <div class="skill-form-actions">
             <button class="secondary-btn" type="button" data-cron-delete>删除</button>
             <button class="secondary-btn" type="button" data-cron-run>立即运行</button>
@@ -3619,11 +3855,11 @@
         return;
       }
       renderCronEditor({ text: '保存中' });
-      const res = await fetch(`/api/cron/jobs/${encodeURIComponent(payload.name)}`, {
+      const res = await fetch(`/api/cron/jobs/${encodeURIComponent(payload.name)}`, fetchOptions({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload.job)
-      });
+      }));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         renderCronEditor({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
@@ -3634,9 +3870,19 @@
       const index = state.cronJobs.findIndex((job) => job.name === data.name);
       if (index >= 0) state.cronJobs[index] = data;
       else state.cronJobs.push(data);
-      renderCronList();
-      renderCronSummary();
-      renderCronEditor({ type: 'ok', text: 'Cron 计划已保存' });
+      try {
+        await Promise.all([
+          loadCronRuns(data.name),
+          previewSelectedCronJob()
+        ]);
+        renderCronList();
+        renderCronSummary();
+        renderCronEditor({ type: 'ok', text: 'Cron 计划已保存' });
+      } catch (err) {
+        renderCronList();
+        renderCronSummary();
+        renderCronEditor({ type: 'error', text: err.message });
+      }
     }
 
     async function runCronJobNow() {
@@ -3647,7 +3893,7 @@
         return;
       }
       renderCronEditor({ text: '正在运行 Cron 任务' });
-      const res = await fetch(`/api/cron/jobs/${encodeURIComponent(name)}/run`, { method: 'POST' });
+      const res = await fetch(`/api/cron/jobs/${encodeURIComponent(name)}/run`, fetchOptions({ method: 'POST' }));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         renderCronEditor({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
@@ -3657,9 +3903,19 @@
       state.selectedCronJobName = data.job?.name || name;
       const index = state.cronJobs.findIndex((job) => job.name === state.selectedCronJobName);
       if (index >= 0) state.cronJobs[index] = data.job;
-      renderCronList();
-      renderCronSummary();
-      renderCronEditor({ type: data.error ? 'error' : 'ok', text: data.error || 'Cron 任务已运行' });
+      try {
+        await Promise.all([
+          loadCronRuns(state.selectedCronJobName),
+          previewSelectedCronJob()
+        ]);
+        renderCronList();
+        renderCronSummary();
+        renderCronEditor({ type: data.error ? 'error' : 'ok', text: data.error || 'Cron 任务已运行' });
+      } catch (err) {
+        renderCronList();
+        renderCronSummary();
+        renderCronEditor({ type: 'error', text: err.message });
+      }
     }
 
     async function deleteCronJob() {
@@ -3669,12 +3925,14 @@
         state.cronJobs = state.cronJobs.filter((job) => job.name !== name);
         state.selectedCronJobName = state.cronJobs[0]?.name || null;
         state.selectedCronJob = state.cronJobs[0] || null;
+        state.selectedCronRuns = [];
+        state.cronPreviewRuns = [];
         renderCronList();
         renderCronSummary();
         renderCronEditor({ type: 'ok', text: '未保存的 Cron 计划已移除' });
         return;
       }
-      const res = await fetch(`/api/cron/jobs/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const res = await fetch(`/api/cron/jobs/${encodeURIComponent(name)}`, fetchOptions({ method: 'DELETE' }));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         renderCronEditor({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
@@ -3683,9 +3941,44 @@
       state.cronJobs = state.cronJobs.filter((job) => job.name !== name);
       state.selectedCronJobName = state.cronJobs[0]?.name || null;
       state.selectedCronJob = state.cronJobs[0] || null;
+      state.selectedCronRuns = [];
+      state.cronPreviewRuns = [];
       renderCronList();
       renderCronSummary();
       renderCronEditor({ type: 'ok', text: 'Cron 计划已删除' });
+    }
+
+    async function refreshCronRuns() {
+      if (!state.selectedCronJobName || state.selectedCronJob?.isDraft) return;
+      try {
+        await loadCronRuns(state.selectedCronJobName);
+        renderCronEditor({ type: 'ok', text: '运行历史已刷新' });
+      } catch (err) {
+        renderCronEditor({ type: 'error', text: err.message });
+      }
+    }
+
+    async function refreshCronPreviewFromForm() {
+      let payload;
+      try {
+        payload = collectCronForm();
+      } catch (err) {
+        renderCronEditor({ type: 'error', text: err.message });
+        return;
+      }
+      const previousJob = state.selectedCronJob;
+      state.selectedCronJob = {
+        ...(previousJob || {}),
+        ...payload.job,
+        name: payload.name,
+        isDraft: previousJob?.isDraft || false
+      };
+      try {
+        await previewSelectedCronJob();
+        renderCronEditor({ type: 'ok', text: '触发预览已刷新' });
+      } catch (err) {
+        renderCronEditor({ type: 'error', text: err.message });
+      }
     }
 
     function formatDateTime(value) {
@@ -4152,10 +4445,10 @@
       const formData = new FormData();
       formData.append('file', file);
       renderSkillEditor({ type: '', text: '正在上传 Skill 插件...' });
-      const res = await fetch('/api/skills/plugins', {
+      const res = await fetch('/api/skills/plugins', fetchOptions({
         method: 'POST',
         body: formData
-      });
+      }));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         renderSkillEditor({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
@@ -4256,11 +4549,11 @@
         renderAbilityPanel({ type: 'error', text: err.message });
         return;
       }
-      const res = await fetch(`/api/skills/${encodeURIComponent(manifest.name)}`, {
+      const res = await fetch(`/api/skills/${encodeURIComponent(manifest.name)}`, fetchOptions({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(manifest)
-      });
+      }));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         renderAbilityPanel({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
@@ -4296,11 +4589,11 @@
         renderAbilityPanel({ type: 'error', text: err.message });
         return;
       }
-      const res = await fetch(`/api/mcp/tools/${encodeURIComponent(tool.name)}`, {
+      const res = await fetch(`/api/mcp/tools/${encodeURIComponent(tool.name)}`, fetchOptions({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tool)
-      });
+      }));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         renderAbilityPanel({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
@@ -4367,11 +4660,11 @@
 
     async function saveToolManifest(tool, renderStatus, okText = '工具已保存') {
       renderStatus({ text: '保存中' });
-      const res = await fetch(`/api/mcp/tools/${encodeURIComponent(tool.name)}`, {
+      const res = await fetch(`/api/mcp/tools/${encodeURIComponent(tool.name)}`, fetchOptions({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tool)
-      });
+      }));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         renderStatus({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
@@ -4570,7 +4863,7 @@
 
     async function sendViaSse(agentName, threadId, attachments, messages, workflow) {
       const runtimeOptions = buildRuntimeOptions(threadId, workflow);
-      const res = await fetch(`/api/agents/${agentName}/runs/stream`, {
+      const res = await fetch(`/api/agents/${agentName}/runs/stream`, fetchOptions({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -4578,7 +4871,7 @@
           attachments,
           runtime_options: runtimeOptions
         })
-      });
+      }));
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || res.statusText);
@@ -4674,7 +4967,7 @@
 
     function openAcpSocket() {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${protocol}//${window.location.host}/api/acp/ws`;
+      const url = `${protocol}//${window.location.host}${acpUrl('/api/acp/ws')}`;
       return new Promise((resolve, reject) => {
         const ws = new WebSocket(url, 'acp.v1');
         let settled = false;
@@ -5182,6 +5475,11 @@
     els.refresh.addEventListener('click', refreshArtifacts);
     els.refreshTop.addEventListener('click', refreshArtifacts);
     els.sandboxStatus.addEventListener('click', loadSandboxStatus);
+    els.saveAdminToken.addEventListener('click', saveAdminToken);
+    els.clearAdminToken.addEventListener('click', clearAdminToken);
+    els.adminToken.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') saveAdminToken();
+    });
     els.refreshSkills.addEventListener('click', () => {
       state.skillsLoaded = false;
       loadSkills({ showLoading: false }).catch((err) => {
@@ -5411,8 +5709,18 @@
         state.selectedCronJob = filteredCronJobs().find((job) => job.name === state.selectedCronJobName)
           || state.cronJobs.find((job) => job.name === state.selectedCronJobName)
           || null;
+        state.selectedCronRuns = [];
+        state.cronPreviewRuns = [];
         renderCronList();
-        renderCronEditor();
+        renderCronEditor({ text: '加载 Cron 详情中' });
+        Promise.all([
+          state.selectedCronJob?.isDraft ? Promise.resolve() : loadCronRuns(state.selectedCronJobName),
+          previewSelectedCronJob()
+        ]).then(() => {
+          renderCronEditor();
+        }).catch((err) => {
+          renderCronEditor({ type: 'error', text: err.message });
+        });
         return;
       }
       if (event.target.closest('[data-cron-save]')) {
@@ -5425,6 +5733,14 @@
       }
       if (event.target.closest('[data-cron-delete]')) {
         deleteCronJob();
+        return;
+      }
+      if (event.target.closest('[data-cron-preview]')) {
+        refreshCronPreviewFromForm();
+        return;
+      }
+      if (event.target.closest('[data-cron-refresh-runs]')) {
+        refreshCronRuns();
         return;
       }
       const useWorkflowButton = event.target.closest('[data-workflow-use]');
@@ -5539,6 +5855,7 @@
       }
     });
 
+    loadAdminToken();
     loadAgents();
     loadSandboxStatus();
     ensureThread();

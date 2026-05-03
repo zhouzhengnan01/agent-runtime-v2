@@ -6,7 +6,7 @@ from typing import Any
 
 from app.core.agent import AgentRuntime
 from app.core.config import AgentConfigLoader
-from app.core.cron.models import CronRunPayload, utc_now
+from app.core.cron.models import CronRunPayload, CronRunRecord, utc_now
 from app.core.cron.store import CronJobStore
 from app.schemas import ChatRequest, Message, RuntimeOptions
 
@@ -29,7 +29,15 @@ class CronService:
         async with self._lock:
             job = self.store.get(name)
             thread_id = self._thread_id(job.name, manual=manual)
-            self.store.mark_started(job.name, started_at=utc_now(), thread_id=thread_id)
+            started_at = utc_now()
+            self.store.mark_started(job.name, started_at=started_at, thread_id=thread_id)
+            run_record = CronRunRecord(
+                run_id=thread_id,
+                job_name=job.name,
+                trigger="manual" if manual else "cron",
+                started_at=started_at,
+                thread_id=thread_id,
+            )
         try:
             agent = self.loader.load(job.agent_name)
             runtime_options = self._runtime_options(job.runtime_options, thread_id)
@@ -41,24 +49,49 @@ class CronService:
                 ),
             )
         except Exception as exc:
+            error = str(exc)
+            finished_at = utc_now()
             finished = self.store.mark_finished(
                 job.name,
-                finished_at=utc_now(),
+                finished_at=finished_at,
                 status="failed",
-                error=str(exc),
+                error=error,
                 thread_id=thread_id,
             )
-            return CronRunPayload(job=finished.to_payload(), result=None, error=str(exc))
+            self.store.append_run(
+                run_record.model_copy(
+                    update={
+                        "finished_at": finished_at,
+                        "status": "failed",
+                        "error": error[:2000],
+                    }
+                )
+            )
+            return CronRunPayload(job=finished.to_payload(), result=None, error=error)
 
+        finished_at = utc_now()
         finished = self.store.mark_finished(
             job.name,
-            finished_at=utc_now(),
+            finished_at=finished_at,
             status=result.status,
             error="" if result.status == "completed" else result.reply,
             reply=result.reply,
             thread_id=result.thread_id,
         )
-        return CronRunPayload(job=finished.to_payload(), result=result.model_dump(mode="json"))
+        result_payload = result.model_dump(mode="json")
+        self.store.append_run(
+            run_record.model_copy(
+                update={
+                    "finished_at": finished_at,
+                    "status": result.status,
+                    "thread_id": result.thread_id,
+                    "reply": result.reply[:2000],
+                    "error": "" if result.status == "completed" else result.reply[:2000],
+                    "result": result_payload,
+                }
+            )
+        )
+        return CronRunPayload(job=finished.to_payload(), result=result_payload)
 
     @staticmethod
     def _runtime_options(raw_options: dict[str, Any], thread_id: str) -> RuntimeOptions:

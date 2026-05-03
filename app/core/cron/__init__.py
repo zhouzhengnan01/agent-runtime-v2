@@ -1,4 +1,4 @@
-from app.core.cron.models import CronJob, CronJobInput, CronRunPayload, CronSchedulerStatus
+from app.core.cron.models import CronJob, CronJobInput, CronRunPayload, CronRunRecord, CronSchedulerStatus
 from app.core.cron.schedule import CronExpression
 from app.core.cron.scheduler import CronScheduler
 from app.core.cron.service import CronService
@@ -10,6 +10,7 @@ __all__ = [
     "CronJobInput",
     "CronJobStore",
     "CronRunPayload",
+    "CronRunRecord",
     "CronScheduler",
     "CronSchedulerStatus",
     "CronService",

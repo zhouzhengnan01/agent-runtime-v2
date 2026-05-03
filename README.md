@@ -407,6 +407,8 @@ config/cron/jobs.json
 ```text
 GET    /api/cron/jobs
 GET    /api/cron/jobs/{job_name}
+GET    /api/cron/jobs/{job_name}/runs
+POST   /api/cron/preview
 PUT    /api/cron/jobs/{job_name}
 DELETE /api/cron/jobs/{job_name}
 POST   /api/cron/jobs/{job_name}/run
@@ -421,8 +423,11 @@ minute hour day-of-month month day-of-week
 
 支持 `*`、`*/n`、范围、列表，以及英文月份/星期缩写。任务会按配置的 `timezone` 计算下一次运行时间，
 并通过现有 `AgentRuntime` 执行指定 `agent_name`、`prompt` 和 `runtime_options`。
+每次运行会追加记录到 `config/cron/runs/{job_name}.jsonl`，便于页面展示最近运行历史。
 
-Workbench 左侧新增 **Cron 计划** 页面，可创建、编辑、启停、删除和立即运行任务。内置调度器默认启用；
+Workbench 左侧新增 **Cron 计划** 页面，可创建、编辑、启停、删除、立即运行任务，查看接下来 5 次触发预览
+和最近运行历史。页面侧提供 Admin Token 输入框，保存后会自动为管理接口附加 `Authorization: Bearer <token>`。
+内置调度器默认启用；
 如需只保留配置管理和手动运行，可以设置：
 
 ```bash
