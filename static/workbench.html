@@ -1545,6 +1545,96 @@
       overflow: hidden;
     }
 
+    .app-template-board {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .58);
+      overflow: hidden;
+    }
+
+    .app-template-list {
+      min-height: 0;
+      overflow: auto;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      align-content: start;
+      gap: 12px;
+    }
+
+    .app-template-card {
+      min-width: 0;
+      display: grid;
+      gap: 12px;
+      text-align: left;
+      padding: 14px;
+      border: 1px solid rgba(223, 227, 234, .88);
+      border-radius: var(--radius-lg);
+      background: #fff;
+      box-shadow: 0 10px 28px rgba(17, 19, 23, .045);
+      transition: border-color 120ms, transform 120ms, box-shadow 120ms;
+    }
+
+    .app-template-card:hover {
+      transform: translateY(-1px);
+      border-color: rgba(21, 91, 212, .26);
+      box-shadow: 0 16px 34px rgba(17, 19, 23, .07);
+    }
+
+    .app-template-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 11px;
+    }
+
+    .app-template-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 18px;
+    }
+
+    .app-template-title {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .app-template-title strong {
+      font-size: 15px;
+      line-height: 1.25;
+      font-weight: 780;
+      color: var(--text);
+    }
+
+    .app-template-title span,
+    .app-template-card p {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .app-template-card p {
+      margin: 0;
+      min-height: 34px;
+    }
+
+    .app-template-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
     .skill-list-pane,
     .skill-editor-pane {
       min-height: 0;
@@ -2176,6 +2266,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
           <span class="nav-label">进入聊天</span>
         </button>
+        <button type="button" data-view="apps">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4z"></path><path d="M13 4h7v7h-7z"></path><path d="M4 13h7v7H4z"></path><path d="M13 13h7v7h-7z"></path></svg>
+          <span class="nav-label">应用中心</span>
+        </button>
         <button type="button">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"></path><path d="M7 15l3-3 3 2 5-6"></path></svg>
           <span class="nav-label">运行详情</span>
@@ -2318,6 +2412,27 @@
             </div>
           </section>
 
+          <section id="appCenter" class="skill-manager" hidden>
+            <div class="skill-manager-head">
+              <div>
+                <h2>应用中心</h2>
+                <p id="appSummary">加载智能体模板中</p>
+              </div>
+              <div class="manager-actions">
+                <button id="refreshApps" class="secondary-btn" type="button">刷新模板</button>
+              </div>
+            </div>
+            <div class="app-template-board">
+              <div class="skill-filter-row" aria-label="应用模板筛选">
+                <button class="active" type="button" data-app-filter="all">全部</button>
+                <button type="button" data-app-filter="general">通用</button>
+                <button type="button" data-app-filter="generation">生成</button>
+                <button type="button" data-app-filter="vision">视觉</button>
+              </div>
+              <div id="appTemplateList" class="app-template-list"></div>
+            </div>
+          </section>
+
           <section id="toolsManager" class="skill-manager" hidden>
             <div class="skill-manager-head">
               <div>
@@ -2425,6 +2540,10 @@
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h7v7H4z"></path><path d="M13 11h7v7h-7z"></path><path d="M11 9l2 2"></path></svg>
                     <span>Workflow</span>
                   </button>
+                  <button class="small-action" type="button" data-view="apps">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4z"></path><path d="M13 4h7v7h-7z"></path><path d="M4 13h7v7H4z"></path><path d="M13 13h7v7h-7z"></path></svg>
+                    <span>应用</span>
+                  </button>
                   <button class="small-action" type="button" data-agent-select="behavior-detector">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                     <span>视觉证据</span>
@@ -2508,6 +2627,10 @@
       workflows: [],
       selectedWorkflowName: null,
       workflowsLoaded: false,
+      appTemplates: [],
+      appTemplatesLoaded: false,
+      appFilter: 'all',
+      selectedAppTemplateName: null,
       cronJobs: [],
       selectedCronJobName: null,
       selectedCronJob: null,
@@ -2566,6 +2689,10 @@
       skillStrip: document.getElementById('skillStrip'),
       chatFrame: document.getElementById('chatFrame'),
       composerWrap: document.getElementById('composerWrap'),
+      appCenter: document.getElementById('appCenter'),
+      appSummary: document.getElementById('appSummary'),
+      refreshApps: document.getElementById('refreshApps'),
+      appTemplateList: document.getElementById('appTemplateList'),
       skillManager: document.getElementById('skillManager'),
       skillSummary: document.getElementById('skillSummary'),
       refreshSkills: document.getElementById('refreshSkills'),
@@ -2887,6 +3014,7 @@
 
     function toggleCapability(kind, name) {
       if (!name) return;
+      clearSelectedAppTemplate();
       if (kind === 'workflow') {
         state.selectedChatWorkflow = state.selectedChatWorkflow === name ? null : name;
         renderComposerCapabilities();
@@ -2903,6 +3031,7 @@
 
     function removeCapability(kind, name) {
       if (!name) return;
+      clearSelectedAppTemplate();
       if (kind === 'workflow') {
         if (state.selectedChatWorkflow === name) state.selectedChatWorkflow = null;
         renderComposerCapabilities();
@@ -3046,6 +3175,157 @@
       }
       renderAgents();
       renderSelectedAgent();
+    }
+
+    async function loadAppTemplates() {
+      if (els.appSummary) els.appSummary.textContent = '加载智能体模板中';
+      const res = await fetch('/api/apps/templates', { cache: 'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
+      state.appTemplates = data.templates || [];
+      state.appTemplatesLoaded = true;
+      renderAppTemplateSummary();
+      renderAppTemplateList();
+    }
+
+    function renderAppTemplateSummary(status = '') {
+      if (!els.appSummary) return;
+      const filteredCount = filteredAppTemplates().length;
+      const categories = new Set(state.appTemplates.map((item) => item.category || 'general')).size;
+      els.appSummary.textContent = status || `${state.appTemplates.length} 个预置模板 · ${categories} 个分类 · 当前 ${filteredCount} 个`;
+    }
+
+    function filteredAppTemplates() {
+      const templates = [...state.appTemplates];
+      const sorted = templates.sort((a, b) => String(a.title || a.name).localeCompare(String(b.title || b.name), 'zh-CN'));
+      if (state.appFilter === 'all') return sorted;
+      return sorted.filter((template) => (template.category || 'general') === state.appFilter);
+    }
+
+    function renderAppTemplateList() {
+      if (!els.appTemplateList) return;
+      const templates = filteredAppTemplates();
+      if (!templates.length) {
+        els.appTemplateList.innerHTML = '<div class="empty-panel">暂无匹配模板</div>';
+        return;
+      }
+      els.appTemplateList.innerHTML = templates.map((template) => `
+        <article class="app-template-card">
+          <div class="app-template-head">
+            <div class="app-template-icon">${escapeHtml(appTemplateIcon(template.icon))}</div>
+            <div class="app-template-title">
+              <strong>${escapeHtml(template.title || template.name)}</strong>
+              <span>${escapeHtml(template.agent_name || 'default')} ${template.workflow ? `· ${template.workflow}` : ''}</span>
+            </div>
+          </div>
+          <p>${escapeHtml(template.description || '')}</p>
+          <div class="skill-badges">
+            <span class="skill-badge sandbox">${escapeHtml(categoryLabel(template.category))}</span>
+            ${(template.tags || []).slice(0, 4).map((tag) => `<span class="skill-badge">${escapeHtml(tag)}</span>`).join('')}
+          </div>
+          <div class="skill-file-line">Skills: ${escapeHtml((template.selected_skills || []).join(', ') || '按 Agent 默认')}</div>
+          <div class="app-template-actions">
+            <button class="secondary-btn" type="button" data-app-template-prompt="${escapeAttr(template.name)}">填入示例</button>
+            <button class="secondary-btn" type="button" data-app-template-cron="${escapeAttr(template.name)}">建 Cron</button>
+            <button class="primary-btn" type="button" data-app-template-use="${escapeAttr(template.name)}">使用此应用</button>
+          </div>
+        </article>
+      `).join('');
+    }
+
+    function appTemplateIcon(icon) {
+      const icons = {
+        chat: '💬',
+        diagram: '▦',
+        slides: '▣',
+        table: '▤',
+        doc: '¶',
+        mindmap: '☷',
+        shield: '◉',
+        package: '✦'
+      };
+      return icons[icon] || '✦';
+    }
+
+    function categoryLabel(category) {
+      const labels = {
+        general: '通用',
+        generation: '生成',
+        vision: '视觉'
+      };
+      return labels[category] || category || '通用';
+    }
+
+    function getAppTemplate(name) {
+      return state.appTemplates.find((template) => template.name === name) || null;
+    }
+
+    function clearSelectedAppTemplate() {
+      state.selectedAppTemplateName = null;
+    }
+
+    function applyAppTemplate(name, options = {}) {
+      const template = getAppTemplate(name);
+      if (!template) return;
+      setAgent(template.agent_name || 'default');
+      state.selectedChatSkills = [...(template.selected_skills || [])];
+      state.selectedChatMcpTools = [...(template.selected_mcp_tools || [])];
+      state.selectedChatWorkflow = template.workflow || null;
+      state.nextAgentOverride = null;
+      state.nextWorkflowOverride = null;
+      state.selectedAppTemplateName = template.name;
+      if (options.fillPrompt !== false && template.prompt_examples?.length) {
+        els.input.value = template.prompt_examples[0];
+      }
+      closeCapabilityPicker();
+      renderComposerCapabilities();
+      renderAppTemplateSummary(`已套用：${template.title || template.name}`);
+      setView('chat');
+      els.input.focus();
+    }
+
+    function runtimeOptionsFromAppTemplate(template, threadId = null) {
+      const runtimeOptions = {
+        ...(template.runtime_options && typeof template.runtime_options === 'object' ? template.runtime_options : {}),
+        selected_skills: [...(template.selected_skills || [])],
+        selected_mcp_tools: [...(template.selected_mcp_tools || [])]
+      };
+      if (threadId) runtimeOptions.thread_id = threadId;
+      if (template.workflow) runtimeOptions.workflow = template.workflow;
+      return runtimeOptions;
+    }
+
+    function createCronFromAppTemplate(name) {
+      const template = getAppTemplate(name);
+      if (!template) return;
+      const jobName = `app-${template.name}`.replace(/[^A-Za-z0-9_.-]/g, '-').slice(0, 120);
+      state.selectedCronJobName = jobName;
+      state.selectedCronJob = {
+        name: jobName,
+        isDraft: true,
+        title: `${template.title || template.name} 定时任务`,
+        description: template.description || '由应用中心模板创建的 Cron 任务。',
+        enabled: true,
+        schedule: '0 9 * * *',
+        timezone: 'Asia/Shanghai',
+        agent_name: template.agent_name || 'default',
+        prompt: template.prompt_examples?.[0] || '',
+        runtime_options: runtimeOptionsFromAppTemplate(template),
+        last_status: 'idle',
+        run_count: 0
+      };
+      if (!state.cronJobs.some((job) => job.name === jobName)) state.cronJobs.push(state.selectedCronJob);
+      state.selectedCronRuns = [];
+      state.cronPreviewRuns = [];
+      setView('cron');
+      renderCronList();
+      renderCronSummary();
+      renderCronEditor({ text: '已从应用模板生成 Cron 草稿，确认时间后保存' });
+      previewSelectedCronJob().then(() => {
+        renderCronEditor({ text: '已从应用模板生成 Cron 草稿，确认时间后保存' });
+      }).catch((err) => {
+        renderCronEditor({ type: 'error', text: err.message });
+      });
     }
 
     async function loadSkills(options = {}) {
@@ -3509,8 +3789,9 @@
     }
 
     function setView(view) {
-      state.view = ['chat', 'skills', 'tools', 'workflows', 'cron'].includes(view) ? view : 'chat';
+      state.view = ['chat', 'apps', 'skills', 'tools', 'workflows', 'cron'].includes(view) ? view : 'chat';
       const isChat = state.view === 'chat';
+      const isApps = state.view === 'apps';
       const isSkills = state.view === 'skills';
       const isTools = state.view === 'tools';
       const isWorkflows = state.view === 'workflows';
@@ -3520,6 +3801,7 @@
       els.skillStrip.hidden = !isChat;
       els.chatFrame.hidden = !isChat;
       els.composerWrap.hidden = !isChat;
+      els.appCenter.hidden = !isApps;
       els.skillManager.hidden = !isSkills;
       els.toolsManager.hidden = !isTools;
       els.workflowManager.hidden = !isWorkflows;
@@ -3527,7 +3809,15 @@
       document.querySelectorAll('[data-view]').forEach((item) => {
         item.classList.toggle('active', item.dataset.view === state.view);
       });
-      if (isSkills) {
+      if (isApps) {
+        state.activeTab = 'abilities';
+        document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item.dataset.tab === 'abilities'));
+        renderPanel();
+        loadAppTemplates().catch((err) => {
+          if (els.appTemplateList) els.appTemplateList.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
+          renderAppTemplateSummary(err.message);
+        });
+      } else if (isSkills) {
         state.activeTab = 'abilities';
         state.abilityMode = 'skills';
         document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item.dataset.tab === 'abilities'));
@@ -5199,12 +5489,14 @@
       if ([...els.agent.options].some((option) => option.value === agentName)) {
         els.agent.value = agentName;
       }
+      clearSelectedAppTemplate();
       state.nextAgentOverride = null;
       state.nextWorkflowOverride = null;
       renderSelectedAgent();
     }
 
     function setNextAgentOverride(agentName, workflowName = null) {
+      if (agentName || workflowName) clearSelectedAppTemplate();
       state.nextAgentOverride = agentName && agentName !== els.agent.value ? agentName : null;
       state.nextWorkflowOverride = workflowName || null;
       renderRouteHint();
@@ -5217,6 +5509,10 @@
       if (state.selectedChatMcpTools.length) capabilityParts.push(`MCP ${state.selectedChatMcpTools.length}`);
       const selectedWorkflow = state.nextWorkflowOverride || state.selectedChatWorkflow;
       if (selectedWorkflow) capabilityParts.push(`Workflow ${selectedWorkflow}`);
+      if (state.selectedAppTemplateName) {
+        const template = getAppTemplate(state.selectedAppTemplateName);
+        capabilityParts.push(`应用 ${template?.title || state.selectedAppTemplateName}`);
+      }
       if (capabilityParts.length) {
         els.routeHint.textContent = `能力：${capabilityParts.join(' · ')}`;
         els.routeHint.classList.add('active');
@@ -5454,6 +5750,7 @@
       state.selectedChatSkills = [];
       state.selectedChatMcpTools = [];
       state.selectedChatWorkflow = null;
+      state.selectedAppTemplateName = null;
       state.nextAgentOverride = null;
       state.nextWorkflowOverride = null;
       closeCapabilityPicker();
@@ -5484,6 +5781,13 @@
       state.skillsLoaded = false;
       loadSkills({ showLoading: false }).catch((err) => {
         renderSkillEditor({ type: 'error', text: err.message });
+      });
+    });
+    els.refreshApps.addEventListener('click', () => {
+      state.appTemplatesLoaded = false;
+      loadAppTemplates().catch((err) => {
+        if (els.appTemplateList) els.appTemplateList.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
+        renderAppTemplateSummary(err.message);
       });
     });
     els.refreshTools.addEventListener('click', () => {
@@ -5677,6 +5981,31 @@
           item.classList.toggle('active', item.dataset.cronFilter === state.cronFilter);
         });
         renderCronList();
+        return;
+      }
+      const appFilterButton = event.target.closest('[data-app-filter]');
+      if (appFilterButton) {
+        state.appFilter = appFilterButton.dataset.appFilter || 'all';
+        document.querySelectorAll('[data-app-filter]').forEach((item) => {
+          item.classList.toggle('active', item.dataset.appFilter === state.appFilter);
+        });
+        renderAppTemplateSummary();
+        renderAppTemplateList();
+        return;
+      }
+      const appUseButton = event.target.closest('[data-app-template-use]');
+      if (appUseButton) {
+        applyAppTemplate(appUseButton.dataset.appTemplateUse || '');
+        return;
+      }
+      const appCronButton = event.target.closest('[data-app-template-cron]');
+      if (appCronButton) {
+        createCronFromAppTemplate(appCronButton.dataset.appTemplateCron || '');
+        return;
+      }
+      const appPromptButton = event.target.closest('[data-app-template-prompt]');
+      if (appPromptButton) {
+        applyAppTemplate(appPromptButton.dataset.appTemplatePrompt || '', { fillPrompt: true });
         return;
       }
       const skillButton = event.target.closest('[data-skill-select]');

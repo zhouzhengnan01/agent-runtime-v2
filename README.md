@@ -46,6 +46,8 @@ python -m app.cli acp-stdio --agent default
 - Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection 等内置 Skill。
 - Workflow 插件：`artifact_workflow`、`evidence_first_detection` 通过 `WorkflowRegistry` 注册，可选启用。
 - 多协议入口：HTTP、SSE、CLI、ACP WebSocket、ACP stdio、MCP HTTP。
+- Workbench 应用中心：通过预置模板一键套用 agent、workflow、Skill、MCP 工具和示例提示词。
+- 轻量 Cron：支持配置定时运行 agent 任务、预览触发时间、手动运行和查看运行历史。
 - 线程级文件工作区：每个 `thread_id` 有自己的 workspace、uploads、outputs。
 - 可选本地 Memory v1：通过 agent JSON 开关控制，提供记忆写入、搜索、删除和可选上下文注入。
 - 本地私密配置：支持 `config/agents/*.local.json` 覆盖公开 agent JSON，并默认忽略上传。
@@ -55,7 +57,7 @@ python -m app.cli acp-stdio --agent default
 - 多 provider 适配：目前主要是 OpenAI-compatible API，还没有 Anthropic、Gemini、Bedrock、OpenRouter 等独立 adapter。
 - 完整 Memory 系统：目前只有本地 JSON Memory v1，还没有向量检索、自动总结、权限隔离和外部存储后端。
 - 完整 Session Resume：`thread_id` 只管理文件和产物，不恢复隐藏历史对话。
-- Cron/Gateway/Telegram/Discord/Slack/Email 等多平台常驻接入。
+- Gateway/Telegram/Discord/Slack/Email 等多平台常驻接入；Cron 已有轻量配置和内置调度器。
 - 子智能体 `delegate_task` 协作。
 - 浏览器自动化和网页抓取工具。
 - 上下文压缩、fallback model、stream 健康检查、复杂断流恢复等长任务增强能力。
@@ -315,6 +317,44 @@ tool calling，可以通过页面能力按钮、CLI `--workflow` 或 ACP `runtim
 
 这种情况下，运行时会使用该 Skill 对应的 workflow 闭环执行。这样页面上的“选择 Skill”按钮可以做到
 所选即所用，同时不会绕过校验、Sandbox 和 retry 逻辑。
+
+## 应用中心 / 智能体模板
+
+如果不希望每次在页面里反复选择 agent、Workflow、Skill 和 MCP 工具，可以把常用组合沉淀成
+Workbench 应用模板。模板配置保存在：
+
+```text
+config/apps/templates.json
+```
+
+当前内置了通用助手、IoT 架构图、项目汇报 PPT、Excel 模板、技术文档、XMind 任务拆解、行为识别
+安全助手和产物生成全家桶等模板。每个模板可声明：
+
+```json
+{
+  "name": "iot-architecture-diagram",
+  "title": "IoT 架构图专家",
+  "category": "generation",
+  "agent_name": "artifact-generator",
+  "workflow": "artifact_workflow",
+  "selected_skills": ["drawio-generation"],
+  "selected_mcp_tools": [],
+  "prompt_examples": ["生成一份 JetLinks IoT 平台架构 Draw.io 图"],
+  "tags": ["Draw.io", "架构图"]
+}
+```
+
+接口：
+
+```text
+GET /api/apps/templates
+GET /api/apps/templates/{template_name}
+```
+
+Workbench 左侧新增 **应用中心** 页面，也可以从输入框工具栏点 **应用** 快捷进入。点击“使用此应用”后，
+页面会自动切换到对应 agent，写入本轮 `runtime_options.workflow`、`selected_skills`、
+`selected_mcp_tools`，并填入第一个示例提示词；之后直接发送即可使用已经配置好的智能体。模板目前是
+轻量 JSON 配置，不会修改 agent 源配置，适合把常用场景预置成可点击入口。
 
 ## 工具、Skill 与 MCP
 
@@ -602,6 +642,7 @@ memory_md_compress -> 把较大的 .md 记忆抽取压缩成 summary.md
 - Web Workbench：`/static/workbench.html`
 - HTTP：`POST /api/agents/{agent}/runs`
 - SSE：`POST /api/agents/{agent}/runs/stream`
+- Apps：`GET /api/apps/templates`
 - ACP WebSocket：`/api/acp/ws`
 - ACP stdio：`python -m app.cli acp-stdio --agent default`
 - MCP HTTP：`POST /mcp`

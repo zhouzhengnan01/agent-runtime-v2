@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import acp, agents, artifacts, cron, health, mcp, sandbox, skills, workflows
+from app.api import acp, agents, apps, artifacts, cron, health, mcp, sandbox, skills, workflows
 
 
 @asynccontextmanager
@@ -33,6 +33,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(acp.router)
     app.include_router(agents.router)
+    app.include_router(apps.router)
     app.include_router(artifacts.router)
     app.include_router(sandbox.router)
     app.include_router(cron.router)
