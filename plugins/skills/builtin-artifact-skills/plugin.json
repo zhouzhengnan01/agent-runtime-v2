@@ -1,0 +1,9 @@
+{
+  "id": "builtin-artifact-skills",
+  "name": "Built-in Artifact Skills",
+  "version": "0.1.0",
+  "description": "Demo skills packaged as a runtime plugin instead of core runtime branches.",
+  "skills": [
+    "skills/*/manifest.json"
+  ]
+}

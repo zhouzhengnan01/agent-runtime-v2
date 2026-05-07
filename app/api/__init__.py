@@ -1,5 +1,2 @@
-"""
-JetLinks Agent API 模块
-"""
+"""HTTP route modules."""
 
-__version__ = "1.0.0"

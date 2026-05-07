@@ -1,0 +1,372 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any
+
+from app.core.config import AgentConfig
+from app.core.events import EventRecorder
+from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
+from app.core.tools import ToolDefinition, ToolInvocationResult, ToolInvocationService
+from app.schemas import AgentRunResult, Message, RuntimeOptions
+
+
+@dataclass
+class ToolLoopResult:
+    result: AgentRunResult
+    messages: list[dict[str, Any]]
+    rounds: int
+
+
+class ToolCallingAgentLoop:
+    """OpenAI tool-calling loop backed by the unified tool service."""
+
+    def __init__(self, tool_service: ToolInvocationService | None = None) -> None:
+        self.tool_service = tool_service or ToolInvocationService()
+
+    async def run(
+        self,
+        agent_config: AgentConfig,
+        messages: list[Message],
+        thread_id: str,
+        recorder: EventRecorder,
+        runtime_options: RuntimeOptions | None = None,
+        emit_message_delta: bool = False,
+    ) -> ToolLoopResult:
+        llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+        llm_metadata = {
+            "llm_configured": llm.configured,
+            "model": llm.model,
+            "temperature": llm.temperature,
+            "top_p": llm.top_p,
+            "max_tokens": llm.max_tokens,
+            "request_timeout_seconds": llm.request_timeout_seconds,
+        }
+        recorder.emit(
+            "llm.started",
+            {
+                "model": llm_metadata["model"],
+                "temperature": llm_metadata["temperature"],
+                "top_p": llm_metadata["top_p"],
+                "max_tokens": llm_metadata["max_tokens"],
+                "request_timeout_seconds": llm_metadata["request_timeout_seconds"],
+                "configured": llm_metadata["llm_configured"],
+            },
+        )
+
+        conversation = [message.model_dump() for message in messages]
+        system_prompt, memory_context_count = self._system_prompt(agent_config)
+        if agent_config.memory.enabled:
+            recorder.emit(
+                "memory.context.loaded",
+                {
+                    "enabled": True,
+                    "inject_context": agent_config.memory.inject_context,
+                    "scope": agent_config.memory.scope,
+                    "count": memory_context_count,
+                },
+            )
+        tools = self._openai_tools(agent_config, runtime_options)
+        if llm.tool_choice == "none":
+            tools = []
+        recorder.emit(
+            "tools.available",
+            {
+                "tool_count": len(tools),
+                "tools": [tool["function"]["name"] for tool in tools],
+                "tool_choice": llm.tool_choice,
+            },
+        )
+
+        if not tools:
+            reply = await llm.complete(system_prompt, messages)
+            return self._result(
+                agent_config,
+                thread_id,
+                reply,
+                0,
+                0,
+                llm_metadata,
+                recorder,
+                conversation,
+                emit_message_delta=emit_message_delta,
+            )
+
+        rounds = 0
+        tool_call_count = 0
+        final_response = LlmChatResponse()
+        max_rounds = max(1, agent_config.runtime.max_tool_rounds)
+        for round_index in range(max_rounds):
+            rounds = round_index + 1
+            final_response = await llm.complete_with_tools(system_prompt, conversation, tools)
+            assistant_message = self._assistant_message(final_response)
+            conversation.append(assistant_message)
+            if not final_response.tool_calls:
+                reply = final_response.content
+                return self._result(
+                    agent_config,
+                    thread_id,
+                    reply,
+                    rounds,
+                    tool_call_count,
+                    llm_metadata,
+                    recorder,
+                    conversation,
+                    emit_message_delta=emit_message_delta,
+                )
+
+            recorder.emit(
+                "tool.calls.started",
+                {
+                    "round": rounds,
+                    "tool_calls": [
+                        {"id": tool_call.id, "name": tool_call.name}
+                        for tool_call in final_response.tool_calls
+                    ],
+                },
+            )
+            for tool_call in final_response.tool_calls:
+                tool_call_count += 1
+                tool_result = self._execute_tool_call(
+                    tool_call,
+                    agent_config,
+                    thread_id,
+                    recorder,
+                    runtime_options=runtime_options,
+                )
+                conversation.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": self._tool_result_content(
+                            tool_result,
+                            max_chars=agent_config.runtime.max_tool_result_chars,
+                        ),
+                    }
+                )
+
+        reply = final_response.content or f"工具调用轮数已达到上限（{max_rounds} 轮），请缩小问题范围或继续追问。"
+        return self._result(
+            agent_config,
+            thread_id,
+            reply,
+            rounds,
+            tool_call_count,
+            llm_metadata,
+            recorder,
+            conversation,
+            status="failed" if final_response.tool_calls else "completed",
+            completed_event=not final_response.tool_calls,
+            emit_message_delta=emit_message_delta,
+        )
+
+    def _openai_tools(
+        self,
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions | None = None,
+    ) -> list[dict[str, Any]]:
+        allowed_names = self._allowed_tool_names(agent_config)
+        selected_mcp_tool_names = self._selected_mcp_tool_names(runtime_options)
+        if not allowed_names and not selected_mcp_tool_names:
+            return []
+
+        definitions = self.tool_service.list_tools()
+        if not agent_config.memory.enabled:
+            definitions = [
+                tool for tool in definitions if tool.source.get("type") not in {"memory", "markdown_memory"}
+            ]
+        elif not agent_config.memory.markdown_enabled:
+            definitions = [tool for tool in definitions if tool.source.get("type") != "markdown_memory"]
+        definitions = [
+            tool
+            for tool in definitions
+            if tool.name in allowed_names
+            or (tool.name in selected_mcp_tool_names and self._runtime_selectable_mcp_tool(tool))
+        ]
+        return [self._openai_tool(tool) for tool in definitions]
+
+    @staticmethod
+    def _allowed_tool_names(agent_config: AgentConfig) -> set[str]:
+        return {name for name in [*agent_config.tools, *agent_config.skills] if name}
+
+    @staticmethod
+    def _selected_mcp_tool_names(runtime_options: RuntimeOptions | None) -> set[str]:
+        if runtime_options is None:
+            return set()
+        return {name.strip() for name in runtime_options.selected_mcp_tools if name.strip()}
+
+    @staticmethod
+    def _runtime_selectable_mcp_tool(tool: ToolDefinition) -> bool:
+        return tool.source.get("type") in {"manual", "memory", "markdown_memory", "local", "skill"}
+
+    @staticmethod
+    def _openai_tool(tool: ToolDefinition) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description or tool.title or tool.name,
+                "parameters": tool.input_schema or {"type": "object", "additionalProperties": True},
+            },
+        }
+
+    @staticmethod
+    def _assistant_message(response: LlmChatResponse) -> dict[str, Any]:
+        message: dict[str, Any] = {"role": "assistant", "content": response.content or ""}
+        if response.tool_calls:
+            message["tool_calls"] = [tool_call.to_openai_payload() for tool_call in response.tool_calls]
+        return message
+
+    def _execute_tool_call(
+        self,
+        tool_call: LlmToolCall,
+        agent_config: AgentConfig,
+        thread_id: str,
+        recorder: EventRecorder,
+        runtime_options: RuntimeOptions | None = None,
+    ) -> ToolInvocationResult:
+        recorder.emit("tool.started", {"tool_name": tool_call.name, "tool_call_id": tool_call.id})
+        try:
+            arguments = self._tool_arguments(tool_call.arguments)
+            arguments.setdefault("_thread_id", thread_id)
+            arguments.setdefault("_agent_name", agent_config.name)
+            arguments.setdefault("_memory_scope", agent_config.memory.scope)
+            arguments.setdefault("_markdown_writable_scopes", agent_config.memory.markdown_writable_scopes)
+            arguments.setdefault("_markdown_max_chars", agent_config.memory.markdown_max_chars)
+            if runtime_options is not None:
+                arguments.setdefault("_user_id", runtime_options.user_id)
+                arguments.setdefault("_project_id", runtime_options.project_id)
+            result = self.tool_service.call_tool(tool_call.name, arguments)
+        except Exception as exc:
+            result = ToolInvocationResult(
+                content=[{"type": "text", "text": f"Tool {tool_call.name} failed: {exc}"}],
+                structured_content={"tool_name": tool_call.name, "error": str(exc)},
+                is_error=True,
+            )
+        recorder.emit(
+            "tool.completed" if not result.is_error else "tool.failed",
+            {
+                "tool_name": tool_call.name,
+                "tool_call_id": tool_call.id,
+                "is_error": result.is_error,
+                "structured_content": result.structured_content,
+            },
+        )
+        return result
+
+    @staticmethod
+    def _tool_arguments(raw_arguments: str) -> dict[str, Any]:
+        if not raw_arguments.strip():
+            return {}
+        parsed = json.loads(raw_arguments)
+        if not isinstance(parsed, dict):
+            raise ValueError("tool arguments must be a JSON object")
+        return parsed
+
+    def _system_prompt(self, agent_config: AgentConfig) -> tuple[str, int]:
+        prompt = agent_config.prompts.system
+        if not agent_config.memory.enabled or not agent_config.memory.inject_context:
+            return prompt, 0
+        try:
+            memories = self.tool_service.memory_store.list(
+                agent_config.name,
+                limit=agent_config.memory.max_items,
+                scope=agent_config.memory.scope,
+            )
+        except Exception:
+            return prompt, 0
+        if not memories:
+            return prompt, 0
+        lines = []
+        for item in memories:
+            tag_text = f" tags={','.join(item.tags)}" if item.tags else ""
+            lines.append(f"- {item.text} (id={item.id}{tag_text})")
+        memory_prompt = "\n".join(
+            [
+                "可用长期记忆如下。仅在与当前请求相关时使用；不要编造未列出的记忆。",
+                *lines,
+            ]
+        )
+        return f"{prompt}\n\n{memory_prompt}", len(memories)
+
+    @classmethod
+    def _tool_result_content(cls, result: ToolInvocationResult, *, max_chars: int) -> str:
+        payload = result.to_mcp_result()
+        rendered = json.dumps(payload, ensure_ascii=False)
+        if len(rendered) <= max_chars:
+            return rendered
+        return cls._truncated_tool_result_content(result, original_json=rendered, max_chars=max_chars)
+
+    @classmethod
+    def _truncated_tool_result_content(
+        cls,
+        result: ToolInvocationResult,
+        *,
+        original_json: str,
+        max_chars: int,
+    ) -> str:
+        source_text = cls._tool_result_text(result) or original_json
+        marker = (
+            "\n\n[tool result truncated before returning to model context; "
+            f"original_json_chars={len(original_json)}, max_tool_result_chars={max_chars}. "
+            "Use a narrower query, smaller file range, or follow-up tool call if more detail is needed.]"
+        )
+        clipped = source_text[: max(0, max_chars - len(marker) - 256)]
+        while True:
+            payload = {
+                "content": [{"type": "text", "text": f"{clipped}{marker}"}],
+                "structuredContent": {
+                    "_truncated": True,
+                    "original_json_chars": len(original_json),
+                    "max_tool_result_chars": max_chars,
+                },
+                "isError": result.is_error,
+            }
+            rendered = json.dumps(payload, ensure_ascii=False)
+            if len(rendered) <= max_chars or not clipped:
+                return rendered
+            overflow = len(rendered) - max_chars
+            clipped = clipped[: max(0, len(clipped) - overflow - 16)]
+
+    @staticmethod
+    def _tool_result_text(result: ToolInvocationResult) -> str:
+        texts: list[str] = []
+        for item in result.content:
+            raw_text = item.get("text")
+            if isinstance(raw_text, str):
+                texts.append(raw_text)
+            else:
+                texts.append(json.dumps(item, ensure_ascii=False))
+        return "\n".join(texts).strip()
+
+    @staticmethod
+    def _result(
+        agent_config: AgentConfig,
+        thread_id: str,
+        reply: str,
+        rounds: int,
+        tool_call_count: int,
+        llm_metadata: dict[str, Any],
+        recorder: EventRecorder,
+        messages: list[dict[str, Any]],
+        status: str = "completed",
+        completed_event: bool = True,
+        emit_message_delta: bool = False,
+    ) -> ToolLoopResult:
+        if emit_message_delta and reply:
+            recorder.emit("agent.message.delta", {"text": reply})
+        recorder.emit("agent.message", {"text": reply})
+        result = AgentRunResult(
+            agent=agent_config.name,
+            thread_id=thread_id,
+            status="completed" if status == "completed" else "failed",
+            reply=reply,
+            metadata={
+                "workflow": "agent_loop",
+                **llm_metadata,
+                "tool_rounds": rounds,
+                "tool_call_count": tool_call_count,
+            },
+        )
+        recorder.emit("run.completed" if completed_event else "run.failed", {"result": result.model_dump()})
+        return ToolLoopResult(result=result, messages=messages, rounds=rounds)

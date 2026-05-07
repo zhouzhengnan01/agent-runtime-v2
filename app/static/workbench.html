@@ -1,0 +1,1405 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JetLinks Agent Workbench</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --surface: #fff;
+      --surface-soft: #f2f5f7;
+      --line: #d8dee4;
+      --line-strong: #b8c2cc;
+      --text: #151b23;
+      --muted: #637083;
+      --soft: #8b98a8;
+      --accent: #0f766e;
+      --accent-soft: #e6f7f3;
+      --ok: #16833f;
+      --warn: #b7791f;
+      --danger: #b42318;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100svh;
+      background: var(--bg);
+      color: var(--text);
+      letter-spacing: 0;
+    }
+
+    button, textarea, select, input {
+      font: inherit;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr) 360px;
+      min-height: 100svh;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      padding: 22px 18px;
+      border-right: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .brand {
+      display: grid;
+      gap: 6px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav-btn, .btn {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease, color 120ms ease;
+    }
+
+    .nav-btn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 11px;
+      text-align: left;
+      font-weight: 620;
+    }
+
+    .nav-btn:hover, .btn:hover {
+      transform: translateY(-1px);
+      border-color: var(--line-strong);
+      background: #f8fafb;
+    }
+
+    .nav-btn.active {
+      border-color: rgba(15, 118, 110, 0.34);
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .nav-count {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+    }
+
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    select, textarea, input {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      outline: none;
+      border-radius: 8px;
+      transition: border-color 140ms ease, box-shadow 140ms ease;
+    }
+
+    select, input {
+      height: 38px;
+      padding: 0 10px;
+    }
+
+    textarea {
+      min-height: 88px;
+      max-height: 220px;
+      resize: vertical;
+      padding: 11px 12px;
+      line-height: 1.5;
+    }
+
+    select:focus, textarea:focus, input:focus {
+      border-color: rgba(15, 118, 110, 0.55);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+    }
+
+    .status-list {
+      display: grid;
+      gap: 10px;
+      padding: 12px 0;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .value {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 170px;
+      color: var(--text);
+      font-weight: 580;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: var(--soft);
+      box-shadow: 0 0 0 4px rgba(139, 152, 168, 0.13);
+    }
+
+    .dot.ok {
+      background: var(--ok);
+      box-shadow: 0 0 0 4px rgba(22, 131, 63, 0.13);
+    }
+
+    .dot.busy {
+      background: var(--warn);
+      box-shadow: 0 0 0 4px rgba(183, 121, 31, 0.13);
+    }
+
+    .actions {
+      display: grid;
+      gap: 10px;
+      margin-top: auto;
+    }
+
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .btn.primary:hover {
+      background: #115e59;
+    }
+
+    .btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+      transform: none;
+    }
+
+    .main {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      min-width: 0;
+      background: var(--surface);
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 66px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.92);
+      backdrop-filter: blur(12px);
+    }
+
+    .topbar h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .view-host {
+      min-height: 0;
+      display: grid;
+    }
+
+    .chat-view {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+    }
+
+    .messages {
+      min-height: 0;
+      overflow: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      scroll-behavior: smooth;
+    }
+
+    .empty {
+      margin: auto;
+      max-width: 560px;
+      text-align: center;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    .empty strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 20px;
+    }
+
+    .message {
+      display: grid;
+      gap: 7px;
+      max-width: min(760px, 88%);
+      animation: rise 180ms ease-out both;
+    }
+
+    .message.user { align-self: flex-end; }
+    .message.assistant { align-self: flex-start; }
+
+    .meta {
+      color: var(--soft);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .bubble {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px 13px;
+      line-height: 1.58;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .user .bubble {
+      border-color: rgba(15, 118, 110, 0.3);
+      background: #ecfdf9;
+    }
+
+    .assistant .bubble {
+      background: #fafbfc;
+    }
+
+    .composer {
+      padding: 16px 24px 20px;
+      border-top: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .composer-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 104px;
+      gap: 12px;
+      align-items: end;
+    }
+
+    .inventory {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .inventory-toolbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 180px;
+      gap: 12px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+
+    .inventory-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(320px, 0.95fr) minmax(360px, 1.05fr);
+    }
+
+    .item-list {
+      min-height: 0;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+    }
+
+    .item-row {
+      width: 100%;
+      display: grid;
+      gap: 7px;
+      padding: 14px 18px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      text-align: left;
+      animation: fade 160ms ease-out both;
+    }
+
+    .item-row:hover, .item-row.selected {
+      background: #f7faf9;
+    }
+
+    .item-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 14px;
+      font-weight: 720;
+    }
+
+    .item-desc {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 0 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .badge.skill {
+      border-color: rgba(15, 118, 110, 0.28);
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .badge.manual {
+      border-color: rgba(79, 70, 229, 0.22);
+      background: #eef2ff;
+      color: #4f46e5;
+    }
+
+    .detail {
+      min-height: 0;
+      overflow: auto;
+      padding: 22px 24px;
+    }
+
+    .detail h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 18px 0;
+    }
+
+    .detail-section {
+      display: grid;
+      gap: 10px;
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }
+
+    .detail-section h4 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 760;
+    }
+
+    .schema-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      align-items: start;
+    }
+
+    .editor-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .save-state {
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .notice {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .code-editor {
+      min-height: 240px;
+      max-height: 430px;
+      overflow: auto;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .kv {
+      display: grid;
+      gap: 5px;
+      padding: 11px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .kv span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .kv strong {
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      margin: 14px 0 0;
+      padding: 14px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f172a;
+      color: #dce7f3;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .inspector {
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+      border-left: 1px solid var(--line);
+      background: #fbfcfd;
+      min-width: 0;
+    }
+
+    .pane {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .pane:last-child { border-bottom: 0; }
+
+    .pane-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      min-height: 50px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+
+    .pane-head h3 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .count {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .event-list, .artifact-list {
+      overflow: auto;
+      padding: 12px 14px;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+    }
+
+    .event, .artifact {
+      display: grid;
+      gap: 5px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--line);
+      animation: fade 160ms ease-out both;
+    }
+
+    .event-type, .artifact-name {
+      font-size: 12px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .event-detail, .artifact-meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .artifact-links {
+      display: flex;
+      gap: 12px;
+      font-size: 12px;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 700;
+    }
+
+    a:hover { text-decoration: underline; }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes fade {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    @media (max-width: 1120px) {
+      .shell { grid-template-columns: 250px minmax(0, 1fr); }
+      .inspector { display: none; }
+    }
+
+    @media (max-width: 820px) {
+      .shell { grid-template-columns: 1fr; }
+      .sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .actions { margin-top: 0; }
+      .inventory-body { grid-template-columns: 1fr; }
+      .item-list { border-right: 0; border-bottom: 1px solid var(--line); }
+      .detail-grid { grid-template-columns: 1fr; }
+      .schema-grid { grid-template-columns: 1fr; }
+      .composer-row, .inventory-toolbar { grid-template-columns: 1fr; }
+      .message { max-width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>JetLinks Agent Workbench</h1>
+        <p>ACP sessions, protocol tools, and internal skills.</p>
+      </div>
+
+      <nav class="nav" aria-label="Workbench views">
+        <button class="nav-btn active" data-view="chat" type="button">Chat <span class="nav-count">ACP</span></button>
+        <button class="nav-btn" data-view="tools" type="button">Tools <span class="nav-count" id="toolNavCount">0</span></button>
+        <button class="nav-btn" data-view="skills" type="button">Skills <span class="nav-count" id="skillNavCount">0</span></button>
+      </nav>
+
+      <div class="field">
+        <label class="label" for="agentSelect">Agent</label>
+        <select id="agentSelect"></select>
+      </div>
+
+      <div class="status-list">
+        <div class="status-row">
+          <span>Connection</span>
+          <span class="value" id="connectionValue"><span class="dot" id="statusDot"></span>idle</span>
+        </div>
+        <div class="status-row">
+          <span>Session</span>
+          <span class="value" id="sessionValue">none</span>
+        </div>
+        <div class="status-row">
+          <span>Backend</span>
+          <span class="value" id="backendValue">local</span>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn" id="newSessionBtn" type="button">New session</button>
+        <button class="btn" id="clearBtn" type="button">Clear view</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h2 id="viewTitle">Chat</h2>
+          <div class="sub" id="viewDescription">ACP WebSocket conversation</div>
+        </div>
+      </header>
+
+      <section class="view-host" id="viewHost"></section>
+    </main>
+
+    <aside class="inspector">
+      <section class="pane">
+        <div class="pane-head">
+          <h3>Runtime events</h3>
+          <span class="count" id="eventCount">0</span>
+        </div>
+        <div class="event-list" id="eventList"></div>
+      </section>
+
+      <section class="pane">
+        <div class="pane-head">
+          <h3>Artifacts</h3>
+          <span class="count" id="artifactCount">0</span>
+        </div>
+        <div class="artifact-list" id="artifactList"></div>
+      </section>
+    </aside>
+  </div>
+
+  <script>
+    const state = {
+      view: 'chat',
+      ws: null,
+      requestId: 1,
+      pending: new Map(),
+      agents: [],
+      tools: [],
+      skills: [],
+      skillDetails: new Map(),
+      selectedTool: null,
+      selectedSkill: null,
+      sessionId: null,
+      threadId: null,
+      backend: 'local',
+      busy: false,
+      events: 0,
+      artifacts: new Map(),
+      messages: []
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const viewHost = $('viewHost');
+    const viewTitle = $('viewTitle');
+    const viewDescription = $('viewDescription');
+    const agentSelect = $('agentSelect');
+    const connectionValue = $('connectionValue');
+    const statusDot = $('statusDot');
+    const sessionValue = $('sessionValue');
+    const backendValue = $('backendValue');
+    const eventList = $('eventList');
+    const eventCount = $('eventCount');
+    const artifactList = $('artifactList');
+    const artifactCount = $('artifactCount');
+
+    const viewCopy = {
+      chat: ['Chat', 'ACP WebSocket conversation'],
+      tools: ['Tools', 'Protocol-facing tools exposed through the MCP surface'],
+      skills: ['Skills', 'Internal JetLinks runtime capabilities and manifests']
+    };
+
+    function wsUrl() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${window.location.host}/api/acp/ws`;
+    }
+
+    function setConnection(label, mode = '') {
+      connectionValue.innerHTML = '';
+      statusDot.className = `dot ${mode}`;
+      connectionValue.append(statusDot, document.createTextNode(label));
+    }
+
+    function setBusy(value) {
+      state.busy = value;
+      const sendBtn = $('sendBtn');
+      if (sendBtn) sendBtn.disabled = value;
+      statusDot.className = `dot ${value ? 'busy' : state.ws ? 'ok' : ''}`;
+    }
+
+    function nextId() {
+      state.requestId += 1;
+      return state.requestId;
+    }
+
+    function call(method, params = {}) {
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        return Promise.reject(new Error('WebSocket is not connected'));
+      }
+      const id = nextId();
+      state.ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+      return new Promise((resolve, reject) => {
+        state.pending.set(id, { resolve, reject });
+      });
+    }
+
+    async function loadData() {
+      const [agentsRes, toolsRes, skillsRes] = await Promise.all([
+        fetch('/api/agents'),
+        fetch('/api/mcp/tools'),
+        fetch('/api/skills')
+      ]);
+      const previousTool = state.selectedTool;
+      const previousSkill = state.selectedSkill;
+      const [agentsData, toolsData, skillsData] = await Promise.all([
+        agentsRes.json(),
+        toolsRes.json(),
+        skillsRes.json()
+      ]);
+      state.agents = agentsData.agents || [];
+      state.tools = toolsData.tools || [];
+      state.skills = skillsData.skills || [];
+      state.skillDetails.clear();
+      state.selectedTool = state.tools.find((tool) => tool.name === previousTool)?.name || state.tools[0]?.name || null;
+      state.selectedSkill = state.skills.find((skill) => skill.name === previousSkill)?.name || state.skills[0]?.name || null;
+      $('toolNavCount').textContent = String(state.tools.length);
+      $('skillNavCount').textContent = String(state.skills.length);
+      renderAgents();
+      renderView();
+    }
+
+    function renderAgents() {
+      agentSelect.innerHTML = '';
+      for (const agent of state.agents) {
+        const option = document.createElement('option');
+        option.value = agent.name;
+        option.textContent = agent.display_name || agent.name;
+        agentSelect.appendChild(option);
+      }
+      agentSelect.value = state.agents[0]?.name || 'default';
+    }
+
+    function connect() {
+      if (state.ws) state.ws.close();
+      state.ws = new WebSocket(wsUrl(), 'acp.v1');
+      setConnection('connecting', 'busy');
+
+      state.ws.addEventListener('open', async () => {
+        setConnection('connected', 'ok');
+        try {
+          await call('initialize', {});
+          await newSession();
+        } catch (error) {
+          addEvent('connection.error', String(error.message || error));
+        }
+      });
+
+      state.ws.addEventListener('message', (event) => {
+        const packet = JSON.parse(event.data);
+        if (packet.method === 'session/update') {
+          handleSessionUpdate(packet.params);
+          return;
+        }
+        if (packet.id && state.pending.has(packet.id)) {
+          const pending = state.pending.get(packet.id);
+          state.pending.delete(packet.id);
+          if (packet.error) {
+            pending.reject(new Error(packet.error.message || 'JSON-RPC error'));
+          } else {
+            pending.resolve(packet.result);
+          }
+        }
+      });
+
+      state.ws.addEventListener('close', () => {
+        setConnection('closed');
+        state.ws = null;
+      });
+
+      state.ws.addEventListener('error', () => {
+        setConnection('error');
+      });
+    }
+
+    async function newSession() {
+      const agentName = agentSelect.value || 'default';
+      const result = await call('new_session', {
+        agentName,
+        threadId: `web-${Date.now()}`,
+        cwd: '/'
+      });
+      state.sessionId = result.sessionId;
+      state.threadId = result.threadId;
+      state.backend = result.backend?.type || 'local';
+      sessionValue.textContent = state.sessionId;
+      backendValue.textContent = state.backend;
+      addEvent('session.created', `${agentName} / ${state.backend}`);
+    }
+
+    async function sendPrompt(text) {
+      if (!text.trim()) return;
+      if (!state.sessionId) await newSession();
+      addMessage('user', text);
+      setBusy(true);
+      try {
+        const result = await call('prompt', {
+          sessionId: state.sessionId,
+          agentName: agentSelect.value,
+          prompt: [{ type: 'text', text }]
+        });
+        if (result?.result?.artifacts) renderArtifacts(result.result.artifacts);
+        if (result?.result?.reply && !hasAssistantText(result.result.reply)) {
+          addMessage('assistant', result.result.reply);
+        }
+        addEvent('prompt.completed', result?.stopReason || 'end_turn');
+      } catch (error) {
+        addMessage('assistant', `Error: ${error.message || error}`);
+        addEvent('prompt.failed', String(error.message || error));
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function setView(view) {
+      state.view = view;
+      document.querySelectorAll('.nav-btn').forEach((button) => {
+        button.classList.toggle('active', button.dataset.view === view);
+      });
+      renderView();
+    }
+
+    function renderView() {
+      const [title, desc] = viewCopy[state.view];
+      viewTitle.textContent = title;
+      viewDescription.textContent = desc;
+      if (state.view === 'chat') renderChat();
+      if (state.view === 'tools') renderTools();
+      if (state.view === 'skills') renderSkills();
+    }
+
+    function renderChat() {
+      viewHost.innerHTML = `
+        <div class="chat-view">
+          <section class="messages" id="messages"></section>
+          <form class="composer" id="composer">
+            <div class="composer-row">
+              <textarea id="promptInput" placeholder="输入消息..." autocomplete="off"></textarea>
+              <button class="btn primary" id="sendBtn" type="submit">Send</button>
+            </div>
+          </form>
+        </div>
+      `;
+      const messages = $('messages');
+      if (!state.messages.length) {
+        messages.innerHTML = `
+          <div class="empty" id="emptyState">
+            <strong>Ready for a session</strong>
+            Select an agent and send a message.
+          </div>
+        `;
+      } else {
+        for (const item of state.messages) appendMessageNode(item.role, item.text);
+      }
+      $('composer').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const input = $('promptInput');
+        const text = input.value;
+        input.value = '';
+        await sendPrompt(text);
+      });
+      $('promptInput').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          $('composer').requestSubmit();
+        }
+      });
+      setBusy(state.busy);
+    }
+
+    function renderTools() {
+      const selected = state.tools.find((tool) => tool.name === state.selectedTool) || state.tools[0] || null;
+      state.selectedTool = selected?.name || null;
+      renderInventory({
+        kind: 'tool',
+        items: state.tools,
+        selectedName: state.selectedTool,
+        onSelect: (name) => {
+          state.selectedTool = name;
+        },
+        filterPlaceholder: 'Filter tools...',
+        detail: renderToolDetail
+      });
+    }
+
+    function renderSkills() {
+      const selected = state.skills.find((skill) => skill.name === state.selectedSkill) || state.skills[0] || null;
+      state.selectedSkill = selected?.name || null;
+      renderInventory({
+        kind: 'skill',
+        items: state.skills,
+        selectedName: state.selectedSkill,
+        onSelect: (name) => {
+          state.selectedSkill = name;
+        },
+        filterPlaceholder: 'Filter skills...',
+        detail: renderSkillDetail
+      });
+    }
+
+    function renderInventory({ kind, items, selectedName, onSelect, filterPlaceholder, detail }) {
+      viewHost.innerHTML = `
+        <div class="inventory">
+          <div class="inventory-toolbar">
+            <input id="filterInput" placeholder="${filterPlaceholder}">
+            <button class="btn" id="refreshInventoryBtn" type="button">Refresh</button>
+          </div>
+          <div class="inventory-body">
+            <div class="item-list" id="itemList"></div>
+            <div class="detail" id="itemDetail"></div>
+          </div>
+        </div>
+      `;
+      const list = $('itemList');
+      const selected = items.find((item) => item.name === selectedName) || items[0];
+      const detailEl = $('itemDetail');
+      let currentSelection = selected?.name || null;
+
+      const renderSelectedDetail = async (item) => {
+        if (!item) {
+          detailEl.innerHTML = `<div class="empty"><strong>No ${kind}s</strong></div>`;
+          return;
+        }
+        try {
+          const rendered = detail(item, detailEl);
+          if (typeof rendered === 'string') {
+            detailEl.innerHTML = rendered;
+          } else if (rendered && typeof rendered.then === 'function') {
+            const html = await rendered;
+            if (typeof html === 'string') detailEl.innerHTML = html;
+          }
+        } catch (error) {
+          detailEl.innerHTML = `
+            <div class="empty">
+              <strong>Unable to load ${kind}</strong>
+              ${escapeHtml(error.message || String(error))}
+            </div>
+          `;
+        }
+      };
+
+      const renderRows = () => {
+        const query = $('filterInput').value.toLowerCase();
+        const filtered = items.filter((item) => {
+          return `${item.name} ${item.title || ''} ${item.description || ''}`.toLowerCase().includes(query);
+        });
+        list.innerHTML = '';
+        for (const item of filtered) {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.className = `item-row ${item.name === (kind === 'tool' ? state.selectedTool : state.selectedSkill) ? 'selected' : ''}`;
+          row.innerHTML = `
+            <div class="item-title">
+              <span></span>
+              <span class="badge ${item.source?.type || kind}"></span>
+            </div>
+            <div class="item-desc"></div>
+            <div class="badges"></div>
+          `;
+          row.classList.toggle('selected', item.name === currentSelection);
+          row.querySelector('.item-title span').textContent = item.title || item.name;
+          row.querySelector('.badge').textContent = kind === 'tool' ? (item.source?.type || 'tool') : item.output_kind || 'skill';
+          row.querySelector('.item-desc').textContent = item.description || '';
+          const badges = row.querySelector('.badges');
+          if (kind === 'tool') {
+            badges.append(makeBadge(item.enabled === false ? 'disabled' : 'enabled'));
+            badges.append(makeBadge(item.editable ? 'editable' : 'generated'));
+          } else {
+            badges.append(makeBadge(item.generation ? 'generation' : 'analysis'));
+            badges.append(makeBadge(item.sandbox?.enabled ? `sandbox:${item.sandbox.profile || 'on'}` : 'local'));
+          }
+          row.addEventListener('click', () => {
+            currentSelection = item.name;
+            onSelect(item.name);
+            renderRows();
+            void renderSelectedDetail(item);
+          });
+          list.appendChild(row);
+        }
+      };
+      $('filterInput').addEventListener('input', renderRows);
+      $('refreshInventoryBtn').addEventListener('click', async () => {
+        await loadData();
+        setView(kind === 'tool' ? 'tools' : 'skills');
+      });
+      renderRows();
+      void renderSelectedDetail(selected);
+    }
+
+    function renderToolDetail(tool, detailEl) {
+      if (!tool) {
+        detailEl.innerHTML = `<div class="empty"><strong>No tools</strong></div>`;
+        return;
+      }
+      detailEl.innerHTML = `
+        <h3>${escapeHtml(tool.title || tool.name)}</h3>
+        <div class="sub">${escapeHtml(tool.description || '')}</div>
+        <div class="detail-grid">
+          ${kv('Name', tool.name)}
+          ${kv('Source', tool.source?.type || 'manual')}
+          ${kv('Enabled', String(tool.enabled !== false))}
+          ${kv('Editable', String(Boolean(tool.editable)))}
+        </div>
+        <div class="badges">
+          <span class="badge ${tool.source?.type || 'manual'}">${escapeHtml(tool.source?.type || 'manual')}</span>
+          <span class="badge">protocol tool</span>
+        </div>
+        <div class="schema-grid">
+          ${jsonSection('Input schema', tool.input_schema || {})}
+          ${jsonSection('Output schema', tool.output_schema || {})}
+        </div>
+        <div class="detail-section">
+          <h4>Provider payload</h4>
+          <pre>${escapeHtml(formatJson(tool.source || {}))}</pre>
+        </div>
+        ${tool.editable ? `
+          <div class="detail-section">
+            <div class="editor-actions">
+              <h4>Tool manifest</h4>
+              <button class="btn" data-action="save-tool" type="button">Save</button>
+            </div>
+            <textarea class="code-editor" id="toolEditor" spellcheck="false">${escapeHtml(formatJson(tool))}</textarea>
+            <div class="save-state" id="toolSaveState"></div>
+          </div>
+        ` : `
+          <div class="detail-section">
+            <h4>Tool manifest</h4>
+            <div class="notice">Generated from provider metadata.</div>
+          </div>
+        `}
+      `;
+      attachToolSave(tool, detailEl);
+    }
+
+    async function renderSkillDetail(skill, detailEl) {
+      if (!skill) {
+        detailEl.innerHTML = `<div class="empty"><strong>No skills</strong></div>`;
+        return;
+      }
+      detailEl.innerHTML = `<div class="empty"><strong>Loading skill</strong></div>`;
+      const detail = await loadSkillDetail(skill.name);
+      const mcpTool = state.tools.find((tool) => tool.source?.skill_name === detail.name || tool.name === detail.name);
+      detailEl.innerHTML = `
+        <h3>${escapeHtml(detail.name)}</h3>
+        <div class="sub">${escapeHtml(detail.description || '')}</div>
+        <div class="detail-grid">
+          ${kv('Output kind', detail.output_kind || '')}
+          ${kv('Generation', String(Boolean(detail.generation)))}
+          ${kv('Sandbox', detail.sandbox?.enabled ? detail.sandbox.profile || 'enabled' : 'local')}
+          ${kv('MCP tool', mcpTool?.name || 'not exposed')}
+        </div>
+        <div class="badges">
+          ${(detail.quality_template || []).map((item) => `<span class="badge skill">${escapeHtml(item)}</span>`).join('') || '<span class="badge">no quality template</span>'}
+        </div>
+        <div class="schema-grid">
+          ${jsonSection('Input schema', detail.input_schema || {})}
+          ${jsonSection('Output schema', detail.output_schema || {})}
+        </div>
+        <div class="detail-section">
+          <div class="editor-actions">
+            <h4>Skill manifest</h4>
+            ${detail.editable ? '<button class="btn" data-action="save-skill" type="button">Save</button>' : ''}
+          </div>
+          <textarea class="code-editor" id="skillEditor" spellcheck="false" ${detail.editable ? '' : 'readonly'}>${escapeHtml(formatJson(detail.manifest || detail))}</textarea>
+          <div class="save-state" id="skillSaveState">${escapeHtml(detail.source_path || '')}</div>
+        </div>
+      `;
+      attachSkillSave(detail, detailEl);
+    }
+
+    function kv(label, value) {
+      return `<div class="kv"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+    }
+
+    function jsonSection(title, value) {
+      return `
+        <div class="detail-section">
+          <h4>${escapeHtml(title)}</h4>
+          <pre>${escapeHtml(formatJson(value))}</pre>
+        </div>
+      `;
+    }
+
+    function formatJson(value) {
+      return JSON.stringify(value ?? {}, null, 2);
+    }
+
+    async function loadSkillDetail(name) {
+      if (state.skillDetails.has(name)) return state.skillDetails.get(name);
+      const response = await fetch(`/api/skills/${encodeURIComponent(name)}`);
+      if (!response.ok) throw new Error(await responseMessage(response));
+      const detail = await response.json();
+      state.skillDetails.set(name, detail);
+      return detail;
+    }
+
+    function attachToolSave(tool, detailEl) {
+      const button = detailEl.querySelector('[data-action="save-tool"]');
+      if (!button) return;
+      button.addEventListener('click', async () => {
+        const editor = detailEl.querySelector('#toolEditor');
+        const saveState = detailEl.querySelector('#toolSaveState');
+        try {
+          saveState.textContent = 'Saving...';
+          const manifest = JSON.parse(editor.value);
+          const response = await fetch(`/api/mcp/tools/${encodeURIComponent(tool.name)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(manifest)
+          });
+          if (!response.ok) throw new Error(await responseMessage(response));
+          const saved = await response.json();
+          const index = state.tools.findIndex((item) => item.name === saved.name);
+          if (index >= 0) state.tools[index] = saved;
+          state.selectedTool = saved.name;
+          renderToolDetail(saved, detailEl);
+          detailEl.querySelector('#toolSaveState').textContent = 'Saved';
+        } catch (error) {
+          saveState.textContent = error.message || String(error);
+        }
+      });
+    }
+
+    function attachSkillSave(skill, detailEl) {
+      const button = detailEl.querySelector('[data-action="save-skill"]');
+      if (!button) return;
+      button.addEventListener('click', async () => {
+        const editor = detailEl.querySelector('#skillEditor');
+        const saveState = detailEl.querySelector('#skillSaveState');
+        try {
+          saveState.textContent = 'Saving...';
+          const manifest = JSON.parse(editor.value);
+          const response = await fetch(`/api/skills/${encodeURIComponent(skill.name)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(manifest)
+          });
+          if (!response.ok) throw new Error(await responseMessage(response));
+          const saved = await response.json();
+          state.skillDetails.set(saved.name, saved);
+          const index = state.skills.findIndex((item) => item.name === saved.name);
+          if (index >= 0) state.skills[index] = saved;
+          state.selectedSkill = saved.name;
+          await renderSkillDetail(saved, detailEl);
+          detailEl.querySelector('#skillSaveState').textContent = 'Saved';
+        } catch (error) {
+          saveState.textContent = error.message || String(error);
+        }
+      });
+    }
+
+    async function responseMessage(response) {
+      try {
+        const data = await response.json();
+        return data.detail || `${response.status} ${response.statusText}`;
+      } catch {
+        return `${response.status} ${response.statusText}`;
+      }
+    }
+
+    function makeBadge(text) {
+      const span = document.createElement('span');
+      span.className = 'badge';
+      span.textContent = text;
+      return span;
+    }
+
+    function handleSessionUpdate(params) {
+      const update = params.update || {};
+      const event = update._meta?.jetlinksRuntimeEvent;
+      const type = event?.type || update.sessionUpdate || 'session/update';
+      const detail = event ? summarizeEvent(event) : summarizeUpdate(update);
+      addEvent(type, detail);
+
+      if (update.sessionUpdate === 'agent_message_chunk' || update.sessionUpdate === 'agent_message') {
+        const text = update.text || update.content?.text || '';
+        if (text) addMessage('assistant', text);
+      }
+
+      const artifact = event?.data?.artifact;
+      if (artifact) renderArtifacts([artifact]);
+      const resultArtifacts = event?.data?.result?.artifacts;
+      if (Array.isArray(resultArtifacts)) renderArtifacts(resultArtifacts);
+    }
+
+    function summarizeEvent(event) {
+      const data = event.data || {};
+      if (data.skill_name) return data.skill_name;
+      if (data.text) return truncate(data.text, 96);
+      if (data.artifact?.name) return data.artifact.name;
+      if (data.result?.status) return data.result.status;
+      if (data.error) return data.error;
+      return '';
+    }
+
+    function summarizeUpdate(update) {
+      if (update.content?.text) return truncate(update.content.text, 96);
+      if (update.title) return update.title;
+      if (update.status) return update.status;
+      return '';
+    }
+
+    function addMessage(role, text) {
+      state.messages.push({ role, text });
+      if (state.view === 'chat') appendMessageNode(role, text);
+    }
+
+    function appendMessageNode(role, text) {
+      const messages = $('messages');
+      if (!messages) return;
+      document.getElementById('emptyState')?.remove();
+      const item = document.createElement('div');
+      item.className = `message ${role}`;
+      item.innerHTML = `
+        <div class="meta">${role === 'user' ? 'You' : 'Agent'}</div>
+        <div class="bubble"></div>
+      `;
+      item.querySelector('.bubble').textContent = text;
+      messages.appendChild(item);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function hasAssistantText(text) {
+      return state.messages.some((message) => message.role === 'assistant' && message.text === text);
+    }
+
+    function addEvent(type, detail) {
+      state.events += 1;
+      eventCount.textContent = String(state.events);
+      const row = document.createElement('div');
+      row.className = 'event';
+      row.innerHTML = `
+        <div class="event-type"></div>
+        <div class="event-detail"></div>
+      `;
+      row.querySelector('.event-type').textContent = type;
+      row.querySelector('.event-detail').textContent = detail || '';
+      eventList.prepend(row);
+    }
+
+    function renderArtifacts(items) {
+      for (const artifact of items) {
+        if (!artifact || !artifact.path) continue;
+        state.artifacts.set(artifact.path, artifact);
+      }
+      artifactCount.textContent = String(state.artifacts.size);
+      artifactList.innerHTML = '';
+      for (const artifact of state.artifacts.values()) {
+        const row = document.createElement('div');
+        row.className = 'artifact';
+        row.innerHTML = `
+          <div class="artifact-name"></div>
+          <div class="artifact-meta"></div>
+          <div class="artifact-links">
+            <a target="_blank" rel="noreferrer">Preview</a>
+            <a target="_blank" rel="noreferrer">Download</a>
+          </div>
+        `;
+        row.querySelector('.artifact-name').textContent = artifact.name || artifact.path;
+        row.querySelector('.artifact-meta').textContent = `${artifact.kind || 'file'} · ${artifact.mime_type || ''}`;
+        const links = row.querySelectorAll('a');
+        links[0].href = artifact.preview_url || '#';
+        links[1].href = artifact.download_url || '#';
+        artifactList.appendChild(row);
+      }
+    }
+
+    function clearView() {
+      state.messages = [];
+      state.events = 0;
+      state.artifacts.clear();
+      eventList.innerHTML = '';
+      artifactList.innerHTML = '';
+      eventCount.textContent = '0';
+      artifactCount.textContent = '0';
+      renderView();
+    }
+
+    function truncate(value, size) {
+      return value.length > size ? `${value.slice(0, size)}...` : value;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    document.querySelectorAll('.nav-btn').forEach((button) => {
+      button.addEventListener('click', () => setView(button.dataset.view));
+    });
+
+    $('newSessionBtn').addEventListener('click', async () => {
+      await newSession();
+    });
+
+    $('clearBtn').addEventListener('click', clearView);
+
+    agentSelect.addEventListener('change', async () => {
+      if (state.ws?.readyState === WebSocket.OPEN) await newSession();
+    });
+
+    loadData()
+      .then(connect)
+      .catch((error) => {
+        setConnection('error');
+        addEvent('startup.failed', String(error.message || error));
+      });
+  </script>
+</body>
+</html>
