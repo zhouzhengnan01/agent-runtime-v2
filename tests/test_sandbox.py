@@ -220,7 +220,7 @@ def test_skills_api_exposes_manifest_for_platform() -> None:
     assert data["sandbox"]["profile"] == "drawio"
     assert data["editable"] is True
     assert data["manifest"]["name"] == "drawio-generation"
-    assert data["source_path"].endswith("config/skills/drawio-generation.json")
+    assert Path(data["source_path"]).parts[-2:] == ("skills", "drawio-generation.json")
     assert '"name"' in data["source_text"]
 
 

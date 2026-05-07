@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Stateless JSON-configured agent runtime for JetLinks artifacts and skills."
 requires-python = ">=3.12"
 dependencies = [
+  "tzdata>=2024.1",
   "agent-client-protocol>=0.9.0,<0.10.0",
   "cryptography>=42.0.0",
   "fastapi>=0.115.0",

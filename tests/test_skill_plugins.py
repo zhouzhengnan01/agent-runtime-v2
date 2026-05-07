@@ -111,7 +111,7 @@ def test_skill_package_file_api_reads_and_updates_package_assets(tmp_path: Path)
     assert files_response.status_code == 200
     files = {item["id"]: item for item in files_response.json()["files"]}
     assert {"manifest", "skill-md", "requirements", "runner", "script-runner"} <= set(files)
-    assert files["skill-md"]["path"].endswith("plugins/skills/builtin-artifact-skills/skills/deliverables-export/SKILL.md")
+    assert Path(files["skill-md"]["path"]).parts[-6:] == ("plugins", "skills", "builtin-artifact-skills", "skills", "deliverables-export", "SKILL.md")
 
     read_response = client.get("/api/skills/deliverables-export/files/skill-md")
     assert read_response.status_code == 200

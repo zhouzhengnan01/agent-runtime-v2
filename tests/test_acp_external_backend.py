@@ -19,27 +19,26 @@ def test_acp_websocket_can_proxy_external_acp_stdio_backend(
     project_root = Path(__file__).resolve().parents[1]
     config_dir = tmp_path / "config" / "agents"
     config_dir.mkdir(parents=True)
+    import json as _json
     (config_dir / "external-behavior.json").write_text(
-        f"""
-{{
-  "name": "external-behavior",
-  "display_name": "External Behavior",
-  "description": "Proxy to an external ACP stdio behavior agent.",
-  "backend": {{
-    "type": "acp_stdio",
-    "command": "{sys.executable}",
-    "args": ["-m", "app.cli", "acp-stdio", "--agent", "behavior-detector"],
-    "cwd": "{project_root}",
-    "env": {{"PYTHONPATH": "{project_root}"}}
-  }},
-  "runtime": {{"stateless": true}},
-  "tools": [],
-  "skills": [],
-  "workflows": {{}},
-  "quality": {{"auto_repair": false, "verify_outputs": false, "fail_on_missing_artifact": false}},
-  "prompts": {{"system": "", "response_language": "zh-CN"}}
-}}
-""",
+        _json.dumps({
+            "name": "external-behavior",
+            "display_name": "External Behavior",
+            "description": "Proxy to an external ACP stdio behavior agent.",
+            "backend": {
+                "type": "acp_stdio",
+                "command": sys.executable,
+                "args": ["-m", "app.cli", "acp-stdio", "--agent", "behavior-detector"],
+                "cwd": str(project_root),
+                "env": {"PYTHONPATH": str(project_root)},
+            },
+            "runtime": {"stateless": True},
+            "tools": [],
+            "skills": [],
+            "workflows": {},
+            "quality": {"auto_repair": False, "verify_outputs": False, "fail_on_missing_artifact": False},
+            "prompts": {"system": "", "response_language": "zh-CN"},
+        }),
         encoding="utf-8",
     )
     monkeypatch.setattr(acp_api, "loader", AgentConfigLoader(tmp_path))
