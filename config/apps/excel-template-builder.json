@@ -1,0 +1,22 @@
+{
+  "name": "excel-template-builder",
+  "title": "Excel 模板助手",
+  "description": "预置表格生成能力，适合设备清单、导入模板、巡检台账和统计汇总。",
+  "category": "generation",
+  "icon": "table",
+  "agent_name": "artifact-generator",
+  "workflow": "artifact_workflow",
+  "selected_skills": [
+    "excel-generation"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "生成一份设备台账 Excel 模板，包含设备编号、名称、产品、状态、安装位置、负责人和备注",
+    "做一个巡检记录 Excel，包含汇总页和明细页"
+  ],
+  "tags": [
+    "Excel",
+    "模板",
+    "台账"
+  ]
+}

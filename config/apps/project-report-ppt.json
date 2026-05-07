@@ -1,0 +1,22 @@
+{
+  "name": "project-report-ppt",
+  "title": "项目汇报 PPT 助手",
+  "description": "预置 PPT 生成能力，适合方案汇报、项目周报、里程碑总结。",
+  "category": "generation",
+  "icon": "slides",
+  "agent_name": "artifact-generator",
+  "workflow": "artifact_workflow",
+  "selected_skills": [
+    "pptx-generation"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "生成一份 JetLinks 项目汇报 PPT，包含封面、目录、架构、流程、计划、风险和总结",
+    "做一份边缘网关项目阶段汇报 PPT"
+  ],
+  "tags": [
+    "PPT",
+    "汇报",
+    "方案"
+  ]
+}

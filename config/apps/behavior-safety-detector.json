@@ -1,0 +1,22 @@
+{
+  "name": "behavior-safety-detector",
+  "title": "行为识别安全助手",
+  "description": "预置证据优先行为识别 Agent，适合翻越、摔倒、禁区逗留等安全事件判断。",
+  "category": "vision",
+  "icon": "shield",
+  "agent_name": "behavior-detector",
+  "workflow": "evidence_first_detection",
+  "selected_skills": [
+    "behavior-detection"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "人员翻越围栏进入禁区，请按证据优先模式判断",
+    "老人摔倒，需要区分文本规则判断和视觉证据确认"
+  ],
+  "tags": [
+    "行为识别",
+    "安全",
+    "证据优先"
+  ]
+}

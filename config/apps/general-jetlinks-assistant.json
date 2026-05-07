@@ -1,0 +1,20 @@
+{
+  "name": "general-jetlinks-assistant",
+  "title": "JetLinks 通用助手",
+  "description": "通用问答、方案分析、轻量文件生成和本地 Workspace 操作。",
+  "category": "general",
+  "icon": "chat",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "帮我梳理当前 JetLinks 项目的下一步开发计划",
+    "总结这个需求并拆成可执行任务"
+  ],
+  "tags": [
+    "通用",
+    "默认",
+    "Workspace"
+  ]
+}

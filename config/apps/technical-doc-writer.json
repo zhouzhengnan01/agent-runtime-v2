@@ -1,0 +1,22 @@
+{
+  "name": "technical-doc-writer",
+  "title": "技术文档助手",
+  "description": "预置 Markdown 文档生成，适合架构说明、接口说明、运维手册和方案文档。",
+  "category": "generation",
+  "icon": "doc",
+  "agent_name": "artifact-generator",
+  "workflow": "artifact_workflow",
+  "selected_skills": [
+    "markdown-rendering"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "生成一份 JetLinks Agent Runtime 的技术说明文档，包含模块结构、API、部署和排错",
+    "写一份设备接入流程运维手册，包含 Mermaid 流程图"
+  ],
+  "tags": [
+    "Markdown",
+    "文档",
+    "Mermaid"
+  ]
+}

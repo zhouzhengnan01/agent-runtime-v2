@@ -15,30 +15,37 @@ class AppTemplateRegistry:
 
     def __init__(self, root_dir: Path | None = None) -> None:
         self.root_dir = root_dir or Path(__file__).resolve().parents[3]
-        self.path = self.root_dir / "config" / "apps" / "templates.json"
+        self.config_dir = self.root_dir / "config" / "apps"
 
     def list(self) -> builtins.list[AppTemplate]:
         return sorted(self._read_templates(), key=lambda template: (template.category, template.title, template.name))
 
     def get(self, name: str) -> AppTemplate:
         safe_name = self._safe_name(name)
-        for template in self._read_templates():
-            if template.name == safe_name:
-                return template
+        path = self.config_dir / f"{safe_name}.json"
+        if path.is_file():
+            return self._load_template(path)
         raise KeyError(f"App template not found: {safe_name}")
 
     def _read_templates(self) -> builtins.list[AppTemplate]:
-        if not self.path.is_file():
-            return []
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
-        items = raw.get("templates") if isinstance(raw, dict) else None
-        if not isinstance(items, list):
+        if not self.config_dir.is_dir():
             return []
         templates: builtins.list[AppTemplate] = []
-        for item in items:
-            if isinstance(item, dict):
-                templates.append(AppTemplate.model_validate(item))
+        for path in sorted(self.config_dir.glob("*.json")):
+            if path.name == "templates.json":
+                continue
+            try:
+                templates.append(self._load_template(path))
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
         return templates
+
+    @staticmethod
+    def _load_template(path: Path) -> AppTemplate:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"App template must be a JSON object: {path}")
+        return AppTemplate.model_validate(data)
 
     def validate_references(self) -> builtins.list[str]:
         """Return template reference problems without failing template loading."""
