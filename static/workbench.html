@@ -1984,6 +1984,117 @@
       background: #f8fafc;
     }
 
+    .schema-editor {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(248, 250, 252, .72);
+    }
+
+    .schema-editor-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .schema-editor-title {
+      display: grid;
+      gap: 3px;
+    }
+
+    .schema-editor-title strong {
+      font-size: 13px;
+      font-weight: 780;
+    }
+
+    .schema-editor-title span {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
+    .schema-editor-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .schema-root {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .schema-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .schema-row {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid rgba(223, 227, 234, .86);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .72);
+    }
+
+    .schema-row-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(140px, .8fr) auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .schema-row-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr) minmax(180px, 1fr);
+      gap: 8px;
+    }
+
+    .schema-row-grid .field {
+      gap: 4px;
+    }
+
+    .schema-row-grid .field input,
+    .schema-row-grid .field textarea,
+    .schema-row-grid .field select {
+      padding: 7px 8px;
+      font-size: 12px;
+    }
+
+    .schema-row-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+
+    .schema-row .check-field {
+      min-height: 32px;
+      font-size: 11px;
+    }
+
+    .schema-row button[data-schema-remove-field] {
+      height: 30px;
+      padding: 0 10px;
+      border-radius: var(--radius-full);
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 720;
+    }
+
+    .schema-root .check-field {
+      justify-content: flex-end;
+      min-height: 32px;
+    }
+
     .field input:focus,
     .field textarea:focus,
     .field select:focus {
@@ -3671,16 +3782,8 @@
             <label for="skillAdapterCommand">Adapter Command</label>
             <input id="skillAdapterCommand" name="adapter_command" value="${escapeAttr(sandbox.adapter_command || '')}">
           </div>
-          <div class="field-grid">
-            <div class="field">
-              <label for="skillInputSchema">Input Schema</label>
-              <textarea id="skillInputSchema" class="code" name="input_schema">${escapeHtml(JSON.stringify(skill.input_schema || {}, null, 2))}</textarea>
-            </div>
-            <div class="field">
-              <label for="skillOutputSchema">Output Schema</label>
-              <textarea id="skillOutputSchema" class="code" name="output_schema">${escapeHtml(JSON.stringify(skill.output_schema || {}, null, 2))}</textarea>
-            </div>
-          </div>
+          ${renderSchemaEditor('input', '输入参数', skill.input_schema || {})}
+          ${renderSchemaEditor('output', '输出参数', skill.output_schema || {})}
           <div class="skill-form-actions">
             <button class="secondary-btn" type="button" data-skill-reset>重置</button>
             <button class="primary-btn" type="button" data-skill-save ${packageFile?.editable === false ? 'disabled' : ''}>保存配置并生成 Manifest JSON</button>
@@ -3689,12 +3792,137 @@
       `;
     }
 
+    function renderSchemaEditor(kind, title, schema) {
+      const state = schemaEditorState(schema);
+      const rows = state.fields.length
+        ? state.fields.map((field) => schemaFieldRowHtml(kind, field)).join('')
+        : schemaFieldRowHtml(kind, {});
+      return `
+        <section class="schema-editor" data-schema-editor="${escapeAttr(kind)}">
+          <div class="schema-editor-head">
+            <div class="schema-editor-title">
+              <strong>${escapeHtml(title)}</strong>
+              <span>配置字段后会生成 JSON Schema 对象。</span>
+            </div>
+            <div class="schema-editor-actions">
+              <button class="secondary-btn" type="button" data-schema-add="${escapeAttr(kind)}">添加字段</button>
+            </div>
+          </div>
+          <div class="schema-root">
+            <div class="field">
+              <label>${escapeHtml(title)}根类型</label>
+              <select data-schema-root-type="${escapeAttr(kind)}">
+                <option value="object" ${state.type === 'object' ? 'selected' : ''}>object</option>
+              </select>
+            </div>
+            <label class="check-field">
+              <input type="checkbox" data-schema-additional="${escapeAttr(kind)}" ${state.additionalProperties ? 'checked' : ''}>
+              <span>允许额外字段</span>
+            </label>
+          </div>
+          <div class="schema-list" data-schema-fields="${escapeAttr(kind)}">
+            ${rows}
+          </div>
+        </section>
+      `;
+    }
+
+    function schemaFieldRowHtml(kind, field = {}) {
+      const type = field.type || 'string';
+      const itemsType = field.itemsType || 'string';
+      return `
+        <div class="schema-row" data-schema-row="${escapeAttr(kind)}">
+          <div class="schema-row-head">
+            <div class="field">
+              <label>字段名</label>
+              <input data-schema-field-name value="${escapeAttr(field.name || '')}" placeholder="title">
+            </div>
+            <div class="field">
+              <label>类型</label>
+              <select data-schema-field-type>
+                ${['string', 'number', 'integer', 'boolean', 'array', 'object'].map((item) => `
+                  <option value="${escapeAttr(item)}" ${type === item ? 'selected' : ''}>${escapeHtml(item)}</option>
+                `).join('')}
+              </select>
+            </div>
+            <label class="check-field">
+              <input type="checkbox" data-schema-field-required ${field.required ? 'checked' : ''}>
+              <span>必填</span>
+            </label>
+            <div class="schema-row-actions">
+              <button type="button" data-schema-remove-field>删除</button>
+            </div>
+          </div>
+          <div class="schema-row-grid">
+            <div class="field">
+              <label>描述</label>
+              <input data-schema-field-description value="${escapeAttr(field.description || '')}" placeholder="字段说明">
+            </div>
+            <div class="field">
+              <label>格式</label>
+              <input data-schema-field-format value="${escapeAttr(field.format || '')}" placeholder="date-time / uri">
+            </div>
+            <div class="field">
+              <label>枚举值</label>
+              <textarea data-schema-field-enum>${escapeHtml(field.enumText || '')}</textarea>
+            </div>
+          </div>
+          <div class="schema-row-grid">
+            <div class="field">
+              <label>默认值</label>
+              <input data-schema-field-default value="${escapeAttr(field.defaultText || '')}" placeholder="可留空">
+            </div>
+            <div class="field">
+              <label>固定值</label>
+              <input data-schema-field-const value="${escapeAttr(field.constText || '')}" placeholder="可留空">
+            </div>
+            <div class="field">
+              <label>数组元素类型</label>
+              <select data-schema-field-items-type ${type === 'array' ? '' : 'disabled'}>
+                ${['string', 'number', 'integer', 'boolean', 'object'].map((item) => `
+                  <option value="${escapeAttr(item)}" ${itemsType === item ? 'selected' : ''}>${escapeHtml(item)}</option>
+                `).join('')}
+              </select>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function schemaEditorState(schema) {
+      const source = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : {};
+      const properties = source.properties && typeof source.properties === 'object' && !Array.isArray(source.properties)
+        ? source.properties
+        : {};
+      const required = new Set(Array.isArray(source.required) ? source.required.filter((item) => typeof item === 'string') : []);
+      const fields = Object.entries(properties).map(([name, definition]) => {
+        const data = definition && typeof definition === 'object' && !Array.isArray(definition) ? definition : {};
+        const items = data.items && typeof data.items === 'object' && !Array.isArray(data.items) ? data.items : {};
+        return {
+          name,
+          type: typeof data.type === 'string' ? data.type : 'string',
+          required: required.has(name),
+          description: typeof data.description === 'string' ? data.description : '',
+          format: typeof data.format === 'string' ? data.format : '',
+          enumText: Array.isArray(data.enum) ? data.enum.map(schemaLiteralToText).join('\n') : '',
+          defaultText: Object.prototype.hasOwnProperty.call(data, 'default') ? schemaLiteralToText(data.default) : '',
+          constText: Object.prototype.hasOwnProperty.call(data, 'const') ? schemaLiteralToText(data.const) : '',
+          itemsType: typeof items.type === 'string' ? items.type : 'string'
+        };
+      });
+      return {
+        type: source.type === 'object' ? 'object' : 'object',
+        additionalProperties: source.additionalProperties !== false,
+        fields
+      };
+    }
+
     function collectSkillForm() {
       const form = document.getElementById('skillForm');
       if (!form || !state.selectedSkill) return null;
       const formData = new FormData(form);
-      const inputSchema = parseJsonField(String(formData.get('input_schema') || '{}'), 'Input Schema');
-      const outputSchema = parseJsonField(String(formData.get('output_schema') || '{}'), 'Output Schema');
+      const inputSchema = collectSchemaEditor('input');
+      const outputSchema = collectSchemaEditor('output');
       const fallback = String(formData.get('fallback_to_local') || 'null');
       const routing = {
         summary: String(formData.get('routing_summary') || '').trim(),
@@ -3742,6 +3970,72 @@
           status.textContent = err.message;
         }
       }
+    }
+
+    function collectSchemaEditor(kind) {
+      const editor = document.querySelector(`[data-schema-editor="${kind}"]`);
+      if (!editor) return { type: 'object', additionalProperties: true, properties: {} };
+      const properties = {};
+      const required = [];
+      editor.querySelectorAll('[data-schema-row]').forEach((row) => {
+        const name = String(row.querySelector('[data-schema-field-name]')?.value || '').trim();
+        if (!name) return;
+        const type = String(row.querySelector('[data-schema-field-type]')?.value || 'string').trim() || 'string';
+        const definition = { type };
+        const description = String(row.querySelector('[data-schema-field-description]')?.value || '').trim();
+        const format = String(row.querySelector('[data-schema-field-format]')?.value || '').trim();
+        const enumText = String(row.querySelector('[data-schema-field-enum]')?.value || '').trim();
+        const defaultText = String(row.querySelector('[data-schema-field-default]')?.value || '').trim();
+        const constText = String(row.querySelector('[data-schema-field-const]')?.value || '').trim();
+        if (description) definition.description = description;
+        if (format) definition.format = format;
+        if (enumText) definition.enum = splitQualityTemplate(enumText).map(schemaLiteralFromText);
+        if (defaultText) definition.default = schemaLiteralFromText(defaultText);
+        if (constText) definition.const = schemaLiteralFromText(constText);
+        if (type === 'array') {
+          const itemsType = String(row.querySelector('[data-schema-field-items-type]')?.value || 'string').trim() || 'string';
+          definition.items = { type: itemsType };
+        }
+        properties[name] = definition;
+        if (row.querySelector('[data-schema-field-required]')?.checked) required.push(name);
+      });
+      const schema = {
+        type: 'object',
+        properties,
+        additionalProperties: Boolean(editor.querySelector('[data-schema-additional]')?.checked)
+      };
+      if (required.length) schema.required = required;
+      return schema;
+    }
+
+    function addSchemaFieldRow(kind) {
+      const container = document.querySelector(`[data-schema-fields="${kind}"]`);
+      if (!container) return;
+      container.insertAdjacentHTML('beforeend', schemaFieldRowHtml(kind, {}));
+      updateSkillManifestPreview();
+    }
+
+    function schemaLiteralToText(value) {
+      if (value == null) return '';
+      if (typeof value === 'string') return value;
+      try {
+        return JSON.stringify(value);
+      } catch (_err) {
+        return String(value);
+      }
+    }
+
+    function schemaLiteralFromText(value) {
+      const text = String(value || '').trim();
+      if (!text) return '';
+      if (/^(true|false|null|-?\d+(\.\d+)?|\[|\{)/.test(text)) {
+        try {
+          return JSON.parse(text);
+        } catch (_err) {
+          return text;
+        }
+      }
+      return text;
     }
 
     function splitQualityTemplate(value) {
@@ -5930,6 +6224,16 @@
         updateSkillManifestPreview();
         return;
       }
+      const schemaAddButton = event.target.closest('[data-schema-add]');
+      if (schemaAddButton) {
+        addSchemaFieldRow(schemaAddButton.dataset.schemaAdd);
+        return;
+      }
+      if (event.target.closest('[data-schema-remove-field]')) {
+        event.target.closest('[data-schema-row]')?.remove();
+        updateSkillManifestPreview();
+        return;
+      }
       const saveButton = event.target.closest('[data-skill-save]');
       if (saveButton) {
         saveSelectedSkill();
@@ -5948,6 +6252,12 @@
       }
     });
     els.skillEditor.addEventListener('change', (event) => {
+      const typeSelect = event.target.closest('[data-schema-field-type]');
+      if (typeSelect) {
+        const row = typeSelect.closest('[data-schema-row]');
+        const itemsType = row?.querySelector('[data-schema-field-items-type]');
+        if (itemsType) itemsType.disabled = typeSelect.value !== 'array';
+      }
       if (event.target.closest('#skillForm') && document.getElementById('skillManifestPreview')) {
         updateSkillManifestPreview();
       }
