@@ -5,49 +5,81 @@
   "generation": true,
   "routing": {
     "summary": "Use for exporting implementation deliverables such as command notes, operation steps, TXT command files, and DOCX step documents.",
-    "keywords": ["交付物", "导出附件", "生成附件", "操作说明", "实施步骤", "命令说明", "docx", "word", "txt"],
-    "examples": ["导出操作说明和命令文件", "生成交付物附件", "把实施步骤输出成 docx"]
+    "keywords": [
+      "交付物",
+      "导出附件",
+      "生成附件",
+      "操作说明",
+      "实施步骤",
+      "命令说明",
+      "docx",
+      "word",
+      "txt"
+    ],
+    "examples": [
+      "导出操作说明和命令文件",
+      "生成交付物附件",
+      "把实施步骤输出成 docx"
+    ]
   },
-  "quality_template": ["commands_txt", "steps_docx", "non_empty_files"],
+  "quality_template": [
+    "commands_txt",
+    "steps_docx",
+    "non_empty_files"
+  ],
   "input_schema": {
     "type": "object",
-    "required": ["commands", "steps"],
+    "required": [
+      "commands",
+      "steps"
+    ],
     "properties": {
-      "skill_name": { "const": "deliverables-export" },
       "commands": {
         "type": "string",
-        "title": "Command notes"
+        "title": "命令调用说明"
       },
       "steps": {
         "type": "string",
-        "title": "Implementation steps"
+        "title": "部署/实施步骤"
       },
       "commands_name": {
         "type": "string",
-        "default": "commands.txt"
+        "default": "命令调用.txt"
       },
       "steps_name": {
         "type": "string",
-        "default": "steps.docx"
+        "default": "步骤说明.docx"
       }
-    },
-    "additionalProperties": true
+    }
   },
   "output_schema": {
     "type": "object",
-    "required": ["artifacts"],
     "properties": {
-      "artifacts": {
+      "success": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": "string"
+      },
+      "outputs": {
         "type": "array",
         "items": {
           "type": "object",
-          "required": ["name", "mime_type", "kind"],
           "properties": {
-            "name": { "type": "string" },
-            "mime_type": { "type": "string" },
-            "kind": { "type": "string", "enum": ["text", "binary"] }
+            "type": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "mime": {
+              "type": "string"
+            }
           }
         }
+      },
+      "result": {
+        "type": "object"
       }
     }
   },

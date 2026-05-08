@@ -33,7 +33,7 @@ __all__ = [
 
 @router.get("/api/mcp/tools")
 async def list_mcp_tools() -> dict[str, list[dict[str, Any]]]:
-    return {"tools": [tool.to_payload() for tool in registry.list(include_disabled=True)]}
+    return {"tools": [tool.to_payload() for tool in registry.list(include_disabled=True, include_skill_tools=False)]}
 
 
 @router.get("/api/mcp/tools/{tool_name}")

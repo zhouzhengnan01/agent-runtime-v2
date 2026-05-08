@@ -5,53 +5,79 @@
   "generation": true,
   "routing": {
     "summary": "Use for Excel workbooks, spreadsheets, templates, data tables, validations, and formula-based summaries.",
-    "keywords": ["excel", "xlsx", "表格", "模板", "工作簿", "数据表", "公式"],
-    "examples": ["生成一份 excel 设备模板", "做一个状态汇总表", "输出带校验的 XLSX 模板"]
+    "keywords": [
+      "excel",
+      "xlsx",
+      "表格",
+      "模板",
+      "工作簿",
+      "数据表",
+      "公式"
+    ],
+    "examples": [
+      "生成一份 excel 设备模板",
+      "做一个状态汇总表",
+      "输出带校验的 XLSX 模板"
+    ]
   },
-  "quality_template": ["field_types", "formulas", "styles", "freeze_panes", "summary_sheet", "validation"],
+  "quality_template": [
+    "field_types",
+    "formulas",
+    "styles",
+    "freeze_panes",
+    "summary_sheet",
+    "validation"
+  ],
   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
-    "required": ["skill_name"],
     "properties": {
-      "skill_name": { "const": "excel-generation" },
-      "title": { "type": "string" },
-      "fields": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "required": ["name"],
-          "properties": {
-            "name": { "type": "string" },
-            "type": { "type": "string" },
-            "required": { "type": "boolean" }
-          },
-          "additionalProperties": true
-        }
+      "title": {
+        "type": "string"
       },
       "sheets": {
         "type": "array",
-        "items": { "type": "string" }
-      }
-    },
-    "additionalProperties": true
-  },
-  "output_schema": {
-    "type": "object",
-    "required": ["artifacts"],
-    "properties": {
-      "artifacts": {
-        "type": "array",
         "items": {
-          "type": "object",
-          "required": ["name", "mime_type", "kind"],
-          "properties": {
-            "name": { "type": "string" },
-            "mime_type": { "type": "string" },
-            "kind": { "type": "string", "enum": ["binary"] }
-          }
+          "type": "object"
         }
+      },
+      "message": {
+        "type": "string"
+      },
+      "output_path": {
+        "type": "string"
+      },
+      "outputPath": {
+        "type": "string"
       }
     }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "success": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": "string"
+      },
+      "outputs": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "result": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "success",
+      "message",
+      "outputs",
+      "result"
+    ]
   },
   "sandbox": {
     "enabled": true,

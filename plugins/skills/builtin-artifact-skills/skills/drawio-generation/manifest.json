@@ -5,75 +5,115 @@
   "generation": true,
   "routing": {
     "summary": "Use for architecture diagrams, topology diagrams, flowcharts, prototype wireframes, and Draw.io source plus PNG preview generation.",
-    "keywords": ["drawio", "draw.io", "架构图", "拓扑", "流程图", "原型图", "线框图", "diagram", "prototype", "wireframe"],
-    "examples": ["生成一份 JetLinks IoT 平台架构 Draw.io 图", "画一个原型图", "生成系统拓扑图"]
+    "keywords": [
+      "drawio",
+      "draw.io",
+      "架构图",
+      "拓扑",
+      "流程图",
+      "原型图",
+      "线框图",
+      "diagram",
+      "prototype",
+      "wireframe"
+    ],
+    "examples": [
+      "生成一份 JetLinks IoT 平台架构 Draw.io 图",
+      "画一个原型图",
+      "生成系统拓扑图"
+    ]
   },
-  "quality_template": ["nodes", "edges", "swimlanes", "layering", "semantic_colors"],
+  "quality_template": [
+    "nodes",
+    "edges",
+    "swimlanes",
+    "layering",
+    "semantic_colors"
+  ],
   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
-    "required": ["skill_name", "title", "nodes", "edges"],
     "properties": {
-      "skill_name": { "const": "drawio-generation" },
-      "title": { "type": "string", "description": "Diagram title." },
       "diagram_type": {
         "type": "string",
-        "enum": ["layered_architecture", "prototype_wireframe", "flowchart"],
-        "default": "layered_architecture"
+        "enum": [
+          "product_architecture",
+          "system_architecture",
+          "flowchart",
+          "mindmap"
+        ],
+        "default": "system_architecture"
       },
-      "nodes": {
-        "type": "array",
-        "items": { "type": "string" },
-        "minItems": 2
-      },
-      "edges": {
-        "type": "array",
-        "items": {
-          "type": "array",
-          "items": { "type": "string" },
-          "minItems": 2,
-          "maxItems": 2
-        }
-      },
-      "swimlanes": {
-        "type": "array",
-        "items": { "type": "string" }
-      },
-      "lane_nodes": {
-        "type": "object",
-        "additionalProperties": {
-          "type": "array",
-          "items": { "type": "string" }
-        }
-      },
-      "visual_style": {
+      "diagramType": {
         "type": "string",
-        "enum": ["standard", "polished"],
-        "default": "standard"
+        "enum": [
+          "product_architecture",
+          "system_architecture",
+          "flowchart",
+          "mindmap"
+        ]
       },
-      "color_semantics": {
-        "type": "object",
-        "additionalProperties": { "type": "string" }
+      "title": {
+        "type": "string"
+      },
+      "data": {
+        "type": "object"
+      },
+      "style": {
+        "type": "string",
+        "enum": [
+          "default",
+          "modern",
+          "colorful",
+          "minimal"
+        ],
+        "default": "modern"
+      },
+      "message": {
+        "type": "string"
       }
-    },
-    "additionalProperties": true
+    }
   },
   "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
-    "required": ["artifacts"],
     "properties": {
-      "artifacts": {
+      "success": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": "string"
+      },
+      "outputs": {
         "type": "array",
         "items": {
-          "type": "object",
-          "required": ["name", "mime_type", "kind"],
-          "properties": {
-            "name": { "type": "string" },
-            "mime_type": { "type": "string" },
-            "kind": { "type": "string", "enum": ["text", "image"] }
+          "type": "object"
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string"
+          },
+          "diagram_type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "web_url": {
+            "type": "string"
           }
         }
       }
-    }
+    },
+    "required": [
+      "success",
+      "message",
+      "outputs",
+      "result"
+    ]
   },
   "sandbox": {
     "enabled": true,

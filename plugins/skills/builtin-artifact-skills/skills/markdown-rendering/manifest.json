@@ -5,49 +5,80 @@
   "generation": true,
   "routing": {
     "summary": "Use for Markdown documents, architecture notes, reports, tables, Mermaid diagrams, ECharts blocks, and rich text artifacts.",
-    "keywords": ["markdown", "md", "文档", "报告", "说明", "mermaid", "表格"],
-    "examples": ["生成一份 markdown 架构说明", "输出一份技术报告", "生成带 Mermaid 的文档"]
+    "keywords": [
+      "markdown",
+      "md",
+      "文档",
+      "报告",
+      "说明",
+      "mermaid",
+      "表格"
+    ],
+    "examples": [
+      "生成一份 markdown 架构说明",
+      "输出一份技术报告",
+      "生成带 Mermaid 的文档"
+    ]
   },
-  "quality_template": ["mermaid", "tables", "echarts_block", "attachment_block"],
+  "quality_template": [
+    "mermaid",
+    "tables",
+    "echarts_block",
+    "attachment_block"
+  ],
   "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
-    "required": ["skill_name", "title"],
     "properties": {
-      "skill_name": { "const": "markdown-rendering" },
-      "title": { "type": "string" },
-      "summary": { "type": "string" },
-      "sections": {
+      "title": {
+        "type": "string"
+      },
+      "message": {
+        "type": "string"
+      },
+      "markdown": {
+        "type": "string"
+      },
+      "blocks": {
         "type": "array",
         "items": {
-          "type": "object",
-          "required": ["title", "content"],
-          "properties": {
-            "title": { "type": "string" },
-            "content": { "type": "string" }
-          },
-          "additionalProperties": true
+          "type": "string"
         }
-      }
-    },
-    "additionalProperties": true
-  },
-  "output_schema": {
-    "type": "object",
-    "required": ["artifacts"],
-    "properties": {
-      "artifacts": {
-        "type": "array",
-        "items": {
-          "type": "object",
-          "required": ["name", "mime_type", "kind"],
-          "properties": {
-            "name": { "type": "string" },
-            "mime_type": { "type": "string" },
-            "kind": { "type": "string", "enum": ["markdown"] }
-          }
-        }
+      },
+      "output_name": {
+        "type": "string"
+      },
+      "outputName": {
+        "type": "string"
       }
     }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "success": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": "string"
+      },
+      "outputs": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "result": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "success",
+      "message",
+      "outputs",
+      "result"
+    ]
   },
   "sandbox": {
     "enabled": false,

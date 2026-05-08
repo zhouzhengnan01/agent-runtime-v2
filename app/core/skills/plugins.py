@@ -33,8 +33,6 @@ from app.core.skills.runner_types import SkillRunResult
 _PACKAGE_FILE_SPECS: dict[str, tuple[str, str, str]] = {
     "manifest": ("manifest.json", "Manifest JSON", "json"),
     "skill-md": ("SKILL.md", "SKILL.md", "markdown"),
-    "input-schema": ("input.schema.json", "Input Schema", "json"),
-    "output-schema": ("output.schema.json", "Output Schema", "json"),
     "requirements": ("requirements.txt", "requirements.txt", "text"),
     "sandbox": ("sandbox.yml", "sandbox.yml", "yaml"),
     "runner": ("runner.py", "runner.py", "python"),

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol
 
 from app.core.artifacts import ArtifactStore
 from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.skills import SkillRunner
 from app.core.tools.providers import (
+    DelegateToolProvider,
     LocalToolProvider,
     ManualToolProvider,
     MarkdownMemoryToolProvider,
@@ -30,16 +32,23 @@ class ToolInvocationService:
         skill_runner: SkillRunner | None = None,
         memory_store: MemoryStore | None = None,
         markdown_memory_store: MarkdownMemoryStore | None = None,
+        root_dir: Path | None = None,
     ) -> None:
+        registry_root = getattr(registry, "root_dir", None)
+        self.root_dir = root_dir or (
+            registry_root if isinstance(registry_root, Path) else Path(__file__).resolve().parents[3]
+        )
         self.artifact_store = artifact_store or ArtifactStore()
         self.memory_store = memory_store or MemoryStore()
         self.markdown_memory_store = markdown_memory_store or MarkdownMemoryStore()
         self.registry = registry or ToolRegistry(
+            root_dir=self.root_dir,
             artifact_store=self.artifact_store,
             skill_runner=skill_runner,
         )
         self.providers: dict[str, ToolProvider] = {
             LocalToolProvider.source_type: LocalToolProvider(artifact_store=self.artifact_store),
+            DelegateToolProvider.source_type: DelegateToolProvider(root_dir=self.root_dir),
             ManualToolProvider.source_type: ManualToolProvider(),
             MemoryToolProvider.source_type: MemoryToolProvider(memory_store=self.memory_store),
             MarkdownMemoryToolProvider.source_type: MarkdownMemoryToolProvider(
@@ -51,8 +60,8 @@ class ToolInvocationService:
             ),
         }
 
-    def list_tools(self, *, include_disabled: bool = False) -> list[ToolDefinition]:
-        return self.registry.list(include_disabled=include_disabled)
+    def list_tools(self, *, include_disabled: bool = False, include_skill_tools: bool = True) -> list[ToolDefinition]:
+        return self.registry.list(include_disabled=include_disabled, include_skill_tools=include_skill_tools)
 
     def get_tool(self, name: str) -> ToolDefinition:
         return self.registry.get(name)

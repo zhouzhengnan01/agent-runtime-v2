@@ -31,7 +31,7 @@ def test_mcp_initialize_and_list_tools(tmp_path: Path, monkeypatch: pytest.Monke
     )
     assert listed.status_code == 200
     tool_names = {tool["name"] for tool in listed.json()["result"]["tools"]}
-    assert "pptx-generation" in tool_names
+    assert "pptx-generation" not in tool_names
     assert "jetlinks_runtime_status" in tool_names
 
 
@@ -79,7 +79,9 @@ def test_mcp_management_saves_custom_tool(tmp_path: Path, monkeypatch: pytest.Mo
 
     listed = client.get("/api/mcp/tools")
     assert listed.status_code == 200
-    assert "demo_status_tool" in {tool["name"] for tool in listed.json()["tools"]}
+    listed_names = {tool["name"] for tool in listed.json()["tools"]}
+    assert "demo_status_tool" in listed_names
+    assert "pptx-generation" not in listed_names
 
 
 def test_mcp_management_requires_admin_token_when_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

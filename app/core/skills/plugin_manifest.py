@@ -20,21 +20,7 @@ def read_json(path: Path) -> dict[str, Any]:
 def read_manifest_source(path: Path) -> dict[str, Any]:
     if path.name == "SKILL.md":
         return manifest_from_skill_md(path.read_text(encoding="utf-8"), path.parent)
-    data = read_json(path)
-    if path.name == "manifest.json":
-        return with_package_asset_contracts(data, path.parent)
-    return data
-
-
-def with_package_asset_contracts(data: dict[str, Any], package_root: Path) -> dict[str, Any]:
-    merged = dict(data)
-    input_schema = read_optional_json(package_root / "input.schema.json")
-    output_schema = read_optional_json(package_root / "output.schema.json")
-    if input_schema is not None:
-        merged["input_schema"] = input_schema
-    if output_schema is not None:
-        merged["output_schema"] = output_schema
-    return merged
+    return read_json(path)
 
 
 def manifest_from_skill_md(text: str, package_root: Path) -> dict[str, Any]:

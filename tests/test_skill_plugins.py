@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 from pathlib import Path
 
@@ -75,8 +76,9 @@ def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
             continue
         assert (package / "SKILL.md").is_file()
         assert (package / "manifest.json").is_file()
-        assert (package / "input.schema.json").is_file()
-        assert (package / "output.schema.json").is_file()
+        manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+        assert isinstance(manifest.get("input_schema"), dict)
+        assert isinstance(manifest.get("output_schema"), dict)
         assert (package / "requirements.txt").is_file()
         assert (package / "sandbox.yml").is_file()
         assert (package / "runner.py").is_file()
@@ -111,6 +113,8 @@ def test_skill_package_file_api_reads_and_updates_package_assets(tmp_path: Path)
     assert files_response.status_code == 200
     files = {item["id"]: item for item in files_response.json()["files"]}
     assert {"manifest", "skill-md", "requirements", "runner", "script-runner"} <= set(files)
+    assert "input-schema" not in files
+    assert "output-schema" not in files
     assert Path(files["skill-md"]["path"]).parts[-6:] == ("plugins", "skills", "builtin-artifact-skills", "skills", "deliverables-export", "SKILL.md")
 
     read_response = client.get("/api/skills/deliverables-export/files/skill-md")
@@ -152,15 +156,65 @@ def test_skill_package_file_api_reads_and_updates_package_assets(tmp_path: Path)
     (skill_root / "runner.py").write_text("def run(skill_name, spec, paths, artifact_store):\n    return {}\n", encoding="utf-8")
 
     manager = SkillPluginManager(custom_root)
-    package_file, saved = manager.write_package_file(
+    manifest_file, saved = manager.write_package_file(
         "editable-skill",
-        "input-schema",
-        '{"type": "object", "properties": {"title": {"type": "string"}}}',
+        "manifest",
+        """
+{
+  "name": "editable-skill",
+  "description": "Editable",
+  "output_kind": "markdown",
+  "generation": true,
+  "quality_template": [],
+  "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}},
+  "output_schema": {"type": "object"},
+  "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
+}
+""",
     )
 
-    assert package_file.exists is True
+    assert manifest_file.exists is True
     assert '"title"' in saved
     assert "title" in manager.read_manifest("editable-skill")["input_schema"]["properties"]
+
+
+def test_skill_manifest_config_api_generates_manifest_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/skills/custom-report/manifest-config",
+        json={
+            "config": {
+                "description": "Custom report skill",
+                "output_kind": "markdown",
+                "generation": True,
+                "quality_template": ["summary", "table"],
+                "routing": {"keywords": ["report"]},
+                "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}},
+                "output_schema": {"type": "object", "properties": {"artifacts": {"type": "array"}}},
+                "sandbox": {
+                    "enabled": False,
+                    "profile": "",
+                    "request_schema_version": "skill-run.v1",
+                    "adapter_command": "",
+                    "fallback_to_local": True,
+                },
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "custom-report"
+    assert data["source_exists"] is True
+    manifest_path = tmp_path / "config" / "skills" / "custom-report.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["name"] == "custom-report"
+    assert manifest["routing"]["keywords"] == ["report"]
+    assert manifest["input_schema"]["properties"]["title"]["type"] == "string"
+    assert manifest["sandbox"]["fallback_to_local"] is True
 
 
 def test_single_skill_markdown_package_upload_registers_skill(
