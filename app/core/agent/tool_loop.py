@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+import time
 from typing import Any
 
+from app.core.agent.context import ContextCompactionResult, ConversationContextManager
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
@@ -55,6 +57,8 @@ class ToolCallingAgentLoop:
         )
 
         conversation = [message.model_dump() for message in messages]
+        context_compactions = 0
+        last_context_event: dict[str, Any] = {}
         system_prompt, memory_context_count = self._system_prompt(agent_config)
         if agent_config.memory.enabled:
             recorder.emit(
@@ -79,7 +83,36 @@ class ToolCallingAgentLoop:
         )
 
         if not tools:
-            reply = await llm.complete(system_prompt, messages)
+            compaction = self._compact_context(agent_config, conversation)
+            if compaction.compacted:
+                context_compactions += 1
+                last_context_event = compaction.event_payload()
+                recorder.emit("context.compacted", last_context_event)
+                conversation = compaction.messages
+            request_started_at = time.perf_counter()
+            recorder.emit(
+                "llm.request.started",
+                {
+                    "round": 1,
+                    "mode": "chat",
+                    "message_count": len(conversation),
+                    "tool_count": 0,
+                    "tools": [],
+                    "tool_choice": llm.tool_choice,
+                },
+            )
+            reply = await llm.complete(system_prompt, conversation)
+            recorder.emit(
+                "llm.request.completed",
+                {
+                    "round": 1,
+                    "mode": "chat",
+                    "duration_ms": round((time.perf_counter() - request_started_at) * 1000, 3),
+                    "finish_reason": "stop",
+                    "tool_call_count": 0,
+                    "content_chars": len(reply),
+                },
+            )
             return self._result(
                 agent_config,
                 thread_id,
@@ -89,7 +122,10 @@ class ToolCallingAgentLoop:
                 llm_metadata,
                 recorder,
                 conversation,
+                context_compactions=context_compactions,
+                last_context_event=last_context_event,
                 emit_message_delta=emit_message_delta,
+                run_id=recorder.run_id,
             )
 
         rounds = 0
@@ -98,7 +134,41 @@ class ToolCallingAgentLoop:
         max_rounds = max(1, agent_config.runtime.max_tool_rounds)
         for round_index in range(max_rounds):
             rounds = round_index + 1
+            compaction = self._compact_context(agent_config, conversation)
+            if compaction.compacted:
+                context_compactions += 1
+                last_context_event = compaction.event_payload()
+                recorder.emit("context.compacted", {**last_context_event, "round": rounds})
+                conversation = compaction.messages
+            request_started_at = time.perf_counter()
+            recorder.emit(
+                "llm.request.started",
+                {
+                    "round": rounds,
+                    "mode": "tool_calling",
+                    "message_count": len(conversation),
+                    "tool_count": len(tools),
+                    "tools": self._openai_tool_names(tools),
+                    "tool_choice": llm.tool_choice,
+                },
+            )
             final_response = await llm.complete_with_tools(system_prompt, conversation, tools)
+            recorder.emit(
+                "llm.request.completed",
+                {
+                    "round": rounds,
+                    "mode": "tool_calling",
+                    "duration_ms": round((time.perf_counter() - request_started_at) * 1000, 3),
+                    "finish_reason": final_response.finish_reason or "",
+                    "tool_call_count": len(final_response.tool_calls),
+                    "tool_calls": [
+                        {"id": tool_call.id, "name": tool_call.name}
+                        for tool_call in final_response.tool_calls
+                    ],
+                    "content_chars": len(final_response.content or ""),
+                    "usage": final_response.usage,
+                },
+            )
             assistant_message = self._assistant_message(final_response)
             conversation.append(assistant_message)
             if not final_response.tool_calls:
@@ -112,7 +182,10 @@ class ToolCallingAgentLoop:
                     llm_metadata,
                     recorder,
                     conversation,
+                    context_compactions=context_compactions,
+                    last_context_event=last_context_event,
                     emit_message_delta=emit_message_delta,
+                    run_id=recorder.run_id,
                 )
 
             recorder.emit(
@@ -157,8 +230,31 @@ class ToolCallingAgentLoop:
             conversation,
             status="failed" if final_response.tool_calls else "completed",
             completed_event=not final_response.tool_calls,
+            context_compactions=context_compactions,
+            last_context_event=last_context_event,
             emit_message_delta=emit_message_delta,
+            run_id=recorder.run_id,
         )
+
+    @staticmethod
+    def _compact_context(agent_config: AgentConfig, conversation: list[dict[str, Any]]) -> ContextCompactionResult:
+        if not agent_config.runtime.context_compression_enabled:
+            before_chars = len(json.dumps(conversation, ensure_ascii=False, default=str))
+            return ContextCompactionResult(
+                messages=conversation,
+                compacted=False,
+                before_chars=before_chars,
+                after_chars=before_chars,
+                original_message_count=len(conversation),
+                compacted_message_count=len(conversation),
+                summarized_message_count=0,
+            )
+        manager = ConversationContextManager(
+            max_chars=agent_config.runtime.context_max_chars,
+            keep_first_messages=agent_config.runtime.context_keep_first_messages,
+            keep_last_messages=agent_config.runtime.context_keep_last_messages,
+        )
+        return manager.compact(conversation)
 
     def _openai_tools(
         self,
@@ -197,7 +293,15 @@ class ToolCallingAgentLoop:
 
     @staticmethod
     def _runtime_selectable_mcp_tool(tool: ToolDefinition) -> bool:
-        return tool.source.get("type") in {"manual", "memory", "markdown_memory", "local", "skill"}
+        return tool.source.get("type") in {
+            "manual",
+            "memory",
+            "markdown_memory",
+            "local",
+            "artifact_workspace",
+            "delegate",
+            "skill",
+        }
 
     @staticmethod
     def _openai_tool(tool: ToolDefinition) -> dict[str, Any]:
@@ -209,6 +313,15 @@ class ToolCallingAgentLoop:
                 "parameters": tool.input_schema or {"type": "object", "additionalProperties": True},
             },
         }
+
+    @staticmethod
+    def _openai_tool_names(tools: list[dict[str, Any]]) -> list[str]:
+        names: list[str] = []
+        for tool in tools:
+            function = tool.get("function")
+            if isinstance(function, dict) and isinstance(function.get("name"), str):
+                names.append(function["name"])
+        return names
 
     @staticmethod
     def _assistant_message(response: LlmChatResponse) -> dict[str, Any]:
@@ -225,7 +338,9 @@ class ToolCallingAgentLoop:
         recorder: EventRecorder,
         runtime_options: RuntimeOptions | None = None,
     ) -> ToolInvocationResult:
+        started_at = time.perf_counter()
         recorder.emit("tool.started", {"tool_name": tool_call.name, "tool_call_id": tool_call.id})
+        arguments: dict[str, Any] = {}
         try:
             arguments = self._tool_arguments(tool_call.arguments)
             arguments.setdefault("_thread_id", thread_id)
@@ -238,17 +353,27 @@ class ToolCallingAgentLoop:
                 arguments.setdefault("_project_id", runtime_options.project_id)
             result = self.tool_service.call_tool(tool_call.name, arguments)
         except Exception as exc:
+            error_code = self._tool_error_code(exc)
             result = ToolInvocationResult(
                 content=[{"type": "text", "text": f"Tool {tool_call.name} failed: {exc}"}],
-                structured_content={"tool_name": tool_call.name, "error": str(exc)},
+                structured_content={
+                    "tool_name": tool_call.name,
+                    "error": str(exc),
+                    "error_code": error_code,
+                    "recoverable": error_code in {"TOOL_ARGUMENTS_INVALID", "TOOL_NOT_FOUND", "TOOL_EXECUTION_FAILED"},
+                },
                 is_error=True,
             )
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 3)
         recorder.emit(
             "tool.completed" if not result.is_error else "tool.failed",
             {
                 "tool_name": tool_call.name,
                 "tool_call_id": tool_call.id,
                 "is_error": result.is_error,
+                "duration_ms": duration_ms,
+                "arguments": self._observable_arguments(arguments),
+                "error_code": result.structured_content.get("error_code") if result.is_error else None,
                 "structured_content": result.structured_content,
             },
         )
@@ -262,6 +387,31 @@ class ToolCallingAgentLoop:
         if not isinstance(parsed, dict):
             raise ValueError("tool arguments must be a JSON object")
         return parsed
+
+    @staticmethod
+    def _observable_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+        visible = {key: value for key, value in arguments.items() if not key.startswith("_")}
+        rendered = json.dumps(visible, ensure_ascii=False, default=str)
+        if len(rendered) <= 4000:
+            return visible
+        return {
+            "_truncated": True,
+            "json_chars": len(rendered),
+            "preview": rendered[:3800],
+        }
+
+    @staticmethod
+    def _tool_error_code(exc: Exception) -> str:
+        if isinstance(exc, json.JSONDecodeError):
+            return "TOOL_ARGUMENTS_INVALID"
+        if isinstance(exc, KeyError):
+            return "TOOL_NOT_FOUND"
+        message = str(exc).lower()
+        if "disabled" in message:
+            return "TOOL_DISABLED"
+        if "arguments" in message and "json" in message:
+            return "TOOL_ARGUMENTS_INVALID"
+        return "TOOL_EXECUTION_FAILED"
 
     def _system_prompt(self, agent_config: AgentConfig) -> tuple[str, int]:
         prompt = agent_config.prompts.system
@@ -351,7 +501,10 @@ class ToolCallingAgentLoop:
         messages: list[dict[str, Any]],
         status: str = "completed",
         completed_event: bool = True,
+        context_compactions: int = 0,
+        last_context_event: dict[str, Any] | None = None,
         emit_message_delta: bool = False,
+        run_id: str = "",
     ) -> ToolLoopResult:
         if emit_message_delta and reply:
             recorder.emit("agent.message.delta", {"text": reply})
@@ -363,9 +516,12 @@ class ToolCallingAgentLoop:
             reply=reply,
             metadata={
                 "workflow": "agent_loop",
+                "run_id": run_id,
                 **llm_metadata,
                 "tool_rounds": rounds,
                 "tool_call_count": tool_call_count,
+                "context_compaction_count": context_compactions,
+                "last_context_compaction": last_context_event or {},
             },
         )
         recorder.emit("run.completed" if completed_event else "run.failed", {"result": result.model_dump()})

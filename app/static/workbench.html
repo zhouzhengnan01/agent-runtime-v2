@@ -576,6 +576,84 @@
       gap: 8px;
     }
 
+    .run-summary {
+      overflow: auto;
+      padding: 12px 14px;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .run-actions {
+      display: flex;
+      gap: 8px;
+      padding: 0 14px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .run-summary .empty {
+      margin: 0;
+      padding: 6px 0;
+    }
+
+    .run-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .run-item {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      display: grid;
+      gap: 2px;
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .run-item .label {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .run-item .value {
+      font-size: 12px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .run-failures {
+      display: grid;
+      gap: 6px;
+    }
+
+    .run-failure {
+      border-left: 2px solid #e26d5c;
+      padding-left: 8px;
+      display: grid;
+      gap: 2px;
+    }
+
+    .run-events-preview {
+      display: grid;
+      gap: 6px;
+      max-height: 240px;
+      overflow: auto;
+    }
+
+    .run-event-row {
+      display: grid;
+      gap: 2px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .run-event-row .meta {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
     .event, .artifact {
       display: grid;
       gap: 5px;
@@ -588,6 +666,22 @@
       font-size: 12px;
       font-weight: 700;
       overflow-wrap: anywhere;
+    }
+
+    .event-meta {
+      color: var(--muted);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .event-pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 1px 6px;
+      white-space: nowrap;
     }
 
     .event-detail, .artifact-meta {
@@ -696,6 +790,23 @@
     <aside class="inspector">
       <section class="pane">
         <div class="pane-head">
+          <h3>Run details</h3>
+          <span class="count" id="runStatusCount">idle</span>
+        </div>
+        <div class="run-summary" id="runSummary">
+          <div class="empty">
+            <strong>No run selected</strong>
+            The latest run for the current thread will appear here.
+          </div>
+        </div>
+        <div class="run-actions">
+          <button class="btn" id="refreshRunsBtn" type="button">Refresh</button>
+          <a class="btn" id="openBundleLink" href="#" target="_blank" rel="noreferrer">Debug bundle</a>
+        </div>
+      </section>
+
+      <section class="pane">
+        <div class="pane-head">
           <h3>Runtime events</h3>
           <span class="count" id="eventCount">0</span>
         </div>
@@ -730,7 +841,10 @@
       busy: false,
       events: 0,
       artifacts: new Map(),
-      messages: []
+      messages: [],
+      selectedRunId: null,
+      selectedRun: null,
+      runBundleUrl: '#'
     };
 
     const $ = (id) => document.getElementById(id);
@@ -746,6 +860,10 @@
     const eventCount = $('eventCount');
     const artifactList = $('artifactList');
     const artifactCount = $('artifactCount');
+    const runSummary = $('runSummary');
+    const runStatusCount = $('runStatusCount');
+    const refreshRunsBtn = $('refreshRunsBtn');
+    const openBundleLink = $('openBundleLink');
 
     const viewCopy = {
       chat: ['Chat', 'ACP WebSocket conversation'],
@@ -896,6 +1014,7 @@
           addMessage('assistant', result.result.reply);
         }
         addEvent('prompt.completed', result?.stopReason || 'end_turn');
+        await refreshRunDetails(null, true);
       } catch (error) {
         addMessage('assistant', `Error: ${error.message || error}`);
         addEvent('prompt.failed', String(error.message || error));
@@ -1262,10 +1381,10 @@
       const event = update._meta?.jetlinksRuntimeEvent;
       const type = event?.type || update.sessionUpdate || 'session/update';
       const detail = event ? summarizeEvent(event) : summarizeUpdate(update);
-      addEvent(type, detail);
+      addEvent(type, detail, event);
 
-      if (update.sessionUpdate === 'agent_message_chunk' || update.sessionUpdate === 'agent_message') {
-        const text = update.text || update.content?.text || '';
+      if (update.sessionUpdate === 'agent_message_chunk') {
+        const text = update.content?.text || '';
         if (text) addMessage('assistant', text);
       }
 
@@ -1273,14 +1392,29 @@
       if (artifact) renderArtifacts([artifact]);
       const resultArtifacts = event?.data?.result?.artifacts;
       if (Array.isArray(resultArtifacts)) renderArtifacts(resultArtifacts);
+
+      const runId = event?.data?.result?.metadata?.run_id || event?.data?.run_id;
+      if (runId) void refreshRunDetails(runId, true);
     }
 
     function summarizeEvent(event) {
       const data = event.data || {};
+      if (data.tool_name) {
+        const parts = [data.tool_name];
+        if (typeof data.duration_ms === 'number') parts.push(`${data.duration_ms.toFixed(1)} ms`);
+        if (data.is_error) parts.push('failed');
+        return parts.join(' · ');
+      }
+      if (data.structured_content?.skill_name) return data.structured_content.skill_name;
       if (data.skill_name) return data.skill_name;
+      if (Array.isArray(data.tools)) return `${data.tools.length} tools: ${data.tools.slice(0, 4).join(', ')}`;
       if (data.text) return truncate(data.text, 96);
       if (data.artifact?.name) return data.artifact.name;
-      if (data.result?.status) return data.result.status;
+      if (data.result?.status) {
+        const meta = data.result.metadata || {};
+        const duration = typeof data.elapsed_ms === 'number' ? ` · ${data.elapsed_ms.toFixed(0)} ms` : '';
+        return `${data.result.status}${meta.tool_call_count ? ` · ${meta.tool_call_count} tool calls` : ''}${duration}`;
+      }
       if (data.error) return data.error;
       return '';
     }
@@ -1316,18 +1450,38 @@
       return state.messages.some((message) => message.role === 'assistant' && message.text === text);
     }
 
-    function addEvent(type, detail) {
+    function addEvent(type, detail, event = null) {
       state.events += 1;
       eventCount.textContent = String(state.events);
       const row = document.createElement('div');
       row.className = 'event';
       row.innerHTML = `
         <div class="event-type"></div>
+        <div class="event-meta"></div>
         <div class="event-detail"></div>
       `;
       row.querySelector('.event-type').textContent = type;
+      renderEventMeta(row.querySelector('.event-meta'), event);
       row.querySelector('.event-detail').textContent = detail || '';
+      if (event) row.title = truncate(JSON.stringify(event.data || {}, null, 2), 2000);
       eventList.prepend(row);
+    }
+
+    function renderEventMeta(container, event) {
+      if (!event) return;
+      const data = event.data || {};
+      const items = [];
+      if (typeof data.sequence === 'number') items.push(`#${data.sequence}`);
+      if (typeof data.elapsed_ms === 'number') items.push(`${data.elapsed_ms.toFixed(0)} ms`);
+      if (data.run_id) items.push(String(data.run_id).replace(/^run-/, 'run '));
+      if (data.thread_id) items.push(String(data.thread_id));
+      if (data.tool_call_id) items.push(String(data.tool_call_id));
+      for (const item of items.slice(0, 5)) {
+        const pill = document.createElement('span');
+        pill.className = 'event-pill';
+        pill.textContent = item;
+        container.appendChild(pill);
+      }
     }
 
     function renderArtifacts(items) {
@@ -1357,14 +1511,120 @@
       }
     }
 
+    async function refreshRunDetails(runId = null, silent = false) {
+      try {
+        if (!runId) {
+          const response = await fetch('/api/agents/runs/recent');
+          if (!response.ok) throw new Error(await responseMessage(response));
+          const payload = await response.json();
+          const runs = Array.isArray(payload.runs) ? payload.runs : [];
+          const scoped = state.threadId ? runs.filter((run) => run.thread_id === state.threadId) : runs;
+          runStatusCount.textContent = scoped.length ? `${scoped.length} runs` : 'idle';
+          const latest = scoped[0] || runs[0] || null;
+          if (!latest) {
+            state.selectedRunId = null;
+            state.selectedRun = null;
+            state.runBundleUrl = '#';
+            openBundleLink.href = '#';
+            renderRunSummary(null);
+            return;
+          }
+          runId = latest.run_id;
+        }
+        const response = await fetch(`/api/agents/runs/${encodeURIComponent(runId)}/debug-bundle`);
+        if (!response.ok) throw new Error(await responseMessage(response));
+        const bundle = await response.json();
+        state.selectedRunId = runId;
+        state.selectedRun = bundle;
+        state.runBundleUrl = `/api/agents/runs/${encodeURIComponent(runId)}/debug-bundle`;
+        openBundleLink.href = state.runBundleUrl;
+        renderRunSummary(bundle);
+        if (!silent) addEvent('run.selected', `${bundle.run?.agent || 'agent'} / ${bundle.run?.status || 'unknown'}`);
+      } catch (error) {
+        if (!silent) addEvent('run.refresh_failed', String(error.message || error));
+      }
+    }
+
+    function renderRunSummary(bundle) {
+      if (!bundle) {
+        runSummary.innerHTML = `
+          <div class="empty">
+            <strong>No run selected</strong>
+            The latest run for the current thread will appear here.
+          </div>
+        `;
+        openBundleLink.href = '#';
+        return;
+      }
+      const run = bundle.run || {};
+      const diagnostics = bundle.diagnostics || {};
+      const failures = Array.isArray(diagnostics.failures) ? diagnostics.failures : [];
+      const recentEvents = Array.isArray(bundle.events) ? bundle.events.slice(-5) : [];
+      runSummary.innerHTML = `
+        <div class="run-grid">
+          ${runItem('Agent', run.agent || '')}
+          ${runItem('Thread', run.thread_id || '')}
+          ${runItem('Status', run.status || '')}
+          ${runItem('Workflow', run.workflow || '')}
+          ${runItem('Duration', `${Math.round(run.duration_ms || 0)} ms`)}
+          ${runItem('Events', String(run.event_count || 0))}
+          ${runItem('Tool calls', String(run.tool_call_count || 0))}
+          ${runItem('Failures', String(diagnostics.failure_count || 0))}
+        </div>
+        ${failures.length ? `
+          <div class="run-failures">
+            ${failures.map((failure) => `
+              <div class="run-failure">
+                <div class="event-type">${escapeHtml(failure.error_code || failure.type || 'failure')}</div>
+                <div class="event-detail">${escapeHtml(failure.message || '')}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+        <div class="run-events-preview">
+          ${recentEvents.map((event) => `
+            <div class="run-event-row">
+              <div class="event-type">${escapeHtml(event.type || '')}</div>
+              <div class="meta">${escapeHtml(formatEventMeta(event.data || {}))}</div>
+              <div class="event-detail">${escapeHtml(summarizeEvent({ data: event.data || {} }) || '')}</div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    function runItem(label, value) {
+      return `
+        <div class="run-item">
+          <div class="label">${escapeHtml(label)}</div>
+          <div class="value">${escapeHtml(value || '—')}</div>
+        </div>
+      `;
+    }
+
+    function formatEventMeta(data) {
+      const parts = [];
+      if (typeof data.sequence === 'number') parts.push(`#${data.sequence}`);
+      if (typeof data.elapsed_ms === 'number') parts.push(`${Math.round(data.elapsed_ms)} ms`);
+      if (data.tool_call_id) parts.push(data.tool_call_id);
+      if (data.run_id) parts.push(data.run_id);
+      return parts.join(' · ');
+    }
+
     function clearView() {
       state.messages = [];
       state.events = 0;
       state.artifacts.clear();
+      state.selectedRunId = null;
+      state.selectedRun = null;
+      state.runBundleUrl = '#';
       eventList.innerHTML = '';
       artifactList.innerHTML = '';
       eventCount.textContent = '0';
       artifactCount.textContent = '0';
+      runStatusCount.textContent = 'idle';
+      openBundleLink.href = '#';
+      renderRunSummary(null);
       renderView();
     }
 
@@ -1386,12 +1646,17 @@
 
     $('newSessionBtn').addEventListener('click', async () => {
       await newSession();
+      await refreshRunDetails(null, true);
     });
 
     $('clearBtn').addEventListener('click', clearView);
+    refreshRunsBtn.addEventListener('click', () => {
+      void refreshRunDetails(null, false);
+    });
 
     agentSelect.addEventListener('change', async () => {
       if (state.ws?.readyState === WebSocket.OPEN) await newSession();
+      await refreshRunDetails(null, true);
     });
 
     loadData()
@@ -1400,6 +1665,12 @@
         setConnection('error');
         addEvent('startup.failed', String(error.message || error));
       });
+
+    setInterval(() => {
+      if (state.sessionId || state.threadId) {
+        void refreshRunDetails(state.selectedRunId, true);
+      }
+    }, 15000);
   </script>
 </body>
 </html>

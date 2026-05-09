@@ -20,6 +20,8 @@ def artifact_kind(path: Path, mime_type: str) -> str:
     suffix = path.suffix.lower()
     if mime_type.startswith("image/"):
         return "image"
+    if suffix in {".html", ".htm"}:
+        return "html"
     if suffix in {".md", ".markdown"}:
         return "markdown"
     if suffix in {".txt", ".json", ".csv", ".xml", ".drawio"}:
@@ -31,4 +33,3 @@ def artifact_kind(path: Path, mime_type: str) -> str:
     if suffix == ".xmind":
         return "mindmap"
     return "file"
-

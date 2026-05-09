@@ -42,6 +42,10 @@ class RuntimeConfig(BaseModel):
     stateless: bool = True
     max_tool_rounds: int = 8
     max_tool_result_chars: int = Field(default=20000, ge=1000, le=500000)
+    context_compression_enabled: bool = False
+    context_max_chars: int = Field(default=120000, ge=1000, le=2_000_000)
+    context_keep_first_messages: int = Field(default=2, ge=0, le=20)
+    context_keep_last_messages: int = Field(default=8, ge=1, le=50)
     max_retries: int = 1
     workspace_mode: Literal["ephemeral_thread"] = "ephemeral_thread"
     require_verification: bool = True

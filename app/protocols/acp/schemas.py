@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -16,4 +16,7 @@ class AcpWebSocketSession:
     backend_type: str = "local"
     backend_session_id: str | None = None
     backend: Any | None = None
-
+    model_id: str | None = None
+    model_name: str | None = None
+    app_template_name: str | None = None
+    runtime_options: dict[str, Any] = field(default_factory=dict)

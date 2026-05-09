@@ -3,17 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from uuid import uuid4
 
 from app.core.artifacts import ArtifactStore
 from app.core.agent.tool_loop import ToolCallingAgentLoop
 from app.core.config import AgentConfig
-from app.core.events import EventRecorder
+from app.core.config.agent_config import ModelConfig
+from app.core.events import EventRecorder, RunEventStore
 from app.core.llm import OpenAICompatibleClient
 from app.core.memory import MarkdownMemoryStore, MemoryStore
-from app.core.routing import WorkflowRouter
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
-from app.schemas import AgentRunResult, ChatEvent, ChatRequest
+from app.schemas import AgentRunResult, ChatEvent, ChatRequest, RuntimeOptions
 
 
 class AgentRuntime:
@@ -22,16 +23,22 @@ class AgentRuntime:
     def __init__(
         self,
         artifact_store: ArtifactStore | None = None,
-        workflow_router: WorkflowRouter | None = None,
+        workflow_router: object | None = None,
         workflow_registry: WorkflowRegistry | None = None,
         memory_store: MemoryStore | None = None,
         markdown_memory_store: MarkdownMemoryStore | None = None,
+        run_event_store: RunEventStore | None = None,
+        model_config: ModelConfig | dict[str, object] | None = None,
+        skills: list[str] | None = None,
     ) -> None:
         self.artifact_store = artifact_store or ArtifactStore()
         self.memory_store = memory_store or MemoryStore()
         self.markdown_memory_store = markdown_memory_store or MarkdownMemoryStore()
+        self.run_event_store = run_event_store or RunEventStore()
         self.workflow_registry = workflow_registry or WorkflowRegistry.builtin(self.artifact_store)
-        self.workflow_router = workflow_router or WorkflowRouter(available_workflows=self.workflow_registry.names())
+        self.workflow_router = workflow_router
+        self.model_config, self._model_config_fields = self._normalize_model_config(model_config)
+        self.skills = self._normalize_skills(skills)
         self.agent_loop = ToolCallingAgentLoop(
             ToolInvocationService(
                 artifact_store=self.artifact_store,
@@ -47,6 +54,7 @@ class AgentRuntime:
     async def run_with_events(
         self, agent_config: AgentConfig, request: ChatRequest
     ) -> tuple[AgentRunResult, list[ChatEvent]]:
+        agent_config, request = self._prepare_execution(agent_config, request)
         if not request.messages:
             raise ValueError("messages must not be empty")
 
@@ -55,7 +63,7 @@ class AgentRuntime:
             workflow = self.workflow_registry.get(workflow_name)
             if workflow is None:
                 raise ValueError(f"Workflow is not registered: {workflow_name}")
-            return workflow.run_with_events(
+            result, events = workflow.run_with_events(
                 agent_config=agent_config,
                 messages=request.messages,
                 attachments=request.attachments,
@@ -63,10 +71,20 @@ class AgentRuntime:
                 workflow_name=workflow_name,
                 runtime_options=request.runtime_options,
             )
+            self._persist_events(agent_config, request, result.thread_id, events, result)
+            return result, events
 
         paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
         recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
-        recorder.emit("run.started", {"workflow": "agent_loop", "stateless": agent_config.runtime.stateless})
+        recorder.emit(
+            "run.started",
+            {
+                "run_id": recorder.run_id,
+                "workflow": "agent_loop",
+                "execution_mode": "agent_loop",
+                "stateless": agent_config.runtime.stateless,
+            },
+        )
         loop_result = await self.agent_loop.run(
             agent_config=agent_config,
             messages=request.messages,
@@ -74,6 +92,7 @@ class AgentRuntime:
             recorder=recorder,
             runtime_options=request.runtime_options,
         )
+        self._persist_events(agent_config, request, paths.thread_id, recorder.events, loop_result.result)
         return loop_result.result, recorder.events
 
     async def stream(self, agent_config: AgentConfig, request: ChatRequest) -> AsyncIterator[str]:
@@ -84,6 +103,7 @@ class AgentRuntime:
             yield self._event(ChatEvent(type="run.failed", data={"agent": agent_config.name, "error": str(exc)}))
 
     async def iter_events(self, agent_config: AgentConfig, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        agent_config, request = self._prepare_execution(agent_config, request)
         if not request.messages:
             raise ValueError("messages must not be empty")
 
@@ -103,16 +123,20 @@ class AgentRuntime:
     ) -> AsyncIterator[ChatEvent]:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[ChatEvent | BaseException | None] = asyncio.Queue()
+        captured_events: list[ChatEvent] = []
+        final_result: AgentRunResult | None = None
 
         def on_event(event: ChatEvent) -> None:
+            captured_events.append(event)
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
         def run_workflow() -> None:
+            nonlocal final_result, captured_events
             workflow = self.workflow_registry.get(workflow_name)
             if workflow is None:
                 raise ValueError(f"Workflow is not registered: {workflow_name}")
             try:
-                workflow.run_with_events(
+                final_result, returned_events = workflow.run_with_events(
                     agent_config=agent_config,
                     messages=request.messages,
                     attachments=request.attachments,
@@ -121,6 +145,8 @@ class AgentRuntime:
                     workflow_name=workflow_name,
                     runtime_options=request.runtime_options,
                 )
+                if not captured_events:
+                    captured_events = list(returned_events)
             except BaseException as exc:
                 loop.call_soon_threadsafe(queue.put_nowait, exc)
             finally:
@@ -138,11 +164,26 @@ class AgentRuntime:
                 yield item
         finally:
             await task
+            if captured_events:
+                thread_id = (
+                    final_result.thread_id
+                    if final_result is not None
+                    else str(captured_events[0].data.get("thread_id") or request.runtime_options.thread_id or "")
+                )
+                self._persist_events(agent_config, request, thread_id, captured_events, final_result)
 
     async def _stream_agent_loop_events(self, agent_config: AgentConfig, request: ChatRequest) -> AsyncIterator[ChatEvent]:
         paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
         recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
-        yield recorder.emit("run.started", {"workflow": "agent_loop", "stateless": agent_config.runtime.stateless})
+        yield recorder.emit(
+            "run.started",
+            {
+                "run_id": recorder.run_id,
+                "workflow": "agent_loop",
+                "execution_mode": "agent_loop",
+                "stateless": agent_config.runtime.stateless,
+            },
+        )
 
         llm = OpenAICompatibleClient(agent_config, runtime_options=request.runtime_options)
         if not llm.configured:
@@ -170,6 +211,7 @@ class AgentRuntime:
                 reply=reply,
                 metadata={
                     "workflow": "agent_loop",
+                    "run_id": recorder.run_id,
                     "llm_configured": llm.configured,
                     "model": llm.model,
                     "temperature": llm.temperature,
@@ -181,10 +223,11 @@ class AgentRuntime:
                 },
             )
             yield recorder.emit("run.completed", {"result": result.model_dump()})
+            self._persist_events(agent_config, request, paths.thread_id, recorder.events, result)
             return
 
         emitted = 1
-        await self.agent_loop.run(
+        loop_result = await self.agent_loop.run(
             agent_config=agent_config,
             messages=request.messages,
             thread_id=paths.thread_id,
@@ -194,61 +237,163 @@ class AgentRuntime:
         )
         for event in recorder.events[emitted:]:
             yield event
+        self._persist_events(agent_config, request, paths.thread_id, recorder.events, loop_result.result)
+
+    def _persist_events(
+        self,
+        agent_config: AgentConfig,
+        request: ChatRequest,
+        thread_id: str,
+        events: list[ChatEvent],
+        result: AgentRunResult | None,
+    ) -> None:
+        if not events:
+            return
+        run_id = str(events[0].data.get("run_id") or f"run-{uuid4().hex[:12]}")
+        if result is not None:
+            result.metadata.setdefault("run_id", run_id)
+        self.run_event_store.save(
+            run_id=run_id,
+            agent=agent_config.name,
+            thread_id=thread_id,
+            events=events,
+            result=result.model_dump(mode="json") if result is not None else None,
+            agent_snapshot=self._agent_snapshot(agent_config),
+            request_snapshot=self._request_snapshot(request),
+        )
+
+    @staticmethod
+    def _agent_snapshot(agent_config: AgentConfig) -> dict[str, object]:
+        payload = agent_config.model_dump(mode="json")
+        model = payload.get("model")
+        if isinstance(model, dict):
+            if model.get("api_key"):
+                model["api_key"] = "********"
+            if model.get("api_key_enc"):
+                model["api_key_enc"] = "********"
+        return payload
+
+    @staticmethod
+    def _request_snapshot(request: ChatRequest) -> dict[str, object]:
+        payload = request.model_dump(mode="json")
+        runtime_options = payload.get("runtime_options")
+        if isinstance(runtime_options, dict) and runtime_options.get("api_key"):
+            runtime_options["api_key"] = "********"
+        return payload
 
     def _should_use_workflow(self, agent_config: AgentConfig, request: ChatRequest) -> bool:
         return self._selected_workflow_name(agent_config, request) is not None
 
     def _selected_workflow_name(self, agent_config: AgentConfig, request: ChatRequest) -> str | None:
-        return self._explicit_workflow_name(request) or self._workflow_for_selected_skills(
-            agent_config,
-            request,
-        )
+        return self._explicit_workflow_name(request)
+
+    def _prepare_execution(self, agent_config: AgentConfig, request: ChatRequest) -> tuple[AgentConfig, ChatRequest]:
+        return self._effective_agent_config(agent_config), self._effective_request(request)
+
+    def _effective_agent_config(self, agent_config: AgentConfig) -> AgentConfig:
+        updates: dict[str, object] = {}
+        if self.skills is not None:
+            updates["skills"] = list(self.skills)
+        if not updates:
+            return agent_config
+        return agent_config.model_copy(update=updates, deep=True)
+
+    def _effective_request(self, request: ChatRequest) -> ChatRequest:
+        runtime_options = self._effective_runtime_options(request.runtime_options)
+        if runtime_options is request.runtime_options:
+            return request
+        return request.model_copy(update={"runtime_options": runtime_options}, deep=True)
+
+    def _effective_runtime_options(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
+        if self.model_config is None:
+            return runtime_options
+        updates = self._model_runtime_option_updates(runtime_options)
+        if not updates:
+            return runtime_options
+        data = runtime_options.model_dump(mode="python")
+        data.update(updates)
+        return RuntimeOptions.model_validate(data)
+
+    def _model_runtime_option_updates(self, runtime_options: RuntimeOptions) -> dict[str, object]:
+        if self.model_config is None:
+            return {}
+        explicit = runtime_options.model_fields_set
+        model_config = self.model_config
+        updates: dict[str, object] = {}
+        model_name = model_config.model if "model" in self._model_config_fields else None
+        if model_name is None and "default_model" in self._model_config_fields:
+            model_name = model_config.default_model
+        if model_name and "model_name" not in explicit:
+            updates["model_name"] = model_name
+        for option_name, config_name in (
+            ("base_url", "base_url"),
+            ("api_key", "api_key"),
+            ("model_env", "model_env"),
+            ("base_url_env", "base_url_env"),
+            ("api_key_env", "api_key_env"),
+            ("temperature", "temperature"),
+            ("top_p", "top_p"),
+            ("max_tokens", "max_tokens"),
+            ("request_timeout_seconds", "request_timeout_seconds"),
+        ):
+            if option_name in explicit or config_name not in self._model_config_fields:
+                continue
+            value = getattr(model_config, config_name)
+            if value is not None:
+                updates[option_name] = value
+        return updates
+
+    @staticmethod
+    def _normalize_model_config(
+        model_config: ModelConfig | dict[str, object] | None,
+    ) -> tuple[ModelConfig | None, set[str]]:
+        if model_config is None:
+            return None, set()
+        if isinstance(model_config, ModelConfig):
+            return model_config, set(model_config.model_fields_set)
+        fields = set(model_config)
+        return ModelConfig.model_validate(model_config), fields
+
+    @staticmethod
+    def _normalize_skills(skills: list[str] | None) -> list[str] | None:
+        if skills is None:
+            return None
+        normalized = []
+        seen = set()
+        for skill in skills:
+            name = skill.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            normalized.append(name)
+        return normalized
 
     @staticmethod
     def _explicit_workflow_name(request: ChatRequest) -> str | None:
         workflow_name = (request.runtime_options.workflow or "").strip()
-        if not workflow_name or workflow_name == "agent_loop":
+        if not workflow_name or workflow_name in {"agent_loop", "default"}:
             return None
         return workflow_name
 
     @staticmethod
-    def _workflow_for_selected_skills(agent_config: AgentConfig, request: ChatRequest) -> str | None:
-        selected_skills = [name.strip() for name in request.runtime_options.selected_skills if name.strip()]
-        if not selected_skills:
-            return None
-        skill_registry = WorkflowRouter().skill_registry
-        for skill_name in selected_skills:
-            if agent_config.skills and skill_name not in agent_config.skills:
-                continue
-            try:
-                skill = skill_registry.get(skill_name)
-            except KeyError:
-                continue
-            if skill.runner_path is None:
-                continue
-            if skill.generation:
-                workflow_name = agent_config.workflows.get("generation", "artifact_workflow")
-            else:
-                workflow_name = agent_config.workflows.get("vision_behavior", "evidence_first_detection")
-            if workflow_name and workflow_name != "agent_loop":
-                return workflow_name
-        return None
-
-    @staticmethod
     def _last_user_text(request: ChatRequest) -> str:
-        return WorkflowRouter.last_user_text(request)
+        for message in reversed(request.messages):
+            if message.role == "user":
+                return message.content.strip()
+        return ""
 
     @staticmethod
     def _has_generation_context(request: ChatRequest) -> bool:
-        return WorkflowRouter().has_generation_context(request)
+        return False
 
     @staticmethod
     def _is_artifact_refinement_request(text: str) -> bool:
-        return WorkflowRouter().is_artifact_refinement_request(text)
+        return False
 
     @staticmethod
     def _is_meta_request(text: str) -> bool:
-        return WorkflowRouter().is_meta_request(text)
+        normalized = text.lower()
+        return any(keyword in normalized for keyword in ("你能干啥", "你能做什么", "what can you do"))
 
     @staticmethod
     def _event(event: ChatEvent) -> str:

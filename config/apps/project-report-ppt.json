@@ -4,7 +4,7 @@
   "description": "预置 PPT 生成能力，适合方案汇报、项目周报、里程碑总结。",
   "category": "generation",
   "icon": "slides",
-  "agent_name": "artifact-generator",
+  "agent_name": "default",
   "workflow": "artifact_workflow",
   "selected_skills": [
     "pptx-generation"

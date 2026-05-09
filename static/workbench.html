@@ -190,7 +190,8 @@
       gap: 2px;
     }
 
-    .nav button {
+    .nav button,
+    .nav a {
       width: 100%;
       min-height: 38px;
       border-radius: var(--radius);
@@ -200,11 +201,13 @@
       gap: 10px;
       color: var(--sidebar-text);
       text-align: left;
+      text-decoration: none;
       transition: background 120ms, color 120ms;
     }
 
     .nav button.active,
-    .nav button:hover {
+    .nav button:hover,
+    .nav a:hover {
       background: rgba(255, 255, 255, .08);
       color: #fff;
     }
@@ -482,14 +485,105 @@
       padding: 0 13px;
       font-size: 13px;
       font-weight: 650;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       transition: background 120ms, border-color 120ms, color 120ms;
       white-space: nowrap;
+      cursor: pointer;
     }
 
     .ghost-btn:hover,
     .secondary-btn:hover {
       background: var(--surface-soft);
       border-color: var(--line-strong);
+    }
+
+    .upload-file-button {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-full);
+      background: var(--surface);
+      color: #3d454d;
+      padding: 0 13px;
+      font-size: 13px;
+      font-weight: 650;
+      white-space: nowrap;
+      cursor: pointer;
+      overflow: hidden;
+    }
+
+    .upload-file-button.primary {
+      background: var(--black);
+      border-color: var(--black);
+      color: #fff;
+      font-weight: 760;
+    }
+
+    .upload-file-button:hover {
+      background: var(--surface-soft);
+      border-color: var(--line-strong);
+    }
+
+    .upload-file-button.primary:hover {
+      background: #000;
+      border-color: #000;
+    }
+
+    .upload-file-button input[type="file"] {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+      font-size: 100px;
+    }
+
+    .skill-local-install {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 280px;
+    }
+
+    .skill-local-install input {
+      width: min(320px, 34vw);
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-full);
+      background: var(--surface);
+      color: #2f363d;
+      padding: 0 12px;
+      font-size: 12px;
+    }
+
+    .skill-drop-zone {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      min-width: 220px;
+      padding: 0 14px;
+      border: 1px dashed var(--line-strong);
+      border-radius: var(--radius-full);
+      background: var(--surface-soft);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      transition: background 120ms, border-color 120ms, color 120ms, box-shadow 120ms;
+      user-select: none;
+    }
+
+    .skill-drop-zone.active {
+      background: var(--accent-soft);
+      border-color: rgba(21, 91, 212, .28);
+      color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(21, 91, 212, .08);
     }
 
     .workbench {
@@ -1986,11 +2080,11 @@
 
     .schema-editor {
       display: grid;
-      gap: 10px;
-      padding: 12px;
+      gap: 12px;
+      padding: 14px;
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      background: rgba(248, 250, 252, .72);
+      background: #f8fafc;
     }
 
     .schema-editor-head {
@@ -2006,7 +2100,7 @@
     }
 
     .schema-editor-title strong {
-      font-size: 13px;
+      font-size: 15px;
       font-weight: 780;
     }
 
@@ -2027,44 +2121,83 @@
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 10px;
       align-items: end;
+      padding: 10px;
+      border: 1px solid rgba(223, 227, 234, .72);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, .74);
     }
 
     .schema-list {
       display: grid;
+      gap: 0;
+      overflow: hidden;
+      border: 1px solid rgba(223, 227, 234, .86);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .schema-list-head {
+      display: grid;
+      grid-template-columns: minmax(140px, 1fr) 132px 150px 72px minmax(180px, 1.2fr) 96px;
       gap: 8px;
+      padding: 8px 10px;
+      background: #eef2f7;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 780;
+      border-bottom: 1px solid rgba(223, 227, 234, .86);
     }
 
     .schema-row {
       display: grid;
-      gap: 8px;
-      padding: 10px;
-      border: 1px solid rgba(223, 227, 234, .86);
-      border-radius: var(--radius);
-      background: rgba(255, 255, 255, .72);
+      gap: 0;
+      border-bottom: 1px solid rgba(223, 227, 234, .72);
+      background: #fff;
+    }
+
+    .schema-row:last-child {
+      border-bottom: 0;
     }
 
     .schema-row-head {
       display: grid;
-      grid-template-columns: minmax(0, 1.2fr) minmax(140px, .8fr) auto auto;
+      grid-template-columns: minmax(140px, 1fr) 132px 150px 72px minmax(180px, 1.2fr) 96px;
       gap: 8px;
       align-items: center;
+      padding: 10px;
     }
 
     .schema-row-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr) minmax(180px, 1fr);
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(180px, 1fr);
       gap: 8px;
+      padding: 0 10px 10px;
+      background: #fbfdff;
     }
 
     .schema-row-grid .field {
       gap: 4px;
     }
 
+    .schema-row-head .field {
+      gap: 0;
+    }
+
+    .schema-row-head .field label {
+      display: none;
+    }
+
     .schema-row-grid .field input,
     .schema-row-grid .field textarea,
-    .schema-row-grid .field select {
+    .schema-row-grid .field select,
+    .schema-row-head .field input,
+    .schema-row-head .field select {
       padding: 7px 8px;
       font-size: 12px;
+    }
+
+    .schema-row-grid .field textarea {
+      min-height: 58px;
     }
 
     .schema-row-actions {
@@ -2077,17 +2210,30 @@
     .schema-row .check-field {
       min-height: 32px;
       font-size: 11px;
+      justify-content: center;
+      padding: 0;
     }
 
-    .schema-row button[data-schema-remove-field] {
+    .schema-row button[data-schema-remove-field],
+    .schema-row button[data-schema-toggle-advanced] {
       height: 30px;
-      padding: 0 10px;
+      padding: 0 9px;
       border-radius: var(--radius-full);
       border: 1px solid var(--line);
       background: var(--surface);
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 720;
+    }
+
+    .schema-row button[data-schema-remove-field] {
+      color: var(--red);
+      border-color: rgba(196, 52, 52, .18);
+      background: rgba(196, 52, 52, .06);
+    }
+
+    .schema-row-actions {
+      justify-content: flex-end;
     }
 
     .schema-root .check-field {
@@ -2276,6 +2422,20 @@
         grid-template-columns: 1fr;
         grid-template-rows: minmax(230px, 34svh) minmax(520px, 1fr);
       }
+      .schema-list-head {
+        display: none;
+      }
+      .schema-row-head,
+      .schema-row-grid,
+      .schema-root {
+        grid-template-columns: 1fr;
+      }
+      .schema-row-head .field label {
+        display: block;
+      }
+      .schema-row .check-field {
+        justify-content: flex-start;
+      }
     }
 
     @media (max-width: 760px) {
@@ -2354,6 +2514,16 @@
         grid-template-columns: 1fr;
       }
     }
+
+    .file-input-proxy {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      z-index: -1;
+    }
   </style>
 </head>
 <body>
@@ -2411,6 +2581,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
           <span class="nav-label">Cron 计划</span>
         </button>
+        <a href="/static/api-docs.html" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5V5a2 2 0 0 1 2-2h11v18H6a2 2 0 0 1-2-1.5z"></path><path d="M8 7h5M8 11h5M8 15h4"></path></svg>
+          <span class="nav-label">接口文档</span>
+        </a>
       </nav>
 
       <section class="side-section">
@@ -2466,19 +2640,18 @@
                 <span>Ready</span>
               </div>
             </div>
-            <div class="module-tabs" aria-label="技能分类">
-              <button type="button" data-agent-select="artifact-generator">技能</button>
-              <button type="button" data-agent-select="artifact-generator">MiniMax-M2.7</button>
-              <button type="button" data-agent-select="artifact-generator">专家套组</button>
-              <button type="button" data-agent-select="artifact-generator">办公</button>
-              <button class="active" type="button" data-agent-select="default">智能体</button>
-              <button type="button" data-agent-select="behavior-detector">视觉识别</button>
+            <div class="module-tabs" aria-label="功能分类">
+              <button class="active" type="button" data-view="chat">智能体</button>
+              <button type="button" data-view="skills">技能</button>
+              <button type="button" data-view="workflows">Workflow</button>
+              <button type="button" data-view="apps">应用</button>
+              <button type="button" data-view="cron">计划</button>
             </div>
           </div>
 
           <div id="skillStrip" class="skill-strip">
             <div class="mode-row">
-              <button class="tool-pill" type="button" data-agent-select="artifact-generator">
+              <button class="tool-pill" type="button" data-view="skills">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l3 7 7 3-7 3-3 7-3-7-7-3 7-3z"></path></svg>
                 <span>技能</span>
               </button>
@@ -2486,18 +2659,18 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"></path></svg>
                 <span>智能体</span>
               </button>
-              <button class="tool-pill" type="button" data-agent-select="artifact-generator">
+              <button class="tool-pill" type="button" data-view="workflows">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 18l6-6-6-6"></path><path d="M8 6l-6 6 6 6"></path></svg>
-                <span>Skill API</span>
+                <span>Workflow</span>
               </button>
             </div>
             <div class="quick-row" aria-label="示例任务">
-              <button type="button" data-agent-select="behavior-detector" data-prompt="人员翻越围栏进入禁区">翻越进入禁区</button>
-              <button type="button" data-agent-select="behavior-detector" data-prompt="老人摔倒">老人摔倒</button>
-              <button type="button" data-agent-select="behavior-detector" data-prompt="人员在禁区长时间逗留">长时间逗留</button>
-              <button type="button" data-agent-select="behavior-detector" data-prompt="人员正常通行">正常通行</button>
-              <button type="button" data-agent-select="artifact-generator" data-prompt="生成一份 JetLinks IoT 平台架构 Draw.io 图，包含接入层、规则引擎、数据存储、告警和运维监控">Draw.io 架构图</button>
-              <button type="button" data-agent-select="artifact-generator" data-prompt="生成一份 JetLinks 项目汇报 PPT，包含封面、目录、架构、流程、计划、风险和总结">PPT 汇报</button>
+              <button type="button" data-agent-select="default" data-workflow-select="evidence_first_detection" data-prompt="人员翻越围栏进入禁区">翻越进入禁区</button>
+              <button type="button" data-agent-select="default" data-workflow-select="evidence_first_detection" data-prompt="老人摔倒">老人摔倒</button>
+              <button type="button" data-agent-select="default" data-workflow-select="evidence_first_detection" data-prompt="人员在禁区长时间逗留">长时间逗留</button>
+              <button type="button" data-agent-select="default" data-workflow-select="evidence_first_detection" data-prompt="人员正常通行">正常通行</button>
+              <button type="button" data-agent-select="default" data-workflow-select="artifact_workflow" data-prompt="生成一份 JetLinks IoT 平台架构 Draw.io 图，包含接入层、规则引擎、数据存储、告警和运维监控">Draw.io 架构图</button>
+              <button type="button" data-agent-select="default" data-workflow-select="artifact_workflow" data-prompt="生成一份 JetLinks 项目汇报 PPT，包含封面、目录、架构、流程、计划、风险和总结">PPT 汇报</button>
             </div>
           </div>
 
@@ -2508,7 +2681,15 @@
                 <p id="skillSummary">加载技能中</p>
               </div>
               <div class="manager-actions">
-                <button class="secondary-btn" type="button" data-upload-skill-plugin>上传 Skill 插件</button>
+                <div class="skill-drop-zone" data-skill-drop-zone>拖放技能包到这里上传</div>
+                <span class="upload-file-button primary">
+                  上传 Skill 插件
+                  <input type="file" accept=".zip,application/zip" data-skill-plugin-input aria-label="上传 Skill 插件">
+                </span>
+                <span class="skill-local-install">
+                  <input type="text" data-skill-plugin-path placeholder="/Users/chenhao/Downloads/skill.zip">
+                  <button class="secondary-btn" type="button" data-install-skill-plugin-path>本地路径安装</button>
+                </span>
                 <button id="refreshSkills" class="secondary-btn" type="button">刷新技能</button>
               </div>
             </div>
@@ -2610,6 +2791,7 @@
                 <p id="workflowSummary">加载 Workflow 插件中</p>
               </div>
               <div class="manager-actions">
+                <input class="skill-plugin-file-input" type="file" accept=".zip,application/zip" data-workflow-plugin-input aria-label="上传 Workflow 插件">
                 <button id="refreshWorkflows" class="secondary-btn" type="button">刷新插件</button>
               </div>
             </div>
@@ -2659,7 +2841,7 @@
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4z"></path><path d="M13 4h7v7h-7z"></path><path d="M4 13h7v7H4z"></path><path d="M13 13h7v7h-7z"></path></svg>
                     <span>应用</span>
                   </button>
-                  <button class="small-action" type="button" data-agent-select="behavior-detector">
+                  <button class="small-action" type="button" data-agent-select="default" data-workflow-select="evidence_first_detection">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                     <span>视觉证据</span>
                   </button>
@@ -2674,7 +2856,6 @@
             </div>
             <div id="attachments" class="attachments"></div>
             <input id="fileInput" type="file" multiple hidden>
-            <input id="skillPluginInput" type="file" accept=".zip,application/zip" hidden>
           </section>
         </section>
 
@@ -2696,24 +2877,55 @@
           <div id="panel" class="inspector-body"></div>
         </aside>
       </section>
+      <input id="skillPluginInput" class="file-input-proxy" type="file" accept=".zip,application/zip" tabindex="-1" aria-hidden="true">
     </main>
   </div>
 
   <script>
     const skillCatalog = [
-      { name: 'drawio-generation', agent: 'artifact-generator', detail: '节点、连线、泳道、分层' },
-      { name: 'pptx-generation', agent: 'artifact-generator', detail: '封面、目录、架构、计划' },
-      { name: 'excel-generation', agent: 'artifact-generator', detail: '公式、样式、汇总、校验' },
-      { name: 'xmind-generation', agent: 'artifact-generator', detail: '多级主题、备注、任务结构' },
-      { name: 'markdown-rendering', agent: 'artifact-generator', detail: 'Mermaid、表格、附件块' },
-      { name: 'deliverables-export', agent: 'artifact-generator', detail: '命令说明、步骤文档、附件导出' },
-      { name: 'behavior-detection', agent: 'behavior-detector', detail: '文本判断 + 视觉证据确认' }
+      { name: 'drawio-generation', agent: 'default', detail: '节点、连线、泳道、分层' },
+      { name: 'pptx-generation', agent: 'default', detail: '封面、目录、架构、计划' },
+      { name: 'excel-generation', agent: 'default', detail: '公式、样式、汇总、校验' },
+      { name: 'xmind-generation', agent: 'default', detail: '多级主题、备注、任务结构' },
+      { name: 'markdown-rendering', agent: 'default', detail: 'Mermaid、表格、附件块' },
+      { name: 'deliverables-export', agent: 'default', detail: '命令说明、步骤文档、附件导出' },
+      { name: 'behavior-detection', agent: 'default', detail: '文本判断 + 视觉证据确认' }
     ];
 
     const agentHints = {
-      'artifact-generator': '文件生成与校验',
-      'behavior-detector': '行为识别诚实模式',
       default: '通用对话'
+    };
+
+    const schemaParamKindOptions = [
+      ['', '普通参数'],
+      ['model', '模型参数'],
+      ['cv_model', 'CV 模型参数'],
+      ['llm_model', 'LLM 参数'],
+      ['embedding_model', 'Embedding 参数'],
+      ['file', '文件参数'],
+      ['image', '图片参数'],
+      ['audio', '音频参数'],
+      ['video', '视频参数'],
+      ['path', '路径参数'],
+      ['config', '配置参数'],
+      ['threshold', '阈值参数'],
+      ['enum', '枚举参数'],
+      ['other', '其他']
+    ];
+
+    const schemaFieldPresetMap = {
+      model: { name: 'model', type: 'string', paramKind: 'model', required: true, description: '模型标识' },
+      cv_model: { name: 'model', type: 'string', paramKind: 'cv_model', required: true, description: 'CV 模型标识' },
+      llm_model: { name: 'model', type: 'string', paramKind: 'llm_model', required: true, description: 'LLM 模型标识' },
+      embedding_model: { name: 'model', type: 'string', paramKind: 'embedding_model', required: true, description: 'Embedding 模型标识' },
+      file: { name: 'file', type: 'string', paramKind: 'file', description: '文件路径、上传文件或文件引用' },
+      image: { name: 'image', type: 'string', paramKind: 'image', description: '图片文件或图片引用' },
+      audio: { name: 'audio', type: 'string', paramKind: 'audio', description: '音频文件或音频引用' },
+      video: { name: 'video', type: 'string', paramKind: 'video', description: '视频文件或视频引用' },
+      path: { name: 'path', type: 'string', paramKind: 'path', description: '本地路径或工作区路径' },
+      config: { name: 'config', type: 'object', paramKind: 'config', description: '结构化配置对象' },
+      threshold: { name: 'threshold', type: 'number', paramKind: 'threshold', description: '阈值参数', defaultText: '0.5' },
+      enum: { name: 'mode', type: 'string', paramKind: 'enum', description: '枚举参数', enumText: 'option-a\noption-b' }
     };
 
     const state = {
@@ -3095,7 +3307,7 @@
             ${items.length ? items.map((item) => renderCapabilityChoice(item, state.capabilityPickerMode, selected.includes(item.name))).join('') : `<div class="empty-panel">${escapeHtml(empty)}</div>`}
           </div>
           <div class="capability-picker-foot">
-            ${isWorkflows ? '<button class="secondary-btn" type="button" data-clear-workflow>不使用 Workflow</button>' : `<button class="secondary-btn" type="button" ${isSkills ? 'data-compose-add-skill' : 'data-compose-add-mcp'}>${isSkills ? '上传 Skill 插件' : '新建 MCP 工具'}</button>`}
+            ${isWorkflows ? '<button class="secondary-btn" type="button" data-upload-workflow-plugin>上传 Workflow 插件</button><button class="secondary-btn" type="button" data-clear-workflow>不使用 Workflow</button>' : `<button class="secondary-btn" type="button" ${isSkills ? 'data-compose-add-skill' : 'data-compose-add-mcp'}>${isSkills ? '上传 Skill 插件' : '新建 MCP 工具'}</button>`}
             <button class="secondary-btn" type="button" data-compose-manage="${isWorkflows ? 'workflows' : isSkills ? 'skills' : 'tools'}">${isWorkflows ? '管理 Workflows' : isSkills ? '管理 Skills' : '管理 Tools'}</button>
             <button class="secondary-btn" type="button" data-capability-close>完成</button>
           </div>
@@ -3698,6 +3910,10 @@
               <label for="skillManifestPreview">生成后的 Manifest JSON</label>
               <textarea id="skillManifestPreview" class="code manifest-preview" spellcheck="false" readonly>${escapeHtml(manifestPreview)}</textarea>
             </div>
+            <div class="field">
+              <label for="skillSandboxPreview">同步生成的 Sandbox YAML</label>
+              <textarea id="skillSandboxPreview" class="code manifest-preview sandbox-preview" spellcheck="false" readonly>${escapeHtml(sandboxYamlPreview(skill))}</textarea>
+            </div>
             <div class="skill-form-actions">
               <button class="secondary-btn" type="button" data-skill-refresh-manifest>刷新预览</button>
             </div>
@@ -3782,13 +3998,89 @@
             <label for="skillAdapterCommand">Adapter Command</label>
             <input id="skillAdapterCommand" name="adapter_command" value="${escapeAttr(sandbox.adapter_command || '')}">
           </div>
+          ${renderExecutionConfig(skill.execution || {})}
           ${renderSchemaEditor('input', '输入参数', skill.input_schema || {})}
           ${renderSchemaEditor('output', '输出参数', skill.output_schema || {})}
           <div class="skill-form-actions">
             <button class="secondary-btn" type="button" data-skill-reset>重置</button>
-            <button class="primary-btn" type="button" data-skill-save ${packageFile?.editable === false ? 'disabled' : ''}>保存配置并生成 Manifest JSON</button>
+            <button class="primary-btn" type="button" data-skill-save ${packageFile?.editable === false ? 'disabled' : ''}>保存配置并同步生成文件</button>
           </div>
         </form>
+      `;
+    }
+
+    function renderExecutionConfig(execution = {}) {
+      const type = execution.type || 'python_script';
+      return `
+        <section class="schema-editor" data-execution-editor>
+          <div class="schema-editor-head">
+            <div class="schema-editor-title">
+              <strong>执行配置</strong>
+              <span>默认运行 Python 脚本；只需要声明脚本路径，其他使用系统默认值。</span>
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="skillExecutionType">执行类型</label>
+              <select id="skillExecutionType" name="execution_type" data-execution-type>
+                ${[
+                  ['python_script', 'Python 脚本'],
+                  ['custom', '自定义 runner.py'],
+                  ['template', '模板生成文件'],
+                  ['http', 'HTTP 请求'],
+                  ['command', '命令执行']
+                ].map(([value, label]) => `
+                  <option value="${escapeAttr(value)}" ${type === value ? 'selected' : ''}>${escapeHtml(label)}</option>
+                `).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label for="skillExecutionScript">Python 脚本</label>
+              <input id="skillExecutionScript" name="execution_script" value="${escapeAttr(execution.script || 'scripts/run_skill.py')}" placeholder="scripts/run_skill.py">
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="skillExecutionFilename">输出文件名</label>
+              <input id="skillExecutionFilename" name="execution_filename" value="${escapeAttr(execution.filename || execution.stdout_filename || '')}" placeholder="result.md">
+            </div>
+            <div class="field">
+              <label for="skillExecutionUrl">HTTP URL</label>
+              <input id="skillExecutionUrl" name="execution_url" value="${escapeAttr(execution.url || '')}" placeholder="https://example.com/api">
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="skillExecutionMethod">HTTP Method</label>
+              <select id="skillExecutionMethod" name="execution_method">
+                ${['POST', 'GET', 'PUT', 'PATCH', 'DELETE'].map((method) => `
+                  <option value="${escapeAttr(method)}" ${String(execution.method || 'POST').toUpperCase() === method ? 'selected' : ''}>${method}</option>
+                `).join('')}
+              </select>
+            </div>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label for="skillExecutionCommand">命令</label>
+              <input id="skillExecutionCommand" name="execution_command" value="${escapeAttr(execution.command || '')}" placeholder="python">
+            </div>
+            <div class="field">
+              <label for="skillExecutionArgs">命令参数</label>
+              <input id="skillExecutionArgs" name="execution_args" value="${escapeAttr((execution.args || []).join(' '))}" placeholder="scripts/run.py --input $spec_json">
+            </div>
+          </div>
+          <div class="field">
+            <label for="skillExecutionTemplate">模板 / 请求 Body / 标准输入</label>
+            <textarea id="skillExecutionTemplate" name="execution_template" placeholder="支持 $title、$spec_json 这类变量">${escapeHtml(execution.template || execution.body_template || execution.stdin_template || '')}</textarea>
+          </div>
+          <div class="field">
+            <label for="skillExecutionAdvanced">高级 JSON</label>
+            <textarea id="skillExecutionAdvanced" class="code" name="execution_advanced" spellcheck="false">${escapeHtml(executionAdvancedJson(execution))}</textarea>
+          </div>
+          <div class="skill-form-actions">
+            <button class="secondary-btn" type="button" data-skill-warm-env>预热依赖环境</button>
+          </div>
+        </section>
       `;
     }
 
@@ -3796,15 +4088,18 @@
       const state = schemaEditorState(schema);
       const rows = state.fields.length
         ? state.fields.map((field) => schemaFieldRowHtml(kind, field)).join('')
-        : schemaFieldRowHtml(kind, {});
+        : '<div class="empty" data-schema-empty>暂未添加字段，请先选择字段模板。</div>';
       return `
         <section class="schema-editor" data-schema-editor="${escapeAttr(kind)}">
           <div class="schema-editor-head">
             <div class="schema-editor-title">
               <strong>${escapeHtml(title)}</strong>
-              <span>配置字段后会生成 JSON Schema 对象。</span>
+              <span>先选字段模板再添加；模型、文件等模板会自动带入字段名和类型，只有普通参数 / 其他需要手动填。</span>
             </div>
             <div class="schema-editor-actions">
+              <select data-schema-add-preset="${escapeAttr(kind)}" aria-label="${escapeAttr(title)}字段模板">
+                ${schemaFieldPresetOptionsHtml('')}
+              </select>
               <button class="secondary-btn" type="button" data-schema-add="${escapeAttr(kind)}">添加字段</button>
             </div>
           </div>
@@ -3821,6 +4116,14 @@
             </label>
           </div>
           <div class="schema-list" data-schema-fields="${escapeAttr(kind)}">
+            <div class="schema-list-head">
+              <span>字段名</span>
+              <span>类型</span>
+              <span>标签</span>
+              <span>必填</span>
+              <span>描述</span>
+              <span>操作</span>
+            </div>
             ${rows}
           </div>
         </section>
@@ -3845,19 +4148,26 @@
                 `).join('')}
               </select>
             </div>
+            <div class="field">
+              <label>标签</label>
+              <select data-schema-field-param-kind>
+                ${schemaParamKindOptionsHtml(field.paramKind || '')}
+              </select>
+            </div>
             <label class="check-field">
               <input type="checkbox" data-schema-field-required ${field.required ? 'checked' : ''}>
-              <span>必填</span>
+              <span>是</span>
             </label>
-            <div class="schema-row-actions">
-              <button type="button" data-schema-remove-field>删除</button>
-            </div>
-          </div>
-          <div class="schema-row-grid">
             <div class="field">
               <label>描述</label>
               <input data-schema-field-description value="${escapeAttr(field.description || '')}" placeholder="字段说明">
             </div>
+            <div class="schema-row-actions">
+              <button type="button" data-schema-toggle-advanced>高级</button>
+              <button type="button" data-schema-remove-field>删除</button>
+            </div>
+          </div>
+          <div class="schema-row-grid" hidden>
             <div class="field">
               <label>格式</label>
               <input data-schema-field-format value="${escapeAttr(field.format || '')}" placeholder="date-time / uri">
@@ -3889,6 +4199,31 @@
       `;
     }
 
+    function schemaParamKindOptionsHtml(selected) {
+      const normalized = normalizeSchemaParamKind(selected);
+      return schemaParamKindOptions.map(([value, label]) => `
+        <option value="${escapeAttr(value)}" ${normalized === value ? 'selected' : ''}>${escapeHtml(label)}</option>
+      `).join('');
+    }
+
+    function schemaFieldPresetOptionsHtml(selected) {
+      const current = normalizeSchemaParamKind(selected);
+      return schemaParamKindOptions.map(([value, label]) => {
+        let displayLabel = label;
+        if (!value) displayLabel = '普通参数（手动填写）';
+        else if (value === 'other') displayLabel = '其他（手动填写）';
+        return `
+          <option value="${escapeAttr(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(displayLabel)}</option>
+        `;
+      }).join('');
+    }
+
+    function normalizeSchemaParamKind(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      return schemaParamKindOptions.some(([optionValue]) => optionValue === raw) ? raw : 'other';
+    }
+
     function schemaEditorState(schema) {
       const source = schema && typeof schema === 'object' && !Array.isArray(schema) ? schema : {};
       const properties = source.properties && typeof source.properties === 'object' && !Array.isArray(source.properties)
@@ -3898,11 +4233,15 @@
       const fields = Object.entries(properties).map(([name, definition]) => {
         const data = definition && typeof definition === 'object' && !Array.isArray(definition) ? definition : {};
         const items = data.items && typeof data.items === 'object' && !Array.isArray(data.items) ? data.items : {};
+        const paramKind = typeof data.x_param_kind === 'string'
+          ? data.x_param_kind
+          : (typeof data['x-param-kind'] === 'string' ? data['x-param-kind'] : '');
         return {
           name,
           type: typeof data.type === 'string' ? data.type : 'string',
           required: required.has(name),
           description: typeof data.description === 'string' ? data.description : '',
+          paramKind: normalizeSchemaParamKind(paramKind),
           format: typeof data.format === 'string' ? data.format : '',
           enumText: Array.isArray(data.enum) ? data.enum.map(schemaLiteralToText).join('\n') : '',
           defaultText: Object.prototype.hasOwnProperty.call(data, 'default') ? schemaLiteralToText(data.default) : '',
@@ -3940,6 +4279,7 @@
         generation: formData.get('generation') === 'on',
         quality_template: splitQualityTemplate(String(formData.get('quality_template') || '')),
         routing,
+        execution: collectExecutionConfig(formData),
         input_schema: inputSchema,
         output_schema: outputSchema,
         sandbox: {
@@ -3952,16 +4292,88 @@
       };
     }
 
+    function collectExecutionConfig(formData) {
+      const type = String(formData.get('execution_type') || 'custom').trim();
+      const advancedText = String(formData.get('execution_advanced') || '').trim();
+      const advanced = advancedText ? parseJsonField(advancedText, '执行配置高级 JSON') : {};
+      if (type === 'custom') {
+        return advancedText ? { ...advanced, type: 'custom' } : {};
+      }
+      const execution = { ...advanced, type };
+      const filename = nullableText(formData.get('execution_filename'));
+      const template = String(formData.get('execution_template') || '');
+      if (type === 'python_script') {
+        execution.script = String(formData.get('execution_script') || '').trim();
+        if (!execution.script) throw new Error('Python 脚本不能为空');
+      }
+      if (filename) {
+        if (type === 'command') execution.stdout_filename = filename;
+        else execution.filename = filename;
+      }
+      if (type === 'template') {
+        execution.template = template;
+      } else if (type === 'http') {
+        execution.url = String(formData.get('execution_url') || '').trim();
+        execution.method = String(formData.get('execution_method') || 'POST').trim() || 'POST';
+        execution.body_template = template;
+      } else if (type === 'command') {
+        execution.command = String(formData.get('execution_command') || '').trim();
+        execution.args = splitCommandArgs(String(formData.get('execution_args') || ''));
+        execution.stdin_template = template;
+      }
+      return pruneEmptyExecution(execution);
+    }
+
+    function executionAdvancedJson(execution = {}) {
+      const clone = { ...execution };
+      [
+        'type',
+        'script',
+        'python',
+        'input_mode',
+        'collect_outputs',
+        'timeout_seconds',
+        'filename',
+        'stdout_filename',
+        'template',
+        'url',
+        'method',
+        'body_template',
+        'command',
+        'args',
+        'stdin_template'
+      ].forEach((key) => delete clone[key]);
+      return Object.keys(clone).length ? `${JSON.stringify(clone, null, 2)}\n` : '{}';
+    }
+
+    function splitCommandArgs(text) {
+      return String(text || '').trim().split(/\s+/).filter(Boolean);
+    }
+
+    function pruneEmptyExecution(execution) {
+      const next = {};
+      Object.entries(execution).forEach(([key, value]) => {
+        if (value == null) return;
+        if (typeof value === 'string' && !value.trim()) return;
+        if (Array.isArray(value) && !value.length) return;
+        if (value && typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length) return;
+        next[key] = value;
+      });
+      return next;
+    }
+
     function updateSkillManifestPreview() {
       const textarea = document.getElementById('skillManifestPreview');
-      if (!textarea) return;
+      const sandboxTextarea = document.getElementById('skillSandboxPreview');
+      if (!textarea && !sandboxTextarea) return;
       try {
         const manifest = collectSkillForm();
-        textarea.value = `${JSON.stringify(manifest, null, 2)}\n`;
+        if (textarea) textarea.value = `${JSON.stringify(manifest, null, 2)}\n`;
+        if (sandboxTextarea) sandboxTextarea.value = `${sandboxYamlFromManifest(manifest)}\n`;
         const status = document.getElementById('skillEditStatus');
         if (status) {
           status.className = 'skill-status';
-          status.textContent = 'Manifest 预览已更新';
+          status.textContent = '配置预览已更新';
         }
       } catch (err) {
         const status = document.getElementById('skillEditStatus');
@@ -3970,6 +4382,39 @@
           status.textContent = err.message;
         }
       }
+    }
+
+    function sandboxYamlPreview(skill) {
+      try {
+        return sandboxYamlFromManifest(skillManifestForSave(skill));
+      } catch (err) {
+        return `# ${err.message}`;
+      }
+    }
+
+    function sandboxYamlFromManifest(manifest) {
+      const sandbox = manifest?.sandbox && typeof manifest.sandbox === 'object' && !Array.isArray(manifest.sandbox)
+        ? manifest.sandbox
+        : {};
+      const lines = ['sandbox:', `  enabled: ${sandbox.enabled ? 'true' : 'false'}`];
+      lines.push(`  profile: ${yamlString(sandbox.profile)}`);
+      if (typeof sandbox.request_schema_version === 'string' && sandbox.request_schema_version.trim()) {
+        lines.push(`  request_schema_version: ${yamlString(sandbox.request_schema_version.trim())}`);
+      }
+      if (typeof sandbox.adapter_command === 'string' && sandbox.adapter_command.trim()) {
+        lines.push(`  adapter_command: ${yamlString(sandbox.adapter_command.trim())}`);
+      }
+      if (sandbox.fallback_to_local === true) {
+        lines.push('  fallback_to_local: true');
+      } else if (sandbox.fallback_to_local === false) {
+        lines.push('  fallback_to_local: false');
+      }
+      return lines.join('\n');
+    }
+
+    function yamlString(value) {
+      if (value == null) return '""';
+      return JSON.stringify(String(value));
     }
 
     function collectSchemaEditor(kind) {
@@ -3983,11 +4428,13 @@
         const type = String(row.querySelector('[data-schema-field-type]')?.value || 'string').trim() || 'string';
         const definition = { type };
         const description = String(row.querySelector('[data-schema-field-description]')?.value || '').trim();
+        const paramKind = String(row.querySelector('[data-schema-field-param-kind]')?.value || '').trim();
         const format = String(row.querySelector('[data-schema-field-format]')?.value || '').trim();
         const enumText = String(row.querySelector('[data-schema-field-enum]')?.value || '').trim();
         const defaultText = String(row.querySelector('[data-schema-field-default]')?.value || '').trim();
         const constText = String(row.querySelector('[data-schema-field-const]')?.value || '').trim();
         if (description) definition.description = description;
+        if (paramKind) definition.x_param_kind = paramKind;
         if (format) definition.format = format;
         if (enumText) definition.enum = splitQualityTemplate(enumText).map(schemaLiteralFromText);
         if (defaultText) definition.default = schemaLiteralFromText(defaultText);
@@ -4008,10 +4455,37 @@
       return schema;
     }
 
-    function addSchemaFieldRow(kind) {
+    function schemaFieldPreset(kind, presetKind) {
+      const normalized = normalizeSchemaParamKind(presetKind);
+      if (!normalized || normalized === 'other') return {};
+      const preset = schemaFieldPresetMap[normalized];
+      if (!preset) return {};
+      return {
+        ...preset,
+        name: uniqueSchemaFieldName(kind, preset.name || normalized)
+      };
+    }
+
+    function uniqueSchemaFieldName(kind, baseName) {
+      const base = String(baseName || 'field').trim() || 'field';
+      const container = document.querySelector(`[data-schema-fields="${kind}"]`);
+      if (!container) return base;
+      const names = new Set(
+        [...container.querySelectorAll('[data-schema-field-name]')]
+          .map((input) => String(input.value || '').trim())
+          .filter(Boolean)
+      );
+      if (!names.has(base)) return base;
+      let index = 2;
+      while (names.has(`${base}_${index}`)) index += 1;
+      return `${base}_${index}`;
+    }
+
+    function addSchemaFieldRow(kind, presetKind = '') {
       const container = document.querySelector(`[data-schema-fields="${kind}"]`);
       if (!container) return;
-      container.insertAdjacentHTML('beforeend', schemaFieldRowHtml(kind, {}));
+      container.querySelector('[data-schema-empty]')?.remove();
+      container.insertAdjacentHTML('beforeend', schemaFieldRowHtml(kind, schemaFieldPreset(kind, presetKind)));
       updateSkillManifestPreview();
     }
 
@@ -4134,6 +4608,21 @@
       renderSkillSummary();
       renderSkillEditor({ type: 'ok', text: '文件已保存' });
       if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'ok', text: '文件已保存' });
+    }
+
+    async function warmSelectedSkillEnvironment() {
+      if (!state.selectedSkillName) return;
+      renderSkillEditor({ text: '依赖环境预热中' });
+      const res = await fetch(`/api/skills/${encodeURIComponent(state.selectedSkillName)}/environment/warm`, fetchOptions({
+        method: 'POST'
+      }));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        renderSkillEditor({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
+        return;
+      }
+      const label = data.status === 'base' ? '无 requirements，使用基础镜像' : `依赖环境 ${data.status || 'ready'}`;
+      renderSkillEditor({ type: data.status === 'failed' ? 'error' : 'ok', text: label });
     }
 
     function formatSelectedSkillFile() {
@@ -4924,8 +5413,12 @@
               <button class="${isWorkflows ? 'active' : ''}" type="button" data-ability-mode="workflows">Workflows</button>
             </div>
             <div class="ability-actions">
-              <button class="secondary-btn" type="button" data-upload-skill-plugin>上传 Skill 插件</button>
-              <button class="secondary-btn" type="button" data-add-mcp-tool>添加 MCP 工具</button>
+              ${isSkills ? '<div class="skill-drop-zone" data-skill-drop-zone>拖放技能包到这里上传</div>' : ''}
+              ${isWorkflows
+                ? '<span class="upload-file-button">上传 Workflow 插件<input type="file" accept=".zip,application/zip" data-workflow-plugin-input aria-label="上传 Workflow 插件"></span>'
+                : isSkills
+                  ? '<span class="upload-file-button">上传 Skill 插件<input type="file" accept=".zip,application/zip" data-skill-plugin-input aria-label="上传 Skill 插件"></span><span class="skill-local-install"><input type="text" data-skill-plugin-path placeholder="/Users/chenhao/Downloads/skill.zip"><button class="secondary-btn" type="button" data-install-skill-plugin-path>本地路径安装</button></span>'
+                  : '<button class="secondary-btn" type="button" data-add-mcp-tool>添加 MCP 工具</button>'}
               <button class="secondary-btn" type="button" data-refresh-abilities>刷新</button>
             </div>
           </div>
@@ -5090,8 +5583,62 @@
     }
 
     function openSkillPluginUpload() {
-      els.skillPluginInput.value = '';
-      els.skillPluginInput.click();
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.zip,application/zip';
+      input.className = 'file-input-proxy';
+      input.tabIndex = -1;
+      input.setAttribute('aria-hidden', 'true');
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        input.remove();
+      };
+      input.addEventListener('change', () => {
+        const file = input.files?.[0];
+        uploadSkillPlugin(file)
+          .catch((err) => {
+            renderSkillEditor({ type: 'error', text: err.message });
+          })
+          .finally(cleanup);
+      });
+      input.addEventListener('cancel', cleanup);
+      document.body.appendChild(input);
+      input.click();
+      setTimeout(() => {
+        if (!input.files?.length) cleanup();
+      }, 120000);
+    }
+
+    function openWorkflowPluginUpload() {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.zip,application/zip';
+      input.className = 'file-input-proxy';
+      input.tabIndex = -1;
+      input.setAttribute('aria-hidden', 'true');
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        input.remove();
+      };
+      input.addEventListener('change', () => {
+        const file = input.files?.[0];
+        uploadWorkflowPlugin(file)
+          .catch((err) => {
+            renderWorkflowEditor({ type: 'error', text: err.message });
+            if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'error', text: err.message });
+          })
+          .finally(cleanup);
+      });
+      input.addEventListener('cancel', cleanup);
+      document.body.appendChild(input);
+      input.click();
+      setTimeout(() => {
+        if (!input.files?.length) cleanup();
+      }, 120000);
     }
 
     async function uploadSkillPlugin(file) {
@@ -5109,31 +5656,91 @@
           renderSkillEditor({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
           return;
         }
-        const names = data.plugin?.skills || [];
-        const successText = `插件已安装：${data.plugin?.id || file.name}`;
-        renderSkillEditor({ type: 'ok', text: `${successText}，正在刷新列表...` });
-        state.skillsLoaded = false;
-        state.mcpToolsLoaded = false;
-        try {
-          await retryAsync(() => Promise.all([loadSkills({ showLoading: false }), loadMcpTools({ showLoading: false })]), {
-            retries: 4,
-            delayMs: 450
-          });
-        } catch (err) {
-          renderSkillEditor({ type: 'error', text: `${successText}，但刷新列表失败：${err.message}` });
-          return;
-        }
-        if (names.length) {
-          state.selectedSkillName = names[0];
-          await retryAsync(() => loadSkillDetail(names[0], { showLoading: false }), { retries: 4, delayMs: 450 });
-        }
-        renderSkillEditor({ type: 'ok', text: successText });
-        if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'ok', text: successText });
+        await handleSkillPluginInstalled(data.plugin, file.name);
       } finally {
         if (els.skillPluginInput) {
           els.skillPluginInput.value = '';
         }
       }
+    }
+
+    async function installSkillPluginFromLocalPath(path) {
+      const normalized = String(path || '').trim();
+      if (!normalized) {
+        renderSkillEditor({ type: 'error', text: '请填写本机 zip 文件路径' });
+        return;
+      }
+      renderSkillEditor({ type: '', text: '正在从本地路径安装 Skill 插件...' });
+      const res = await fetch('/api/skills/plugins/local-path', fetchOptions({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: normalized })
+      }));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        renderSkillEditor({ type: 'error', text: data.detail || res.statusText || `HTTP ${res.status}` });
+        return;
+      }
+      await handleSkillPluginInstalled(data.plugin, normalized.split('/').pop() || normalized);
+    }
+
+    async function handleSkillPluginInstalled(plugin, fallbackName) {
+      const names = plugin?.skills || [];
+      const successText = `插件已安装：${plugin?.id || fallbackName}，参数标签已按规范归一`;
+      renderSkillEditor({ type: 'ok', text: `${successText}，正在刷新列表...` });
+      state.skillsLoaded = false;
+      state.mcpToolsLoaded = false;
+      try {
+        await retryAsync(() => Promise.all([loadSkills({ showLoading: false }), loadMcpTools({ showLoading: false })]), {
+          retries: 4,
+          delayMs: 450
+        });
+      } catch (err) {
+        renderSkillEditor({ type: 'error', text: `${successText}，但刷新列表失败：${err.message}` });
+        return;
+      }
+      if (names.length) {
+        state.selectedSkillName = names[0];
+        await retryAsync(() => loadSkillDetail(names[0], { showLoading: false }), { retries: 4, delayMs: 450 });
+      }
+      renderSkillEditor({ type: 'ok', text: successText });
+      if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'ok', text: successText });
+    }
+
+    async function uploadWorkflowPlugin(file) {
+      if (!file) return;
+      const formData = new FormData();
+      formData.append('file', file);
+      renderWorkflowEditor({ type: '', text: '正在上传 Workflow 插件...' });
+      if (state.activeTab === 'abilities') renderAbilityPanel({ type: '', text: '正在上传 Workflow 插件...' });
+      const res = await fetch('/api/workflows/plugins', fetchOptions({
+        method: 'POST',
+        body: formData
+      }));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const message = data.detail || res.statusText || `HTTP ${res.status}`;
+        renderWorkflowEditor({ type: 'error', text: message });
+        if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'error', text: message });
+        return;
+      }
+      const names = data.plugin?.workflows || [];
+      const successText = `Workflow 插件已安装：${data.plugin?.id || file.name}`;
+      renderWorkflowEditor({ type: 'ok', text: `${successText}，正在刷新列表...` });
+      state.workflowsLoaded = false;
+      try {
+        await retryAsync(() => loadWorkflows(), { retries: 4, delayMs: 450 });
+      } catch (err) {
+        renderWorkflowEditor({ type: 'error', text: `${successText}，但刷新列表失败：${err.message}` });
+        if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'error', text: `${successText}，但刷新列表失败：${err.message}` });
+        return;
+      }
+      if (names.length) {
+        state.selectedWorkflowName = names[0];
+      }
+      renderWorkflowList();
+      renderWorkflowEditor({ type: 'ok', text: successText });
+      if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'ok', text: successText });
     }
 
     async function retryAsync(action, options = {}) {
@@ -5463,9 +6070,7 @@
     }
 
     function agentFromSelectedCapabilities() {
-      if (state.selectedChatSkills.includes('behavior-detection')) return 'behavior-detector';
-      const generationSkill = state.selectedChatSkills.some((name) => /drawio|pptx|excel|xmind|markdown|deliverables|export|generation|rendering/.test(name));
-      return generationSkill ? 'artifact-generator' : null;
+      return null;
     }
 
     async function send() {
@@ -6128,8 +6733,59 @@
       state.files = [...els.fileInput.files];
       renderAttachments();
     });
-    els.skillPluginInput.addEventListener('change', () => {
+    els.skillPluginInput?.addEventListener('change', () => {
       const file = els.skillPluginInput.files?.[0];
+      uploadSkillPlugin(file).catch((err) => {
+        renderSkillEditor({ type: 'error', text: err.message });
+      });
+    });
+    document.body.addEventListener('change', (event) => {
+      const skillInput = event.target.closest?.('[data-skill-plugin-input]');
+      if (skillInput) {
+        const file = skillInput.files?.[0];
+        uploadSkillPlugin(file)
+          .catch((err) => {
+            renderSkillEditor({ type: 'error', text: err.message });
+          })
+          .finally(() => {
+            skillInput.value = '';
+        });
+        return;
+      }
+      const workflowInput = event.target.closest?.('[data-workflow-plugin-input]');
+      if (!workflowInput) return;
+      const file = workflowInput.files?.[0];
+      uploadWorkflowPlugin(file)
+        .catch((err) => {
+          renderWorkflowEditor({ type: 'error', text: err.message });
+          if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'error', text: err.message });
+        })
+        .finally(() => {
+          workflowInput.value = '';
+        });
+    });
+    document.body.addEventListener('dragover', (event) => {
+      const zone = event.target.closest?.('[data-skill-drop-zone]');
+      if (!zone) return;
+      event.preventDefault();
+      zone.classList.add('active');
+      event.dataTransfer.dropEffect = 'copy';
+    });
+    document.body.addEventListener('dragleave', (event) => {
+      const zone = event.target.closest?.('[data-skill-drop-zone]');
+      if (!zone) return;
+      zone.classList.remove('active');
+    });
+    document.body.addEventListener('drop', (event) => {
+      const zone = event.target.closest?.('[data-skill-drop-zone]');
+      if (!zone) return;
+      event.preventDefault();
+      zone.classList.remove('active');
+      const file = [...(event.dataTransfer?.files || [])].find((item) => item.name.toLowerCase().endsWith('.zip'));
+      if (!file) {
+        renderSkillEditor({ type: 'error', text: '请拖入 Skill zip 文件' });
+        return;
+      }
       uploadSkillPlugin(file).catch((err) => {
         renderSkillEditor({ type: 'error', text: err.message });
       });
@@ -6224,14 +6880,34 @@
         updateSkillManifestPreview();
         return;
       }
+      if (event.target.closest('[data-skill-warm-env]')) {
+        warmSelectedSkillEnvironment();
+        return;
+      }
       const schemaAddButton = event.target.closest('[data-schema-add]');
       if (schemaAddButton) {
-        addSchemaFieldRow(schemaAddButton.dataset.schemaAdd);
+        const kind = schemaAddButton.dataset.schemaAdd;
+        const preset = document.querySelector(`[data-schema-add-preset="${kind}"]`)?.value || '';
+        addSchemaFieldRow(kind, preset);
         return;
       }
       if (event.target.closest('[data-schema-remove-field]')) {
-        event.target.closest('[data-schema-row]')?.remove();
+        const row = event.target.closest('[data-schema-row]');
+        const list = row?.parentElement;
+        row?.remove();
+        if (list && !list.querySelector('[data-schema-row]') && !list.querySelector('[data-schema-empty]')) {
+          list.insertAdjacentHTML('beforeend', '<div class="empty" data-schema-empty>暂未添加字段，请先选择字段模板。</div>');
+        }
         updateSkillManifestPreview();
+        return;
+      }
+      if (event.target.closest('[data-schema-toggle-advanced]')) {
+        const row = event.target.closest('[data-schema-row]');
+        const advanced = row?.querySelector('.schema-row-grid');
+        if (advanced) {
+          advanced.hidden = !advanced.hidden;
+          event.target.closest('[data-schema-toggle-advanced]').textContent = advanced.hidden ? '高级' : '收起';
+        }
         return;
       }
       const saveButton = event.target.closest('[data-skill-save]');
@@ -6350,10 +7026,25 @@
         addCronJobDraft();
         return;
       }
+      const installSkillPathButton = event.target.closest('[data-install-skill-plugin-path]');
+      if (installSkillPathButton) {
+        const scope = installSkillPathButton.closest('.manager-actions, .ability-actions') || document;
+        const input = scope.querySelector('[data-skill-plugin-path]');
+        installSkillPluginFromLocalPath(input?.value || '').catch((err) => {
+          renderSkillEditor({ type: 'error', text: err.message });
+        });
+        return;
+      }
       if (event.target.closest('[data-compose-add-skill]')) {
         closeCapabilityPicker();
         setView('skills');
         openSkillPluginUpload();
+        return;
+      }
+      if (event.target.closest('[data-upload-workflow-plugin]')) {
+        closeCapabilityPicker();
+        setView('workflows');
+        openWorkflowPluginUpload();
         return;
       }
       if (event.target.closest('[data-compose-add-mcp]')) {
@@ -6552,6 +7243,11 @@
         openSkillPluginUpload();
         return;
       }
+      if (event.target.closest('[data-upload-workflow-plugin]')) {
+        setView('workflows');
+        openWorkflowPluginUpload();
+        return;
+      }
       if (event.target.closest('[data-add-mcp-tool]')) {
         addMcpToolDraft();
         return;
@@ -6576,7 +7272,7 @@
       const promptButton = event.target.closest('[data-prompt]');
       if (promptButton) {
         els.input.value = promptButton.dataset.prompt;
-        setNextAgentOverride(promptButton.dataset.agentSelect || null);
+        setNextAgentOverride(promptButton.dataset.agentSelect || null, promptButton.dataset.workflowSelect || null);
         els.input.focus();
         return;
       }

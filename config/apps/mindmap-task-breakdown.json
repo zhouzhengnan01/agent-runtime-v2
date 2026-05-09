@@ -4,7 +4,7 @@
   "description": "预置脑图生成能力，适合需求拆解、项目计划、功能树和会议纪要。",
   "category": "generation",
   "icon": "mindmap",
-  "agent_name": "artifact-generator",
+  "agent_name": "default",
   "workflow": "artifact_workflow",
   "selected_skills": [
     "xmind-generation"

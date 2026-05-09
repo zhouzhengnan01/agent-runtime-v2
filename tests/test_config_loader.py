@@ -9,19 +9,19 @@ from app.core.tools import ToolInvocationService
 
 
 def test_load_builtin_agent() -> None:
-    agent = AgentConfigLoader().load("artifact-generator")
-    assert agent.name == "artifact-generator"
+    agent = AgentConfigLoader().load("default")
+    assert agent.name == "default"
     assert agent.runtime.stateless is True
     assert "markdown-rendering" in agent.skills
-    assert agent.model.model == "Qwen3.6-35B-A3B"
-    assert agent.model.base_url == "http://124.132.152.75:62091/v1"
-    assert agent.routing.llm_workflow_router is True
+    assert agent.model.model == "qwen3.6-27b"
+    assert agent.model.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert agent.routing.llm_workflow_router is False
     assert agent.routing.llm_workflow_router_env == "LLM_WORKFLOW_ROUTER"
 
 
 def test_list_agents() -> None:
     names = {agent.name for agent in AgentConfigLoader().list_agents()}
-    assert {"default", "artifact-generator", "behavior-detector"} <= names
+    assert names == {"default"}
 
 
 def test_builtin_agent_tool_names_resolve_to_registered_tools() -> None:

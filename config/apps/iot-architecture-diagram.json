@@ -4,7 +4,7 @@
   "description": "一键配置架构图生成 Agent，适合 Draw.io 分层架构、拓扑图、流程图。",
   "category": "generation",
   "icon": "diagram",
-  "agent_name": "artifact-generator",
+  "agent_name": "default",
   "workflow": "artifact_workflow",
   "selected_skills": [
     "drawio-generation"

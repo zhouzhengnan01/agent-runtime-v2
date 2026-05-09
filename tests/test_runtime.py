@@ -9,7 +9,7 @@ from PIL import Image
 from app.core.agent import AgentRuntime
 from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfig, AgentConfigLoader
-from app.core.llm import OpenAICompatibleClient
+from app.core.llm import LlmChatResponse, OpenAICompatibleClient
 from app.core.routing import WorkflowRouter
 from app.core.skills import SkillRegistry
 from app.core.workflow import WorkflowRegistry
@@ -22,7 +22,7 @@ async def _collect_events(source: AsyncIterator[ChatEvent]) -> list[ChatEvent]:
 
 def test_artifact_generator_creates_verified_markdown(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
-    agent = AgentConfigLoader().load("artifact-generator")
+    agent = AgentConfigLoader().load("default")
     request = ChatRequest(
         messages=[Message(role="user", content="生成一份 markdown 架构说明")],
         runtime_options=RuntimeOptions(thread_id="t1", workflow="artifact_workflow"),
@@ -58,7 +58,7 @@ def test_agent_with_no_configured_skills_uses_installed_skill_plugins(tmp_path: 
 
 def test_artifact_generator_emits_coded_events(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
-    agent = AgentConfigLoader().load("artifact-generator")
+    agent = AgentConfigLoader().load("default")
     request = ChatRequest(
         messages=[Message(role="user", content="生成一份 drawio 架构图")],
         runtime_options=RuntimeOptions(thread_id="events", workflow="artifact_workflow"),
@@ -101,12 +101,155 @@ def test_default_agent_stream_emits_text_delta(tmp_path: Path, monkeypatch: pyte
     assert events[-1].type == "run.completed"
 
 
+def test_runtime_init_model_config_overrides_env_and_agent_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del system_prompt, messages
+        seen.update(
+            {
+                "model": self.model,
+                "base_url": self.base_url,
+                "api_key": self.api_key,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+            }
+        )
+        return "ok"
+
+    monkeypatch.setenv("LLM_MODEL", "env-model")
+    monkeypatch.setenv("LLM_BASE_URL", "http://env.local/v1")
+    monkeypatch.setenv("LLM_API_KEY", "env-key")
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path),
+        model_config={
+            "model": "runtime-model",
+            "base_url": "http://runtime.local/v1",
+            "api_key": "runtime-key",
+            "temperature": 0.2,
+            "max_tokens": 123,
+        },
+    )
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model={"model": "json-model", "base_url": "http://json.local/v1", "api_key": "json-key"},
+        tools=[],
+        skills=[],
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="hi")],
+        runtime_options=RuntimeOptions(thread_id="runtime-model-config"),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.reply == "ok"
+    assert seen == {
+        "model": "runtime-model",
+        "base_url": "http://runtime.local/v1",
+        "api_key": "runtime-key",
+        "temperature": 0.2,
+        "max_tokens": 123,
+    }
+
+
+def test_request_model_options_override_runtime_init_model_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del system_prompt, messages
+        seen.update({"model": self.model, "base_url": self.base_url})
+        return "ok"
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path),
+        model_config={"model": "runtime-model", "base_url": "http://runtime.local/v1"},
+    )
+    agent = AgentConfig(name="json-model", display_name="JSON Model", tools=[], skills=[])
+    request = ChatRequest(
+        messages=[Message(role="user", content="hi")],
+        runtime_options=RuntimeOptions(
+            thread_id="request-model-config",
+            model_name="request-model",
+            base_url="http://request.local/v1",
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.reply == "ok"
+    assert seen == {"model": "request-model", "base_url": "http://request.local/v1"}
+
+
+def test_runtime_init_skills_replace_agent_json_default_skills(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools.extend(str(tool["function"]["name"]) for tool in tools)
+        return LlmChatResponse(content="ok")
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path),
+        model_config={"model": "runtime-model", "base_url": "http://runtime.local/v1"},
+        skills=["markdown-rendering"],
+    )
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        tools=[],
+        skills=["drawio-generation"],
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="hi")],
+        runtime_options=RuntimeOptions(thread_id="runtime-skills"),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.reply == "ok"
+    assert "markdown-rendering" in seen_tools
+    assert "drawio-generation" not in seen_tools
+
+
 def test_agent_workflow_config_does_not_auto_run_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
-    agent = AgentConfigLoader().load("artifact-generator")
+    agent = AgentConfigLoader().load("default")
     agent.model.base_url = None
     agent.model.api_key = None
     request = ChatRequest(
@@ -126,7 +269,7 @@ def test_unregistered_explicit_workflow_fails_fast(tmp_path: Path) -> None:
         artifact_store=ArtifactStore(root_dir=tmp_path),
         workflow_registry=WorkflowRegistry(),
     )
-    agent = AgentConfigLoader().load("artifact-generator")
+    agent = AgentConfigLoader().load("default")
     request = ChatRequest(
         messages=[Message(role="user", content="生成一份 markdown 架构说明")],
         runtime_options=RuntimeOptions(thread_id="workflow-plugin-disabled", workflow="artifact_workflow"),
@@ -236,7 +379,7 @@ def test_behavior_detector_capability_question_bypasses_detection_workflow(tmp_p
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
-    agent = AgentConfigLoader().load("behavior-detector")
+    agent = AgentConfigLoader().load("default")
     agent.model.base_url = None
     agent.model.api_key = None
     request = ChatRequest(
@@ -257,7 +400,7 @@ def test_behavior_detector_capability_question_bypasses_detection_workflow(tmp_p
 def test_prototype_request_routes_to_drawio(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path)
     runtime = AgentRuntime(artifact_store=store)
-    agent = AgentConfigLoader().load("artifact-generator")
+    agent = AgentConfigLoader().load("default")
     request = ChatRequest(
         messages=[Message(role="user", content="可以帮我画一个原型图")],
         runtime_options=RuntimeOptions(thread_id="prototype", workflow="artifact_workflow"),
@@ -574,9 +717,14 @@ def test_default_agent_runs_explicit_generation_workflow(tmp_path: Path) -> None
     assert result.artifacts[1].name == "prototype.png"
 
 
-def test_selected_generation_skill_routes_through_artifact_workflow(tmp_path: Path) -> None:
+def test_selected_generation_skill_does_not_auto_route_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("default")
+    agent.model.base_url = None
+    agent.model.api_key = None
     request = ChatRequest(
         messages=[Message(role="user", content="生成一份项目汇报材料")],
         runtime_options=RuntimeOptions(
@@ -589,28 +737,26 @@ def test_selected_generation_skill_routes_through_artifact_workflow(tmp_path: Pa
     event_types = [event.type for event in events]
 
     assert result.status == "completed"
-    assert result.metadata["workflow"] == "artifact_workflow"
-    assert result.spec is not None
-    assert result.spec["skill_name"] == "pptx-generation"
-    assert result.verification is not None
-    assert result.verification.passed is True
-    assert result.artifacts[0].name.endswith(".pptx")
+    assert result.metadata["workflow"] == "agent_loop"
+    assert result.spec is None
+    assert result.artifacts == []
     assert "direct_skill.started" not in event_types
-    assert "verifier.completed" in event_types
+    assert "verifier.completed" not in event_types
 
 
-def test_selected_generation_skill_uses_default_artifact_workflow_without_agent_mapping(tmp_path: Path) -> None:
+def test_selected_generation_skill_uses_explicit_artifact_workflow_without_agent_mapping(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfig(
         name="minimal-skill-agent",
         display_name="Minimal Skill Agent",
         skills=["markdown-rendering"],
-        workflows={"default": "agent_loop"},
+        workflows={},
     )
     request = ChatRequest(
         messages=[Message(role="user", content="生成一份 markdown 项目说明")],
         runtime_options=RuntimeOptions(
             thread_id="selected-skill-default-workflow",
+            workflow="artifact_workflow",
             selected_skills=["markdown-rendering"],
         ),
     )
@@ -628,18 +774,19 @@ def test_selected_generation_skill_uses_default_artifact_workflow_without_agent_
     assert "verifier.completed" in event_types
 
 
-def test_selected_behavior_skill_uses_default_evidence_workflow_without_agent_mapping(tmp_path: Path) -> None:
+def test_selected_behavior_skill_uses_explicit_evidence_workflow_without_agent_mapping(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfig(
         name="minimal-behavior-agent",
         display_name="Minimal Behavior Agent",
         skills=["behavior-detection"],
-        workflows={"default": "agent_loop"},
+        workflows={},
     )
     request = ChatRequest(
         messages=[Message(role="user", content="人员翻越围栏进入禁区")],
         runtime_options=RuntimeOptions(
             thread_id="selected-behavior-default-workflow",
+            workflow="evidence_first_detection",
             selected_skills=["behavior-detection"],
         ),
     )
@@ -658,7 +805,7 @@ def test_selected_behavior_skill_uses_default_evidence_workflow_without_agent_ma
 
 def test_drawio_followup_keeps_previous_prototype_intent(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
-    agent = AgentConfigLoader().load("artifact-generator")
+    agent = AgentConfigLoader().load("default")
     request = ChatRequest(
         messages=[
             Message(role="user", content="可以帮我画一个原型图"),
@@ -678,7 +825,7 @@ def test_drawio_followup_keeps_previous_prototype_intent(tmp_path: Path) -> None
 
 def test_behavior_detector_text_only_is_honest(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
-    agent = AgentConfigLoader().load("behavior-detector")
+    agent = AgentConfigLoader().load("default")
     request = ChatRequest(
         messages=[Message(role="user", content="人员翻越围栏进入禁区")],
         runtime_options=RuntimeOptions(thread_id="t2", workflow="evidence_first_detection"),
@@ -692,7 +839,7 @@ def test_behavior_detector_text_only_is_honest(tmp_path: Path) -> None:
 
 def test_behavior_detector_with_attachment_can_emit_visual_score(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
-    agent = AgentConfigLoader().load("behavior-detector")
+    agent = AgentConfigLoader().load("default")
     request = ChatRequest(
         messages=[Message(role="user", content="人员翻越围栏进入禁区")],
         attachments=[Attachment(name="evidence.jpg", mime_type="image/jpeg", data_base64="ZmFrZQ==")],
@@ -708,7 +855,7 @@ def test_behavior_detector_with_attachment_can_emit_visual_score(tmp_path: Path)
 
 def test_generation_skills_create_verified_binary_artifacts(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
-    agent = AgentConfigLoader().load("artifact-generator")
+    agent = AgentConfigLoader().load("default")
 
     for thread_id, prompt, expected_suffix in [
         ("ppt", "生成一份 ppt 方案", ".pptx"),

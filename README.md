@@ -11,10 +11,10 @@ v2 与原 `jetlinks-agent-runtime` v1 是不同架构：v2 默认不保存隐藏
 ## 快速启动
 
 ```bash
-export LLM_BASE_URL="http://124.132.152.75:62091/v1"
-# 如果 config/agents/<agent>.json 或 <agent>.local.json 已配置 model.api_key，这里可以不设置
+export LLM_BASE_URL="http://192.168.32.11:11434/v1"
+# 如果 config/agents/default.json 或 default.local.json 已配置 model.api_key，这里可以不设置
 export LLM_API_KEY="..."
-export LLM_MODEL="Qwen3.6-35B-A3B"
+export LLM_MODEL="qwen3.6:27b"
 
 uvicorn app.main:app --reload --port 8010
 ```
@@ -25,14 +25,217 @@ uvicorn app.main:app --reload --port 8010
 http://127.0.0.1:8010/static/workbench.html
 ```
 
+### 一键进程管理脚本
+
+仓库根目录提供了面向本地部署、Java `ProcessBuilder` 或其他进程管理器调用的脚本：
+
+```bash
+./up.sh       # 后台启动
+./status.sh   # 输出机器可读状态
+./stop.sh     # 停止服务
+./restart.sh  # 重启服务
+```
+
+首次部署或 Python 依赖变化后先执行：
+
+```bash
+./install-deps.sh
+```
+
+`install-deps.sh` 会创建 `.venv` 并安装 `requirements.txt`。默认使用 `python3` 创建虚拟环境，
+也可以指定：
+
+```bash
+BASE_PYTHON=/usr/bin/python3.12 VENV_DIR=.venv ./install-deps.sh
+```
+
+默认启动地址是 `http://127.0.0.1:8000`，Workbench 为：
+
+```text
+http://127.0.0.1:8000/static/workbench.html
+```
+
+运行状态文件默认写入 `.runtime/server/`：
+
+```text
+.runtime/server/server.pid
+.runtime/server/server.log
+```
+
+可通过环境变量覆盖启动参数，适合 Java 调用前注入：
+
+```bash
+APP_HOST=0.0.0.0 APP_PORT=8010 ./up.sh
+APP_PORT=8010 ./status.sh
+APP_PORT=8010 ./restart.sh
+APP_PORT=8010 ./stop.sh
+```
+
+常用变量：
+
+- `APP_HOST`：监听地址，默认 `127.0.0.1`
+- `APP_PORT`：监听端口，默认 `8000`
+- `APP_MODULE`：ASGI 应用，默认 `app.main:app`
+- `APP_WORKERS`：uvicorn workers，默认 `1`
+- `APP_LOG_LEVEL`：uvicorn 日志级别，默认 `info`
+- `PYTHON_BIN`：Python 解释器，默认优先 `.venv/bin/python`
+- `RUNTIME_DIR`：PID 和日志目录，默认 `.runtime/server`
+- `PID_FILE`：PID 文件路径
+- `LOG_FILE`：日志文件路径
+- `APP_START_TIMEOUT_SECONDS`：启动健康检查超时，默认 `30`
+- `APP_STOP_TIMEOUT_SECONDS`：停止等待超时，默认 `15`
+- `BASE_PYTHON`：`install-deps.sh` 创建虚拟环境时使用的 Python，默认 `python3`
+- `VENV_DIR`：虚拟环境目录，默认 `.venv`
+
+`status.sh` 输出适合程序解析：
+
+```text
+status=running pid=12345 health=ok url=http://127.0.0.1:8000 log=.runtime/server/server.log
+```
+
+退出码约定：
+
+- `0`：运行中且 `/health` 正常
+- `2`：进程存在但健康检查失败
+- `3`：未运行或 PID 文件过期
+
+脚本会读取根目录 `.env`（如果存在），可把 `LLM_API_KEY`、`RUNTIME_AUTH_MODE`、`RUNTIME_API_TOKEN`
+等运行环境放入 `.env`，但不要把真实密钥提交到仓库。
+
+如果 `up.sh` 发现当前 Python 环境缺少依赖，会返回退出码 `10` 并提示先执行：
+
+```bash
+./install-deps.sh
+```
+
+#### Java 调用示例
+
+Java 侧可以直接通过 `ProcessBuilder` 调用这些脚本。下面示例展示首次安装依赖、启动、查询状态、
+重启和停止：
+
+```java
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+
+public class AgentRuntimeManager {
+    private final File workDir;
+
+    public AgentRuntimeManager(String repoPath) {
+        this.workDir = new File(repoPath);
+    }
+
+    public CommandResult installDeps() throws IOException, InterruptedException {
+        return run("./install-deps.sh", Map.of(
+            "BASE_PYTHON", "python3",
+            "VENV_DIR", ".venv"
+        ));
+    }
+
+    public CommandResult start() throws IOException, InterruptedException {
+        return run("./up.sh", Map.of(
+            "APP_HOST", "127.0.0.1",
+            "APP_PORT", "8000"
+        ));
+    }
+
+    public CommandResult status() throws IOException, InterruptedException {
+        return run("./status.sh", Map.of(
+            "APP_PORT", "8000"
+        ));
+    }
+
+    public CommandResult restart() throws IOException, InterruptedException {
+        return run("./restart.sh", Map.of(
+            "APP_PORT", "8000"
+        ));
+    }
+
+    public CommandResult stop() throws IOException, InterruptedException {
+        return run("./stop.sh", Map.of(
+            "APP_PORT", "8000"
+        ));
+    }
+
+    private CommandResult run(String command, Map<String, String> env)
+        throws IOException, InterruptedException {
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.directory(workDir);
+        builder.redirectErrorStream(true);
+        Map<String, String> processEnv = builder.environment();
+        processEnv.putAll(env);
+
+        Process process = builder.start();
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+            new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append('\n');
+            }
+        }
+        int exitCode = process.waitFor();
+        return new CommandResult(exitCode, output.toString());
+    }
+
+    public static Map<String, String> parseStatus(String output) {
+        Map<String, String> result = new HashMap<>();
+        for (String part : output.trim().split("\\s+")) {
+            int index = part.indexOf('=');
+            if (index > 0) {
+                result.put(part.substring(0, index), part.substring(index + 1));
+            }
+        }
+        return result;
+    }
+
+    public record CommandResult(int exitCode, String output) {}
+}
+```
+
+调用示例：
+
+```java
+AgentRuntimeManager manager = new AgentRuntimeManager(
+    "/Users/chenhao/Desktop/code/jetlinks-official/jetlinks-agent-runtime-agent-v2-branch"
+);
+
+CommandResult install = manager.installDeps();
+if (install.exitCode() != 0) {
+    throw new IllegalStateException("install failed: " + install.output());
+}
+
+CommandResult start = manager.start();
+if (start.exitCode() != 0) {
+    throw new IllegalStateException("start failed: " + start.output());
+}
+
+CommandResult status = manager.status();
+Map<String, String> fields = AgentRuntimeManager.parseStatus(status.output());
+System.out.println(fields.get("status"));
+System.out.println(fields.get("url"));
+```
+
+Java 侧建议逻辑：
+
+1. 首次部署或升级后调用 `./install-deps.sh`
+2. 调用 `./up.sh`
+3. 调用 `./status.sh`，退出码为 `0` 且 `status=running` 才认为启动成功
+4. 需要重载时调用 `./restart.sh`
+5. 停止时调用 `./stop.sh`
+
 ## 命令行
 
 ```bash
 python -m app.cli list-agents
-python -m app.cli show-agent artifact-generator
+python -m app.cli show-agent default
 python -m app.cli run --agent default --message "你能做什么"
-python -m app.cli run --agent artifact-generator --workflow artifact_workflow --message "生成一个 JetLinks IoT 平台架构图"
-python -m app.cli run --agent behavior-detector --workflow evidence_first_detection --message "人员翻越围栏进入禁区" --json
+python -m app.cli run --agent default --workflow artifact_workflow --message "生成一个 JetLinks IoT 平台架构图"
+python -m app.cli run --agent default --workflow evidence_first_detection --message "人员翻越围栏进入禁区" --json
 python -m app.cli acp-stdio --agent default
 ```
 
@@ -41,15 +244,17 @@ python -m app.cli acp-stdio --agent default
 当前 `agent-v2` 已经具备轻量 agent runtime 的核心能力：
 
 - 完整的基础 agent loop：模型输出 `tool_calls`，运行时执行工具，再把 `role=tool` 结果回填给模型继续推理。
-- JSON 配置驱动：不同 agent 通过 `config/agents/*.json` 定义模型、工具、Skill、Workflow 和运行参数。
+- JSON 配置驱动：通用 agent 通过 `config/agents/default.json` 定义模型、工具、Skill 和运行参数。
 - 统一工具层：Skill、MCP/manual 工具、本地 workspace 工具都通过 `ToolRegistry` 和 `ToolInvocationService` 暴露。
 - Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection 等内置 Skill。
 - Workflow 插件：`artifact_workflow`、`evidence_first_detection` 通过 `WorkflowRegistry` 注册，可选启用。
 - 多协议入口：HTTP、SSE、CLI、ACP WebSocket、ACP stdio、MCP HTTP。
-- Workbench 应用中心：通过预置模板一键套用 agent、workflow、Skill、MCP 工具和示例提示词。
+- Workbench 应用中心：通过预置模板一键套用 default agent、workflow、Skill、MCP 工具和示例提示词。
 - 轻量 Cron：支持配置定时运行 agent 任务、预览触发时间、手动运行和查看运行历史。
 - 线程级文件工作区：每个 `thread_id` 有自己的 workspace、uploads、outputs。
 - 可选本地 Memory v1：通过 agent JSON 开关控制，提供记忆写入、搜索、删除和可选上下文注入。
+- Hermes-like 上下文压缩：当请求或工具闭环消息过长时，可按 agent JSON 配置保留头尾消息，并把中间历史压缩成交接摘要。
+- 轻量 `delegate_task`：可把聚焦子任务交给一次无工具子模型调用，父 agent 只接收子任务摘要。
 - 本地私密配置：支持 `config/agents/*.local.json` 覆盖公开 agent JSON，并默认忽略上传。
 
 当前还没有完整实现这些 Hermes/OpenCode 级能力：
@@ -58,9 +263,9 @@ python -m app.cli acp-stdio --agent default
 - 完整 Memory 系统：目前只有本地 JSON Memory v1，还没有向量检索、自动总结、权限隔离和外部存储后端。
 - 完整 Session Resume：`thread_id` 只管理文件和产物，不恢复隐藏历史对话。
 - Gateway/Telegram/Discord/Slack/Email 等多平台常驻接入；Cron 已有轻量配置和内置调度器。
-- 子智能体 `delegate_task` 协作。
+- 完整 Hermes 式多层子智能体协作；当前只有轻量无工具 `delegate_task`，还没有子 agent 工具集、暂停、中断和观测面板。
 - 浏览器自动化和网页抓取工具。
-- 上下文压缩、fallback model、stream 健康检查、复杂断流恢复等长任务增强能力。
+- fallback model、stream 健康检查、复杂断流恢复等长任务增强能力。
 
 这些能力可以继续参考 `/Users/chenhao/Desktop/code/opencode/hermes-agent` 分批接入，但不建议一次性整包搬入。
 
@@ -98,17 +303,20 @@ workflow；调用方显式传入 `runtime_options.workflow` 时，`AgentRuntime`
 中取出对应插件执行。如果显式指定的 workflow 没有注册，请求会直接失败并返回清晰错误，避免调用方
 误以为已经进入某个插件流程。
 
-另外，页面或协议层如果显式传入 `runtime_options.selected_skills`，运行时会把它视为一次用户确认的
-能力选择：generation Skill 会进入 `artifact_workflow`，非 generation Skill 会进入
-`evidence_first_detection`，并继续走 Spec 构建、Sandbox 策略、Skill 执行、Verifier 和可选 retry
-闭环，而不是绕过 workflow 直接执行 Skill。`runtime_options.workflow` 的优先级仍然最高。
+`runtime_options.selected_skills` 只表示本轮选择或允许的 Skill，不会单独触发 workflow。需要确定性
+workflow 闭环时，调用方必须显式传入 `runtime_options.workflow`，并可同时传入
+`runtime_options.selected_skills` 约束 workflow 使用的 Skill。
 
 通用 agent loop 只会向模型暴露当前 agent JSON 声明的 `tools` 和 `skills`。模型返回
 OpenAI-compatible `tool_calls` 后，运行时通过统一工具服务执行工具，把工具结果以 `role=tool`
 消息追加回对话，并最多循环 `runtime.max_tool_rounds` 轮。
 
 为避免文件读取、搜索、Skill 输出等大结果撑爆模型上下文，工具结果回填给模型前会按
-`runtime.max_tool_result_chars` 裁剪（默认 20000 字符）。裁剪只影响进入下一轮 LLM 的
+`runtime.max_tool_result_chars` 裁剪（默认 20000 字符）。如果 agent JSON 开启
+`runtime.context_compression_enabled`，运行时还会在每次模型调用前检查当前对话 JSON 长度；超过
+`runtime.context_max_chars` 时保留前 `runtime.context_keep_first_messages` 条和后
+`runtime.context_keep_last_messages` 条消息，并把中间消息压缩成一条 reference-only 交接摘要。
+裁剪只影响进入下一轮 LLM 的
 `role=tool` JSON；运行时事件里的 `structured_content` 仍保留工具执行层返回的结构化信息，便于审计和调试。
 
 ```text
@@ -117,16 +325,14 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 
 ## Agent 配置
 
-每个智能体由 `config/agents/*.json` 驱动。稳定的智能体行为建议放在这里：
+通用智能体由 `config/agents/default.json` 驱动。稳定的智能体行为建议放在这里：
 
 - `model.model`、`model.base_url`、`model.api_key`、`model.api_key_enc`、`model.tool_choice`、`model.temperature`、`model.max_tokens`、`model.request_timeout_seconds`
-- `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_tool_result_chars`、`runtime.max_retries`、`runtime.require_verification`
+- `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_tool_result_chars`、`runtime.context_compression_enabled`、
+  `runtime.context_max_chars`、`runtime.context_keep_first_messages`、`runtime.context_keep_last_messages`、
+  `runtime.max_retries`、`runtime.require_verification`
 - `tools`：暴露给 `agent_loop` 的 MCP/manual/local 工具
-- `skills`：暴露给模型的 Skill-backed tools，同时也用于 Workflow Skill 选择
-- `workflows`：可选 Workflow 插件名声明，例如 `agent_loop`、`artifact_workflow`、`evidence_first_detection`。
-  该字段不再驱动默认文本自动路由，默认主流程始终是 `agent_loop`；但显式 `selected_skills` 会使用
-  `generation` / `vision_behavior` 映射，未配置时分别回落到内置 `artifact_workflow` /
-  `evidence_first_detection`。
+- `skills`：暴露给模型的 Skill-backed tools，也可被显式 workflow 根据 `selected_skills` 使用
 - `memory`：是否启用长期记忆、记忆作用域、最大注入条数和是否注入系统提示
 - `quality`
 - `prompts.system`
@@ -258,24 +464,8 @@ uv run uvicorn app.main:app --reload --port 8010
 
 ## Workflow 配置
 
-典型配置：
-
-```json
-{
-  "workflows": {
-    "default": "agent_loop",
-    "generation": "artifact_workflow",
-    "vision_behavior": "evidence_first_detection"
-  }
-}
-```
-
-`default: agent_loop` 表示默认走通用 Hermes-like 工具调用循环。`generation` 和
-`vision_behavior` 只是声明可选插件名，便于页面、CLI、ACP 或后续推荐器明确选择。
-
-真正触发 workflow 的方式有两种。
-
-第一种是直接指定 workflow：
+Workflow 是平台级插件，由 `WorkflowRegistry` 注册和发现，不写在 `config/agents/default.json` 里。
+默认请求始终走通用 agent loop；真正触发 workflow 的方式是直接指定 workflow：
 
 ```json
 {
@@ -298,7 +488,7 @@ uv run uvicorn app.main:app --reload --port 8010
 tool calling，可以通过页面能力按钮、CLI `--workflow` 或 ACP `runtimeOptions.workflow` 显式启用
 确定性 workflow。
 
-第二种是本轮显式选择 Skill：
+本轮也可以同时显式选择 Skill：
 
 ```json
 {
@@ -310,13 +500,14 @@ tool calling，可以通过页面能力按钮、CLI `--workflow` 或 ACP `runtim
   ],
   "runtime_options": {
     "thread_id": "local-demo",
+    "workflow": "artifact_workflow",
     "selected_skills": ["pptx-generation"]
   }
 }
 ```
 
-这种情况下，运行时会使用该 Skill 对应的 workflow 闭环执行。这样页面上的“选择 Skill”按钮可以做到
-所选即所用，同时不会绕过校验、Sandbox 和 retry 逻辑。
+这种情况下，`artifact_workflow` 会优先使用 `pptx-generation`。如果只传 `selected_skills` 而不传
+`workflow`，请求仍然走默认 `agent_loop`。
 
 ## 应用中心 / 智能体模板
 
@@ -335,7 +526,7 @@ config/apps/templates.json
   "name": "iot-architecture-diagram",
   "title": "IoT 架构图专家",
   "category": "generation",
-  "agent_name": "artifact-generator",
+  "agent_name": "default",
   "workflow": "artifact_workflow",
   "selected_skills": ["drawio-generation"],
   "selected_mcp_tools": [],
@@ -492,6 +683,7 @@ local_search_text   -> 搜索当前线程 workspace 内的文本文件
 local_todo          -> 维护当前线程的 todo 列表
 local_shell_command -> 在当前线程 workspace 内执行 shell 命令，默认关闭
 present_files       -> 列出当前线程 outputs 文件，可选列出 workspace 文件
+delegate_task       -> 把聚焦子任务委派给一次无工具子模型调用
 ```
 
 `local_shell_command` 默认不暴露，只有显式启用后才会出现在工具列表中：
@@ -507,13 +699,26 @@ export LOCAL_SHELL_TOOL_ENABLED=true
 - 超时与输出裁剪策略
 - 操作审计日志
 
+### 轻量 Delegation 工具
+
+参考 Hermes `delegate_task` 的父子 agent 思路后，v2 当前先接入了低风险版本：
+
+```text
+delegate_task(goal, context?, agent_name?, model_name?, temperature?, max_tokens?, request_timeout_seconds?)
+```
+
+它会加载 `agent_name` 指定的 agent 配置；未指定时使用当前 agent。子任务只执行一次普通模型调用，不暴露工具、
+不写共享记忆、不递归委派，返回内容会作为工具结果交回父 agent。适合做独立审查、拆分分析和第二视角总结。
+这不是完整 Hermes 多层 subagent 系统；后续如果要增强，可继续加入子 agent 工具 allowlist、并发调度、
+超时中断、运行观测和结果尾部摘录。
+
 ### 运行时选择工具策略
 
 `runtime_options.selected_mcp_tools` 用于“本轮临时把某些已注册工具暴露给 agent loop”。它不是任意工具
 执行入口，只影响本轮发给模型的 OpenAI-compatible `tools` 列表：
 
 - 只会暴露已经注册且 `enabled=true` 的工具；未知工具会被忽略。
-- 当前允许临时选择 `manual`、`local`、`memory`、`skill` 来源的工具。
+- 当前允许临时选择 `manual`、`local`、`delegate`、`memory`、`skill` 来源的工具。
 - 如果 agent 关闭了 `memory.enabled`，memory 工具仍不会暴露。
 - `local_shell_command` 默认 disabled；只有 `LOCAL_SHELL_TOOL_ENABLED=true` 后才会进入可选列表。
 - 当 agent JSON 的 `model.tool_choice` 为 `none`，但本轮选择了 MCP 工具时，运行时会把本轮
@@ -640,6 +845,7 @@ memory_md_compress -> 把较大的 .md 记忆抽取压缩成 summary.md
 运行时核心只产生一套 typed events，不同协议负责适配这些事件：
 
 - Web Workbench：`/static/workbench.html`
+- 接口文档：`/static/api-docs.html`
 - HTTP：`POST /api/agents/{agent}/runs`
 - SSE：`POST /api/agents/{agent}/runs/stream`
 - Apps：`GET /api/apps/templates`
@@ -647,8 +853,51 @@ memory_md_compress -> 把较大的 .md 记忆抽取压缩成 summary.md
 - ACP stdio：`python -m app.cli acp-stdio --agent default`
 - MCP HTTP：`POST /mcp`
 
-ACP WebSocket 支持通过 `agentName` 切换当前智能体，也支持通过 `runtimeOptions.workflow` 显式启用
-workflow。ACP stdio 用于编辑器或本地 agent 客户端的 stdio 集成场景，同样默认进入 `agent_loop`。
+ACP WebSocket 支持通过 `runtimeOptions.workflow` 显式启用 workflow。新入口应使用
+`agentName=default`。
+ACP stdio 用于编辑器或本地 agent 客户端的 stdio 集成场景，同样默认进入 `agent_loop`。
+
+ACP prompt 会把官方 `TextContentBlock`、`ImageContentBlock`、`ResourceLink` 和嵌入式
+`ResourceContentBlock` 映射到内部 `Message` 与 `Attachment`。图片、音频和 blob resource 会以
+base64 attachment 传给 runtime；resource link 会保留虚拟路径；嵌入式文本 resource 会同时追加到
+用户消息正文，避免下游只读文本时丢上下文。
+
+ACP WebSocket 的 `session/new` 可以传入 session 默认运行参数。调用方可以直接传
+`runtimeOptions`，也可以传 `appTemplateName` 引用 `config/apps/*.json`，由服务端自动带出模板里的
+`agent_name`、`workflow`、`selected_skills`、`selected_mcp_tools` 和 `runtime_options`。后续
+`session/prompt` 会继承这些默认值，本轮 prompt 再传 `runtimeOptions` 时优先覆盖：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "session/new",
+  "params": {
+    "appTemplateName": "iot-architecture-diagram",
+    "threadId": "web-iot-001",
+    "cwd": "/",
+    "runtimeOptions": {
+      "modelName": "Qwen3.6-35B-A3B",
+      "temperature": 0.2,
+      "topP": 0.8,
+      "maxTokens": 4096,
+      "requestTimeoutSeconds": 120
+    }
+  }
+}
+```
+
+ACP WebSocket 和 ACP stdio 都支持 `session/list`、`session/close`、`session/set_model` 等常用
+session 扩展方法，并提供 `session/cancel`。取消是 best-effort：协议层会取消当前 prompt task，
+并向 external ACP backend 转发 cancel；已经进入同步线程、沙箱或远端 provider 的底层操作可能不会瞬时停止，
+但协议响应会返回 `stopReason=cancelled`，客户端不会再被正在执行的 prompt 阻塞。
+
+JetLinks 额外提供一个非官方 ACP 扩展方法，用于清理当前 session 绑定 thread 的运行文件：
+WebSocket 使用 `jetlinks/session/delete_files`，stdio 按 ACP SDK 扩展约定使用
+`_jetlinks/session/delete_files`。参数为 `sessionId` 必填，`scopes` 可选，取值限制为
+`workspace`、`uploads`、`outputs`，默认清理三个 scope；`dryRun=true` 只返回将删除的虚拟路径、
+文件数量和字节数，不落盘删除。该方法只删除 `/mnt/user-data/{workspace,uploads,outputs}` 下的内容，
+保留 session 和 thread 容器目录本身，不等价于官方 `session/close`。
 
 agent backend 分两类：
 
@@ -661,6 +910,12 @@ external:
   backend.type = acp_stdio
   代理 Codex 或其他 ACP stdio agent。
 ```
+
+代理 external ACP backend 时，client 回调提供受限文件和终端能力：`fs/read_text_file` 可读取
+`/mnt/user-data/workspace`、`/mnt/user-data/uploads`、`/mnt/user-data/outputs` 下的虚拟路径，
+`fs/write_text_file` 只允许写入 workspace，并阻止路径穿越。`session/request_permission` 默认返回
+cancelled，终端回调会在当前 thread workspace 内启动本地 subprocess 并捕获输出；这适合可信本地
+ACP agent 集成，不应当当成远程不可信代码的安全沙箱。
 
 ## Sandbox 策略
 
@@ -735,15 +990,17 @@ GET /api/skills/{skill_name}
 - 线程 todo
 - 默认关闭的 workspace shell
 - 本地 Memory v1 工具
+- 确定性上下文压缩：保留头尾消息，把中间历史转换为 reference-only 交接摘要
+- 轻量 `delegate_task`：无工具子模型调用，适合独立分析和第二视角总结
 
 后续可继续参考 Hermes 分批补齐：
 
 1. 多 provider adapter 和统一 `NormalizedResponse`
 2. Memory 增强和 Session Resume
-3. Context 压缩（工具结果裁剪已具备基础版本）
+3. 更完整的 Context 引擎（LLM 摘要、token 预算、压缩失败退避、主动任务保护）
 4. Browser/Web tools
 5. Cron/Gateway 和多平台消息接入
-6. 子智能体 delegation
+6. 完整多层子智能体 delegation（子 agent 工具集、并发、暂停、中断、观测）
 
 优先建议继续保持“可选、插件化、agent JSON 可控”的方式接入，避免把通用助手的高权限能力直接写进主流程。
 

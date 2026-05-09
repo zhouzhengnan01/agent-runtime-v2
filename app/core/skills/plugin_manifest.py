@@ -8,6 +8,21 @@ from typing import Any, Protocol
 
 
 PLUGIN_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+PARAM_KIND_VALUES = {
+    "model",
+    "cv_model",
+    "llm_model",
+    "embedding_model",
+    "file",
+    "image",
+    "audio",
+    "video",
+    "path",
+    "config",
+    "threshold",
+    "enum",
+    "other",
+}
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -20,7 +35,7 @@ def read_json(path: Path) -> dict[str, Any]:
 def read_manifest_source(path: Path) -> dict[str, Any]:
     if path.name == "SKILL.md":
         return manifest_from_skill_md(path.read_text(encoding="utf-8"), path.parent)
-    return read_json(path)
+    return normalize_skill_manifest(read_json(path))
 
 
 def manifest_from_skill_md(text: str, package_root: Path) -> dict[str, Any]:
@@ -34,8 +49,8 @@ def manifest_from_skill_md(text: str, package_root: Path) -> dict[str, Any]:
         "output_kind": infer_output_kind(name, tags),
         "generation": infer_generation(name, tags),
         "quality_template": tags,
-        "input_schema": read_optional_json(package_root / "input.schema.json") or {"type": "object", "additionalProperties": True},
-        "output_schema": read_optional_json(package_root / "output.schema.json") or {"type": "object", "additionalProperties": True},
+        "input_schema": {"type": "object", "additionalProperties": True},
+        "output_schema": {"type": "object", "additionalProperties": True},
         "sandbox": sandbox_from_package(package_root),
     }
 
@@ -85,15 +100,6 @@ def skill_md_frontmatter(text: str) -> dict[str, object]:
     return data
 
 
-def read_optional_json(path: Path) -> dict[str, Any] | None:
-    if not path.is_file():
-        return None
-    try:
-        return read_json(path)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
-
-
 def json_object_from_text(content: str, label: str) -> dict[str, Any]:
     try:
         parsed = json.loads(content or "{}")
@@ -102,6 +108,52 @@ def json_object_from_text(content: str, label: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError(f"{label} must be a JSON object.")
     return parsed
+
+
+def normalize_skill_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(manifest)
+    if isinstance(normalized.get("input_schema"), dict):
+        normalized["input_schema"] = normalize_schema_param_kinds(normalized["input_schema"])
+    if isinstance(normalized.get("output_schema"), dict):
+        normalized["output_schema"] = normalize_schema_param_kinds(normalized["output_schema"])
+    return normalized
+
+
+def normalize_schema_param_kinds(schema: object) -> dict[str, Any] | None:
+    if not isinstance(schema, dict):
+        return None
+    normalized = dict(schema)
+    properties = normalized.get("properties")
+    if isinstance(properties, dict):
+        next_properties: dict[str, Any] = {}
+        for name, definition in properties.items():
+            if not isinstance(definition, dict):
+                next_properties[name] = definition
+                continue
+            next_properties[name] = normalize_schema_param_kinds(definition) or dict(definition)
+        normalized["properties"] = next_properties
+
+    items = normalized.get("items")
+    if isinstance(items, dict):
+        normalized["items"] = normalize_schema_param_kinds(items) or dict(items)
+
+    raw_kind = normalized.get("x_param_kind")
+    if not isinstance(raw_kind, str):
+        raw_kind = normalized.get("x-param-kind")
+    normalized.pop("x-param-kind", None)
+    kind = normalize_param_kind(raw_kind)
+    if kind:
+        normalized["x_param_kind"] = kind
+    else:
+        normalized.pop("x_param_kind", None)
+    return normalized
+
+
+def normalize_param_kind(value: object) -> str:
+    raw = value.strip() if isinstance(value, str) else ""
+    if not raw:
+        return ""
+    return raw if raw in PARAM_KIND_VALUES else "other"
 
 
 class LoadedSkillLike(Protocol):

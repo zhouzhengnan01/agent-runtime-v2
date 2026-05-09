@@ -4,7 +4,7 @@
   "description": "预置表格生成能力，适合设备清单、导入模板、巡检台账和统计汇总。",
   "category": "generation",
   "icon": "table",
-  "agent_name": "artifact-generator",
+  "agent_name": "default",
   "workflow": "artifact_workflow",
   "selected_skills": [
     "excel-generation"

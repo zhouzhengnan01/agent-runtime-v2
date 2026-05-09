@@ -4,12 +4,54 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
+
+from acp import helpers as acp_helpers
+
+from app.core.agent import AgentRuntime
+from app.core.artifacts import ArtifactStore
+from app.core.runtime import ModelManager
+from app.protocols.acp.transport_stdio import JetLinksAcpStdioAgent
+from app.schemas import ChatEvent, ChatRequest
+
+
+class CapturingStdioRuntime(AgentRuntime):
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def iter_events(self, agent_config: Any, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        del agent_config
+        self.requests.append(request)
+        yield ChatEvent(type="run.completed", data={})
+
+
+class BlockingStdioRuntime(AgentRuntime):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def iter_events(self, agent_config: Any, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        del agent_config, request
+        self.started.set()
+        yield ChatEvent(type="run.started", data={})
+        await asyncio.sleep(60)
 
 
 def test_acp_stdio_initialize_new_session_and_prompt() -> None:
     asyncio.run(_run_acp_stdio_flow())
+
+
+def test_acp_stdio_agent_routes_multimodal_prompt_and_model() -> None:
+    asyncio.run(_run_acp_stdio_multimodal_flow())
+
+
+def test_acp_stdio_cancel_interrupts_active_prompt() -> None:
+    asyncio.run(_run_acp_stdio_cancel_flow())
+
+
+def test_acp_stdio_delete_session_files_extension(tmp_path: Path) -> None:
+    asyncio.run(_run_acp_stdio_delete_files_flow(tmp_path))
 
 
 async def _run_acp_stdio_flow() -> None:
@@ -22,7 +64,7 @@ async def _run_acp_stdio_flow() -> None:
         "app.cli",
         "acp-stdio",
         "--agent",
-        "behavior-detector",
+        "default",
         cwd=project_root,
         env=env,
         stdin=asyncio.subprocess.PIPE,
@@ -61,6 +103,32 @@ async def _run_acp_stdio_flow() -> None:
             {
                 "jsonrpc": "2.0",
                 "id": 3,
+                "method": "session/list",
+                "params": {"cwd": str(project_root)},
+            },
+        )
+        listed = await _read(process)
+        assert listed["id"] == 3
+        assert any(item["sessionId"] == session_id for item in listed["result"]["sessions"])
+
+        await _send(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "session/set_model",
+                "params": {"sessionId": session_id, "modelId": "stdio-test-model"},
+            },
+        )
+        set_model = await _read(process)
+        assert set_model["id"] == 4
+        assert "error" not in set_model
+
+        await _send(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
                 "method": "session/prompt",
                 "params": {
                     "sessionId": session_id,
@@ -77,7 +145,7 @@ async def _run_acp_stdio_flow() -> None:
             if packet.get("method") == "session/update":
                 notifications.append(packet)
                 continue
-            if packet.get("id") == 3:
+            if packet.get("id") == 5:
                 final = packet
                 break
 
@@ -88,6 +156,19 @@ async def _run_acp_stdio_flow() -> None:
             for notification in notifications
             if notification["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
         )
+
+        await _send(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "session/close",
+                "params": {"sessionId": session_id},
+            },
+        )
+        closed = await _read(process)
+        assert closed["id"] == 6
+        assert "error" not in closed
     finally:
         if process.stdin is not None:
             process.stdin.close()
@@ -97,6 +178,91 @@ async def _run_acp_stdio_flow() -> None:
         except TimeoutError:
             process.terminate()
             await process.wait()
+
+
+async def _run_acp_stdio_multimodal_flow() -> None:
+    runtime = CapturingStdioRuntime()
+    model_manager = ModelManager(
+        [
+            {
+                "id": "stdio-model",
+                "config": {
+                    "model": "stdio-runtime-model",
+                    "base_url": "http://stdio-model.local/v1",
+                    "api_key": "stdio-key",
+                },
+            }
+        ]
+    )
+    agent = JetLinksAcpStdioAgent(runtime=runtime, model_manager=model_manager)
+    created = await agent.new_session(cwd="/tmp", mcp_servers=[])
+    await agent.set_session_model("stdio-model", created.session_id)
+
+    response = await agent.prompt(
+        [
+            acp_helpers.text_block("分析图片"),
+            acp_helpers.image_block("aW1hZ2U=", "image/png", uri="file:///camera.png"),
+            acp_helpers.resource_link_block("log.txt", "/mnt/user-data/uploads/log.txt", mime_type="text/plain"),
+            acp_helpers.resource_block(
+                acp_helpers.embedded_text_resource("file:///ctx.txt", "ctx text", mime_type="text/plain")
+            ),
+        ],
+        session_id=created.session_id,
+    )
+
+    assert response.stop_reason == "end_turn"
+    request = runtime.requests[0]
+    assert request.runtime_options.model_name == "stdio-runtime-model"
+    assert request.runtime_options.base_url == "http://stdio-model.local/v1"
+    assert request.runtime_options.api_key == "stdio-key"
+    assert "分析图片" in request.messages[0].content
+    assert "Embedded resource (file:///ctx.txt):" in request.messages[0].content
+    attachment_types = {attachment.metadata["acp_type"] for attachment in request.attachments}
+    assert attachment_types == {"image", "resource_link", "embedded_text_resource"}
+
+
+async def _run_acp_stdio_cancel_flow() -> None:
+    runtime = BlockingStdioRuntime()
+    agent = JetLinksAcpStdioAgent(runtime=runtime)
+    created = await agent.new_session(cwd="/tmp", mcp_servers=[])
+    prompt_task = asyncio.create_task(agent.prompt([acp_helpers.text_block("hold")], session_id=created.session_id))
+    await asyncio.wait_for(runtime.started.wait(), timeout=1)
+    await agent.cancel(created.session_id)
+    response = await asyncio.wait_for(prompt_task, timeout=1)
+    assert response.stop_reason == "cancelled"
+
+
+async def _run_acp_stdio_delete_files_flow(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = JetLinksAcpStdioAgent(runtime=runtime)
+    created = await agent.new_session(cwd=str(tmp_path), mcp_servers=[])
+    session = agent.sessions[created.session_id]
+    paths = runtime.artifact_store.prepare_thread(session.thread_id)
+    workspace_file = paths.workspace / "scratch.txt"
+    uploads_file = paths.uploads / "camera.jpg"
+    workspace_file.write_text("scratch", encoding="utf-8")
+    uploads_file.write_bytes(b"image")
+
+    dry_run = await agent.ext_method(
+        "_jetlinks/session/delete_files",
+        {"sessionId": created.session_id, "scopes": ["workspace"], "dryRun": True},
+    )
+    assert dry_run["dryRun"] is True
+    assert dry_run["deletedFileCount"] == 1
+    assert workspace_file.exists()
+
+    deleted = await agent.ext_method(
+        "jetlinks/session/delete_files",
+        {"sessionId": created.session_id, "scopes": ["workspace"]},
+    )
+    assert deleted["sessionId"] == created.session_id
+    assert deleted["threadId"] == session.thread_id
+    assert deleted["scopes"] == ["workspace"]
+    assert deleted["deletedFileCount"] == 1
+    assert deleted["deleted"][0]["path"] == "/mnt/user-data/workspace/scratch.txt"
+    assert not workspace_file.exists()
+    assert paths.workspace.exists()
+    assert uploads_file.exists()
 
 
 async def _send(process: asyncio.subprocess.Process, payload: dict[str, Any]) -> None:

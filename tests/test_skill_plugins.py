@@ -42,6 +42,8 @@ def test_skill_plugin_upload_registers_and_executes_uploaded_skill(
     skills = {skill["name"]: skill for skill in listed.json()["skills"]}
     assert skills["uploaded-summary"]["executable"] is True
     assert skills["uploaded-summary"]["source"]["type"] == "plugin"
+    assert skills["uploaded-summary"]["input_schema"]["properties"]["model"]["x_param_kind"] == "cv_model"
+    assert skills["uploaded-summary"]["input_schema"]["properties"]["legacy"]["x_param_kind"] == "other"
 
     store = ArtifactStore(root_dir=tmp_path / "runtime")
     paths = store.prepare_thread("uploaded-plugin")
@@ -55,6 +57,15 @@ def test_skill_plugin_upload_registers_and_executes_uploaded_skill(
     assert result.outputs[0].name == "summary.txt"
     assert (paths.outputs / "summary.txt").read_text(encoding="utf-8") == "hello plugin"
 
+    saved_manifest = json.loads(
+        (tmp_path / "plugins" / "skills" / "summary-plugin" / "skills" / "uploaded-summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert saved_manifest["input_schema"]["properties"]["model"]["x_param_kind"] == "cv_model"
+    assert saved_manifest["input_schema"]["properties"]["legacy"]["x_param_kind"] == "other"
+    assert "x-param-kind" not in saved_manifest["input_schema"]["properties"]["legacy"]
+
 
 def test_skill_plugin_upload_can_replace_existing_plugin(tmp_path: Path) -> None:
     manager = SkillPluginManager(tmp_path)
@@ -65,6 +76,26 @@ def test_skill_plugin_upload_can_replace_existing_plugin(tmp_path: Path) -> None
     assert first.plugin_id == "summary-plugin"
     assert second.plugin_id == "summary-plugin"
     assert "uploaded-summary" in manager.load_skills()
+
+
+def test_skill_plugin_local_path_install_registers_skill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+    zip_path = tmp_path / "summary-plugin.zip"
+    zip_path.write_bytes(_plugin_zip())
+
+    response = client.post("/api/skills/plugins/local-path", json={"path": str(zip_path)})
+
+    assert response.status_code == 200
+    assert response.json()["plugin"]["id"] == "summary-plugin"
+    listed = client.get("/api/skills")
+    assert listed.status_code == 200
+    skills = {skill["name"]: skill for skill in listed.json()["skills"]}
+    assert "uploaded-summary" in skills
 
 
 def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
@@ -146,7 +177,13 @@ def test_skill_package_file_api_reads_and_updates_package_assets(tmp_path: Path)
   "output_kind": "markdown",
   "generation": true,
   "quality_template": [],
-  "input_schema": {"type": "object"},
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "model": {"type": "string", "x_param_kind": "cv_model"},
+      "legacy": {"type": "string", "x-param-kind": "custom-legacy-kind"}
+    }
+  },
   "output_schema": {"type": "object"},
   "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
 }
@@ -192,7 +229,14 @@ def test_skill_manifest_config_api_generates_manifest_file(tmp_path: Path, monke
                 "generation": True,
                 "quality_template": ["summary", "table"],
                 "routing": {"keywords": ["report"]},
-                "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}},
+                "execution": {"type": "template", "filename": "report.md", "template": "# $title"},
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "x_param_kind": "model"},
+                        "legacy": {"type": "string", "x_param_kind": "custom-old-kind"},
+                    },
+                },
                 "output_schema": {"type": "object", "properties": {"artifacts": {"type": "array"}}},
                 "sandbox": {
                     "enabled": False,
@@ -213,8 +257,262 @@ def test_skill_manifest_config_api_generates_manifest_file(tmp_path: Path, monke
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["name"] == "custom-report"
     assert manifest["routing"]["keywords"] == ["report"]
+    assert manifest["execution"]["type"] == "template"
     assert manifest["input_schema"]["properties"]["title"]["type"] == "string"
+    assert manifest["input_schema"]["properties"]["title"]["x_param_kind"] == "model"
+    assert manifest["input_schema"]["properties"]["legacy"]["x_param_kind"] == "other"
     assert manifest["sandbox"]["fallback_to_local"] is True
+
+
+def test_generic_template_skill_executes_without_runner(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugins" / "skills" / "generic-template-plugin"
+    skill_root = plugin_root / "skills" / "generic-template"
+    skill_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "generic-template-plugin",
+  "name": "Generic Template Plugin",
+  "version": "1.0.0",
+  "skills": ["skills/*/manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (skill_root / "manifest.json").write_text(
+        """
+{
+  "name": "generic-template",
+  "description": "Generic template",
+  "output_kind": "markdown",
+  "generation": true,
+  "quality_template": [],
+  "execution": {
+    "type": "template",
+    "filename": "$title.md",
+    "template": "# $title\\n\\n$body"
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "model": {"type": "string", "x_param_kind": "cv_model"},
+      "legacy": {"type": "string", "x-param-kind": "custom-legacy-kind"}
+    }
+  },
+  "output_schema": {"type": "object"},
+  "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
+}
+""",
+        encoding="utf-8",
+    )
+
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("generic-template")
+    result = SkillRunner(store, root_dir=tmp_path).run(
+        "generic-template",
+        {"title": "daily-report", "body": "done"},
+        paths,
+    )
+
+    assert result.skill_name == "generic-template"
+    assert result.outputs[0].name == "daily-report.md"
+    assert (paths.outputs / "daily-report.md").read_text(encoding="utf-8") == "# daily-report\n\ndone"
+
+
+def test_python_script_skill_requires_only_script_config(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugins" / "skills" / "python-script-plugin"
+    skill_root = plugin_root / "skills" / "python-script-skill"
+    script_root = skill_root / "scripts"
+    script_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "python-script-plugin",
+  "name": "Python Script Plugin",
+  "version": "1.0.0",
+  "skills": ["skills/*/manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (skill_root / "manifest.json").write_text(
+        """
+{
+  "name": "python-script-skill",
+  "description": "Python script skill",
+  "output_kind": "markdown",
+  "generation": true,
+  "quality_template": [],
+  "execution": {
+    "type": "python_script",
+    "script": "scripts/run_skill.py"
+  },
+  "input_schema": {"type": "object"},
+  "output_schema": {"type": "object"},
+  "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
+}
+""",
+        encoding="utf-8",
+    )
+    (script_root / "run_skill.py").write_text(
+        """
+import json
+import sys
+from pathlib import Path
+
+payload = json.load(sys.stdin)
+spec = payload["spec"]
+outputs = Path(payload["outputs_dir"])
+(outputs / "result.md").write_text(f"# {spec['title']}\\n", encoding="utf-8")
+print(json.dumps({"message": "ok"}, ensure_ascii=False))
+""",
+        encoding="utf-8",
+    )
+
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("python-script-skill")
+    result = SkillRunner(store, root_dir=tmp_path).run(
+        "python-script-skill",
+        {"title": "Python Skill"},
+        paths,
+    )
+
+    assert result.skill_name == "python-script-skill"
+    assert result.data["message"] == "ok"
+    assert result.outputs[0].name == "result.md"
+    assert (paths.outputs / "result.md").read_text(encoding="utf-8") == "# Python Skill\n"
+
+
+def test_python_script_manifest_rejects_missing_script_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "plugins" / "skills" / "missing-script-plugin"
+    skill_root = package_root / "skills" / "missing-script"
+    skill_root.mkdir(parents=True)
+    (package_root / "plugin.json").write_text(
+        """
+{
+  "id": "missing-script-plugin",
+  "name": "Missing Script Plugin",
+  "version": "1.0.0",
+  "skills": ["skills/*/manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (skill_root / "manifest.json").write_text(
+        """
+{
+  "name": "missing-script",
+  "description": "Missing script",
+  "output_kind": "json",
+  "generation": true,
+  "quality_template": [],
+  "input_schema": {"type": "object"},
+  "output_schema": {"type": "object"},
+  "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
+}
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/skills/missing-script/manifest-config",
+        json={
+            "config": {
+                "description": "Missing script",
+                "output_kind": "json",
+                "generation": True,
+                "quality_template": [],
+                "execution": {"type": "python_script", "script": "scripts/run_skill.py"},
+                "input_schema": {"type": "object"},
+                "output_schema": {"type": "object"},
+                "sandbox": {"enabled": False, "profile": None, "request_schema_version": "skill-run.v1"},
+            }
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Python script not found" in response.json()["detail"]
+
+
+def test_skill_manifest_config_api_syncs_sandbox_yaml_for_package_skills(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "plugins" / "skills" / "manifest-sync-plugin"
+    skill_root = package_root / "skills" / "report-sync"
+    skill_root.mkdir(parents=True)
+    (package_root / "plugin.json").write_text(
+        """
+{
+  "id": "manifest-sync-plugin",
+  "name": "Manifest Sync Plugin",
+  "version": "1.0.0",
+  "skills": ["skills/*/manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (skill_root / "manifest.json").write_text(
+        """
+{
+  "name": "report-sync",
+  "description": "Report Sync",
+  "output_kind": "json",
+  "generation": true,
+  "quality_template": [],
+  "input_schema": {"type": "object"},
+  "output_schema": {"type": "object"},
+  "sandbox": {"enabled": false, "profile": "", "request_schema_version": "skill-run.v1"}
+}
+""",
+        encoding="utf-8",
+    )
+    (skill_root / "runner.py").write_text("def run(skill_name, spec, paths, artifact_store):\n    return {}\n", encoding="utf-8")
+
+    manager = SkillPluginManager(tmp_path)
+    registry = SkillRegistry(tmp_path)
+    monkeypatch.setattr(skills_api, "registry", registry)
+    monkeypatch.setattr(skills_api, "plugin_manager", manager)
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/skills/report-sync/manifest-config",
+        json={
+            "config": {
+                "description": "Report sync skill",
+                "output_kind": "markdown",
+                "generation": True,
+                "quality_template": ["summary"],
+                "routing": {"keywords": ["report"]},
+                "input_schema": {"type": "object", "properties": {"title": {"type": "string"}}},
+                "output_schema": {"type": "object", "properties": {"artifacts": {"type": "array"}}},
+                "sandbox": {
+                    "enabled": True,
+                    "profile": "report-profile",
+                    "request_schema_version": "skill-run.v1",
+                    "adapter_command": "python runner.py",
+                    "fallback_to_local": False,
+                },
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    sandbox_path = skill_root / "sandbox.yml"
+    assert sandbox_path.is_file()
+    sandbox_text = sandbox_path.read_text(encoding="utf-8")
+    assert "sandbox:" in sandbox_text
+    assert "enabled: true" in sandbox_text
+    assert 'profile: "report-profile"' in sandbox_text
+    assert 'adapter_command: "python runner.py"' in sandbox_text
+    assert "fallback_to_local: false" in sandbox_text
 
 
 def test_single_skill_markdown_package_upload_registers_skill(
@@ -265,7 +563,13 @@ def _plugin_zip() -> bytes:
   "output_kind": "text",
   "generation": true,
   "quality_template": ["summary"],
-  "input_schema": {"type": "object"},
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "model": {"type": "string", "x_param_kind": "cv_model"},
+      "legacy": {"type": "string", "x-param-kind": "custom-legacy-kind"}
+    }
+  },
   "output_schema": {"type": "object"},
   "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
 }
@@ -307,8 +611,6 @@ tags:
 # Uploaded Skill
 """,
         )
-        archive.writestr("input.schema.json", """{"type": "object", "additionalProperties": true}""")
-        archive.writestr("output.schema.json", """{"type": "object", "additionalProperties": true}""")
         archive.writestr("requirements.txt", "")
         archive.writestr(
             "runner.py",

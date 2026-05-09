@@ -4,7 +4,7 @@
   "description": "预置证据优先行为识别 Agent，适合翻越、摔倒、禁区逗留等安全事件判断。",
   "category": "vision",
   "icon": "shield",
-  "agent_name": "behavior-detector",
+  "agent_name": "default",
   "workflow": "evidence_first_detection",
   "selected_skills": [
     "behavior-detection"

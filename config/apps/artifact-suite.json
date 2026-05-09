@@ -4,7 +4,7 @@
   "description": "一次性启用常用产物技能，适合复杂交付物：图、PPT、Excel、脑图和 Markdown。",
   "category": "generation",
   "icon": "package",
-  "agent_name": "artifact-generator",
+  "agent_name": "default",
   "workflow": "artifact_workflow",
   "selected_skills": [
     "drawio-generation",

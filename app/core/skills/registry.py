@@ -35,6 +35,7 @@ class SkillDefinition:
     generation: bool = True
     quality_template: tuple[str, ...] = ()
     routing: dict[str, Any] | None = None
+    execution: dict[str, Any] | None = None
     input_schema: dict[str, Any] | None = None
     output_schema: dict[str, Any] | None = None
     sandbox: SkillSandboxSpec = field(default_factory=SkillSandboxSpec)
@@ -55,6 +56,7 @@ class SkillDefinition:
             "generation": self.generation,
             "quality_template": list(self.quality_template),
             "routing": self.routing or {},
+            "execution": self.execution or {},
             "input_schema": self.input_schema or {},
             "output_schema": self.output_schema or {},
             "sandbox": self.sandbox.to_payload(),
@@ -90,6 +92,7 @@ class SkillDefinition:
             generation=self.generation,
             quality_template=self.quality_template,
             routing=self.routing,
+            execution=self.execution,
             input_schema=self.input_schema,
             output_schema=self.output_schema,
             sandbox=self.sandbox,
@@ -186,6 +189,7 @@ def definition_from_manifest(data: object, path: Path) -> SkillDefinition:
         generation=bool(data.get("generation", True)),
         quality_template=_string_tuple(data.get("quality_template")),
         routing=_dict_value(data.get("routing")),
+        execution=_dict_value(data.get("execution")),
         input_schema=_dict_value(data.get("input_schema")),
         output_schema=_dict_value(data.get("output_schema")),
         sandbox=sandbox,

@@ -7,6 +7,7 @@ from typing import Any, List
 
 from app.core.artifacts import ArtifactStore
 from app.core.skills import SkillRegistry, SkillRunner
+from app.core.tools.providers.artifact_workspace import artifact_workspace_tool_definitions
 from app.core.tools.providers.delegate import delegate_tool_definitions
 from app.core.tools.providers.local import local_tool_definitions
 from app.core.tools.providers.markdown_memory import markdown_memory_tool_definitions
@@ -71,6 +72,7 @@ class ToolRegistry:
     def _builtin_tools() -> List[ToolDefinition]:
         return (
             local_tool_definitions()
+            + artifact_workspace_tool_definitions()
             + delegate_tool_definitions()
             + memory_tool_definitions()
             + markdown_memory_tool_definitions()

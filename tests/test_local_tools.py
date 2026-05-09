@@ -125,6 +125,6 @@ def test_agent_loop_can_use_local_workspace_tools(tmp_path: Path, monkeypatch: M
     assert result.status == "completed"
     assert result.reply == "已写入。"
     assert calls[0] == ["local_write_file"]
-    assert (tmp_path / "agent-local-tools" / "user-data" / "workspace" / "result.txt").read_text() == (
+    assert (tmp_path / "agent-local-tools" / "workspace" / "result.txt").read_text() == (
         "hello from local tool"
     )

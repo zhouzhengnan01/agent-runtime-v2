@@ -31,7 +31,7 @@ def test_mcp_initialize_and_list_tools(tmp_path: Path, monkeypatch: pytest.Monke
     )
     assert listed.status_code == 200
     tool_names = {tool["name"] for tool in listed.json()["result"]["tools"]}
-    assert "pptx-generation" not in tool_names
+    assert "pptx-generation" in tool_names
     assert "jetlinks_runtime_status" in tool_names
 
 

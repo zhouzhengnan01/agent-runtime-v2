@@ -3,8 +3,10 @@
 .pytest_cache/
 .ruff_cache/
 .venv/
+.env
 .runtime/
 test-results/
 __pycache__/
 *.py[cod]
 config/agents/*.local.json
+config/sandbox/*.local.json

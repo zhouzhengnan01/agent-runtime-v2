@@ -38,6 +38,7 @@ class LlmChatResponse:
     content: str = ""
     tool_calls: list[LlmToolCall] = field(default_factory=list)
     finish_reason: str | None = None
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 ChatMessageInput = Message | dict[str, Any]
@@ -59,7 +60,7 @@ class OpenAICompatibleClient:
         base_url_env = runtime_options.base_url_env or model_config.base_url_env
         api_key_env = runtime_options.api_key_env or model_config.api_key_env
         self.base_url = (runtime_options.base_url or os.getenv(base_url_env) or model_config.base_url or "").rstrip("/")
-        self.api_key = runtime_options.api_key or os.getenv(api_key_env) or model_config.api_key or ""
+        self.api_key = _first_defined(runtime_options.api_key, _env_value(api_key_env), model_config.api_key, "")
         self.model = model_override or runtime_options.model_name or os.getenv(model_env) or model_config.model or model_config.default_model
         self.temperature = runtime_options.temperature if runtime_options.temperature is not None else model_config.temperature
         self.top_p = runtime_options.top_p if runtime_options.top_p is not None else model_config.top_p
@@ -77,7 +78,7 @@ class OpenAICompatibleClient:
     def configured(self) -> bool:
         return not self.disabled and bool(self.base_url and self.model)
 
-    async def complete(self, system_prompt: str, messages: list[Message]) -> str:
+    async def complete(self, system_prompt: str, messages: Sequence[ChatMessageInput]) -> str:
         if not self.configured:
             return self._not_configured_message()
 
@@ -115,7 +116,7 @@ class OpenAICompatibleClient:
             data = response.json()
         return self._parse_chat_response(data)
 
-    def complete_sync(self, system_prompt: str, messages: list[Message]) -> str:
+    def complete_sync(self, system_prompt: str, messages: Sequence[ChatMessageInput]) -> str:
         if not self.configured:
             return self._not_configured_message()
 
@@ -216,7 +217,15 @@ class OpenAICompatibleClient:
         if response.status_code != 400:
             return False
         body = response.text.lower()
-        return "tool choice" in body and "enable-auto-tool-choice" in body
+        return (
+            ("tool" in body and "unsupported" in body)
+            or ("tool" in body and "not support" in body)
+            or ("tool" in body and "not supported" in body)
+            or ("tool" in body and "invalid" in body)
+            or ("tool" in body and "extra_forbidden" in body)
+            or "enable-auto-tool-choice" in body
+            or "tool-call-parser" in body
+        )
 
     def _not_configured_message(self) -> str:
         if self.disabled:
@@ -243,6 +252,7 @@ class OpenAICompatibleClient:
             content=content if isinstance(content, str) else "",
             tool_calls=cls._parse_tool_calls(message),
             finish_reason=finish_reason if isinstance(finish_reason, str) else None,
+            usage=data.get("usage") if isinstance(data.get("usage"), dict) else {},
         )
 
     @staticmethod
@@ -318,3 +328,16 @@ def _bounded_timeout(value: str | int | float | None) -> float:
     except (TypeError, ValueError):
         return 120.0
     return max(1.0, min(3600.0, timeout))
+
+
+def _env_value(name: str | None) -> str | None:
+    if not name:
+        return None
+    return os.environ.get(name) if name in os.environ else None
+
+
+def _first_defined(*values: str | None) -> str:
+    for value in values:
+        if value is not None:
+            return value
+    return ""

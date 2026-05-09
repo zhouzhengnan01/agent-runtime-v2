@@ -7,7 +7,7 @@ import pytest
 from app.core.memory import MarkdownMemoryContext, MarkdownMemoryStore
 
 
-def test_markdown_memory_store_uses_hierarchical_user_project_session_dirs(tmp_path: Path) -> None:
+def test_markdown_memory_store_uses_thread_memory_for_session_scope(tmp_path: Path) -> None:
     store = MarkdownMemoryStore(root_dir=tmp_path)
     first = MarkdownMemoryContext(
         agent_name="default",
@@ -29,15 +29,7 @@ def test_markdown_memory_store_uses_hierarchical_user_project_session_dirs(tmp_p
     assert session_file.path == "notes/summary.md"
     assert project_file.path == "architecture/overview.md"
     assert user_file.path == "preferences.md"
-    assert (
-        tmp_path
-        / "users"
-        / "user-a"
-        / "sessions"
-        / "thread-one"
-        / "notes"
-        / "summary.md"
-    ).is_file()
+    assert (tmp_path / "threads" / "thread-one" / "memory" / "notes" / "summary.md").is_file()
     assert (
         tmp_path
         / "users"
@@ -48,7 +40,28 @@ def test_markdown_memory_store_uses_hierarchical_user_project_session_dirs(tmp_p
         / "overview.md"
     ).is_file()
     assert store.search(first, ["session", "project", "user"], "记忆", max_results=10)
-    assert store.search(second, ["session", "project", "user"], "记忆", max_results=10) == []
+    second_matches = store.search(second, ["session", "project", "user"], "记忆", max_results=10)
+    assert [match.path for match in second_matches] == ["notes/summary.md"]
+
+
+def test_markdown_memory_store_creates_default_thread_memory_files(tmp_path: Path) -> None:
+    store = MarkdownMemoryStore(root_dir=tmp_path)
+    context = MarkdownMemoryContext(agent_name="default", user_id="u1", thread_id="thread/one")
+
+    files = store.list_files(context, "session")
+    paths = {file.path for file in files}
+
+    assert {
+        "conversation.md",
+        "summary.md",
+        "decisions.md",
+        "todo.md",
+        "artifacts.md",
+    }.issubset(paths)
+    assert (tmp_path / "threads" / "thread-one" / "memory" / "conversation.md").is_file()
+    summary, truncated = store.read(context, "session", "summary.md")
+    assert truncated is False
+    assert summary == "# Summary\n\n"
 
 
 def test_markdown_memory_store_blocks_path_traversal_and_non_markdown(tmp_path: Path) -> None:

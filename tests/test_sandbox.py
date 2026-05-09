@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -9,11 +10,17 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.core.sandbox.config import SandboxConfig, load_sandbox_config
+from app.core.sandbox import config as sandbox_config_module
+from app.core.sandbox.env_cache import SkillEnvironmentCache, normalized_requirements, requirements_hash_for_text
 from app.core.sandbox.policy import load_sandbox_policy
 from app.core.sandbox.status import get_sandbox_status
 from app.core.skills import SkillRegistry
 from app.main import create_app
 from app.api import skills as skills_api
+
+
+def json_dumps(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, indent=2) + "\n"
 
 
 def test_sandbox_status_defaults_to_local(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,6 +47,7 @@ def test_sandbox_config_reads_opensandbox_environment(monkeypatch: pytest.Monkey
     monkeypatch.setenv("OPENSANDBOX_PROTOCOL", "http")
     monkeypatch.setenv("OPENSANDBOX_IMAGE", "example/opensandbox:test")
     monkeypatch.setenv("SANDBOX_SKILLS", "drawio-generation,pptx-generation")
+    monkeypatch.setenv("SKILL_ENV_CACHE_ENABLED", "true")
 
     config = load_sandbox_config()
 
@@ -49,6 +57,147 @@ def test_sandbox_config_reads_opensandbox_environment(monkeypatch: pytest.Monkey
     assert config.sandboxed_skills == ("drawio-generation", "pptx-generation")
     assert config.should_use_sandbox("drawio-generation") is True
     assert config.should_use_sandbox("behavior-detection") is False
+    assert config.skill_env_cache_enabled is True
+
+
+def test_sandbox_config_reads_runtime_json_and_local_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox_dir = tmp_path / "config" / "sandbox"
+    sandbox_dir.mkdir(parents=True)
+    (sandbox_dir / "runtime.json").write_text(
+        json_dumps(
+            {
+                "provider": "opensandbox",
+                "opensandbox_domain": "127.0.0.1:19090",
+                "executor_enabled": False,
+                "skill_env_cache": {
+                    "enabled": True,
+                    "image_prefix": "default-prefix",
+                    "max_images": 10,
+                    "torch_base_image": "torch-default",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (sandbox_dir / "runtime.local.json").write_text(
+        json_dumps(
+            {
+                "executor_enabled": True,
+                "skill_env_cache": {
+                    "image_prefix": "local-prefix",
+                    "max_images": 5,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sandbox_config_module.Path, "resolve", lambda self: tmp_path / "app/core/sandbox/config.py")
+
+    config = load_sandbox_config()
+
+    assert config.provider == "opensandbox"
+    assert config.opensandbox_domain == "127.0.0.1:19090"
+    assert config.executor_enabled is True
+    assert config.skill_env_cache_enabled is True
+    assert config.skill_env_cache_image_prefix == "local-prefix"
+    assert config.skill_env_cache_max_images == 5
+    assert config.skill_env_cache_torch_base_image == "torch-default"
+
+
+def test_sandbox_config_environment_overrides_runtime_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox_dir = tmp_path / "config" / "sandbox"
+    sandbox_dir.mkdir(parents=True)
+    (sandbox_dir / "runtime.json").write_text(
+        json_dumps({"skill_env_cache": {"enabled": False, "image_prefix": "file-prefix"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sandbox_config_module.Path, "resolve", lambda self: tmp_path / "app/core/sandbox/config.py")
+    monkeypatch.setenv("SKILL_ENV_CACHE_ENABLED", "true")
+    monkeypatch.setenv("SKILL_ENV_CACHE_IMAGE_PREFIX", "env-prefix")
+
+    config = load_sandbox_config()
+
+    assert config.skill_env_cache_enabled is True
+    assert config.skill_env_cache_image_prefix == "env-prefix"
+
+
+def test_requirements_normalization_ignores_comments_and_order() -> None:
+    first = """
+requests==2.32.3
+openpyxl==3.1.5
+"""
+    second = """
+# excel skill
+openpyxl==3.1.5
+
+requests==2.32.3  # http client
+"""
+
+    assert normalized_requirements(first) == "openpyxl==3.1.5\nrequests==2.32.3"
+    assert requirements_hash_for_text(first) == requirements_hash_for_text(second)
+
+
+def test_skill_environment_cache_uses_base_image_without_requirements(tmp_path: Path) -> None:
+    cache = SkillEnvironmentCache(tmp_path)
+    package_root = tmp_path / "plugin" / "skills" / "empty"
+    package_root.mkdir(parents=True)
+
+    env = cache.prepare(
+        skill_name="empty",
+        package_root=package_root,
+        profile=load_sandbox_policy(SandboxConfig()).profiles["office"],
+        config=SandboxConfig(skill_env_cache_enabled=True),
+    )
+
+    assert env.status == "base"
+    assert env.requirements_hash is None
+    assert env.image == "jetlinks/opensandbox-office:0.1.0"
+
+
+def test_skill_environment_cache_reuses_ready_dependency_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = SkillEnvironmentCache(tmp_path)
+    package_root = tmp_path / "plugin" / "skills" / "deps"
+    package_root.mkdir(parents=True)
+    (package_root / "requirements.txt").write_text("requests==2.32.3\n", encoding="utf-8")
+    req_hash = requirements_hash_for_text("requests==2.32.3\n")
+    image = f"jetlinks-python-skill-deps:{req_hash[:16]}"
+    cache.cache_dir.mkdir(parents=True)
+    cache.index_path.write_text(
+        json_dumps(
+            {
+                req_hash: {
+                    "status": "ready",
+                    "image": image,
+                    "base_image": "jetlinks/opensandbox-office:0.1.0",
+                    "skills": ["old"],
+                    "last_used_at": 1,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cache, "_image_exists", lambda _image: True)
+
+    env = cache.prepare(
+        skill_name="new",
+        package_root=package_root,
+        profile=load_sandbox_policy(SandboxConfig()).profiles["office"],
+        config=SandboxConfig(skill_env_cache_enabled=True),
+    )
+
+    assert env.status == "ready"
+    assert env.image == image
+    index = cache._read_index()
+    assert index[req_hash]["skills"] == ["new", "old"]
 
 
 def test_sandbox_policy_resolves_skill_profiles(monkeypatch: pytest.MonkeyPatch) -> None:

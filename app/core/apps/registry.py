@@ -25,6 +25,9 @@ class AppTemplateRegistry:
         path = self.config_dir / f"{safe_name}.json"
         if path.is_file():
             return self._load_template(path)
+        for template in self._read_templates():
+            if template.name == safe_name:
+                return template
         raise KeyError(f"App template not found: {safe_name}")
 
     def _read_templates(self) -> builtins.list[AppTemplate]:
@@ -32,10 +35,11 @@ class AppTemplateRegistry:
             return []
         templates: builtins.list[AppTemplate] = []
         for path in sorted(self.config_dir.glob("*.json")):
-            if path.name == "templates.json":
-                continue
             try:
-                templates.append(self._load_template(path))
+                if path.name == "templates.json":
+                    templates.extend(self._load_template_collection(path))
+                else:
+                    templates.append(self._load_template(path))
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
         return templates
@@ -46,6 +50,16 @@ class AppTemplateRegistry:
         if not isinstance(data, dict):
             raise ValueError(f"App template must be a JSON object: {path}")
         return AppTemplate.model_validate(data)
+
+    @staticmethod
+    def _load_template_collection(path: Path) -> builtins.list[AppTemplate]:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"App template collection must be a JSON object: {path}")
+        raw_templates = data.get("templates")
+        if not isinstance(raw_templates, list):
+            raise ValueError(f"App template collection must contain templates list: {path}")
+        return [AppTemplate.model_validate(item) for item in raw_templates if isinstance(item, dict)]
 
     def validate_references(self) -> builtins.list[str]:
         """Return template reference problems without failing template loading."""

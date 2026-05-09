@@ -4,7 +4,7 @@
   "description": "预置 Markdown 文档生成，适合架构说明、接口说明、运维手册和方案文档。",
   "category": "generation",
   "icon": "doc",
-  "agent_name": "artifact-generator",
+  "agent_name": "default",
   "workflow": "artifact_workflow",
   "selected_skills": [
     "markdown-rendering"

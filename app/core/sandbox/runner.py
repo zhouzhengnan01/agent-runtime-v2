@@ -11,8 +11,10 @@ from typing import Any
 
 from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.sandbox.config import SandboxConfig
+from app.core.sandbox.env_cache import SkillEnvironmentCache
 from app.core.sandbox.policy import SandboxDecision, SandboxProfile
 from app.core.skills import SkillRunResult
+from app.core.skills.plugins import SkillPluginManager
 from app.schemas import ArtifactRef
 
 
@@ -46,11 +48,13 @@ class SandboxSkillRunner:
 
     def __init__(self, artifact_store: ArtifactStore) -> None:
         self.artifact_store = artifact_store
+        self.environment_cache = SkillEnvironmentCache()
+        self.skill_plugin_manager = SkillPluginManager()
 
     def run(self, context: SandboxRunContext) -> SkillRunResult:
         if context.decision.profile is None:
             raise SandboxExecutionError("Sandbox decision has no profile.", data=context.decision.model_dump())
-        profile = context.decision.profile
+        profile = self._profile_with_dependency_image(context)
         try:
             return self._run_with_opensandbox(context, profile)
         except SandboxExecutionError:
@@ -150,6 +154,39 @@ class SandboxSkillRunner:
                     sandbox.close()
                 except Exception:
                     pass
+
+    def _profile_with_dependency_image(self, context: SandboxRunContext) -> SandboxProfile:
+        profile = context.decision.profile
+        if profile is None or not context.config.skill_env_cache_enabled:
+            return profile
+        try:
+            loaded = self.skill_plugin_manager.get_loaded_skill(context.skill_name)
+            package_root = loaded.manifest_path.parent if loaded.manifest_path is not None else None
+            environment = self.environment_cache.prepare(
+                skill_name=context.skill_name,
+                package_root=package_root,
+                profile=profile,
+                config=context.config,
+            )
+        except Exception as exc:
+            if context.decision.fallback_to_local:
+                raise SandboxExecutionError(
+                    "Prepare sandbox dependency image failed.",
+                    data={"error": str(exc), "fallback_to_local": True},
+                ) from exc
+            raise
+        if environment.status != "ready":
+            if environment.status == "base":
+                return profile
+            raise SandboxExecutionError(
+                "Sandbox dependency image is not ready.",
+                data={
+                    "requirements_hash": environment.requirements_hash,
+                    "status": environment.status,
+                    "message": environment.message,
+                },
+            )
+        return profile.model_copy(update={"image": environment.image, "runtime_install": False})
 
     def _write_output_bytes(self, paths: ThreadPaths, relative_path: str, content: bytes) -> Path:
         target = (paths.outputs / relative_path).resolve()

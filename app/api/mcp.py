@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 
 from app.api.auth import require_admin_token
-from app.core.artifacts import ArtifactStore
 from app.core.mcp import McpToolRegistry
+from app.core.runtime import default_container
 from app.core.skills import SkillRunner
 from app.protocols.mcp import (
     MCP_PROTOCOL_VERSION,
@@ -19,7 +19,7 @@ from app.protocols.mcp import (
 
 router = APIRouter(tags=["mcp"])
 registry = McpToolRegistry()
-artifact_store = ArtifactStore()
+artifact_store = default_container.runtime.artifact_store
 skill_runner = SkillRunner(artifact_store)
 
 __all__ = [

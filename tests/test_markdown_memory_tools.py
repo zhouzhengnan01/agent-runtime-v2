@@ -64,7 +64,7 @@ def test_markdown_memory_tools_append_list_read_search_and_compress(tmp_path: Pa
     assert compression["compressed_chars"] <= 700
 
 
-def test_markdown_memory_tool_context_isolation_by_user_and_thread(tmp_path: Path) -> None:
+def test_markdown_memory_tool_session_scope_is_owned_by_thread(tmp_path: Path) -> None:
     service = ToolInvocationService(markdown_memory_store=MarkdownMemoryStore(root_dir=tmp_path))
     service.call_tool(
         "memory_md_append",
@@ -100,9 +100,34 @@ def test_markdown_memory_tool_context_isolation_by_user_and_thread(tmp_path: Pat
     )
 
     assert same_thread_other_user.is_error is False
-    assert same_thread_other_user.structured_content["matches"] == []
+    assert same_thread_other_user.structured_content["matches"][0]["path"] == "summary.md"
     assert same_user_other_thread.is_error is False
     assert same_user_other_thread.structured_content["matches"] == []
+
+
+def test_markdown_memory_tools_list_default_thread_memory_files(tmp_path: Path) -> None:
+    service = ToolInvocationService(markdown_memory_store=MarkdownMemoryStore(root_dir=tmp_path))
+
+    list_result = service.call_tool(
+        "memory_md_list",
+        {
+            "_agent_name": "default",
+            "_user_id": "u1",
+            "_thread_id": "session-a",
+            "scope": "session",
+        },
+    )
+
+    assert list_result.is_error is False
+    paths = {file["path"] for file in list_result.structured_content["files"]}
+    assert {
+        "conversation.md",
+        "summary.md",
+        "decisions.md",
+        "todo.md",
+        "artifacts.md",
+    }.issubset(paths)
+    assert (tmp_path / "threads" / "session-a" / "memory" / "artifacts.md").is_file()
 
 
 def test_markdown_memory_tools_default_to_session_only_writes(tmp_path: Path) -> None:

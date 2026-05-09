@@ -16,6 +16,8 @@ from app.core.skills.plugin_execution import (
     load_runner_module as _load_runner_module,
     normalize_result as _normalize_result,
 )
+from app.core.skills.generic_runner import can_run_generic as _can_run_generic
+from app.core.skills.generic_runner import run_generic_skill as _run_generic_skill
 from app.core.skills.plugin_manifest import (
     json_object_from_text as _json_object_from_text,
     plugin_metadata_from_skill_md as _plugin_metadata_from_skill_md,
@@ -24,6 +26,7 @@ from app.core.skills.plugin_manifest import (
     safe_zip_members as _safe_zip_members,
     single_root_prefix as _single_root_prefix,
     skill_package_root as _skill_package_root,
+    normalize_skill_manifest as _normalize_skill_manifest,
     validated_plugin_id as _validated_plugin_id,
 )
 from app.core.skills.registry import SkillDefinition, definition_from_manifest
@@ -226,14 +229,27 @@ class SkillPluginManager:
         return self._package_file(self.get_loaded_skill(skill_name), file_id), content
 
     def save_manifest(self, skill_name: str, manifest: dict[str, Any]) -> LoadedSkill:
+        existing = self.load_skills().get(skill_name)
         path = self.manifest_path_for(skill_name)
         data = dict(manifest)
         data["name"] = skill_name
+        data = _normalize_skill_manifest(data)
         definition = definition_from_manifest(data, path)
+        if existing is not None:
+            self._validate_execution(data, existing)
         path.parent.mkdir(parents=True, exist_ok=True)
         target = path.with_suffix(".json.tmp")
         target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         target.replace(path)
+        if (
+            existing is not None
+            and existing.plugin is not None
+            and existing.manifest_path.suffix.lower() == ".json"
+            and path.resolve() == existing.manifest_path.resolve()
+        ):
+            package_root = _skill_package_root(existing)
+            if package_root is not None:
+                self._write_sandbox_package_file(package_root, data.get("sandbox"))
         loaded = self.load_skills().get(skill_name)
         if loaded is not None:
             return loaded
@@ -283,6 +299,7 @@ class SkillPluginManager:
         plugin = self._load_plugin(temp_root)
         if plugin.plugin_id != plugin_id:
             raise ValueError("plugin.json id changed during installation.")
+        self._normalize_uploaded_package_files(plugin)
         if target_root.exists():
             shutil.rmtree(target_root)
         temp_root.replace(target_root)
@@ -298,8 +315,27 @@ class SkillPluginManager:
         loaded = self.get_loaded_skill(skill_name)
         if loaded.plugin is None:
             raise KeyError(f"Skill is not backed by an installed plugin: {skill_name}")
+        manifest = self.read_manifest(skill_name)
+        if loaded.runner_path is None and _can_run_generic(manifest):
+            return _run_generic_skill(
+                skill_name,
+                manifest,
+                spec,
+                paths,
+                artifact_store,
+                package_root=_skill_package_root(loaded),
+            )
         if loaded.runner_path is None:
             raise KeyError(f"Skill is not backed by an installed runner: {skill_name}")
+        if loaded.runner_path.resolve() == loaded.manifest_path.resolve() and _can_run_generic(manifest):
+            return _run_generic_skill(
+                skill_name,
+                manifest,
+                spec,
+                paths,
+                artifact_store,
+                package_root=_skill_package_root(loaded),
+            )
         module = _load_runner_module(loaded.runner_path)
         result = _call_runner(module, skill_name, spec, paths, artifact_store)
         return _normalize_result(skill_name, result)
@@ -425,7 +461,9 @@ class SkillPluginManager:
             if path.suffix.lower() != ".json" and path.name != "SKILL.md":
                 continue
             try:
-                definition = definition_from_manifest(_read_manifest_source(path), path)
+                manifest = _read_manifest_source(path)
+                definition = definition_from_manifest(manifest, path)
+                _validate_manifest_execution(manifest, path)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
             manifests[definition.name] = path
@@ -477,6 +515,56 @@ class SkillPluginManager:
             raise ValueError(f"Skill package file path escaped package root: {file_id}") from exc
         return path
 
+    def _validate_execution(self, manifest: dict[str, Any], loaded: LoadedSkill) -> None:
+        execution = manifest.get("execution")
+        if not isinstance(execution, dict) or execution.get("type") != "python_script":
+            return
+        script = execution.get("script")
+        if not isinstance(script, str) or not script.strip():
+            raise ValueError("Python script execution requires execution.script.")
+        package_root = _skill_package_root(loaded)
+        if package_root is None:
+            raise ValueError("Python script execution requires a skill package root.")
+        script_path = (package_root / script.strip()).resolve()
+        try:
+            script_path.relative_to(package_root.resolve())
+        except ValueError as exc:
+            raise ValueError("Python script path must stay inside the skill package root.") from exc
+        if not script_path.is_file():
+            raise ValueError(f"Python script not found: {script.strip()}")
+
+    @staticmethod
+    def _normalize_uploaded_package_files(plugin: SkillPlugin) -> None:
+        for manifest_path in plugin.manifest_paths.values():
+            if manifest_path.suffix.lower() != ".json":
+                continue
+            manifest = _read_manifest_source(manifest_path)
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _write_sandbox_package_file(package_root: Path, sandbox: object) -> None:
+        sandbox_data = sandbox if isinstance(sandbox, dict) else {}
+        enabled = bool(sandbox_data.get("enabled", False))
+        profile = sandbox_data.get("profile")
+        request_schema_version = sandbox_data.get("request_schema_version")
+        adapter_command = sandbox_data.get("adapter_command")
+        fallback_to_local = sandbox_data.get("fallback_to_local")
+
+        lines = ["sandbox:", f"  enabled: {'true' if enabled else 'false'}"]
+        if isinstance(profile, str):
+            lines.append(f"  profile: {json.dumps(profile, ensure_ascii=False)}")
+        else:
+            lines.append('  profile: ""')
+        if isinstance(request_schema_version, str) and request_schema_version.strip():
+            lines.append(f"  request_schema_version: {json.dumps(request_schema_version.strip(), ensure_ascii=False)}")
+        if isinstance(adapter_command, str) and adapter_command.strip():
+            lines.append(f"  adapter_command: {json.dumps(adapter_command.strip(), ensure_ascii=False)}")
+        if isinstance(fallback_to_local, bool):
+            lines.append(f"  fallback_to_local: {'true' if fallback_to_local else 'false'}")
+
+        sandbox_path = package_root / "sandbox.yml"
+        sandbox_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 def _with_plugin_metadata(
     definition: SkillDefinition,
     plugin: SkillPlugin | None,
@@ -484,6 +572,8 @@ def _with_plugin_metadata(
     runner_path: Path | None,
     spec_builder_path: Path | None,
 ) -> SkillDefinition:
+    if runner_path is None and _can_run_generic(definition.to_event_payload()):
+        runner_path = manifest_path
     if plugin is None:
         return definition.with_source(
             source_type="manifest",
@@ -505,6 +595,23 @@ def _with_plugin_metadata(
         runner_path=runner_path,
         spec_builder_path=spec_builder_path,
     )
+
+def _validate_manifest_execution(manifest: dict[str, Any], manifest_path: Path) -> None:
+    execution = manifest.get("execution")
+    if not isinstance(execution, dict) or execution.get("type") != "python_script":
+        return
+    script = execution.get("script")
+    if not isinstance(script, str) or not script.strip():
+        raise ValueError(f"Python script execution requires execution.script: {manifest_path}")
+    package_root = manifest_path.parent.resolve()
+    script_path = (package_root / script.strip()).resolve()
+    try:
+        script_path.relative_to(package_root)
+    except ValueError as exc:
+        raise ValueError(f"Python script path must stay inside the skill package root: {script}") from exc
+    if not script_path.is_file():
+        raise ValueError(f"Python script not found: {script}")
+
 
 def _score_skill(
     loaded: LoadedSkill,
@@ -565,7 +672,7 @@ def _manifest_keyword_score(plugin: SkillPlugin, skill_name: str, routing_text: 
     if manifest_path is None:
         return 0
     try:
-        manifest = _read_json(manifest_path)
+        manifest = _read_manifest_source(manifest_path)
     except (OSError, ValueError, json.JSONDecodeError):
         return 0
     routing = manifest.get("routing")

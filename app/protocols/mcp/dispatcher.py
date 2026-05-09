@@ -36,7 +36,7 @@ class McpDispatcher:
         if method == "ping":
             return {}
         if method == "tools/list":
-            return {"tools": [to_mcp_tool(tool) for tool in self.tool_service.list_tools(include_skill_tools=False)]}
+            return {"tools": [to_mcp_tool(tool) for tool in self.tool_service.list_tools()]}
         if method == "tools/call":
             return self.call_tool(params)
         raise ValueError(f"Unsupported MCP method: {method}")

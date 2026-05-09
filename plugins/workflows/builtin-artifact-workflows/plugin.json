@@ -1,0 +1,10 @@
+{
+  "id": "builtin-artifact-workflows",
+  "name": "Builtin Artifact Workflows",
+  "version": "1.0.0",
+  "description": "Built-in artifact and evidence-first workflow plugins.",
+  "protected": true,
+  "workflows": [
+    "workflows/*/workflow.json"
+  ]
+}

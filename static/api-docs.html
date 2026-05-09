@@ -1,0 +1,1069 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JetLinks Agent Runtime 接口文档</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fa;
+      --surface: #ffffff;
+      --surface-soft: #f8fafc;
+      --line: #dde3ec;
+      --text: #171b22;
+      --muted: #65717f;
+      --accent: #155bd4;
+      --accent-soft: #edf3ff;
+      --green: #0f766e;
+      --orange: #a65f00;
+      --code: #101827;
+      --radius: 8px;
+      --sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; color: var(--text); background: var(--bg); font-family: var(--sans); letter-spacing: 0; }
+    a { color: inherit; }
+    .layout { min-height: 100svh; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+    .sidebar { position: sticky; top: 0; height: 100svh; padding: 22px 16px; background: #111317; color: #d7dbe2; border-right: 1px solid rgba(255,255,255,.08); overflow: auto; }
+    .brand { display: grid; gap: 4px; padding: 0 4px 18px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .brand strong { color: #fff; font-size: 17px; line-height: 1.2; }
+    .brand span { color: #8f98a6; font-size: 12px; }
+    .nav { display: grid; gap: 4px; padding: 18px 0; }
+    .nav a, .side-link { min-height: 36px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: var(--radius); color: #d7dbe2; text-decoration: none; font-size: 13px; }
+    .nav a:hover, .side-link:hover { background: rgba(255,255,255,.08); color: #fff; }
+    .side-link { margin-top: 10px; color: #9ea7b5; border: 1px solid rgba(255,255,255,.08); }
+    main { min-width: 0; padding: 28px; }
+    .page { max-width: 1180px; margin: 0 auto; display: grid; gap: 18px; }
+    .hero, .section { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 14px 36px rgba(24,27,31,.06); }
+    .hero { padding: 28px; display: grid; gap: 16px; }
+    .section { padding: 22px; display: grid; gap: 16px; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 30px; line-height: 1.15; letter-spacing: 0; }
+    h2 { font-size: 20px; line-height: 1.25; letter-spacing: 0; }
+    h3 { font-size: 15px; line-height: 1.35; letter-spacing: 0; }
+    p, li, td, th { font-size: 14px; line-height: 1.7; }
+    .muted { color: var(--muted); }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip { display: inline-flex; align-items: center; min-height: 28px; padding: 4px 9px; border-radius: var(--radius); background: var(--accent-soft); color: #0f49ad; border: 1px solid #d6e5ff; font-size: 12px; font-weight: 650; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .callout, .method { padding: 14px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: var(--radius); display: grid; gap: 8px; }
+    .method { padding: 16px; background: #fff; gap: 12px; }
+    .method-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .method-name { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .tag { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border-radius: var(--radius); background: #ecfdf5; color: var(--green); border: 1px solid #bbf7d0; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .tag.ws { background: #eff6ff; color: var(--accent); border-color: #bfdbfe; }
+    .tag.admin { background: #fff7ed; color: var(--orange); border-color: #fed7aa; }
+    .tag.runtime { background: #f1f5f9; color: #334155; border-color: #cbd5e1; }
+    code { font-family: var(--mono); font-size: .92em; color: #0f172a; background: #eef2f7; border: 1px solid #dbe3ed; border-radius: 6px; padding: 1px 5px; }
+    pre { margin: 0; padding: 14px; overflow: auto; border-radius: var(--radius); color: #e6edf8; background: var(--code); border: 1px solid #172033; font-family: var(--mono); font-size: 12px; line-height: 1.55; tab-size: 2; }
+    pre code { padding: 0; color: inherit; background: transparent; border: 0; font-size: inherit; }
+    table { width: 100%; border-collapse: collapse; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+    th, td { padding: 10px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    th { color: #334155; background: #f8fafc; font-size: 12px; font-weight: 760; }
+    tr:last-child td { border-bottom: 0; }
+    .flow { display: grid; gap: 8px; counter-reset: flow; padding: 0; margin: 0; }
+    .flow li { list-style: none; position: relative; padding: 12px 12px 12px 42px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-soft); }
+    .flow li::before { counter-increment: flow; content: counter(flow); position: absolute; left: 12px; top: 13px; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: var(--accent); font-size: 12px; font-weight: 760; }
+    @media (max-width: 920px) {
+      .layout { display: block; }
+      .sidebar { position: static; height: auto; }
+      main { padding: 16px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <strong>接口文档</strong>
+        <span>JetLinks Agent Runtime v2</span>
+      </div>
+      <nav class="nav" aria-label="接口文档目录">
+        <a href="#overview">总览</a>
+        <a href="#auth">鉴权</a>
+        <a href="#acp-ws">ACP WebSocket</a>
+        <a href="#acp-methods">ACP 方法</a>
+        <a href="#runtime-options">Runtime Options</a>
+        <a href="#schemas">数据模型</a>
+        <a href="#responses">返回值</a>
+        <a href="#errors">错误码</a>
+        <a href="#events">事件流</a>
+        <a href="#endpoint-map">接口总表</a>
+        <a href="#http">HTTP 接口</a>
+        <a href="#artifacts">Artifacts</a>
+        <a href="#plugins">插件接口</a>
+        <a href="#cron">Cron</a>
+        <a href="#mcp">MCP</a>
+        <a href="#bootstrap">后端初始化</a>
+      </nav>
+      <a class="side-link" href="/static/workbench.html">返回 Workbench</a>
+    </aside>
+    <main>
+      <div class="page">
+        <section id="overview" class="hero">
+          <div class="chips">
+            <span class="chip">ACP over WebSocket</span>
+            <span class="chip">Server-managed Models</span>
+            <span class="chip">Workflow Plugins</span>
+            <span class="chip">Artifact Workspace</span>
+          </div>
+          <h1>JetLinks Agent Runtime 接口文档</h1>
+          <p class="muted">本页描述当前服务的运行接口、ACP WebSocket 对接方式、模型托管语义、workflow/skill/runtimeOptions 的约定。默认通用智能体走 agent loop；workflow 只有在请求显式传入时才会执行。</p>
+          <div class="grid">
+            <div class="callout">
+              <strong>服务地址</strong>
+              <p><code>http://127.0.0.1:8010</code>。生产环境以部署网关地址为准。</p>
+            </div>
+            <div class="callout">
+              <strong>核心入口</strong>
+              <p>浏览器或第三方系统优先接入 <code>/api/acp/ws</code>；简单调试可使用 <code>/api/agents/{agent}/runs</code>。</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="auth" class="section">
+          <h2>鉴权</h2>
+          <table>
+            <thead><tr><th>场景</th><th>规则</th><th>传参方式</th></tr></thead>
+            <tbody>
+              <tr><td>开发模式</td><td><code>RUNTIME_AUTH_MODE</code> 未设置为 production 时，运行类接口默认不强制 token。</td><td>无需传 token。</td></tr>
+              <tr><td>生产运行接口</td><td><code>RUNTIME_AUTH_MODE=production</code> 时，HTTP 运行接口和 ACP WebSocket 需要 <code>RUNTIME_API_TOKEN</code>。</td><td><code>Authorization: Bearer &lt;token&gt;</code> 或 <code>?token=&lt;token&gt;</code>。</td></tr>
+              <tr><td>管理写接口</td><td>只要配置了 <code>RUNTIME_API_TOKEN</code>，插件上传、配置保存、手动 cron 等管理写接口都要求 token。</td><td><code>Authorization: Bearer &lt;token&gt;</code>。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="acp-ws" class="section">
+          <h2>ACP WebSocket 对接</h2>
+          <div class="method">
+            <div class="method-head">
+              <div class="method-name"><span class="tag ws">WS</span><h3>/api/acp/ws</h3></div>
+              <span class="muted">JSON-RPC 2.0 over WebSocket，服务端接受子协议 <code>acp.v1</code></span>
+            </div>
+            <pre><code>const ws = new WebSocket('ws://127.0.0.1:8010/api/acp/ws', 'acp.v1');
+
+ws.onmessage = (event) =&gt; {
+  const packet = JSON.parse(event.data);
+  if (packet.method === 'session/update') {
+    console.log('runtime event', packet.params.update);
+    return;
+  }
+  console.log('rpc result', packet);
+};</code></pre>
+          </div>
+          <h3>常用会话字段</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>sessionId</code></td><td>string</td><td>ACP 会话 ID。请求级管理操作一般都需要它。</td></tr>
+              <tr><td><code>threadId</code></td><td>string</td><td>对应运行时线程 ID，和产物目录、记忆目录绑定。</td></tr>
+              <tr><td><code>agentName</code></td><td>string</td><td>实际执行的 agent 名称，默认 <code>default</code>。</td></tr>
+              <tr><td><code>cwd</code></td><td>string</td><td>当前工作目录，外部 ACP backend 会使用它作为会话根目录。</td></tr>
+              <tr><td><code>backend.type</code></td><td>string</td><td><code>local</code> 或 <code>acp_stdio</code>。</td></tr>
+              <tr><td><code>modelId</code></td><td>string|null</td><td>当前选中的托管模型 ID。</td></tr>
+              <tr><td><code>modelName</code></td><td>string|null</td><td>解析后的真实模型名或兼容旧逻辑时的模型名。</td></tr>
+              <tr><td><code>appTemplateName</code></td><td>string|null</td><td>会话使用的 app template 名称。</td></tr>
+            </tbody>
+          </table>
+          <h3>prompt 里可传的块</h3>
+          <table>
+            <thead><tr><th>块类型</th><th>字段</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>text</code></td><td><code>text</code></td><td>纯文本内容。</td></tr>
+              <tr><td><code>image</code></td><td><code>data</code> / <code>mimeType</code> / <code>uri</code></td><td>图片，<code>data</code> 为 base64，<code>uri</code> 可为原始文件路径。</td></tr>
+              <tr><td><code>audio</code></td><td><code>data</code> / <code>mimeType</code> / <code>uri</code></td><td>音频输入。</td></tr>
+              <tr><td><code>resource_link</code></td><td><code>name</code> / <code>uri</code> / <code>mimeType</code></td><td>资源链接，通常映射到上传文件或虚拟路径。</td></tr>
+              <tr><td><code>resource</code></td><td><code>resource.uri</code> / <code>resource.mimeType</code> / <code>resource.text</code></td><td>嵌入式资源，可直接追加到用户消息正文中。</td></tr>
+            </tbody>
+          </table>
+          <h3>推荐调用顺序</h3>
+          <ol class="flow">
+            <li>连接 <code>/api/acp/ws</code>，生产模式下通过 query token 或 header 传鉴权。</li>
+            <li>发送 <code>initialize</code>，读取能力信息和 <code>_meta.jetlinks.modelManagement</code>。</li>
+            <li>发送 <code>session/new</code> 创建会话，得到 <code>sessionId</code>、<code>threadId</code>、模型列表。</li>
+            <li>需要切换模型时发送 <code>session/set_model</code>，只传后端模型管理里的 <code>modelId</code>。</li>
+            <li>发送 <code>session/prompt</code>，持续接收 <code>session/update</code>，最后收到同 id 的 JSON-RPC result。</li>
+            <li>会话结束后发送 <code>session/close</code>；需要中断时发送 <code>session/cancel</code>。</li>
+          </ol>
+          <h3>完整示例</h3>
+          <pre><code>ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: {
+    protocolVersion: 1,
+    clientInfo: { name: 'external-console', version: '1.0.0' }
+  }
+}));
+
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 2,
+  method: 'session/new',
+  params: {
+    agentName: 'default',
+    threadId: 'thread-001',
+    cwd: '/tmp'
+  }
+}));
+
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 3,
+  method: 'session/set_model',
+  params: {
+    sessionId: 'acp-session-xxxx',
+    modelId: 'qwen-vl-30b'
+  }
+}));
+
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 4,
+  method: 'session/prompt',
+  params: {
+    sessionId: 'acp-session-xxxx',
+    prompt: [{ type: 'text', text: '生成一份 JetLinks IoT 架构说明' }],
+    runtimeOptions: {
+      workflow: 'artifact_workflow',
+      selectedSkills: ['markdown-rendering']
+    }
+  }
+}));</code></pre>
+        </section>
+
+        <section id="acp-methods" class="section">
+          <h2>ACP JSON-RPC 方法</h2>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag ws">RPC</span><h3>initialize</h3></div></div>
+            <p class="muted">返回协议版本、运行能力、JetLinks 扩展能力。当前会在 <code>_meta.jetlinks</code> 标注模型由服务端管理。</p>
+            <table>
+              <thead><tr><th>请求参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>protocolVersion</code></td><td>integer</td><td>否</td><td>客户端期望的协议版本，当前服务固定返回 <code>1</code>。</td></tr>
+                <tr><td><code>clientInfo</code></td><td>object</td><td>否</td><td>客户端名称和版本，用于日志和兼容判断。</td></tr>
+                <tr><td><code>clientInfo.name</code></td><td>string</td><td>否</td><td>客户端名称。</td></tr>
+                <tr><td><code>clientInfo.version</code></td><td>string</td><td>否</td><td>客户端版本。</td></tr>
+              </tbody>
+            </table>
+            <pre><code>{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {}
+}</code></pre>
+            <pre><code>{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": 1,
+    "agentInfo": { "name": "jetlinks-agent-runtime-v2", "version": "0.1.0" },
+    "agentCapabilities": {
+      "promptCapabilities": { "image": true, "audio": true, "embeddedContext": true },
+      "sessionCapabilities": { "list": true, "close": true, "fork": true, "resume": true, "cancel": true },
+      "transports": ["websocket"]
+    },
+    "_meta": {
+      "jetlinks": {
+        "modelManagement": "server",
+        "artifactWorkspace": true
+      }
+    }
+  }
+}</code></pre>
+            <h3>返回值字段</h3>
+            <table>
+              <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>protocolVersion</code></td><td>integer</td><td>协议版本，当前固定为 <code>1</code>。</td></tr>
+                <tr><td><code>agentInfo</code></td><td>object</td><td>服务端信息。</td></tr>
+                <tr><td><code>agentCapabilities</code></td><td>object</td><td>能力声明。</td></tr>
+                <tr><td><code>_meta.jetlinks.modelManagement</code></td><td>string</td><td>模型托管模式，当前为 <code>server</code>。</td></tr>
+                <tr><td><code>_meta.jetlinks.runtimeOptions</code></td><td>string[]</td><td>当前支持的 runtimeOptions 字段名列表。</td></tr>
+                <tr><td><code>_meta.jetlinks.artifactWorkspace</code></td><td>boolean</td><td>是否启用线程成果工作区。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag ws">RPC</span><h3>session/new</h3></div></div>
+            <p class="muted">创建会话。可传 <code>agentName</code>、<code>threadId</code>、<code>appTemplateName</code>、<code>runtimeOptions</code>。如果传了托管模型 ID，会解析成完整模型配置。</p>
+            <table>
+              <thead><tr><th>请求参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>sessionId</code></td><td>string</td><td>否</td><td>显式指定会话 ID，不传则自动生成。</td></tr>
+                <tr><td><code>agentName</code></td><td>string</td><td>否</td><td>要执行的 agent 名称，默认 <code>default</code>。</td></tr>
+                <tr><td><code>threadId</code></td><td>string</td><td>否</td><td>线程 ID，默认自动生成。</td></tr>
+                <tr><td><code>cwd</code></td><td>string</td><td>否</td><td>会话工作目录，外部 backend 会使用它。</td></tr>
+                <tr><td><code>appTemplateName</code></td><td>string</td><td>否</td><td>从应用模板派生会话初始配置。</td></tr>
+                <tr><td><code>runtimeOptions</code></td><td>object</td><td>否</td><td>本次会话默认 runtimeOptions。</td></tr>
+              </tbody>
+            </table>
+            <pre><code>{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "session/new",
+  "params": {
+    "agentName": "default",
+    "threadId": "thread-001",
+    "cwd": "/tmp",
+    "runtimeOptions": {
+      "modelName": "qwen-vl-30b",
+      "workflow": "artifact_workflow",
+      "selectedSkills": ["drawio-generation"]
+    }
+  }
+}</code></pre>
+            <h3>返回值字段</h3>
+            <table>
+              <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>sessionId</code></td><td>string</td><td>新建的 ACP 会话 ID。</td></tr>
+                <tr><td><code>threadId</code></td><td>string</td><td>运行线程 ID。</td></tr>
+                <tr><td><code>agentName</code></td><td>string</td><td>最终使用的 agent 名称。</td></tr>
+                <tr><td><code>cwd</code></td><td>string</td><td>会话工作目录。</td></tr>
+                <tr><td><code>backend.type</code></td><td>string</td><td>后端类型。</td></tr>
+                <tr><td><code>appTemplateName</code></td><td>string|null</td><td>应用模板名。</td></tr>
+                <tr><td><code>runtimeOptions</code></td><td>object</td><td>已归一化的运行参数。</td></tr>
+                <tr><td><code>models.currentModelId</code></td><td>string|null</td><td>当前模型 ID。</td></tr>
+                <tr><td><code>models.currentModelName</code></td><td>string|null</td><td>当前真实模型名。</td></tr>
+                <tr><td><code>models.availableModels</code></td><td>array</td><td>可用模型列表。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag ws">RPC</span><h3>session/prompt</h3></div></div>
+            <p class="muted">执行一轮对话。运行中会发送多条 <code>session/update</code>，最终返回同 id 的 result。重复发送同一 session 的 prompt 会取消上一轮未完成任务。</p>
+            <table>
+              <thead><tr><th>请求参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>sessionId</code></td><td>string</td><td>否</td><td>目标会话 ID。不传时会自动新建会话。</td></tr>
+                <tr><td><code>agentName</code></td><td>string</td><td>否</td><td>覆盖当前会话使用的 agent。</td></tr>
+                <tr><td><code>prompt</code></td><td>string | array</td><td>是</td><td>一轮输入文本或多块输入，见上面的块类型表。</td></tr>
+                <tr><td><code>runtimeOptions</code></td><td>object</td><td>否</td><td>本轮覆盖参数，优先级高于会话默认值。</td></tr>
+                <tr><td><code>cwd</code></td><td>string</td><td>否</td><td>仅外部 backend 场景使用。</td></tr>
+              </tbody>
+            </table>
+            <pre><code>{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "session/prompt",
+  "params": {
+    "sessionId": "acp-session-abc123",
+    "prompt": [{ "type": "text", "text": "人员翻越围栏进入禁区" }],
+    "runtimeOptions": {
+      "workflow": "evidence_first_detection",
+      "selectedSkills": ["behavior-detection"]
+    }
+  }
+}</code></pre>
+            <h3>返回值字段</h3>
+            <table>
+              <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>stopReason</code></td><td>string</td><td>结束原因，当前通常为 <code>end_turn</code>，取消时为 <code>cancelled</code>。</td></tr>
+                <tr><td><code>threadId</code></td><td>string</td><td>执行线程 ID。</td></tr>
+                <tr><td><code>agentName</code></td><td>string</td><td>执行 agent 名称。</td></tr>
+                <tr><td><code>result</code></td><td>object</td><td><code>AgentRunResult</code> 的完整结果对象。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag ws">RPC</span><h3>session/set_model</h3></div></div>
+            <p class="muted">切换当前会话模型。推荐只传后端模型管理中的 <code>modelId</code>。如果 modelId 不存在，会兼容旧逻辑，把该值当作模型名。</p>
+            <table>
+              <thead><tr><th>请求参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>sessionId</code></td><td>string</td><td>是</td><td>目标会话 ID。</td></tr>
+                <tr><td><code>modelId</code></td><td>string</td><td>是</td><td>后端模型管理里的模型 ID。兼容字段 <code>modelName</code> / <code>model_name</code>。</td></tr>
+              </tbody>
+            </table>
+            <pre><code>{
+  "jsonrpc": "2.0",
+  "id": 20,
+  "method": "session/set_model",
+  "params": {
+    "sessionId": "acp-session-abc123",
+    "modelId": "qwen-vl-30b"
+  }
+}</code></pre>
+            <h3>返回值字段</h3>
+            <table>
+              <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+              <tbody>
+                <tr><td><code>sessionId</code></td><td>string</td><td>会话 ID。</td></tr>
+                <tr><td><code>modelId</code></td><td>string</td><td>最终设置的模型 ID。</td></tr>
+                <tr><td><code>modelName</code></td><td>string</td><td>解析后的真实模型名。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <table>
+            <thead><tr><th>方法</th><th>作用</th><th>关键参数</th></tr></thead>
+            <tbody>
+              <tr><td><code>session/list</code></td><td>列出当前 WebSocket 连接内的会话。</td><td>无，直接返回会话列表。</td></tr>
+              <tr><td><code>session/load</code></td><td>加载并更新已有会话的 cwd/runtimeOptions。</td><td><code>sessionId</code> 必填；可选 <code>cwd</code>、<code>runtimeOptions</code>。</td></tr>
+              <tr><td><code>session/fork</code></td><td>从已有会话派生新会话。</td><td><code>sessionId</code> 必填；可选 <code>newSessionId</code>、<code>threadId</code>、<code>cwd</code>、<code>runtimeOptions</code>。</td></tr>
+              <tr><td><code>session/resume</code></td><td>恢复会话；如果不存在则创建。</td><td><code>sessionId</code> 必填；可选 <code>agentName</code>、<code>threadId</code>、<code>cwd</code>、<code>appTemplateName</code>、<code>runtimeOptions</code>。</td></tr>
+              <tr><td><code>session/cancel</code></td><td>取消当前会话正在执行的 prompt。</td><td><code>sessionId</code> 必填。</td></tr>
+              <tr><td><code>session/close</code></td><td>关闭会话并清理外部 ACP backend。</td><td><code>sessionId</code> 必填。</td></tr>
+              <tr><td><code>list_agents</code></td><td>列出可用 agent。</td><td>无，返回当前 loader 中的 agent 列表。</td></tr>
+              <tr><td><code>jetlinks/session/delete_files</code></td><td>删除线程工作区文件，可 dry run。</td><td><code>sessionId</code> 必填；可选 <code>scopes</code>、<code>dryRun</code>。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="runtime-options" class="section">
+          <h2>Runtime Options</h2>
+          <p class="muted">请求级 <code>runtimeOptions</code> 优先级最高；服务初始化传入的模型和 skill 默认值次之；环境变量和 agent JSON 只作为兜底。</p>
+          <table>
+            <thead><tr><th>字段</th><th>说明</th><th>示例</th></tr></thead>
+            <tbody>
+              <tr><td><code>threadId</code></td><td>线程 ID，对应 <code>.runtime/threads/{thread_id}</code>。</td><td><code>thread-001</code></td></tr>
+              <tr><td><code>workflow</code></td><td>显式选择 workflow。空、<code>agent_loop</code>、<code>default</code> 都表示走通用 agent loop。</td><td><code>artifact_workflow</code></td></tr>
+              <tr><td><code>selectedSkills</code></td><td>本轮允许或优先使用的 skill。不会单独触发 workflow。</td><td><code>["markdown-rendering"]</code></td></tr>
+              <tr><td><code>selectedMcpTools</code></td><td>本轮显式选择 MCP 工具。</td><td><code>["local_read_file"]</code></td></tr>
+              <tr><td><code>modelName</code> / <code>modelId</code></td><td>ACP 层推荐传托管模型 ID；运行时会解析为真实模型名和连接参数。</td><td><code>qwen-vl-30b</code></td></tr>
+              <tr><td><code>baseUrl</code> / <code>apiKey</code></td><td>调试或高级覆盖场景使用；业务接入优先只传 modelId。</td><td><code>http://host/v1</code></td></tr>
+              <tr><td><code>temperature</code> / <code>topP</code></td><td>采样参数。</td><td><code>0.4</code></td></tr>
+              <tr><td><code>maxTokens</code></td><td>最大输出 token。</td><td><code>2048</code></td></tr>
+              <tr><td><code>requestTimeoutSeconds</code></td><td>模型请求超时时间。</td><td><code>120</code></td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="responses" class="section">
+          <h2>返回值</h2>
+          <p class="muted">下面整理的是当前接口里最常见、最重要的返回结构。很多接口还会额外带上原样透传字段，但接入方至少应先按这里的字段消费。</p>
+          <h3>AgentRunResult</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>agent</code></td><td>string</td><td>执行 agent 名称。</td></tr>
+              <tr><td><code>thread_id</code></td><td>string</td><td>线程 ID。</td></tr>
+              <tr><td><code>status</code></td><td>string</td><td><code>completed</code> 或 <code>failed</code>。</td></tr>
+              <tr><td><code>reply</code></td><td>string</td><td>最终回复文本。</td></tr>
+              <tr><td><code>artifacts</code></td><td>array</td><td>成果文件引用列表。</td></tr>
+              <tr><td><code>verification</code></td><td>object|null</td><td>校验结果，存在则说明 workflow/skill 已执行 verifier。</td></tr>
+              <tr><td><code>spec</code></td><td>object|null</td><td>workflow 或 skill 的结构化规格。</td></tr>
+              <tr><td><code>metadata</code></td><td>object</td><td>补充元数据。</td></tr>
+            </tbody>
+          </table>
+          <h3>ArtifactRef</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>thread_id</code></td><td>string</td><td>线程 ID。</td></tr>
+              <tr><td><code>path</code></td><td>string</td><td>虚拟路径，前端用它拼接预览或下载地址。</td></tr>
+              <tr><td><code>name</code></td><td>string</td><td>文件名。</td></tr>
+              <tr><td><code>mime_type</code></td><td>string</td><td>MIME 类型。</td></tr>
+              <tr><td><code>kind</code></td><td>string</td><td>内容归类，如 <code>markdown</code>、<code>html</code>、<code>image</code>。</td></tr>
+              <tr><td><code>size</code></td><td>integer</td><td>文件字节数。</td></tr>
+              <tr><td><code>preview_url</code></td><td>string</td><td>预览 URL。</td></tr>
+              <tr><td><code>download_url</code></td><td>string</td><td>下载 URL。</td></tr>
+            </tbody>
+          </table>
+          <h3>VerificationResult</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>passed</code></td><td>boolean</td><td>是否通过。</td></tr>
+              <tr><td><code>retry_count</code></td><td>integer</td><td>重试次数。</td></tr>
+              <tr><td><code>checks</code></td><td>array</td><td>完整检查项列表。</td></tr>
+              <tr><td><code>failed_checks</code></td><td>string[]</td><td>失败检查项名称。</td></tr>
+            </tbody>
+          </table>
+          <h3>Cron 相关返回</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>CronJob</code></td><td>object</td><td>包含 <code>name</code>、<code>title</code>、<code>schedule</code>、<code>timezone</code>、<code>last_run_at</code> 等完整信息。</td></tr>
+              <tr><td><code>CronRunRecord</code></td><td>object</td><td>包含单次执行记录，字段含 <code>run_id</code>、<code>status</code>、<code>thread_id</code>、<code>reply</code>、<code>error</code>。</td></tr>
+              <tr><td><code>CronSchedulerStatus</code></td><td>object</td><td>包含调度器启用状态、运行状态、下次 tick 时间、due jobs 等信息。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="errors" class="section">
+          <h2>错误码</h2>
+          <p class="muted">ACP WebSocket 使用 JSON-RPC 错误码；HTTP 接口通常返回 FastAPI 的 4xx/5xx JSON 错误体。对接时优先处理下面这几类 ACP 错误。</p>
+          <table>
+            <thead><tr><th>错误码</th><th>含义</th><th>常见触发点</th></tr></thead>
+            <tbody>
+              <tr><td><code>-32600</code></td><td>Invalid Request</td><td>消息不是对象，或缺少 <code>method</code>。</td></tr>
+              <tr><td><code>-32602</code></td><td>Invalid params</td><td>参数校验失败、会话不存在、缺少 <code>sessionId</code>、缺少 <code>prompt</code>、无效模型 ID、无效工作流名等。</td></tr>
+              <tr><td><code>-32004</code></td><td>Not Found</td><td>外部 ACP backend、线程文件或资源不存在。</td></tr>
+              <tr><td><code>-32000</code></td><td>Server error</td><td>未捕获异常、运行时内部错误、后端执行失败。</td></tr>
+            </tbody>
+          </table>
+          <h3>常见错误消息</h3>
+          <table>
+            <thead><tr><th>消息</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>sessionId is required</code></td><td>需要显式传入会话 ID。</td></tr>
+              <tr><td><code>prompt text or messages are required</code></td><td><code>session/prompt</code> 缺少可执行输入。</td></tr>
+              <tr><td><code>Unknown ACP session: ...</code></td><td>引用了不存在的会话。</td></tr>
+              <tr><td><code>Unknown ACP app template: ...</code></td><td>传入的应用模板名不存在。</td></tr>
+              <tr><td><code>Unsupported ACP method: ...</code></td><td>请求的方法未注册。</td></tr>
+              <tr><td><code>scopes must be a list of strings</code></td><td>删除文件时 <code>scopes</code> 类型不正确。</td></tr>
+              <tr><td><code>Unsupported ACP file deletion scope: ...</code></td><td>删除文件时传入了非法 scope。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="schemas" class="section">
+          <h2>数据模型</h2>
+          <p class="muted">这部分对应服务实际使用的 typed models。字段名与接口请求/响应一致，建议对接方直接按这里填写。</p>
+
+          <h3>ChatRequest</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>messages</code></td><td>Message[]</td><td>是</td><td>-</td><td>对话消息列表，至少一条。</td></tr>
+              <tr><td><code>attachments</code></td><td>Attachment[]</td><td>否</td><td>[]</td><td>本轮附件，支持上传文件、资源链接、base64 数据。</td></tr>
+              <tr><td><code>runtime_options</code></td><td>RuntimeOptions</td><td>否</td><td>{}</td><td>本轮执行上下文。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Message</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>role</code></td><td><code>system|user|assistant|tool</code></td><td>是</td><td>-</td><td>消息角色。</td></tr>
+              <tr><td><code>content</code></td><td>string</td><td>是</td><td>-</td><td>消息文本内容。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Attachment</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>name</code></td><td>string</td><td>是</td><td>-</td><td>附件名称。</td></tr>
+              <tr><td><code>path</code></td><td>string|null</td><td>否</td><td>null</td><td>附件路径；资源链接时常见。</td></tr>
+              <tr><td><code>mime_type</code></td><td>string|null</td><td>否</td><td>null</td><td>MIME 类型。</td></tr>
+              <tr><td><code>data_base64</code></td><td>string|null</td><td>否</td><td>null</td><td>base64 编码数据。</td></tr>
+              <tr><td><code>metadata</code></td><td>object</td><td>否</td><td>{}</td><td>附加元数据，例如 ACP 类型、资源信息等。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>RuntimeOptions</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>thread_id</code></td><td>string|null</td><td>否</td><td>null</td><td>线程 ID，用于产物、记忆、版本目录。</td></tr>
+              <tr><td><code>user_id</code></td><td>string|null</td><td>否</td><td>null</td><td>用户上下文 ID。</td></tr>
+              <tr><td><code>project_id</code></td><td>string|null</td><td>否</td><td>null</td><td>项目上下文 ID。</td></tr>
+              <tr><td><code>workflow</code></td><td>string|null</td><td>否</td><td>null</td><td>显式 workflow 名称，必须已注册。</td></tr>
+              <tr><td><code>selected_skills</code></td><td>string[]</td><td>否</td><td>[]</td><td>本轮允许/优先使用的 skill。</td></tr>
+              <tr><td><code>selected_mcp_tools</code></td><td>string[]</td><td>否</td><td>[]</td><td>本轮显式启用的 MCP 工具。</td></tr>
+              <tr><td><code>model_name</code></td><td>string|null</td><td>否</td><td>null</td><td>模型名或托管模型 ID。</td></tr>
+              <tr><td><code>model_env</code></td><td>string|null</td><td>否</td><td>null</td><td>模型名所在环境变量名。</td></tr>
+              <tr><td><code>base_url</code></td><td>string|null</td><td>否</td><td>null</td><td>OpenAI-compatible base URL。</td></tr>
+              <tr><td><code>base_url_env</code></td><td>string|null</td><td>否</td><td>null</td><td>base URL 环境变量名。</td></tr>
+              <tr><td><code>api_key</code></td><td>string|null</td><td>否</td><td>null</td><td>API key。</td></tr>
+              <tr><td><code>api_key_env</code></td><td>string|null</td><td>否</td><td>null</td><td>API key 环境变量名。</td></tr>
+              <tr><td><code>temperature</code></td><td>number|null</td><td>否</td><td>null</td><td>采样温度。</td></tr>
+              <tr><td><code>top_p</code></td><td>number|null</td><td>否</td><td>null</td><td>top-p 采样。</td></tr>
+              <tr><td><code>max_tokens</code></td><td>integer|null</td><td>否</td><td>null</td><td>最大输出 token。</td></tr>
+              <tr><td><code>request_timeout_seconds</code></td><td>number|null</td><td>否</td><td>null</td><td>请求超时。</td></tr>
+              <tr><td><code>response_format</code></td><td><code>text|json</code></td><td>否</td><td><code>text</code></td><td>响应格式约束。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>AgentRunResult</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>agent</code></td><td>string</td><td>是</td><td>-</td><td>agent 名称。</td></tr>
+              <tr><td><code>thread_id</code></td><td>string</td><td>是</td><td>-</td><td>线程 ID。</td></tr>
+              <tr><td><code>status</code></td><td><code>completed|failed</code></td><td>否</td><td><code>completed</code></td><td>运行结果。</td></tr>
+              <tr><td><code>reply</code></td><td>string</td><td>是</td><td>-</td><td>最终文本回复。</td></tr>
+              <tr><td><code>artifacts</code></td><td>ArtifactRef[]</td><td>否</td><td>[]</td><td>本轮产物引用。</td></tr>
+              <tr><td><code>verification</code></td><td>VerificationResult|null</td><td>否</td><td>null</td><td>校验结果。</td></tr>
+              <tr><td><code>spec</code></td><td>object|null</td><td>否</td><td>null</td><td>workflow / skill spec。</td></tr>
+              <tr><td><code>metadata</code></td><td>object</td><td>否</td><td>{}</td><td>补充元数据。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>ArtifactRef</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>thread_id</code></td><td>string</td><td>线程 ID。</td></tr>
+              <tr><td><code>path</code></td><td>string</td><td>虚拟路径，通常形如 <code>/mnt/user-data/outputs/...</code>。</td></tr>
+              <tr><td><code>name</code></td><td>string</td><td>文件名。</td></tr>
+              <tr><td><code>mime_type</code></td><td>string</td><td>MIME 类型。</td></tr>
+              <tr><td><code>kind</code></td><td>string</td><td>归类后的类型，如 <code>markdown</code>、<code>html</code>、<code>image</code>。</td></tr>
+              <tr><td><code>size</code></td><td>integer</td><td>文件大小字节数。</td></tr>
+              <tr><td><code>preview_url</code></td><td>string</td><td>预览 URL。</td></tr>
+              <tr><td><code>download_url</code></td><td>string</td><td>下载 URL。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>VerificationResult</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>passed</code></td><td>boolean</td><td>是否通过。</td></tr>
+              <tr><td><code>retry_count</code></td><td>integer</td><td>重试次数。</td></tr>
+              <tr><td><code>checks</code></td><td>VerificationCheck[]</td><td>所有校验项。</td></tr>
+              <tr><td><code>failed_checks</code></td><td>string[]</td><td>失败检查名列表。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>AppTemplate</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>name</code></td><td>string</td><td>-</td><td>模板名。</td></tr>
+              <tr><td><code>title</code></td><td>string</td><td>-</td><td>展示标题。</td></tr>
+              <tr><td><code>description</code></td><td>string</td><td>""</td><td>模板说明。</td></tr>
+              <tr><td><code>category</code></td><td>string</td><td><code>general</code></td><td>分类。</td></tr>
+              <tr><td><code>icon</code></td><td>string</td><td><code>spark</code></td><td>图标名。</td></tr>
+              <tr><td><code>agent_name</code></td><td>string</td><td><code>default</code></td><td>使用的 agent。</td></tr>
+              <tr><td><code>workflow</code></td><td>string|null</td><td>null</td><td>默认 workflow。</td></tr>
+              <tr><td><code>selected_skills</code></td><td>string[]</td><td>[]</td><td>默认 skill 选择。</td></tr>
+              <tr><td><code>selected_mcp_tools</code></td><td>string[]</td><td>[]</td><td>默认 MCP 工具。</td></tr>
+              <tr><td><code>prompt_examples</code></td><td>string[]</td><td>[]</td><td>示例 prompt。</td></tr>
+              <tr><td><code>tags</code></td><td>string[]</td><td>[]</td><td>标签。</td></tr>
+              <tr><td><code>runtime_options</code></td><td>object</td><td>{}</td><td>默认 runtime options。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>CronJobInput / CronJob</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>title</code></td><td>string</td><td>""</td><td>任务标题。</td></tr>
+              <tr><td><code>description</code></td><td>string</td><td>""</td><td>任务描述。</td></tr>
+              <tr><td><code>enabled</code></td><td>boolean</td><td><code>true</code></td><td>是否启用。</td></tr>
+              <tr><td><code>schedule</code></td><td>string</td><td><code>0 * * * *</code></td><td>5 字段 cron 表达式。</td></tr>
+              <tr><td><code>timezone</code></td><td>string</td><td><code>Asia/Shanghai</code></td><td>时区。</td></tr>
+              <tr><td><code>agent_name</code></td><td>string</td><td><code>default</code></td><td>执行 agent。</td></tr>
+              <tr><td><code>prompt</code></td><td>string</td><td>-</td><td>任务 prompt，不能为空。</td></tr>
+              <tr><td><code>runtime_options</code></td><td>object</td><td>{}</td><td>运行时参数。</td></tr>
+              <tr><td><code>name</code></td><td>string</td><td>-</td><td>cron job 名称。</td></tr>
+              <tr><td><code>created_at</code></td><td>datetime</td><td>-</td><td>创建时间。</td></tr>
+              <tr><td><code>updated_at</code></td><td>datetime</td><td>-</td><td>更新时间。</td></tr>
+              <tr><td><code>next_run_at</code></td><td>datetime|null</td><td>null</td><td>下次执行时间。</td></tr>
+              <tr><td><code>last_status</code></td><td><code>idle|running|completed|failed</code></td><td><code>idle</code></td><td>最近状态。</td></tr>
+              <tr><td><code>last_error</code></td><td>string</td><td>""</td><td>最近错误。</td></tr>
+              <tr><td><code>last_thread_id</code></td><td>string</td><td>""</td><td>最近执行线程。</td></tr>
+              <tr><td><code>last_reply</code></td><td>string</td><td>""</td><td>最近回复。</td></tr>
+              <tr><td><code>run_count</code></td><td>integer</td><td>0</td><td>已运行次数。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>ToolDefinition</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>name</code></td><td>string</td><td>工具名。</td></tr>
+              <tr><td><code>title</code></td><td>string</td><td>展示标题。</td></tr>
+              <tr><td><code>description</code></td><td>string</td><td>工具说明。</td></tr>
+              <tr><td><code>input_schema</code></td><td>object</td><td>输入 JSON Schema。</td></tr>
+              <tr><td><code>output_schema</code></td><td>object</td><td>输出 JSON Schema。</td></tr>
+              <tr><td><code>enabled</code></td><td>boolean</td><td>是否启用。</td></tr>
+              <tr><td><code>source</code></td><td>object</td><td>来源信息。</td></tr>
+              <tr><td><code>editable</code></td><td>boolean</td><td>是否可编辑。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>WorkflowConfig</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>name</code></td><td>string</td><td>-</td><td>workflow 名称，必须符合 <code>[A-Za-z0-9_.-]{1,128}</code>。</td></tr>
+              <tr><td><code>display_name</code></td><td>string</td><td>-</td><td>展示名。</td></tr>
+              <tr><td><code>description</code></td><td>string</td><td>""</td><td>说明。</td></tr>
+              <tr><td><code>enabled</code></td><td>boolean</td><td><code>true</code></td><td>是否注册。</td></tr>
+              <tr><td><code>handler</code></td><td>string</td><td>-</td><td>处理器，格式为 <code>module.py:ClassName</code>。</td></tr>
+              <tr><td><code>trigger</code></td><td><code>explicit_runtime_options</code></td><td><code>explicit_runtime_options</code></td><td>当前只支持显式 runtimeOptions 触发。</td></tr>
+              <tr><td><code>metadata</code></td><td>object</td><td>{}</td><td>附加元数据。</td></tr>
+            </tbody>
+          </table>
+
+          <h3>SandboxStatus</h3>
+          <table>
+            <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>provider</code></td><td><code>local|opensandbox</code></td><td>沙箱提供方。</td></tr>
+              <tr><td><code>configured</code></td><td>boolean</td><td>配置是否有效。</td></tr>
+              <tr><td><code>available</code></td><td>boolean</td><td>当前是否可用。</td></tr>
+              <tr><td><code>sdk_installed</code></td><td>boolean</td><td>Python SDK 是否安装。</td></tr>
+              <tr><td><code>domain</code></td><td>string|null</td><td>OpenSandbox domain。</td></tr>
+              <tr><td><code>protocol</code></td><td>string</td><td>协议。</td></tr>
+              <tr><td><code>server_url</code></td><td>string|null</td><td>服务地址。</td></tr>
+              <tr><td><code>image</code></td><td>string|null</td><td>镜像。</td></tr>
+              <tr><td><code>routing_mode</code></td><td>string</td><td>路由模式。</td></tr>
+              <tr><td><code>policy_source</code></td><td>string</td><td>策略来源。</td></tr>
+              <tr><td><code>policy_error</code></td><td>string|null</td><td>策略错误。</td></tr>
+              <tr><td><code>profiles</code></td><td>object</td><td>可用 profile 映射。</td></tr>
+              <tr><td><code>skill_profiles</code></td><td>object</td><td>技能到 profile 映射。</td></tr>
+              <tr><td><code>sandboxed_skills</code></td><td>string[]</td><td>启用 sandbox 的 skill 列表。</td></tr>
+              <tr><td><code>fallback_to_local</code></td><td>boolean</td><td>失败时是否回退本地工作区。</td></tr>
+              <tr><td><code>executor_enabled</code></td><td>boolean</td><td>执行器是否启用。</td></tr>
+              <tr><td><code>message</code></td><td>string</td><td>状态描述。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="events" class="section">
+          <h2>ACP 事件流</h2>
+          <p class="muted">执行期间服务端发送 <code>session/update</code> notification。原始运行事件会放在 <code>update._meta.jetlinksRuntimeEvent</code> 中。</p>
+          <pre><code>{
+  "jsonrpc": "2.0",
+  "method": "session/update",
+  "params": {
+    "sessionId": "acp-session-abc123",
+    "update": {
+      "sessionUpdate": "agent_message_chunk",
+      "content": { "type": "text", "text": "处理中..." },
+      "_meta": {
+        "jetlinksRuntimeEvent": {
+          "type": "agent.message.delta",
+          "data": { "text": "处理中..." }
+        }
+      }
+    }
+  }
+}</code></pre>
+          <table>
+            <thead><tr><th>runtime event</th><th>sessionUpdate</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>run.started</code></td><td><code>agent_thought_chunk</code></td><td>本轮执行开始，原始事件在 <code>_meta.jetlinksRuntimeEvent</code>。</td></tr>
+              <tr><td><code>llm.started</code></td><td><code>agent_thought_chunk</code></td><td>模型参数已解析，包含 model、temperature、max_tokens 等。</td></tr>
+              <tr><td><code>agent.message.delta</code></td><td><code>agent_message_chunk</code></td><td>流式文本片段。</td></tr>
+              <tr><td><code>agent.message</code></td><td><code>agent_message_chunk</code></td><td>完整文本消息；若本轮已经发送过 delta，会避免重复发送完整消息。</td></tr>
+              <tr><td><code>tools.available</code></td><td><code>agent_thought_chunk</code></td><td>本轮暴露给模型的工具列表。</td></tr>
+              <tr><td><code>tool.started</code></td><td><code>tool_call</code></td><td>agent loop 工具开始执行，包含 <code>toolCallId</code>、<code>title</code>、<code>status</code>。</td></tr>
+              <tr><td><code>tool.completed</code> / <code>tool.failed</code></td><td><code>tool_call_update</code></td><td>agent loop 工具完成或失败，结构化结果在 <code>rawOutput</code>。</td></tr>
+              <tr><td><code>skill.started</code></td><td><code>tool_call</code></td><td>workflow 或 skill-backed tool 开始执行。</td></tr>
+              <tr><td><code>skill.completed</code></td><td><code>tool_call_update</code></td><td>workflow 或 skill-backed tool 完成，结构化结果在 <code>rawOutput</code>。</td></tr>
+              <tr><td><code>artifact.created</code></td><td><code>agent_thought_chunk</code></td><td>产物生成或更新；产物详情在 <code>_meta.jetlinksRuntimeEvent.data.artifact</code>。</td></tr>
+              <tr><td><code>verifier.started</code></td><td><code>tool_call</code></td><td>内容校验开始。</td></tr>
+              <tr><td><code>verifier.completed</code></td><td><code>tool_call_update</code></td><td>内容校验完成，结果在 <code>rawOutput</code>。</td></tr>
+              <tr><td><code>run.completed</code></td><td><code>agent_thought_chunk</code></td><td>本轮完成，最终结果也会通过同 id 的 RPC result 返回。</td></tr>
+              <tr><td><code>run.failed</code></td><td><code>agent_thought_chunk</code></td><td>执行失败；错误或结果仍在 <code>_meta.jetlinksRuntimeEvent</code>。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="endpoint-map" class="section">
+          <h2>接口总表</h2>
+          <p class="muted">下面按当前代码实际注册的路由整理。标记为 Runtime token 的接口只在 <code>RUNTIME_AUTH_MODE=production</code> 时强制鉴权；标记为 Admin token 的接口只要配置了 <code>RUNTIME_API_TOKEN</code> 就需要鉴权。</p>
+          <table>
+            <thead><tr><th>模块</th><th>方法</th><th>路径</th><th>用途</th><th>鉴权</th></tr></thead>
+            <tbody>
+              <tr><td>Health</td><td>GET</td><td><code>/health</code></td><td>健康检查。</td><td>无</td></tr>
+              <tr><td>ACP</td><td>WS</td><td><code>/api/acp/ws</code></td><td>ACP JSON-RPC WebSocket。</td><td>Runtime token</td></tr>
+              <tr><td>Agents</td><td>GET</td><td><code>/api/agents</code></td><td>列出 agent。</td><td>无</td></tr>
+              <tr><td>Agents</td><td>GET</td><td><code>/api/agents/{agent_name}</code></td><td>查看 agent 配置。</td><td>无</td></tr>
+              <tr><td>Agents</td><td>POST</td><td><code>/api/agents/{agent_name}/runs</code></td><td>执行一次非流式对话。</td><td>Runtime token</td></tr>
+              <tr><td>Agents</td><td>POST</td><td><code>/api/agents/{agent_name}/runs/stream</code></td><td>SSE 流式执行。</td><td>Runtime token</td></tr>
+              <tr><td>Artifacts</td><td>GET</td><td><code>/api/artifacts/{thread_id}</code></td><td>列出线程产物。</td><td>无</td></tr>
+              <tr><td>Artifacts</td><td>GET</td><td><code>/api/artifacts/{thread_id}/{path}</code></td><td>读取、预览或下载产物文件。</td><td>无</td></tr>
+              <tr><td>Apps</td><td>GET</td><td><code>/api/apps/templates</code></td><td>列出应用模板。</td><td>无</td></tr>
+              <tr><td>Apps</td><td>GET</td><td><code>/api/apps/templates/{template_name}</code></td><td>查看应用模板。</td><td>无</td></tr>
+              <tr><td>Skills</td><td>GET</td><td><code>/api/skills</code></td><td>列出 skill。</td><td>无</td></tr>
+              <tr><td>Skills</td><td>GET</td><td><code>/api/skills/plugins</code></td><td>列出 skill 插件包。</td><td>无</td></tr>
+              <tr><td>Skills</td><td>POST</td><td><code>/api/skills/plugins</code></td><td>上传 skill 插件 zip。</td><td>Admin token</td></tr>
+              <tr><td>Skills</td><td>POST</td><td><code>/api/skills/plugins/local-path</code></td><td>从服务端本地路径安装 skill 插件。</td><td>Admin token</td></tr>
+              <tr><td>Skills</td><td>GET</td><td><code>/api/skills/{skill_name}</code></td><td>查看 skill 详情和 manifest。</td><td>无</td></tr>
+              <tr><td>Skills</td><td>PUT</td><td><code>/api/skills/{skill_name}</code></td><td>保存 skill manifest。</td><td>Admin token</td></tr>
+              <tr><td>Skills</td><td>PUT</td><td><code>/api/skills/{skill_name}/manifest-config</code></td><td>通过表单化配置更新 manifest。</td><td>Admin token</td></tr>
+              <tr><td>Skills</td><td>GET</td><td><code>/api/skills/{skill_name}/files</code></td><td>列出 skill 包文件。</td><td>无</td></tr>
+              <tr><td>Skills</td><td>GET</td><td><code>/api/skills/{skill_name}/files/{file_id}</code></td><td>读取 skill 包文件。</td><td>无</td></tr>
+              <tr><td>Skills</td><td>PUT</td><td><code>/api/skills/{skill_name}/files/{file_id}</code></td><td>写入 skill 包文件。</td><td>Admin token</td></tr>
+              <tr><td>Skills</td><td>GET</td><td><code>/api/skills/{skill_name}/environment</code></td><td>查看 skill 运行环境状态。</td><td>无</td></tr>
+              <tr><td>Skills</td><td>POST</td><td><code>/api/skills/{skill_name}/environment/warm</code></td><td>预热 skill sandbox 环境。</td><td>Admin token</td></tr>
+              <tr><td>Workflows</td><td>GET</td><td><code>/api/workflows</code></td><td>列出已注册 workflow。</td><td>无</td></tr>
+              <tr><td>Workflows</td><td>GET</td><td><code>/api/workflows/plugins</code></td><td>列出 workflow 插件包。</td><td>无</td></tr>
+              <tr><td>Workflows</td><td>POST</td><td><code>/api/workflows/plugins</code></td><td>上传 workflow 插件 zip。</td><td>Admin token</td></tr>
+              <tr><td>Workflows</td><td>DELETE</td><td><code>/api/workflows/plugins/{plugin_id}</code></td><td>删除 workflow 插件。</td><td>Admin token</td></tr>
+              <tr><td>MCP</td><td>GET</td><td><code>/api/mcp/tools</code></td><td>列出手动 MCP 工具。</td><td>无</td></tr>
+              <tr><td>MCP</td><td>GET</td><td><code>/api/mcp/tools/{tool_name}</code></td><td>查看 MCP 工具。</td><td>无</td></tr>
+              <tr><td>MCP</td><td>PUT</td><td><code>/api/mcp/tools/{tool_name}</code></td><td>保存 MCP 工具。</td><td>Admin token</td></tr>
+              <tr><td>MCP</td><td>POST</td><td><code>/mcp</code></td><td>MCP JSON-RPC HTTP 入口。</td><td>按 MCP 方法自身约束</td></tr>
+              <tr><td>Cron</td><td>GET</td><td><code>/api/cron/jobs</code></td><td>列出 cron job。</td><td>无</td></tr>
+              <tr><td>Cron</td><td>GET</td><td><code>/api/cron/jobs/{job_name}</code></td><td>查看 cron job。</td><td>无</td></tr>
+              <tr><td>Cron</td><td>GET</td><td><code>/api/cron/jobs/{job_name}/runs</code></td><td>查看运行历史。</td><td>无</td></tr>
+              <tr><td>Cron</td><td>POST</td><td><code>/api/cron/preview</code></td><td>预览 cron 触发时间。</td><td>无</td></tr>
+              <tr><td>Cron</td><td>PUT</td><td><code>/api/cron/jobs/{job_name}</code></td><td>保存 cron job。</td><td>Admin token</td></tr>
+              <tr><td>Cron</td><td>DELETE</td><td><code>/api/cron/jobs/{job_name}</code></td><td>删除 cron job。</td><td>Admin token</td></tr>
+              <tr><td>Cron</td><td>POST</td><td><code>/api/cron/jobs/{job_name}/run</code></td><td>手动运行 cron job。</td><td>Admin token</td></tr>
+              <tr><td>Cron</td><td>GET</td><td><code>/api/cron/scheduler/status</code></td><td>查看 scheduler 状态。</td><td>无</td></tr>
+              <tr><td>Sandbox</td><td>GET</td><td><code>/api/sandbox/status</code></td><td>查看 sandbox / docker / profile 状态。</td><td>无</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="http" class="section">
+          <h2>Agents HTTP 运行接口</h2>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag runtime">GET</span><h3>/api/agents</h3></div></div>
+            <p class="muted">列出当前可被调用的 agent。legacy 兼容 agent 不会出现在列表里。</p>
+            <pre><code>{
+  "agents": [
+    {
+      "name": "default",
+      "display_name": "JetLinks 智能体",
+      "description": "General JetLinks assistant..."
+    }
+  ]
+}</code></pre>
+          </div>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag runtime">GET</span><h3>/api/agents/{agent_name}</h3></div></div>
+            <p class="muted">查看 agent 配置。<code>model.api_key</code> 和 <code>model.api_key_enc</code> 会返回 <code>********</code>。</p>
+          </div>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag runtime">POST</span><h3>/api/agents/{agent_name}/runs</h3></div></div>
+            <p class="muted">非流式运行接口，返回完整 <code>AgentRunResult</code>。</p>
+            <pre><code>{
+  "messages": [
+    { "role": "user", "content": "生成一份架构说明" }
+  ],
+  "attachments": [
+    {
+      "name": "camera.png",
+      "mime_type": "image/png",
+      "data_base64": "..."
+    }
+  ],
+  "runtime_options": {
+    "thread_id": "http-thread-001",
+    "workflow": "artifact_workflow",
+    "selected_skills": ["markdown-rendering"]
+  }
+}</code></pre>
+            <pre><code>{
+  "agent": "default",
+  "thread_id": "http-thread-001",
+  "status": "completed",
+  "reply": "已生成...",
+  "artifacts": [
+    {
+      "thread_id": "http-thread-001",
+      "path": "/mnt/user-data/outputs/report.md",
+      "name": "report.md",
+      "mime_type": "text/markdown",
+      "kind": "markdown",
+      "size": 1024,
+      "preview_url": "/api/artifacts/http-thread-001/outputs/report.md",
+      "download_url": "/api/artifacts/http-thread-001/outputs/report.md?download=true"
+    }
+  ],
+  "metadata": { "workflow": "artifact_workflow" }
+}</code></pre>
+          </div>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag runtime">POST</span><h3>/api/agents/{agent_name}/runs/stream</h3></div></div>
+            <p class="muted">SSE 事件流。事件格式为 <code>event: &lt;type&gt;</code> 和 <code>data: &lt;ChatEvent JSON&gt;</code>。</p>
+            <pre><code>event: run.started
+data: {"type":"run.started","data":{"workflow":"agent_loop"}}
+
+event: agent.message.delta
+data: {"type":"agent.message.delta","data":{"text":"你好"}}</code></pre>
+          </div>
+        </section>
+
+        <section id="artifacts" class="section">
+          <h2>Artifacts 产物接口</h2>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag runtime">GET</span><h3>/api/artifacts/{thread_id}</h3></div></div>
+            <p class="muted">列出线程下当前 outputs 产物。产物物理位置在 <code>.runtime/threads/{thread_id}/outputs</code>，对外仍使用 <code>/mnt/user-data/outputs/...</code> 虚拟路径。</p>
+            <pre><code>{
+  "thread_id": "thread-001",
+  "artifacts": [
+    {
+      "thread_id": "thread-001",
+      "path": "/mnt/user-data/outputs/index.html",
+      "name": "index.html",
+      "mime_type": "text/html",
+      "kind": "html",
+      "size": 2048,
+      "preview_url": "/api/artifacts/thread-001/outputs/index.html",
+      "download_url": "/api/artifacts/thread-001/outputs/index.html?download=true"
+    }
+  ]
+}</code></pre>
+          </div>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag runtime">GET</span><h3>/api/artifacts/{thread_id}/{path}</h3></div></div>
+            <p class="muted">读取产物文件。<code>download=true</code> 会强制下载。HTML、XHTML、SVG 会用 <code>FileResponse</code> 返回；文本文件返回文本；二进制返回原始 bytes。</p>
+            <pre><code>GET /api/artifacts/thread-001/outputs/index.html
+GET /api/artifacts/thread-001/outputs/report.md
+GET /api/artifacts/thread-001/outputs/report.pdf?download=true</code></pre>
+          </div>
+        </section>
+
+        <section id="apps" class="section">
+          <h2>Apps 应用模板接口</h2>
+          <table>
+            <thead><tr><th>接口</th><th>说明</th><th>响应</th></tr></thead>
+            <tbody>
+              <tr><td><code>GET /api/apps/templates</code></td><td>列出应用模板。</td><td><code>{"templates":[...]}</code></td></tr>
+              <tr><td><code>GET /api/apps/templates/{template_name}</code></td><td>查看单个模板。</td><td>模板完整 payload。</td></tr>
+            </tbody>
+          </table>
+          <pre><code>{
+  "name": "iot-architecture-diagram",
+  "title": "IoT 架构图",
+  "agent_name": "default",
+  "workflow": "artifact_workflow",
+  "selected_skills": ["drawio-generation"],
+  "runtime_options": {}
+}</code></pre>
+        </section>
+
+        <section id="plugins" class="section">
+          <h2>插件与管理接口</h2>
+          <h3>Workflow 插件</h3>
+          <table>
+            <thead><tr><th>接口</th><th>方法</th><th>说明</th><th>鉴权</th></tr></thead>
+            <tbody>
+              <tr><td><code>/api/workflows</code></td><td>GET</td><td>列出已注册 workflow，包括 display_name、description、trigger、handler、metadata、request_example。</td><td>无</td></tr>
+              <tr><td><code>/api/workflows/plugins</code></td><td>GET</td><td>列出 workflow 插件包。</td><td>无</td></tr>
+              <tr><td><code>/api/workflows/plugins</code></td><td>POST multipart</td><td>上传 workflow 插件 zip，字段名为 <code>file</code>。</td><td>Admin token</td></tr>
+              <tr><td><code>/api/workflows/plugins/{plugin_id}</code></td><td>DELETE</td><td>删除 workflow 插件；protected 插件不可删除。</td><td>Admin token</td></tr>
+            </tbody>
+          </table>
+          <pre><code>curl -X POST http://127.0.0.1:8010/api/workflows/plugins \
+  -H "Authorization: Bearer $RUNTIME_API_TOKEN" \
+  -F "file=@workflow-plugin.zip"</code></pre>
+
+          <h3>Skill 插件</h3>
+          <table>
+            <thead><tr><th>接口</th><th>方法</th><th>请求</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>/api/skills</code></td><td>GET</td><td>-</td><td>列出 skill。</td></tr>
+              <tr><td><code>/api/skills/{skill_name}</code></td><td>GET</td><td>-</td><td>查看 skill 详情，含 manifest、source_text、package_files。</td></tr>
+              <tr><td><code>/api/skills/{skill_name}</code></td><td>PUT</td><td><code>{"manifest": {...}}</code> 或直接 manifest JSON。</td><td>保存完整 manifest。</td></tr>
+              <tr><td><code>/api/skills/{skill_name}/manifest-config</code></td><td>PUT</td><td><code>{"config": {...}}</code> 或直接 config JSON。</td><td>通过配置表单更新 manifest。</td></tr>
+              <tr><td><code>/api/skills/plugins</code></td><td>GET</td><td>-</td><td>列出 skill 插件包。</td></tr>
+              <tr><td><code>/api/skills/plugins</code></td><td>POST multipart</td><td><code>file=@skill-plugin.zip</code></td><td>上传 skill 插件。</td></tr>
+              <tr><td><code>/api/skills/plugins/local-path</code></td><td>POST</td><td><code>{"path": "/tmp/plugin.zip"}</code></td><td>从服务端本地路径安装插件。</td></tr>
+              <tr><td><code>/api/skills/{skill_name}/files</code></td><td>GET</td><td>-</td><td>列出包内可编辑文件。</td></tr>
+              <tr><td><code>/api/skills/{skill_name}/files/{file_id}</code></td><td>GET</td><td>-</td><td>读取包文件内容。</td></tr>
+              <tr><td><code>/api/skills/{skill_name}/files/{file_id}</code></td><td>PUT</td><td><code>{"content": "..."}</code></td><td>写入包文件内容。</td></tr>
+              <tr><td><code>/api/skills/{skill_name}/environment</code></td><td>GET</td><td>-</td><td>查看 sandbox/profile/cache 状态。</td></tr>
+              <tr><td><code>/api/skills/{skill_name}/environment/warm</code></td><td>POST</td><td>-</td><td>预热 sandbox skill 环境。</td></tr>
+            </tbody>
+          </table>
+          <pre><code>{
+  "description": "生成 Markdown 文档",
+  "output_kind": "markdown",
+  "generation": true,
+  "quality_template": ["必须生成可读标题", "必须写入 outputs"],
+  "routing": { "keywords": ["文档", "markdown"] },
+  "input_schema": { "type": "object", "additionalProperties": true },
+  "output_schema": { "type": "object" },
+  "sandbox": { "enabled": false, "profile": null }
+}</code></pre>
+        </section>
+
+        <section id="mcp" class="section">
+          <h2>MCP 工具接口</h2>
+          <table>
+            <thead><tr><th>接口</th><th>方法</th><th>说明</th><th>鉴权</th></tr></thead>
+            <tbody>
+              <tr><td><code>/api/mcp/tools</code></td><td>GET</td><td>列出手动 MCP 工具，不包含 skill-backed tools。</td><td>无</td></tr>
+              <tr><td><code>/api/mcp/tools/{tool_name}</code></td><td>GET</td><td>查看 MCP 工具定义。</td><td>无</td></tr>
+              <tr><td><code>/api/mcp/tools/{tool_name}</code></td><td>PUT</td><td>保存 MCP 工具定义。</td><td>Admin token</td></tr>
+              <tr><td><code>/mcp</code></td><td>POST</td><td>MCP JSON-RPC HTTP 入口，按 <code>Mcp-Method</code> / <code>Mcp-Name</code> header 和 JSON-RPC body 分发。</td><td>按 MCP 方法自身约束</td></tr>
+            </tbody>
+          </table>
+          <pre><code>{
+  "name": "local_status",
+  "title": "Local Status",
+  "description": "检查本地状态",
+  "enabled": true,
+  "input_schema": {
+    "type": "object",
+    "additionalProperties": true
+  }
+}</code></pre>
+        </section>
+
+        <section id="cron" class="section">
+          <h2>Cron 计划任务接口</h2>
+          <table>
+            <thead><tr><th>接口</th><th>方法</th><th>说明</th><th>鉴权</th></tr></thead>
+            <tbody>
+              <tr><td><code>/api/cron/jobs</code></td><td>GET</td><td>列出 cron job。</td><td>无</td></tr>
+              <tr><td><code>/api/cron/jobs/{job_name}</code></td><td>GET</td><td>查看 cron job。</td><td>无</td></tr>
+              <tr><td><code>/api/cron/jobs/{job_name}/runs?limit=50</code></td><td>GET</td><td>查看最近运行历史，limit 范围 1-200。</td><td>无</td></tr>
+              <tr><td><code>/api/cron/preview</code></td><td>POST</td><td>预览后续触发时间。</td><td>无</td></tr>
+              <tr><td><code>/api/cron/jobs/{job_name}</code></td><td>PUT</td><td>保存 cron job。</td><td>Admin token</td></tr>
+              <tr><td><code>/api/cron/jobs/{job_name}</code></td><td>DELETE</td><td>删除 cron job。</td><td>Admin token</td></tr>
+              <tr><td><code>/api/cron/jobs/{job_name}/run</code></td><td>POST</td><td>手动运行 cron job。</td><td>Admin token</td></tr>
+              <tr><td><code>/api/cron/scheduler/status</code></td><td>GET</td><td>查看 scheduler 状态。</td><td>无</td></tr>
+            </tbody>
+          </table>
+          <pre><code>{
+  "job": {
+    "name": "daily-report",
+    "enabled": true,
+    "schedule": "0 9 * * *",
+    "timezone": "Asia/Shanghai",
+    "agent_name": "default",
+    "prompt": "生成今日巡检报告",
+    "runtime_options": {
+      "workflow": "artifact_workflow",
+      "selected_skills": ["markdown-rendering"]
+    }
+  }
+}</code></pre>
+          <pre><code>{
+  "schedule": "0 9 * * *",
+  "timezone": "Asia/Shanghai",
+  "count": 5
+}</code></pre>
+        </section>
+
+        <section id="sandbox" class="section">
+          <h2>Sandbox 状态接口</h2>
+          <div class="method">
+            <div class="method-head"><div class="method-name"><span class="tag runtime">GET</span><h3>/api/sandbox/status</h3></div></div>
+            <p class="muted">返回 sandbox 是否启用、Docker 是否可用、active profiles、sandboxed skills、环境缓存状态等信息。页面用于判断 skill 环境预热和运行隔离能力。</p>
+          </div>
+        </section>
+
+        <section id="bootstrap" class="section">
+          <h2>后端初始化模型与 Skill</h2>
+          <p class="muted">模型管理由后端做时，推荐通过 <code>create_app(bootstrap=...)</code> 或等价容器配置注入。请求级 runtimeOptions 仍然拥有最高优先级。</p>
+          <pre><code>from app.main import create_app
+
+app = create_app(
+    bootstrap={
+        "models": [
+            {
+                "id": "qwen-vl-30b",
+                "display_name": "Qwen VL 30B",
+                "config": {
+                    "model": "Qwen3-VL-30B-A3B-Instruct-w8a8",
+                    "base_url": "http://192.168.33.92:8011/v1",
+                    "api_key": "EMPTY",
+                    "temperature": 0.4,
+                    "max_tokens": 2048
+                },
+                "capabilities": ["vision", "tool_calling"]
+            }
+        ],
+        "default_model_id": "qwen-vl-30b",
+        "skills": ["markdown-rendering", "drawio-generation"]
+    }
+)</code></pre>
+          <div class="callout">
+            <strong>优先级</strong>
+            <p><code>runtimeOptions</code> 请求覆盖 &gt; 服务初始化模型/skills &gt; 环境变量 &gt; <code>config/agents/default.json</code> 默认值。</p>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

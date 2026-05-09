@@ -9,6 +9,13 @@ from typing import Literal
 MarkdownMemoryScope = Literal["global", "user", "project", "session"]
 
 _SAFE_KEY_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
+DEFAULT_SESSION_MEMORY_FILES: dict[str, str] = {
+    "conversation.md": "# Conversation\n\n",
+    "summary.md": "# Summary\n\n",
+    "decisions.md": "# Decisions\n\n",
+    "todo.md": "# Todo\n\n",
+    "artifacts.md": "# Artifacts\n\n",
+}
 
 
 @dataclass(frozen=True)
@@ -74,11 +81,18 @@ class MarkdownMemoryCompression:
 
 
 class MarkdownMemoryStore:
-    """Human-readable Markdown memory store with user/project/session isolation."""
+    """Human-readable Markdown memory store.
 
-    def __init__(self, root_dir: Path | None = None) -> None:
+    Session memory is thread-owned and lives next to the thread workspace:
+    .runtime/threads/{thread_id}/memory/.
+    """
+
+    def __init__(self, root_dir: Path | None = None, threads_root_dir: Path | None = None) -> None:
         project_root = Path(__file__).resolve().parents[3]
         self.root_dir = root_dir or project_root / ".runtime" / "memory-md"
+        self.threads_root_dir = threads_root_dir or (
+            project_root / ".runtime" / "threads" if root_dir is None else self.root_dir / "threads"
+        )
 
     def list_files(
         self,
@@ -89,6 +103,7 @@ class MarkdownMemoryStore:
         max_results: int = 100,
     ) -> list[MarkdownMemoryFile]:
         root = self._scope_root(context, scope)
+        self._ensure_scope_defaults(context, scope)
         target = self._resolve_dir(root, path)
         if not target.exists():
             return []
@@ -120,6 +135,7 @@ class MarkdownMemoryStore:
         max_chars: int = 12000,
     ) -> tuple[str, bool]:
         root = self._scope_root(context, scope)
+        self._ensure_scope_defaults(context, scope)
         target = self._resolve_file(root, path)
         if not target.is_file():
             raise FileNotFoundError(f"memory file not found: {path}")
@@ -154,6 +170,7 @@ class MarkdownMemoryStore:
         heading: str | None = None,
     ) -> MarkdownMemoryFile:
         root = self._scope_root(context, scope)
+        self._ensure_scope_defaults(context, scope)
         target = self._resolve_file(root, path)
         target.parent.mkdir(parents=True, exist_ok=True)
         existing = target.read_text(encoding="utf-8", errors="replace") if target.is_file() else ""
@@ -181,6 +198,7 @@ class MarkdownMemoryStore:
         matches: list[MarkdownMemorySearchMatch] = []
         for scope in scopes:
             root = self._scope_root(context, scope)
+            self._ensure_scope_defaults(context, scope)
             if not root.exists():
                 continue
             for file_path in sorted(root.rglob("*.md")):
@@ -242,7 +260,7 @@ class MarkdownMemoryStore:
             project_key = self._safe_key(context.project_id or "default")
             return self.root_dir / "users" / user_key / "projects" / project_key
         thread_key = self._safe_key(context.thread_id or "default")
-        return self.root_dir / "users" / user_key / "sessions" / thread_key
+        return self.threads_root_dir / thread_key / "memory"
 
     def _write_text(
         self,
@@ -256,6 +274,16 @@ class MarkdownMemoryStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         return target
+
+    def _ensure_scope_defaults(self, context: MarkdownMemoryContext, scope: MarkdownMemoryScope) -> None:
+        if scope != "session":
+            return
+        root = self._scope_root(context, scope)
+        root.mkdir(parents=True, exist_ok=True)
+        for filename, content in DEFAULT_SESSION_MEMORY_FILES.items():
+            target = root / filename
+            if not target.exists():
+                target.write_text(content, encoding="utf-8")
 
     @classmethod
     def _compress_text(cls, text: str, *, max_chars: int, keywords: list[str]) -> str:

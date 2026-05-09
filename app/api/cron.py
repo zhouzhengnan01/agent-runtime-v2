@@ -7,11 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.auth import require_admin_token
 from app.core.cron import CronExpression, CronJobStore, CronRunPayload, CronScheduler, CronService
 from app.core.cron.models import utc_now
+from app.core.runtime import default_container
 
 
 router = APIRouter(prefix="/api/cron", tags=["cron"])
 store = CronJobStore()
-service = CronService(store=store)
+service = CronService(store=store, loader=default_container.loader, runtime=default_container.runtime)
 scheduler = CronScheduler(store=store, service=service)
 
 __all__ = ["router", "scheduler", "service", "store"]

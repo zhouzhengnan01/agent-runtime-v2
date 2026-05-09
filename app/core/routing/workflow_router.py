@@ -21,7 +21,7 @@ class WorkflowSelection:
 
 
 class WorkflowRouter:
-    """Select workflows from agent-declared skills and skill manifests."""
+    """Suggest workflow plugins from skill manifests for UI or compatibility callers."""
 
     def __init__(
         self,
@@ -35,15 +35,11 @@ class WorkflowRouter:
         return self.select_with_details(agent_config, request).workflow_name
 
     def select_with_details(self, agent_config: AgentConfig, request: ChatRequest) -> WorkflowSelection:
-        default_workflow = agent_config.workflows.get("default", "agent_loop")
         routing_text = self.routing_text(request)
         if not routing_text:
             return WorkflowSelection(workflow_name=None, reason="empty_request")
         if self._is_agent_capability_question(routing_text):
             return WorkflowSelection(workflow_name=None, reason="capability_question")
-
-        if self._is_registered_workflow(default_workflow):
-            return WorkflowSelection(workflow_name=default_workflow, mode="config", reason="default_workflow")
 
         allowed_skills = self._allowed_skills(agent_config)
         if not allowed_skills:
@@ -130,8 +126,8 @@ class WorkflowRouter:
     @staticmethod
     def _workflow_for_skill(agent_config: AgentConfig, skill: SkillDefinition) -> str | None:
         if skill.generation:
-            return agent_config.workflows.get("generation")
-        return agent_config.workflows.get("vision_behavior")
+            return "artifact_workflow"
+        return "evidence_first_detection"
 
     def _is_registered_workflow(self, workflow_name: str | None) -> bool:
         return bool(workflow_name and workflow_name != "agent_loop" and workflow_name in self.available_workflows)

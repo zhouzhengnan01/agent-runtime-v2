@@ -7,11 +7,13 @@ from app.core.artifacts import ArtifactStore
 from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.skills import SkillRunner
 from app.core.tools.providers import (
+    ArtifactWorkspaceToolProvider,
     DelegateToolProvider,
     LocalToolProvider,
     ManualToolProvider,
     MarkdownMemoryToolProvider,
     MemoryToolProvider,
+    McpStreamableHttpToolProvider,
     SkillToolProvider,
 )
 from app.core.tools.registry import ToolRegistry
@@ -48,8 +50,13 @@ class ToolInvocationService:
         )
         self.providers: dict[str, ToolProvider] = {
             LocalToolProvider.source_type: LocalToolProvider(artifact_store=self.artifact_store),
+            ArtifactWorkspaceToolProvider.source_type: ArtifactWorkspaceToolProvider(
+                artifact_store=self.artifact_store,
+                markdown_memory_store=self.markdown_memory_store,
+            ),
             DelegateToolProvider.source_type: DelegateToolProvider(root_dir=self.root_dir),
             ManualToolProvider.source_type: ManualToolProvider(),
+            McpStreamableHttpToolProvider.source_type: McpStreamableHttpToolProvider(),
             MemoryToolProvider.source_type: MemoryToolProvider(memory_store=self.memory_store),
             MarkdownMemoryToolProvider.source_type: MarkdownMemoryToolProvider(
                 markdown_memory_store=self.markdown_memory_store
