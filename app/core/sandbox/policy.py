@@ -147,7 +147,7 @@ class SandboxPolicy(BaseModel):
         effective_profile = _effective_profile(profile, skill_sandbox)
         fallback_to_local = _fallback_to_local(sandbox_config, profile, skill_sandbox)
 
-        if sandbox_config.provider != "opensandbox":
+        if sandbox_config.provider == "local":
             return SandboxDecision(
                 skill_name=skill_name,
                 eligible=True,
@@ -173,6 +173,20 @@ class SandboxPolicy(BaseModel):
                 request_schema_version=request_schema_version,
                 fallback_to_local=fallback_to_local,
                 reason="Sandbox profile matched, but sandbox executor is not enabled; use local execution.",
+            )
+
+        if sandbox_config.provider == "local_subprocess":
+            return SandboxDecision(
+                skill_name=skill_name,
+                eligible=True,
+                use_sandbox=True,
+                execution_mode="sandbox",
+                provider=sandbox_config.provider,
+                profile_name=profile_name,
+                profile=effective_profile,
+                request_schema_version=request_schema_version,
+                fallback_to_local=fallback_to_local,
+                reason="Sandbox profile matched; use local subprocess execution.",
             )
 
         return SandboxDecision(

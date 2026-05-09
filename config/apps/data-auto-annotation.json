@@ -1,0 +1,28 @@
+{
+  "name": "data-auto-annotation",
+  "title": "数据自动标注助手",
+  "description": "预置 SAM3 自动标注能力，适合上传图片后生成目标检测预标注和标准 COCO JSON 数据集。",
+  "category": "vision",
+  "icon": "image",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [
+    "data-auto-annotation"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "请把我上传的图片自动标注成 COCO JSON，类别 labels: person car helmet",
+    "用 SAM3 对这张图片做目标检测预标注，并导出 annotations.coco.json"
+  ],
+  "tags": [
+    "自动标注",
+    "COCO",
+    "SAM3",
+    "数据集"
+  ],
+  "runtime_options": {
+    "selected_skills": [
+      "data-auto-annotation"
+    ]
+  }
+}

@@ -131,7 +131,7 @@ class OpenAICompatibleClient:
         message = choices[0].get("message") or {}
         return str(message.get("content") or "")
 
-    async def stream_complete(self, system_prompt: str, messages: list[Message]) -> AsyncIterator[str]:
+    async def stream_complete(self, system_prompt: str, messages: Sequence[ChatMessageInput]) -> AsyncIterator[str]:
         if not self.configured:
             yield self._not_configured_message()
             return
@@ -248,11 +248,13 @@ class OpenAICompatibleClient:
         message = raw_message if isinstance(raw_message, dict) else {}
         content = message.get("content")
         finish_reason = choice.get("finish_reason")
+        raw_usage = data.get("usage")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
         return LlmChatResponse(
             content=content if isinstance(content, str) else "",
             tool_calls=cls._parse_tool_calls(message),
             finish_reason=finish_reason if isinstance(finish_reason, str) else None,
-            usage=data.get("usage") if isinstance(data.get("usage"), dict) else {},
+            usage=usage,
         )
 
     @staticmethod

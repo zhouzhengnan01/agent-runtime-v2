@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 from app.core.artifacts import ArtifactStore
+from app.core.agent.session import SessionConversationStore
 from app.core.agent.tool_loop import ToolCallingAgentLoop
 from app.core.config import AgentConfig
 from app.core.config.agent_config import ModelConfig
@@ -14,7 +15,7 @@ from app.core.llm import OpenAICompatibleClient
 from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
-from app.schemas import AgentRunResult, ChatEvent, ChatRequest, RuntimeOptions
+from app.schemas import AgentRunResult, ChatEvent, ChatRequest, Message, RuntimeOptions
 
 
 class AgentRuntime:
@@ -28,6 +29,7 @@ class AgentRuntime:
         memory_store: MemoryStore | None = None,
         markdown_memory_store: MarkdownMemoryStore | None = None,
         run_event_store: RunEventStore | None = None,
+        session_store: SessionConversationStore | None = None,
         model_config: ModelConfig | dict[str, object] | None = None,
         skills: list[str] | None = None,
     ) -> None:
@@ -35,6 +37,7 @@ class AgentRuntime:
         self.memory_store = memory_store or MemoryStore()
         self.markdown_memory_store = markdown_memory_store or MarkdownMemoryStore()
         self.run_event_store = run_event_store or RunEventStore()
+        self.session_store = session_store or SessionConversationStore()
         self.workflow_registry = workflow_registry or WorkflowRegistry.builtin(self.artifact_store)
         self.workflow_router = workflow_router
         self.model_config, self._model_config_fields = self._normalize_model_config(model_config)
@@ -63,18 +66,22 @@ class AgentRuntime:
             workflow = self.workflow_registry.get(workflow_name)
             if workflow is None:
                 raise ValueError(f"Workflow is not registered: {workflow_name}")
+            paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
+            conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
             result, events = workflow.run_with_events(
                 agent_config=agent_config,
-                messages=request.messages,
+                messages=self._workflow_messages(conversation),
                 attachments=request.attachments,
-                thread_id=request.runtime_options.thread_id,
+                thread_id=paths.thread_id,
                 workflow_name=workflow_name,
                 runtime_options=request.runtime_options,
             )
+            self.session_store.save(paths, self._conversation_with_result(conversation, result), run_id=self._run_id(events))
             self._persist_events(agent_config, request, result.thread_id, events, result)
             return result, events
 
         paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
+        conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
         recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
         recorder.emit(
             "run.started",
@@ -87,11 +94,12 @@ class AgentRuntime:
         )
         loop_result = await self.agent_loop.run(
             agent_config=agent_config,
-            messages=request.messages,
+            messages=conversation,
             thread_id=paths.thread_id,
             recorder=recorder,
             runtime_options=request.runtime_options,
         )
+        self.session_store.save(paths, loop_result.messages, run_id=recorder.run_id)
         self._persist_events(agent_config, request, paths.thread_id, recorder.events, loop_result.result)
         return loop_result.result, recorder.events
 
@@ -121,6 +129,8 @@ class AgentRuntime:
     async def _stream_workflow_events(
         self, agent_config: AgentConfig, request: ChatRequest, workflow_name: str
     ) -> AsyncIterator[ChatEvent]:
+        paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
+        conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[ChatEvent | BaseException | None] = asyncio.Queue()
         captured_events: list[ChatEvent] = []
@@ -138,9 +148,9 @@ class AgentRuntime:
             try:
                 final_result, returned_events = workflow.run_with_events(
                     agent_config=agent_config,
-                    messages=request.messages,
+                    messages=self._workflow_messages(conversation),
                     attachments=request.attachments,
-                    thread_id=request.runtime_options.thread_id,
+                    thread_id=paths.thread_id,
                     on_event=on_event,
                     workflow_name=workflow_name,
                     runtime_options=request.runtime_options,
@@ -170,10 +180,17 @@ class AgentRuntime:
                     if final_result is not None
                     else str(captured_events[0].data.get("thread_id") or request.runtime_options.thread_id or "")
                 )
+                if final_result is not None:
+                    self.session_store.save(
+                        paths,
+                        self._conversation_with_result(conversation, final_result),
+                        run_id=self._run_id(captured_events),
+                    )
                 self._persist_events(agent_config, request, thread_id, captured_events, final_result)
 
     async def _stream_agent_loop_events(self, agent_config: AgentConfig, request: ChatRequest) -> AsyncIterator[ChatEvent]:
         paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
+        conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
         recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
         yield recorder.emit(
             "run.started",
@@ -199,11 +216,12 @@ class AgentRuntime:
                 },
             )
             chunks: list[str] = []
-            async for chunk in llm.stream_complete(agent_config.prompts.system, request.messages):
+            async for chunk in llm.stream_complete(agent_config.prompts.system, conversation):
                 chunks.append(chunk)
                 yield recorder.emit("agent.message.delta", {"text": chunk})
 
             reply = "".join(chunks)
+            final_messages = [*conversation, {"role": "assistant", "content": reply}]
             yield recorder.emit("agent.message", {"text": reply})
             result = AgentRunResult(
                 agent=agent_config.name,
@@ -223,13 +241,14 @@ class AgentRuntime:
                 },
             )
             yield recorder.emit("run.completed", {"result": result.model_dump()})
+            self.session_store.save(paths, final_messages, run_id=recorder.run_id)
             self._persist_events(agent_config, request, paths.thread_id, recorder.events, result)
             return
 
         emitted = 1
         loop_result = await self.agent_loop.run(
             agent_config=agent_config,
-            messages=request.messages,
+            messages=conversation,
             thread_id=paths.thread_id,
             recorder=recorder,
             runtime_options=request.runtime_options,
@@ -237,6 +256,7 @@ class AgentRuntime:
         )
         for event in recorder.events[emitted:]:
             yield event
+        self.session_store.save(paths, loop_result.messages, run_id=recorder.run_id)
         self._persist_events(agent_config, request, paths.thread_id, recorder.events, loop_result.result)
 
     def _persist_events(
@@ -261,6 +281,33 @@ class AgentRuntime:
             agent_snapshot=self._agent_snapshot(agent_config),
             request_snapshot=self._request_snapshot(request),
         )
+
+    @staticmethod
+    def _workflow_messages(conversation: list[dict[str, object]]) -> list[Message]:
+        messages: list[Message] = []
+        for item in conversation:
+            role = item.get("role")
+            content = item.get("content")
+            if role in {"system", "user", "assistant", "tool"} and isinstance(content, str):
+                messages.append(Message(role=role, content=content))
+        return messages
+
+    @staticmethod
+    def _conversation_with_result(
+        conversation: list[dict[str, object]],
+        result: AgentRunResult | None,
+    ) -> list[dict[str, object]]:
+        if result is None or not result.reply:
+            return conversation
+        if conversation and conversation[-1].get("role") == "assistant" and conversation[-1].get("content") == result.reply:
+            return conversation
+        return [*conversation, {"role": "assistant", "content": result.reply}]
+
+    @staticmethod
+    def _run_id(events: list[ChatEvent]) -> str:
+        if not events:
+            return ""
+        return str(events[0].data.get("run_id") or "")
 
     @staticmethod
     def _agent_snapshot(agent_config: AgentConfig) -> dict[str, object]:

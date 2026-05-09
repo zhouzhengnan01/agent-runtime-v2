@@ -92,12 +92,14 @@
         <a href="#responses">返回值</a>
         <a href="#errors">错误码</a>
         <a href="#events">事件流</a>
+        <a href="#observability">运行观测</a>
         <a href="#endpoint-map">接口总表</a>
         <a href="#http">HTTP 接口</a>
         <a href="#artifacts">Artifacts</a>
         <a href="#plugins">插件接口</a>
         <a href="#cron">Cron</a>
         <a href="#mcp">MCP</a>
+        <a href="#deployment">部署管理</a>
         <a href="#bootstrap">后端初始化</a>
       </nav>
       <a class="side-link" href="/static/workbench.html">返回 Workbench</a>
@@ -184,11 +186,66 @@ ws.onmessage = (event) =&gt; {
           <ol class="flow">
             <li>连接 <code>/api/acp/ws</code>，生产模式下通过 query token 或 header 传鉴权。</li>
             <li>发送 <code>initialize</code>，读取能力信息和 <code>_meta.jetlinks.modelManagement</code>。</li>
-            <li>发送 <code>session/new</code> 创建会话，得到 <code>sessionId</code>、<code>threadId</code>、模型列表。</li>
+            <li>发送 <code>session/new</code> 创建会话。产品入口推荐传 <code>appTemplateName</code>，由服务端从 <code>config/apps/*.json</code> 带出默认 agent、workflow、skill 和示例配置。</li>
             <li>需要切换模型时发送 <code>session/set_model</code>，只传后端模型管理里的 <code>modelId</code>。</li>
             <li>发送 <code>session/prompt</code>，持续接收 <code>session/update</code>，最后收到同 id 的 JSON-RPC result。</li>
             <li>会话结束后发送 <code>session/close</code>；需要中断时发送 <code>session/cancel</code>。</li>
           </ol>
+          <h3>应用模板与 runtimeOptions 优先级</h3>
+          <p class="muted">应用模板是推荐的产品入口。模板 JSON 保存在 <code>config/apps/*.json</code>，例如 <code>config/apps/iot-architecture-diagram.json</code>、<code>config/apps/project-report-ppt.json</code>、<code>config/apps/technical-doc-writer.json</code>。也可以通过 <code>GET /api/apps/templates</code> 列出模板，或用 <code>GET /api/apps/templates/{template_name}</code> 查看单个模板完整 JSON。</p>
+          <table>
+            <thead><tr><th>来源</th><th>作用</th><th>优先级</th></tr></thead>
+            <tbody>
+              <tr><td><code>config/apps/&lt;name&gt;.json</code></td><td>应用初始配置，声明 <code>agent_name</code>、<code>workflow</code>、<code>selected_skills</code>、<code>selected_mcp_tools</code>、<code>runtime_options</code>、<code>prompt_examples</code>。</td><td>基础默认值</td></tr>
+              <tr><td><code>session/new.runtimeOptions</code></td><td>创建会话时覆盖模板默认值，并作为该 ACP session 的默认运行参数保存。</td><td>高于应用模板</td></tr>
+              <tr><td><code>session/prompt.runtimeOptions</code></td><td>只覆盖当前这一轮 prompt，适合临时切换 skill、workflow、模型或采样参数。</td><td>最高</td></tr>
+            </tbody>
+          </table>
+          <p class="muted"><code>selectedSkills</code> 只表示本轮允许或优先使用的 skill，不会单独触发 workflow。要走产物生成流程，需要模板或 runtimeOptions 同时设置 <code>workflow: "artifact_workflow"</code>；如果 workflow 为空、<code>agent_loop</code> 或 <code>default</code>，则进入通用 agent loop，skill 会作为模型可调用工具暴露。</p>
+          <pre><code>// 1. 推荐：用应用模板创建会话，不必每轮手动传 workflow / selectedSkills
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 2,
+  method: 'session/new',
+  params: {
+    sessionId: 's-iot-diagram',
+    threadId: 'thread-iot-diagram',
+    appTemplateName: 'iot-architecture-diagram'
+  }
+}));
+
+// iot-architecture-diagram 来自 config/apps/iot-architecture-diagram.json，大致等价于：
+// {
+//   "agent_name": "default",
+//   "workflow": "artifact_workflow",
+//   "selected_skills": ["drawio-generation"]
+// }
+
+// 2. 后续 prompt 默认继承模板配置
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 3,
+  method: 'session/prompt',
+  params: {
+    sessionId: 's-iot-diagram',
+    prompt: [{ type: 'text', text: '生成一份 JetLinks IoT 平台架构图' }]
+  }
+}));
+
+// 3. 如果某一轮要临时覆盖，再传 runtimeOptions
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 4,
+  method: 'session/prompt',
+  params: {
+    sessionId: 's-iot-diagram',
+    prompt: [{ type: 'text', text: '这一轮改成技术文档' }],
+    runtimeOptions: {
+      workflow: 'artifact_workflow',
+      selectedSkills: ['markdown-rendering']
+    }
+  }
+}));</code></pre>
           <h3>完整示例</h3>
           <pre><code>ws.send(JSON.stringify({
   jsonrpc: '2.0',
@@ -205,9 +262,9 @@ ws.send(JSON.stringify({
   id: 2,
   method: 'session/new',
   params: {
-    agentName: 'default',
     threadId: 'thread-001',
-    cwd: '/tmp'
+    cwd: '/tmp',
+    appTemplateName: 'iot-architecture-diagram'
   }
 }));
 
@@ -227,11 +284,7 @@ ws.send(JSON.stringify({
   method: 'session/prompt',
   params: {
     sessionId: 'acp-session-xxxx',
-    prompt: [{ type: 'text', text: '生成一份 JetLinks IoT 架构说明' }],
-    runtimeOptions: {
-      workflow: 'artifact_workflow',
-      selectedSkills: ['markdown-rendering']
-    }
+    prompt: [{ type: 'text', text: '生成一份 JetLinks IoT 架构说明' }]
   }
 }));</code></pre>
         </section>
@@ -417,7 +470,7 @@ ws.send(JSON.stringify({
 
         <section id="runtime-options" class="section">
           <h2>Runtime Options</h2>
-          <p class="muted">请求级 <code>runtimeOptions</code> 优先级最高；服务初始化传入的模型和 skill 默认值次之；环境变量和 agent JSON 只作为兜底。</p>
+          <p class="muted">在 ACP WebSocket 中，<code>session/prompt.runtimeOptions</code> 优先级最高，<code>session/new.runtimeOptions</code> 次之，<code>appTemplateName</code> 引用的 <code>config/apps/*.json</code> 作为应用默认值；服务初始化传入的模型和 skill 默认值、环境变量、agent JSON 再作为兜底。</p>
           <table>
             <thead><tr><th>字段</th><th>说明</th><th>示例</th></tr></thead>
             <tbody>
@@ -735,6 +788,8 @@ ws.send(JSON.stringify({
             <tbody>
               <tr><td><code>run.started</code></td><td><code>agent_thought_chunk</code></td><td>本轮执行开始，原始事件在 <code>_meta.jetlinksRuntimeEvent</code>。</td></tr>
               <tr><td><code>llm.started</code></td><td><code>agent_thought_chunk</code></td><td>模型参数已解析，包含 model、temperature、max_tokens 等。</td></tr>
+              <tr><td><code>llm.request.started</code></td><td><code>agent_thought_chunk</code></td><td>每轮 LLM 请求开始，包含 round、mode、message_count、tool_count、tools、tool_choice。</td></tr>
+              <tr><td><code>llm.request.completed</code></td><td><code>agent_thought_chunk</code></td><td>每轮 LLM 请求完成，包含 duration_ms、finish_reason、tool_call_count、tool_calls、usage。</td></tr>
               <tr><td><code>agent.message.delta</code></td><td><code>agent_message_chunk</code></td><td>流式文本片段。</td></tr>
               <tr><td><code>agent.message</code></td><td><code>agent_message_chunk</code></td><td>完整文本消息；若本轮已经发送过 delta，会避免重复发送完整消息。</td></tr>
               <tr><td><code>tools.available</code></td><td><code>agent_thought_chunk</code></td><td>本轮暴露给模型的工具列表。</td></tr>
@@ -751,6 +806,60 @@ ws.send(JSON.stringify({
           </table>
         </section>
 
+        <section id="observability" class="section">
+          <h2>运行观测与 Debug Bundle</h2>
+          <p class="muted">每次运行都会生成 <code>run_id</code>，事件会持久化到 <code>.runtime/runs/{run_id}.json</code>。实时事件通过 ACP <code>session/update</code> 回传；历史详情可通过 HTTP 查询。</p>
+          <div class="grid">
+            <div class="callout">
+              <strong>实时观测</strong>
+              <p>ACP WebSocket 的 <code>update._meta.jetlinksRuntimeEvent</code> 包含完整原始事件，例如 LLM 请求、工具调用、Skill 状态、artifact.created。</p>
+            </div>
+            <div class="callout">
+              <strong>历史复盘</strong>
+              <p>通过 <code>/api/agents/runs/{run_id}/debug-bundle</code> 获取脱敏 agent/request 快照、结果、事件链和失败诊断。</p>
+            </div>
+          </div>
+          <table>
+            <thead><tr><th>接口</th><th>说明</th><th>响应重点</th></tr></thead>
+            <tbody>
+              <tr><td><code>GET /api/agents/runs/recent</code></td><td>列出最近运行摘要。</td><td>run_id、agent、thread_id、status、workflow、duration_ms、event_count、tool_call_count。</td></tr>
+              <tr><td><code>GET /api/agents/runs/{run_id}</code></td><td>读取完整 run 记录。</td><td>events、result、agent_snapshot、request_snapshot。</td></tr>
+              <tr><td><code>GET /api/agents/runs/{run_id}/events</code></td><td>只读取事件列表。</td><td>events。</td></tr>
+              <tr><td><code>GET /api/agents/runs/{run_id}/debug-bundle</code></td><td>导出复盘包。</td><td>schema、run、agent_snapshot、request_snapshot、result、events、diagnostics。</td></tr>
+            </tbody>
+          </table>
+          <pre><code>{
+  "schema": "jetlinks-agent-run-debug-bundle.v1",
+  "run": {
+    "run_id": "run-abc123",
+    "agent": "default",
+    "thread_id": "web-001",
+    "status": "completed",
+    "workflow": "agent_loop",
+    "duration_ms": 1280,
+    "event_count": 12,
+    "tool_call_count": 1
+  },
+  "diagnostics": {
+    "failure_count": 0,
+    "failures": [],
+    "tool_events": 1,
+    "skill_events": 0
+  }
+}</code></pre>
+          <h3>工具失败诊断</h3>
+          <p class="muted">工具失败事件会带结构化 <code>error_code</code>，便于 Java 或前端直接分类处理。</p>
+          <table>
+            <thead><tr><th>error_code</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr><td><code>TOOL_ARGUMENTS_INVALID</code></td><td>模型返回的工具参数不是合法 JSON 或不是对象。</td></tr>
+              <tr><td><code>TOOL_NOT_FOUND</code></td><td>工具未注册或不可见。</td></tr>
+              <tr><td><code>TOOL_DISABLED</code></td><td>工具已注册但被禁用，例如本地 shell 工具未开启。</td></tr>
+              <tr><td><code>TOOL_EXECUTION_FAILED</code></td><td>工具执行过程中抛出其他异常。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
         <section id="endpoint-map" class="section">
           <h2>接口总表</h2>
           <p class="muted">下面按当前代码实际注册的路由整理。标记为 Runtime token 的接口只在 <code>RUNTIME_AUTH_MODE=production</code> 时强制鉴权；标记为 Admin token 的接口只要配置了 <code>RUNTIME_API_TOKEN</code> 就需要鉴权。</p>
@@ -761,6 +870,10 @@ ws.send(JSON.stringify({
               <tr><td>ACP</td><td>WS</td><td><code>/api/acp/ws</code></td><td>ACP JSON-RPC WebSocket。</td><td>Runtime token</td></tr>
               <tr><td>Agents</td><td>GET</td><td><code>/api/agents</code></td><td>列出 agent。</td><td>无</td></tr>
               <tr><td>Agents</td><td>GET</td><td><code>/api/agents/{agent_name}</code></td><td>查看 agent 配置。</td><td>无</td></tr>
+              <tr><td>Agents</td><td>GET</td><td><code>/api/agents/runs/recent</code></td><td>列出最近 run 观测摘要。</td><td>Runtime token</td></tr>
+              <tr><td>Agents</td><td>GET</td><td><code>/api/agents/runs/{run_id}</code></td><td>查看完整 run 观测记录。</td><td>Runtime token</td></tr>
+              <tr><td>Agents</td><td>GET</td><td><code>/api/agents/runs/{run_id}/events</code></td><td>查看 run 事件列表。</td><td>Runtime token</td></tr>
+              <tr><td>Agents</td><td>GET</td><td><code>/api/agents/runs/{run_id}/debug-bundle</code></td><td>导出 debug bundle。</td><td>Runtime token</td></tr>
               <tr><td>Agents</td><td>POST</td><td><code>/api/agents/{agent_name}/runs</code></td><td>执行一次非流式对话。</td><td>Runtime token</td></tr>
               <tr><td>Agents</td><td>POST</td><td><code>/api/agents/{agent_name}/runs/stream</code></td><td>SSE 流式执行。</td><td>Runtime token</td></tr>
               <tr><td>Artifacts</td><td>GET</td><td><code>/api/artifacts/{thread_id}</code></td><td>列出线程产物。</td><td>无</td></tr>
@@ -902,6 +1015,7 @@ GET /api/artifacts/thread-001/outputs/report.pdf?download=true</code></pre>
 
         <section id="apps" class="section">
           <h2>Apps 应用模板接口</h2>
+          <p class="muted">应用模板是会话初始 JSON 配置，文件位于 <code>config/apps/*.json</code>。模板用于把一个产品入口绑定到默认 <code>agent_name</code>、<code>workflow</code>、<code>selected_skills</code>、<code>selected_mcp_tools</code>、<code>runtime_options</code> 和示例 prompt。ACP WebSocket 可在 <code>session/new</code> 中传 <code>appTemplateName</code> 引用模板。</p>
           <table>
             <thead><tr><th>接口</th><th>说明</th><th>响应</th></tr></thead>
             <tbody>
@@ -909,6 +1023,13 @@ GET /api/artifacts/thread-001/outputs/report.pdf?download=true</code></pre>
               <tr><td><code>GET /api/apps/templates/{template_name}</code></td><td>查看单个模板。</td><td>模板完整 payload。</td></tr>
             </tbody>
           </table>
+          <pre><code># 直接看本地 JSON 配置
+ls config/apps
+cat config/apps/iot-architecture-diagram.json
+
+# 通过 HTTP 查看
+curl http://127.0.0.1:8010/api/apps/templates
+curl http://127.0.0.1:8010/api/apps/templates/iot-architecture-diagram</code></pre>
           <pre><code>{
   "name": "iot-architecture-diagram",
   "title": "IoT 架构图",
@@ -986,6 +1107,62 @@ GET /api/artifacts/thread-001/outputs/report.pdf?download=true</code></pre>
     "additionalProperties": true
   }
 }</code></pre>
+        </section>
+
+        <section id="deployment" class="section">
+          <h2>本地部署与 Java 进程管理</h2>
+          <p class="muted">仓库根目录提供了一组脚本，适合本机部署、Java <code>ProcessBuilder</code> 或其他进程管理器调用。</p>
+          <table>
+            <thead><tr><th>脚本</th><th>用途</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>./install-deps.sh</code></td><td>安装 Python 依赖。</td><td>创建 <code>.venv</code> 并安装 <code>requirements.txt</code>。</td></tr>
+              <tr><td><code>./up.sh</code></td><td>后台启动服务。</td><td>启动前检查 Python 依赖，启动后轮询 <code>/health</code>。</td></tr>
+              <tr><td><code>./status.sh</code></td><td>查看状态。</td><td>输出机器可读的 <code>status=running pid=... health=ok</code>。</td></tr>
+              <tr><td><code>./stop.sh</code></td><td>停止服务。</td><td>先发送 SIGTERM，超时后 SIGKILL。</td></tr>
+              <tr><td><code>./restart.sh</code></td><td>重启服务。</td><td>等价于 stop 后 up。</td></tr>
+            </tbody>
+          </table>
+          <pre><code>./install-deps.sh
+APP_HOST=0.0.0.0 APP_PORT=8000 ./up.sh
+APP_PORT=8000 ./status.sh
+APP_PORT=8000 ./restart.sh
+APP_PORT=8000 ./stop.sh</code></pre>
+          <h3>状态输出与退出码</h3>
+          <pre><code>status=running pid=12345 health=ok url=http://127.0.0.1:8000 log=.runtime/server/server.log</code></pre>
+          <table>
+            <thead><tr><th>退出码</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr><td><code>0</code></td><td>运行中且健康检查正常。</td></tr>
+              <tr><td><code>2</code></td><td>进程存在但健康检查失败。</td></tr>
+              <tr><td><code>3</code></td><td>未运行或 PID 文件过期。</td></tr>
+              <tr><td><code>10</code></td><td><code>up.sh</code> 检测到 Python 依赖缺失，需要先执行 <code>./install-deps.sh</code>。</td></tr>
+            </tbody>
+          </table>
+          <h3>Java ProcessBuilder 示例</h3>
+          <pre><code>ProcessBuilder builder = new ProcessBuilder("./status.sh");
+builder.directory(new File("/opt/jetlinks-agent-runtime"));
+builder.redirectErrorStream(true);
+builder.environment().put("APP_PORT", "8000");
+
+Process process = builder.start();
+String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+int exitCode = process.waitFor();
+
+// output example:
+// status=running pid=12345 health=ok url=http://127.0.0.1:8000 log=.runtime/server/server.log</code></pre>
+          <h3>常用环境变量</h3>
+          <table>
+            <thead><tr><th>变量</th><th>默认值</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>APP_HOST</code></td><td><code>127.0.0.1</code></td><td>监听地址。</td></tr>
+              <tr><td><code>APP_PORT</code></td><td><code>8000</code></td><td>监听端口。</td></tr>
+              <tr><td><code>PYTHON_BIN</code></td><td><code>.venv/bin/python</code></td><td>运行服务的 Python。</td></tr>
+              <tr><td><code>BASE_PYTHON</code></td><td><code>python3</code></td><td>创建虚拟环境使用的 Python。</td></tr>
+              <tr><td><code>VENV_DIR</code></td><td><code>.venv</code></td><td>虚拟环境目录。</td></tr>
+              <tr><td><code>RUNTIME_DIR</code></td><td><code>.runtime/server</code></td><td>PID 和日志目录。</td></tr>
+              <tr><td><code>LOG_FILE</code></td><td><code>.runtime/server/server.log</code></td><td>服务日志。</td></tr>
+            </tbody>
+          </table>
         </section>
 
         <section id="cron" class="section">

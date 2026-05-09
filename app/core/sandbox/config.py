@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-SandboxProvider = Literal["local", "opensandbox"]
+SandboxProvider = Literal["local", "local_subprocess", "opensandbox"]
 SandboxProtocol = Literal["http", "https"]
 SandboxRoutingMode = Literal["selective"]
 
@@ -56,12 +56,18 @@ def load_sandbox_config(env: Mapping[str, str] | None = None) -> SandboxConfig:
     file_config = _load_runtime_config() if env is None else {}
     cache_config = file_config.get("skill_env_cache") if isinstance(file_config.get("skill_env_cache"), dict) else {}
     raw_provider = _env_or_config(values, "SANDBOX_PROVIDER", file_config, "provider", "local").strip().lower() or "local"
-    provider: SandboxProvider = "opensandbox" if raw_provider == "opensandbox" else "local"
+    provider: SandboxProvider
+    if raw_provider == "opensandbox":
+        provider = "opensandbox"
+    elif raw_provider == "local_subprocess":
+        provider = "local_subprocess"
+    else:
+        provider = "local"
     protocol = _protocol(_env_or_config(values, "OPENSANDBOX_PROTOCOL", file_config, "opensandbox_protocol", "http"))
     return SandboxConfig(
         provider=provider,
         raw_provider=raw_provider,
-        provider_valid=raw_provider in {"local", "opensandbox"},
+        provider_valid=raw_provider in {"local", "local_subprocess", "opensandbox"},
         opensandbox_domain=_env_or_config(values, "OPENSANDBOX_DOMAIN", file_config, "opensandbox_domain", "127.0.0.1:8080").strip()
         or "127.0.0.1:8080",
         opensandbox_protocol=protocol,

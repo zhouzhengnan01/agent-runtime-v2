@@ -1,0 +1,9 @@
+{
+  "id": "data-auto-annotation",
+  "name": "data-auto-annotation",
+  "version": "0.2.0",
+  "description": "Use SAM3 to auto-annotate a single image and export standard COCO JSON. Use when the user uploads an image and asks for automatic labeling or COCO output.",
+  "skills": [
+    "SKILL.md"
+  ]
+}

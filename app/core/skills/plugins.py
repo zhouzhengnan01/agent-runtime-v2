@@ -199,6 +199,9 @@ class SkillPluginManager:
                     language=language,
                 )
             )
+        execution_script = self._execution_script_file(loaded)
+        if execution_script is not None and execution_script.path not in {item.path for item in files}:
+            files.append(execution_script)
         return files
 
     def read_package_file(self, skill_name: str, file_id: str) -> tuple[SkillPackageFile, str]:
@@ -247,7 +250,7 @@ class SkillPluginManager:
             and existing.manifest_path.suffix.lower() == ".json"
             and path.resolve() == existing.manifest_path.resolve()
         ):
-            package_root = _skill_package_root(existing)
+            package_root = self._loaded_package_root(existing)
             if package_root is not None:
                 self._write_sandbox_package_file(package_root, data.get("sandbox"))
         loaded = self.load_skills().get(skill_name)
@@ -323,7 +326,7 @@ class SkillPluginManager:
                 spec,
                 paths,
                 artifact_store,
-                package_root=_skill_package_root(loaded),
+                package_root=self._execution_package_root(loaded),
             )
         if loaded.runner_path is None:
             raise KeyError(f"Skill is not backed by an installed runner: {skill_name}")
@@ -334,7 +337,7 @@ class SkillPluginManager:
                 spec,
                 paths,
                 artifact_store,
-                package_root=_skill_package_root(loaded),
+                package_root=self._execution_package_root(loaded),
             )
         module = _load_runner_module(loaded.runner_path)
         result = _call_runner(module, skill_name, spec, paths, artifact_store)
@@ -380,6 +383,8 @@ class SkillPluginManager:
     def format_reply(self, skill_name: str, verification: object, run_result: SkillRunResult) -> str | None:
         loaded = self.load_skills().get(skill_name)
         if loaded is None or loaded.runner_path is None:
+            return None
+        if loaded.runner_path.resolve() == loaded.manifest_path.resolve() and _can_run_generic(self.read_manifest(skill_name)):
             return None
         module = _load_runner_module(loaded.runner_path)
         formatter = getattr(module, "format_reply", None)
@@ -484,6 +489,11 @@ class SkillPluginManager:
         return plugin.spec_builder_path
 
     def _package_file(self, loaded: LoadedSkill, file_id: str) -> SkillPackageFile:
+        if file_id == "execution-script":
+            package_file = self._execution_script_file(loaded)
+            if package_file is None:
+                raise ValueError(f"Skill package file is not available for {loaded.definition.name}: {file_id}")
+            return package_file
         if file_id not in _PACKAGE_FILE_SPECS:
             raise ValueError(f"Unknown skill package file: {file_id}")
         path = self._package_file_path(loaded, file_id)
@@ -505,7 +515,7 @@ class SkillPluginManager:
             return self.manifest_path_for(loaded.definition.name).resolve()
         if loaded.plugin is None:
             return None
-        package_root = _skill_package_root(loaded)
+        package_root = self._loaded_package_root(loaded)
         if package_root is None:
             return None
         path = (package_root / relative).resolve()
@@ -522,7 +532,7 @@ class SkillPluginManager:
         script = execution.get("script")
         if not isinstance(script, str) or not script.strip():
             raise ValueError("Python script execution requires execution.script.")
-        package_root = _skill_package_root(loaded)
+        package_root = self._loaded_package_root(loaded)
         if package_root is None:
             raise ValueError("Python script execution requires a skill package root.")
         script_path = (package_root / script.strip()).resolve()
@@ -532,6 +542,54 @@ class SkillPluginManager:
             raise ValueError("Python script path must stay inside the skill package root.") from exc
         if not script_path.is_file():
             raise ValueError(f"Python script not found: {script.strip()}")
+
+    def _execution_script_file(self, loaded: LoadedSkill) -> SkillPackageFile | None:
+        if loaded.plugin is None:
+            return None
+        try:
+            manifest = self.read_manifest(loaded.definition.name)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError, KeyError):
+            return None
+        execution = manifest.get("execution")
+        if not isinstance(execution, dict) or execution.get("type") != "python_script":
+            return None
+        script = execution.get("script")
+        if not isinstance(script, str) or not script.strip():
+            return None
+        package_root = self._loaded_package_root(loaded)
+        if package_root is None:
+            return None
+        path = (package_root / script.strip()).resolve()
+        try:
+            path.relative_to(package_root.resolve())
+        except ValueError:
+            return None
+        return SkillPackageFile(
+            file_id="execution-script",
+            label=script.strip(),
+            path=path,
+            exists=path.is_file(),
+            editable=True,
+            language="python" if path.suffix == ".py" else "text",
+        )
+
+    @staticmethod
+    def _execution_package_root(loaded: LoadedSkill) -> Path | None:
+        package_root = _skill_package_root(loaded)
+        if package_root is not None:
+            return package_root
+        if loaded.plugin is not None:
+            return loaded.plugin.root.resolve()
+        return None
+
+    @staticmethod
+    def _loaded_package_root(loaded: LoadedSkill) -> Path | None:
+        package_root = _skill_package_root(loaded)
+        if package_root is not None:
+            return package_root
+        if loaded.plugin is not None:
+            return loaded.plugin.root.resolve()
+        return None
 
     @staticmethod
     def _normalize_uploaded_package_files(plugin: SkillPlugin) -> None:

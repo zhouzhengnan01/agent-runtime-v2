@@ -282,6 +282,54 @@ def test_agent_loop_treats_selected_skill_as_tool_when_no_workflow_mapping(
     assert tools_event.data["tools"] == ["drawio-generation"]
 
 
+def test_agent_loop_exposes_runtime_selected_skill_not_declared_on_agent(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="已暴露运行时选中的 Skill。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="runtime-selected-skill-agent",
+        display_name="Runtime Selected Skill Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=artifact_store))
+    recorder = EventRecorder(agent=agent.name, thread_id="runtime-selected-skill")
+
+    loop_result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="把上传图片自动标注成 COCO")],
+            thread_id="runtime-selected-skill",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="runtime-selected-skill",
+                selected_skills=["data-auto-annotation"],
+            ),
+        )
+    )
+
+    assert loop_result.result.metadata["workflow"] == "agent_loop"
+    assert seen_tools == ["data-auto-annotation"]
+    tools_event = next(event for event in recorder.events if event.type == "tools.available")
+    assert tools_event.data["tools"] == ["data-auto-annotation"]
+
+
 def test_agent_loop_exposes_runtime_selected_mcp_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

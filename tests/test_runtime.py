@@ -13,7 +13,7 @@ from app.core.llm import LlmChatResponse, OpenAICompatibleClient
 from app.core.routing import WorkflowRouter
 from app.core.skills import SkillRegistry
 from app.core.workflow import WorkflowRegistry
-from app.schemas import Attachment, ChatEvent, ChatRequest, Message, RuntimeOptions
+from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, RuntimeOptions
 
 
 async def _collect_events(source: AsyncIterator[ChatEvent]) -> list[ChatEvent]:
@@ -77,6 +77,8 @@ def test_artifact_generator_emits_coded_events(tmp_path: Path) -> None:
     assert sandbox_event.data["profile_name"] == "drawio"
     assert sandbox_event.data["eligible"] is True
     assert sandbox_event.data["use_sandbox"] is False
+    assert "sandbox.failed" not in event_types
+    assert "sandbox.fallback" not in event_types
     assert "architecture.drawio" in result.reply
 
 
@@ -199,6 +201,201 @@ def test_request_model_options_override_runtime_init_model_config(
 
     assert result.reply == "ok"
     assert seen == {"model": "request-model", "base_url": "http://request.local/v1"}
+
+
+def test_agent_loop_persists_and_restores_thread_conversation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+    replies = iter(["第一轮回复", "第二轮回复"])
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del self, system_prompt
+        seen_messages.append([dict(message) for message in messages])
+        return next(replies)
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="session-agent",
+        display_name="Session Agent",
+        model={"model": "session-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    first = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="第一轮问题")],
+                runtime_options=RuntimeOptions(thread_id="session-1"),
+            ),
+        )
+    )
+    second = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="第二轮问题")],
+                runtime_options=RuntimeOptions(thread_id="session-1"),
+            ),
+        )
+    )
+
+    assert first.reply == "第一轮回复"
+    assert second.reply == "第二轮回复"
+    assert seen_messages[0] == [{"role": "user", "content": "第一轮问题"}]
+    assert seen_messages[1] == [
+        {"role": "user", "content": "第一轮问题"},
+        {"role": "assistant", "content": "第一轮回复"},
+        {"role": "user", "content": "第二轮问题"},
+    ]
+    history_path = tmp_path / "threads" / "session-1" / "memory" / "conversation.jsonl"
+    transcript_path = tmp_path / "threads" / "session-1" / "memory" / "conversation.md"
+    assert history_path.is_file()
+    assert transcript_path.is_file()
+    assert "第二轮回复" in transcript_path.read_text(encoding="utf-8")
+
+
+def test_agent_loop_does_not_duplicate_client_supplied_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+    replies = iter(["第一轮回复", "第二轮回复"])
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del self, system_prompt
+        seen_messages.append([dict(message) for message in messages])
+        return next(replies)
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="session-agent",
+        display_name="Session Agent",
+        model={"model": "session-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="第一轮问题")],
+                runtime_options=RuntimeOptions(thread_id="session-2"),
+            ),
+        )
+    )
+    asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[
+                    Message(role="user", content="第一轮问题"),
+                    Message(role="assistant", content="第一轮回复"),
+                    Message(role="user", content="第二轮问题"),
+                ],
+                runtime_options=RuntimeOptions(thread_id="session-2"),
+            ),
+        )
+    )
+
+    assert seen_messages[1] == [
+        {"role": "user", "content": "第一轮问题"},
+        {"role": "assistant", "content": "第一轮回复"},
+        {"role": "user", "content": "第二轮问题"},
+    ]
+
+
+def test_workflow_persists_and_restores_thread_conversation(tmp_path: Path) -> None:
+    seen_messages: list[list[Message]] = []
+    replies = iter(["工作流第一轮回复", "工作流第二轮回复"])
+
+    class CapturingWorkflow:
+        def run_with_events(
+            self,
+            agent_config: AgentConfig,
+            messages: list[Message],
+            attachments: list[Attachment],
+            thread_id: str | None,
+            on_event=None,
+            workflow_name: str | None = None,
+            runtime_options: RuntimeOptions | None = None,
+        ) -> tuple[AgentRunResult, list[ChatEvent]]:
+            del attachments, on_event, runtime_options
+            seen_messages.append(list(messages))
+            reply = next(replies)
+            event = ChatEvent(
+                type="run.started",
+                data={
+                    "run_id": f"run-{len(seen_messages)}",
+                    "agent": agent_config.name,
+                    "thread_id": thread_id or "",
+                    "workflow": workflow_name or "capturing_workflow",
+                },
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=thread_id or "",
+                reply=reply,
+                metadata={"workflow": workflow_name or "capturing_workflow"},
+            )
+            return result, [event]
+
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        workflow_registry=WorkflowRegistry({"capturing_workflow": CapturingWorkflow()}),
+    )
+    agent = AgentConfig(
+        name="workflow-session-agent",
+        display_name="Workflow Session Agent",
+        tools=[],
+        skills=[],
+    )
+
+    first = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="第一轮生成")],
+                runtime_options=RuntimeOptions(thread_id="workflow-session", workflow="capturing_workflow"),
+            ),
+        )
+    )
+    second = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="第二轮修改")],
+                runtime_options=RuntimeOptions(thread_id="workflow-session", workflow="capturing_workflow"),
+            ),
+        )
+    )
+
+    assert first.reply == "工作流第一轮回复"
+    assert second.reply == "工作流第二轮回复"
+    assert [(message.role, message.content) for message in seen_messages[1]] == [
+        ("user", "第一轮生成"),
+        ("assistant", "工作流第一轮回复"),
+        ("user", "第二轮修改"),
+    ]
+    transcript_path = tmp_path / "threads" / "workflow-session" / "memory" / "conversation.md"
+    assert "工作流第二轮回复" in transcript_path.read_text(encoding="utf-8")
 
 
 def test_runtime_init_skills_replace_agent_json_default_skills(

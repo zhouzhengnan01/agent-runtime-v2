@@ -11,6 +11,7 @@ from app.core.sandbox.config import load_sandbox_config
 from app.core.sandbox.env_cache import SkillEnvironmentCache
 from app.core.sandbox.policy import load_sandbox_policy
 from app.core.skills import SkillDefinition, SkillRegistry
+from app.core.skills.local_subprocess import LocalSubprocessEnvironmentCache
 from app.core.skills.plugins import SkillPluginManager
 
 
@@ -18,6 +19,7 @@ router = APIRouter(prefix="/api/skills", tags=["skills"])
 registry = SkillRegistry()
 plugin_manager = SkillPluginManager()
 environment_cache = SkillEnvironmentCache()
+local_environment_cache = LocalSubprocessEnvironmentCache()
 
 
 @router.get("")
@@ -36,7 +38,8 @@ async def upload_skill_plugin(file: UploadFile = File(...)) -> dict[str, object]
     try:
         plugin = plugin_manager.install_zip(content)
         registry.reload()
-        return {"plugin": plugin.to_payload()}
+        environments = [_environment_summary(skill_name) for skill_name in plugin.manifest_paths]
+        return {"plugin": plugin.to_payload(), "environments": environments}
     except (OSError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -54,7 +57,8 @@ async def install_skill_plugin_from_local_path(payload: dict[str, Any]) -> dict[
             raise ValueError("Skill plugin local path must point to a .zip file.")
         plugin = plugin_manager.install_zip(path.read_bytes())
         registry.reload()
-        return {"plugin": plugin.to_payload()}
+        environments = [_environment_summary(skill_name) for skill_name in plugin.manifest_paths]
+        return {"plugin": plugin.to_payload(), "environments": environments}
     except (OSError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -74,7 +78,8 @@ async def get_skill_environment(skill_name: str) -> dict[str, object]:
         sandbox_config = load_sandbox_config()
         policy = load_sandbox_policy(sandbox_config, skill_registry=registry)
         decision = policy.resolve(skill_name, sandbox_config)
-        requirements_text = environment_cache.requirements_text(loaded.manifest_path.parent)
+        package_root = _skill_package_root(loaded)
+        requirements_text = environment_cache.requirements_text(package_root)
         requirements_hash = None
         if requirements_text:
             from app.core.sandbox.env_cache import requirements_hash_for_text
@@ -91,6 +96,7 @@ async def get_skill_environment(skill_name: str) -> dict[str, object]:
             "requirements_hash": requirements_hash,
             "has_requirements": bool(requirements_text),
             "status": _environment_status(requirements_hash),
+            "local_subprocess": _local_environment_payload(skill_name, loaded),
         }
     except (KeyError, ValueError, OSError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -107,7 +113,7 @@ async def warm_skill_environment(skill_name: str) -> dict[str, object]:
             raise ValueError("Skill has no sandbox profile.")
         environment = environment_cache.prepare(
             skill_name=skill_name,
-            package_root=loaded.manifest_path.parent,
+            package_root=_skill_package_root(loaded),
             profile=decision.profile,
             config=sandbox_config,
         )
@@ -117,6 +123,7 @@ async def warm_skill_environment(skill_name: str) -> dict[str, object]:
             "image": environment.image,
             "status": environment.status,
             "message": environment.message,
+            "local_subprocess": _warm_local_environment_if_configured(skill_name),
         }
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -165,7 +172,9 @@ async def configure_skill_manifest(skill_name: str, payload: dict[str, Any]) -> 
     try:
         manifest = _manifest_from_config(skill_name, raw_config, existing)
         skill = registry.save_manifest(skill_name, manifest)
-        return _skill_payload(skill, include_manifest=True)
+        payload = _skill_payload(skill, include_manifest=True)
+        payload["environment"] = _warm_skill_environment_if_configured(skill_name)
+        return payload
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (OSError, ValueError, TypeError) as exc:
@@ -188,7 +197,9 @@ async def update_skill(skill_name: str, payload: dict[str, Any]) -> dict[str, ob
         raise HTTPException(status_code=400, detail="Skill manifest must be a JSON object.")
     try:
         skill = registry.save_manifest(skill_name, manifest)
-        return _skill_payload(skill, include_manifest=True)
+        payload = _skill_payload(skill, include_manifest=True)
+        payload["environment"] = _warm_skill_environment_if_configured(skill_name)
+        return payload
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (OSError, ValueError, TypeError) as exc:
@@ -271,6 +282,101 @@ def _nullable_string(value: object) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _skill_package_root(loaded: Any) -> Path:
+    plugin = getattr(loaded, "plugin", None)
+    if plugin is not None:
+        return plugin.root
+    return loaded.manifest_path.parent
+
+
+def _warm_skill_environment_if_configured(skill_name: str) -> dict[str, object]:
+    local_payload = _warm_local_environment_if_configured(skill_name)
+    try:
+        loaded = plugin_manager.get_loaded_skill(skill_name)
+        sandbox_config = load_sandbox_config()
+        policy = load_sandbox_policy(sandbox_config, skill_registry=registry)
+        decision = policy.resolve(skill_name, sandbox_config)
+        if not sandbox_config.skill_env_cache_enabled or not decision.use_sandbox or decision.profile is None:
+            return {
+                "skill_name": skill_name,
+                "status": "skipped",
+                "reason": decision.reason,
+                "cache_enabled": sandbox_config.skill_env_cache_enabled,
+                "local_subprocess": local_payload,
+            }
+        environment = environment_cache.prepare(
+            skill_name=skill_name,
+            package_root=_skill_package_root(loaded),
+            profile=decision.profile,
+            config=sandbox_config,
+        )
+        return {
+            "skill_name": skill_name,
+            "requirements_hash": environment.requirements_hash,
+            "image": environment.image,
+            "status": environment.status,
+            "message": environment.message,
+            "local_subprocess": local_payload,
+        }
+    except Exception as exc:
+        return {"skill_name": skill_name, "status": "failed", "message": str(exc), "local_subprocess": local_payload}
+
+
+def _environment_summary(skill_name: str) -> dict[str, object]:
+    try:
+        loaded = plugin_manager.get_loaded_skill(skill_name)
+        return {
+            "skill_name": skill_name,
+            "status": "pending",
+            "local_subprocess": _local_environment_payload(skill_name, loaded),
+        }
+    except Exception as exc:
+        return {"skill_name": skill_name, "status": "unknown", "message": str(exc)}
+
+
+def _warm_local_environment_if_configured(skill_name: str) -> dict[str, object]:
+    try:
+        loaded = plugin_manager.get_loaded_skill(skill_name)
+        manifest = plugin_manager.read_manifest(skill_name)
+        execution = manifest.get("execution")
+        if not isinstance(execution, dict) or (execution.get("runtime") or execution.get("mode")) != "local_subprocess":
+            return {"skill_name": skill_name, "status": "skipped", "reason": "execution.runtime is not local_subprocess"}
+        environment = local_environment_cache.prepare(
+            skill_name=skill_name,
+            package_root=_skill_package_root(loaded),
+            base_python=str(execution.get("python")) if isinstance(execution.get("python"), str) else None,
+            install_timeout_seconds=int(execution.get("install_timeout_seconds") or 1800),
+        )
+        return {
+            "skill_name": skill_name,
+            "requirements_hash": environment.requirements_hash,
+            "python": str(environment.python),
+            "status": environment.status,
+            "message": environment.message,
+        }
+    except Exception as exc:
+        return {"skill_name": skill_name, "status": "failed", "message": str(exc)}
+
+
+def _local_environment_payload(skill_name: str, loaded: Any) -> dict[str, object]:
+    manifest = plugin_manager.read_manifest(skill_name)
+    execution = manifest.get("execution")
+    runtime = execution.get("runtime") or execution.get("mode") if isinstance(execution, dict) else None
+    package_root = _skill_package_root(loaded)
+    requirements_text = local_environment_cache.requirements_text(package_root)
+    payload: dict[str, object] = {
+        "enabled": runtime == "local_subprocess",
+        "runtime": runtime or "",
+        "has_requirements": bool(requirements_text),
+        "status": local_environment_cache.status(
+            skill_name=skill_name,
+            package_root=package_root,
+            base_python=str(execution.get("python")) if isinstance(execution, dict) and isinstance(execution.get("python"), str) else None,
+        ),
+    }
+    return payload
 
 
 def _skill_payload(skill: SkillDefinition, *, include_manifest: bool = False) -> dict[str, object]:

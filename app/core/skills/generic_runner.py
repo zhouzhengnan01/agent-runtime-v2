@@ -12,6 +12,7 @@ from string import Template
 from typing import Any
 
 from app.core.artifacts import ArtifactStore, ThreadPaths
+from app.core.skills.local_subprocess import LocalSubprocessEnvironmentCache
 from app.core.skills.runner_types import SkillRunResult
 from app.schemas import ArtifactRef
 
@@ -65,7 +66,7 @@ def _run_python_script(
     script_path = _safe_package_path(script, package_root)
     if not script_path.is_file():
         raise ValueError(f"Python script not found: {script}")
-    python = _string(execution.get("python")) or "python"
+    python = _python_executable(skill_name, execution, package_root)
     timeout = _bounded_int(execution.get("timeout_seconds"), default=120, minimum=1, maximum=1800)
     input_mode = _string(execution.get("input_mode")) or "stdin_json"
     args = _python_script_args(execution, spec, paths)
@@ -84,7 +85,7 @@ def _run_python_script(
     )
     outputs = _python_script_outputs(execution, completed, spec, paths, artifact_store)
     data = _python_script_data(completed.stdout)
-    data.update({"execution_type": "python_script", "returncode": completed.returncode})
+    data.update({"execution_type": "python_script", "execution_runtime": _execution_runtime(execution), "returncode": completed.returncode})
     if completed.returncode != 0:
         data["stderr"] = completed.stderr
     return SkillRunResult(skill_name=skill_name, outputs=outputs, data=data)
@@ -303,6 +304,26 @@ def _json_object(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _python_executable(skill_name: str, execution: dict[str, Any], package_root: Path | None) -> str:
+    runtime = _execution_runtime(execution)
+    configured = _string(execution.get("python"))
+    if runtime != "local_subprocess":
+        return configured or "python"
+    environment = LocalSubprocessEnvironmentCache().prepare(
+        skill_name=skill_name,
+        package_root=package_root,
+        base_python=configured or None,
+        install_timeout_seconds=_bounded_int(execution.get("install_timeout_seconds"), default=1800, minimum=1, maximum=7200),
+    )
+    if environment.status == "failed":
+        raise RuntimeError(f"Prepare local_subprocess environment failed: {environment.message}")
+    return str(environment.python)
+
+
+def _execution_runtime(execution: dict[str, Any]) -> str:
+    return _string(execution.get("runtime")) or _string(execution.get("mode")) or "in_process"
 
 
 def _render_value(template: str, spec: dict[str, Any]) -> str:

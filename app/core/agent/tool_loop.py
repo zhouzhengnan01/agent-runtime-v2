@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 import time
 from typing import Any
 
 from app.core.agent.context import ContextCompactionResult, ConversationContextManager
+from app.core.agent.session import ChatHistoryMessage
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
@@ -29,7 +31,7 @@ class ToolCallingAgentLoop:
     async def run(
         self,
         agent_config: AgentConfig,
-        messages: list[Message],
+        messages: Sequence[ChatHistoryMessage],
         thread_id: str,
         recorder: EventRecorder,
         runtime_options: RuntimeOptions | None = None,
@@ -56,7 +58,7 @@ class ToolCallingAgentLoop:
             },
         )
 
-        conversation = [message.model_dump() for message in messages]
+        conversation = [self._normalize_message(message) for message in messages]
         context_compactions = 0
         last_context_event: dict[str, Any] = {}
         system_prompt, memory_context_count = self._system_prompt(agent_config)
@@ -237,6 +239,12 @@ class ToolCallingAgentLoop:
         )
 
     @staticmethod
+    def _normalize_message(message: ChatHistoryMessage) -> dict[str, Any]:
+        if isinstance(message, Message):
+            return message.model_dump(mode="python")
+        return dict(message)
+
+    @staticmethod
     def _compact_context(agent_config: AgentConfig, conversation: list[dict[str, Any]]) -> ContextCompactionResult:
         if not agent_config.runtime.context_compression_enabled:
             before_chars = len(json.dumps(conversation, ensure_ascii=False, default=str))
@@ -262,8 +270,9 @@ class ToolCallingAgentLoop:
         runtime_options: RuntimeOptions | None = None,
     ) -> list[dict[str, Any]]:
         allowed_names = self._allowed_tool_names(agent_config)
+        selected_skill_names = self._selected_skill_names(runtime_options)
         selected_mcp_tool_names = self._selected_mcp_tool_names(runtime_options)
-        if not allowed_names and not selected_mcp_tool_names:
+        if not allowed_names and not selected_skill_names and not selected_mcp_tool_names:
             return []
 
         definitions = self.tool_service.list_tools()
@@ -277,6 +286,7 @@ class ToolCallingAgentLoop:
             tool
             for tool in definitions
             if tool.name in allowed_names
+            or (tool.name in selected_skill_names and tool.source.get("type") == "skill")
             or (tool.name in selected_mcp_tool_names and self._runtime_selectable_mcp_tool(tool))
         ]
         return [self._openai_tool(tool) for tool in definitions]
@@ -284,6 +294,12 @@ class ToolCallingAgentLoop:
     @staticmethod
     def _allowed_tool_names(agent_config: AgentConfig) -> set[str]:
         return {name for name in [*agent_config.tools, *agent_config.skills] if name}
+
+    @staticmethod
+    def _selected_skill_names(runtime_options: RuntimeOptions | None) -> set[str]:
+        if runtime_options is None:
+            return set()
+        return {name.strip() for name in runtime_options.selected_skills if name.strip()}
 
     @staticmethod
     def _selected_mcp_tool_names(runtime_options: RuntimeOptions | None) -> set[str]:
@@ -506,6 +522,13 @@ class ToolCallingAgentLoop:
         emit_message_delta: bool = False,
         run_id: str = "",
     ) -> ToolLoopResult:
+        final_messages = list(messages)
+        if reply and (
+            not final_messages
+            or final_messages[-1].get("role") != "assistant"
+            or final_messages[-1].get("content") != reply
+        ):
+            final_messages.append({"role": "assistant", "content": reply})
         if emit_message_delta and reply:
             recorder.emit("agent.message.delta", {"text": reply})
         recorder.emit("agent.message", {"text": reply})
@@ -525,4 +548,4 @@ class ToolCallingAgentLoop:
             },
         )
         recorder.emit("run.completed" if completed_event else "run.failed", {"result": result.model_dump()})
-        return ToolLoopResult(result=result, messages=messages, rounds=rounds)
+        return ToolLoopResult(result=result, messages=final_messages, rounds=rounds)

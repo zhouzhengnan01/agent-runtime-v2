@@ -23,7 +23,7 @@ def json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2) + "\n"
 
 
-def test_sandbox_status_defaults_to_local(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sandbox_status_defaults_to_lightweight_local(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SANDBOX_PROVIDER", raising=False)
     monkeypatch.delenv("SANDBOX_SKILLS", raising=False)
 
@@ -31,14 +31,14 @@ def test_sandbox_status_defaults_to_local(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert status.provider == "local"
     assert status.configured is True
-    assert status.available is True
     assert status.server_url is None
     assert status.routing_mode == "selective"
-    assert status.sandboxed_skills == ["drawio-generation", "excel-generation", "pptx-generation"]
+    assert status.sandboxed_skills == ["data-auto-annotation", "drawio-generation", "excel-generation", "pptx-generation"]
+    assert status.skill_profiles["data-auto-annotation"] == "python-skill"
     assert status.skill_profiles["drawio-generation"] == "drawio"
+    assert status.profiles["python-skill"].image == "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2"
     assert status.profiles["drawio"].image == "jetlinks/opensandbox-drawio:0.1.0"
     assert status.executor_enabled is False
-    assert status.message == "Using local thread workspace."
 
 
 def test_sandbox_config_reads_opensandbox_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,6 +58,16 @@ def test_sandbox_config_reads_opensandbox_environment(monkeypatch: pytest.Monkey
     assert config.should_use_sandbox("drawio-generation") is True
     assert config.should_use_sandbox("behavior-detection") is False
     assert config.skill_env_cache_enabled is True
+
+
+def test_sandbox_config_reads_local_subprocess_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SANDBOX_PROVIDER", "local_subprocess")
+    monkeypatch.setenv("SANDBOX_EXECUTOR_ENABLED", "true")
+
+    config = load_sandbox_config()
+
+    assert config.provider == "local_subprocess"
+    assert config.executor_enabled is True
 
 
 def test_sandbox_config_reads_runtime_json_and_local_override(
@@ -259,6 +269,19 @@ def test_sandbox_policy_keeps_local_until_executor_enabled() -> None:
     assert "executor is not enabled" in decision.reason
 
 
+def test_sandbox_policy_uses_local_subprocess_when_enabled() -> None:
+    config = SandboxConfig(provider="local_subprocess", executor_enabled=True)
+    policy = load_sandbox_policy(config)
+
+    decision = policy.resolve("drawio-generation", config)
+
+    assert decision.eligible is True
+    assert decision.use_sandbox is True
+    assert decision.execution_mode == "sandbox"
+    assert decision.provider == "local_subprocess"
+    assert "local subprocess" in decision.reason
+
+
 def test_sandbox_global_fallback_false_overrides_skill_default() -> None:
     config = SandboxConfig(provider="opensandbox", executor_enabled=True, fallback_to_local=False)
     policy = load_sandbox_policy(config)
@@ -338,7 +361,7 @@ def test_opensandbox_status_reports_unreachable_server(monkeypatch: pytest.Monke
     assert "not reachable" in status.message
 
 
-def test_sandbox_status_api_defaults_to_local(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sandbox_status_api_defaults_to_lightweight_local(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SANDBOX_PROVIDER", raising=False)
     client = TestClient(create_app())
 
@@ -347,9 +370,9 @@ def test_sandbox_status_api_defaults_to_local(monkeypatch: pytest.MonkeyPatch) -
     assert response.status_code == 200
     data = response.json()
     assert data["provider"] == "local"
-    assert data["available"] is True
     assert data["routing_mode"] == "selective"
-    assert data["sandboxed_skills"] == ["drawio-generation", "excel-generation", "pptx-generation"]
+    assert data["sandboxed_skills"] == ["data-auto-annotation", "drawio-generation", "excel-generation", "pptx-generation"]
+    assert data["skill_profiles"]["data-auto-annotation"] == "python-skill"
     assert data["skill_profiles"]["pptx-generation"] == "office"
     assert data["profiles"]["office"]["image"] == "jetlinks/opensandbox-office:0.1.0"
     assert data["executor_enabled"] is False

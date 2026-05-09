@@ -261,7 +261,7 @@ python -m app.cli acp-stdio --agent default
 
 - 多 provider 适配：目前主要是 OpenAI-compatible API，还没有 Anthropic、Gemini、Bedrock、OpenRouter 等独立 adapter。
 - 完整 Memory 系统：目前只有本地 JSON Memory v1，还没有向量检索、自动总结、权限隔离和外部存储后端。
-- 完整 Session Resume：`thread_id` 只管理文件和产物，不恢复隐藏历史对话。
+- 基础 Session Resume：Runtime 会按 `thread_id` 为 agent loop 和 workflow 保存并恢复会话消息；更完整的摘要压缩、权限隔离和外部存储后端仍待增强。
 - Gateway/Telegram/Discord/Slack/Email 等多平台常驻接入；Cron 已有轻量配置和内置调度器。
 - 完整 Hermes 式多层子智能体协作；当前只有轻量无工具 `delegate_task`，还没有子 agent 工具集、暂停、中断和观测面板。
 - 浏览器自动化和网页抓取工具。
@@ -269,14 +269,15 @@ python -m app.cli acp-stdio --agent default
 
 这些能力可以继续参考 `/Users/chenhao/Desktop/code/opencode/hermes-agent` 分批接入，但不建议一次性整包搬入。
 
-## 无状态约定
+## 会话状态约定
 
 - Agent 配置是静态输入，不是运行时状态。
-- 请求必须包含当前轮需要的 messages。
-- 服务端不会从隐藏历史中恢复完整对话；只有 agent JSON 显式开启的 Memory 会参与运行。
-- `thread_id` 只用于隔离 `.runtime/threads/<thread_id>` 下的文件。
-- 如果要继续一段对话，调用方需要把前文 messages 再次传入。
-- Memory 是长期偏好和事实记录，不等同于 chat history 或 session resume。
+- `thread_id` 是会话 ID，用于隔离 `.runtime/threads/<thread_id>` 下的消息历史、工作区和产物。
+- Runtime 会把合并后的对话保存到 `.runtime/threads/<thread_id>/memory/conversation.jsonl`，并生成可读 transcript：`.runtime/threads/<thread_id>/memory/conversation.md`。
+- 如果调用方只传当前轮 messages，服务端会自动加载同一 `thread_id` 的已保存历史再进入模型。
+- 如果调用方已经传入完整历史，服务端会做前后缀重叠检测，避免把同一批消息重复追加。
+- 文件成果仍存储在 `.runtime/threads/<thread_id>/outputs/`，并通过同目录下的 `manifest.json` 建索引。
+- Memory v1 仍用于长期偏好和事实记录，不等同于完整 chat history；会话历史由 thread 目录内的 conversation 文件负责。
 
 ## 运行时架构
 
@@ -920,7 +921,7 @@ ACP agent 集成，不应当当成远程不可信代码的安全沙箱。
 ## Sandbox 策略
 
 Sandbox 执行是选择性的。普通对话、LLM spec planning、行为检测文本判断默认在本地 runtime 中完成。
-只有 Skill manifest 显式映射到 sandbox profile 时，才会进入 OpenSandbox 执行路径。
+只有 Skill manifest 显式映射到 sandbox profile，且当前 provider/executor 开启时，才会进入隔离执行路径。
 
 Skill manifest 位置：
 
@@ -960,6 +961,41 @@ export SANDBOX_EXECUTOR_ENABLED=false         # 默认关闭；OpenSandbox Serve
 export OPENSANDBOX_DOMAIN=127.0.0.1:8080
 export OPENSANDBOX_PROTOCOL=http
 ```
+
+本机开发默认推荐轻量 local：
+
+```json
+{
+  "provider": "local",
+  "executor_enabled": false,
+  "fallback_to_local": true
+}
+```
+
+如果希望不启动 OpenSandbox Server / Docker，但又把 Skill adapter 放到独立进程里执行，可以复制
+`config/sandbox/runtime.local.example.json` 为 `config/sandbox/runtime.local.json`，启用 `local_subprocess`：
+
+```json
+{
+  "provider": "local_subprocess",
+  "executor_enabled": true,
+  "sandboxed_skills": ["drawio-generation"],
+  "fallback_to_local": true
+}
+```
+
+`local_subprocess` 会在当前 thread 下创建本地执行目录：
+
+```text
+.runtime/threads/<thread_id>/sandbox-run/
+  workspace/request.json
+  outputs/
+  inputs/
+  skills/
+```
+
+它不依赖 OpenSandbox Server 或 Docker，适合可信 Skill 的本机调试；它不是安全沙箱，不能用于执行不可信代码。
+服务器部署或强隔离场景再启用 `opensandbox` provider。
 
 OpenSandbox Skill 镜像使用统一 adapter 入口：
 

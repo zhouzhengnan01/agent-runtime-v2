@@ -2928,6 +2928,8 @@
       enum: { name: 'mode', type: 'string', paramKind: 'enum', description: '枚举参数', enumText: 'option-a\noption-b' }
     };
 
+    const THREAD_STORAGE_KEY = 'jetlinks.runtime.threadId';
+
     const state = {
       messages: [],
       timeline: [],
@@ -3088,9 +3090,10 @@
 
     function ensureThread() {
       if (!els.thread.value.trim()) {
-        els.thread.value = `local-${Date.now().toString(36)}`;
+        els.thread.value = localStorage.getItem(THREAD_STORAGE_KEY) || `local-${Date.now().toString(36)}`;
       }
       els.threadMini.textContent = els.thread.value.trim();
+      localStorage.setItem(THREAD_STORAGE_KEY, els.thread.value.trim());
       return els.thread.value.trim();
     }
 
@@ -5705,6 +5708,30 @@
       }
       renderSkillEditor({ type: 'ok', text: successText });
       if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'ok', text: successText });
+      warmSkillEnvironments(names, successText);
+    }
+
+    async function warmSkillEnvironments(names, successText) {
+      const skills = Array.isArray(names) ? names.filter(Boolean) : [];
+      if (!skills.length) return;
+      const results = [];
+      for (const name of skills) {
+        try {
+          const res = await fetch(`/api/skills/${encodeURIComponent(name)}/environment/warm`, fetchOptions({ method: 'POST' }));
+          const data = await res.json().catch(() => ({}));
+          results.push({ name, ok: res.ok, data, message: data.detail || data.message || res.statusText || '' });
+        } catch (err) {
+          results.push({ name, ok: false, message: err.message });
+        }
+      }
+      const failed = results.filter((item) => !item.ok || item.data?.status === 'failed');
+      if (failed.length) {
+        renderSkillEditor({ type: 'error', text: `${successText}，依赖预热未完成：${failed.map((item) => `${item.name}: ${item.message || item.data?.message || 'failed'}`).join('；')}` });
+        if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'error', text: '依赖预热未完成，可稍后在技能环境中重试' });
+        return;
+      }
+      renderSkillEditor({ type: 'ok', text: `${successText}，依赖环境已就绪` });
+      if (state.activeTab === 'abilities') renderAbilityPanel({ type: 'ok', text: '依赖环境已就绪' });
     }
 
     async function uploadWorkflowPlugin(file) {
@@ -6432,10 +6459,47 @@
 
     async function refreshArtifacts() {
       const threadId = ensureThread();
-      const res = await fetch(`/api/artifacts/${threadId}`);
+      const res = await fetch(`/api/artifacts/${threadId}`, { cache: 'no-store' });
       const data = await res.json();
       state.artifacts = data.artifacts || [];
       renderPanel();
+    }
+
+    async function loadArtifactsForThread(threadId) {
+      const res = await fetch(`/api/artifacts/${encodeURIComponent(threadId)}`, { cache: 'no-store' });
+      if (!res.ok) return [];
+      const data = await res.json().catch(() => ({}));
+      return Array.isArray(data.artifacts) ? data.artifacts : [];
+    }
+
+    async function restoreRecentArtifacts() {
+      try {
+        const threadId = ensureThread();
+        state.artifacts = await loadArtifactsForThread(threadId);
+        if (state.artifacts.length) {
+          renderPanel();
+          return;
+        }
+
+        const res = await fetch('/api/agents/runs/recent?limit=20', fetchOptions({ cache: 'no-store' }));
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        const runs = Array.isArray(data.runs) ? data.runs : [];
+        for (const run of runs) {
+          const candidate = String(run.thread_id || '').trim();
+          if (!candidate || candidate === threadId) continue;
+          const artifacts = await loadArtifactsForThread(candidate);
+          if (!artifacts.length) continue;
+          els.thread.value = candidate;
+          els.threadMini.textContent = candidate;
+          localStorage.setItem(THREAD_STORAGE_KEY, candidate);
+          state.artifacts = artifacts;
+          renderPanel();
+          return;
+        }
+      } catch (err) {
+        console.debug('artifact restore skipped', err);
+      }
     }
 
     async function preview(url, kind, target) {
@@ -6793,6 +6857,7 @@
     els.newThread.addEventListener('click', () => {
       els.thread.value = `local-${Date.now().toString(36)}`;
       els.threadMini.textContent = els.thread.value;
+      localStorage.setItem(THREAD_STORAGE_KEY, els.thread.value);
       state.messages = [];
       state.timeline = [];
       state.artifacts = [];
@@ -6820,6 +6885,9 @@
       renderPanel();
     });
     els.thread.addEventListener('input', ensureThread);
+    els.thread.addEventListener('change', () => {
+      refreshArtifacts().catch((err) => console.debug('artifact refresh skipped', err));
+    });
     els.agent.addEventListener('change', renderSelectedAgent);
     els.refresh.addEventListener('click', refreshArtifacts);
     els.refreshTop.addEventListener('click', refreshArtifacts);
@@ -7297,7 +7365,13 @@
       const button = event.target.closest('button');
       if (!button) return;
       if (button.dataset.download) {
-        window.open(button.dataset.download, '_blank');
+        const link = document.createElement('a');
+        link.href = button.dataset.download;
+        link.download = '';
+        link.rel = 'noreferrer';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
         return;
       }
       if (button.dataset.preview) {
@@ -7314,6 +7388,7 @@
     renderAttachments();
     renderComposerCapabilities();
     renderPanel();
+    restoreRecentArtifacts();
   </script>
 </body>
 </html>

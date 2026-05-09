@@ -441,6 +441,86 @@ def test_python_script_manifest_rejects_missing_script_file(
     assert "Python script not found" in response.json()["detail"]
 
 
+def test_python_script_config_override_uses_plugin_root_for_single_skill_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_root = tmp_path / "plugins" / "skills" / "data-auto-annotation"
+    script_root = plugin_root / "scripts"
+    script_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "data-auto-annotation",
+  "name": "data-auto-annotation",
+  "version": "1.0.0",
+  "skills": ["SKILL.md"]
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "SKILL.md").write_text(
+        """
+---
+name: data-auto-annotation
+description: Data annotation
+---
+""",
+        encoding="utf-8",
+    )
+    (script_root / "sam3-predict.py").write_text("print('{}')\n", encoding="utf-8")
+    config_dir = tmp_path / "config" / "skills"
+    config_dir.mkdir(parents=True)
+    (config_dir / "data-auto-annotation.json").write_text(
+        """
+{
+  "name": "data-auto-annotation",
+  "description": "Data annotation",
+  "output_kind": "json",
+  "generation": true,
+  "execution": {
+    "type": "python_script",
+    "script": "scripts/sam3-predict.py"
+  },
+  "input_schema": {"type": "object"},
+  "output_schema": {"type": "object"},
+  "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
+}
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    detail = client.get("/api/skills/data-auto-annotation")
+    assert detail.status_code == 200
+    file_paths = {Path(item["path"]).name for item in detail.json()["package_files"]}
+    assert "SKILL.md" in file_paths
+    assert "requirements.txt" in file_paths
+    assert "sam3-predict.py" in file_paths
+
+    response = client.put(
+        "/api/skills/data-auto-annotation/manifest-config",
+        json={
+            "config": {
+                "description": "Data annotation updated",
+                "output_kind": "json",
+                "generation": True,
+                "quality_template": [],
+                "execution": {"type": "python_script", "script": "scripts/sam3-predict.py"},
+                "input_schema": {"type": "object"},
+                "output_schema": {"type": "object"},
+                "sandbox": {"enabled": True, "profile": "python-skill", "request_schema_version": "skill-run.v1"},
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert (plugin_root / "sandbox.yml").is_file()
+
+
 def test_skill_manifest_config_api_syncs_sandbox_yaml_for_package_skills(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

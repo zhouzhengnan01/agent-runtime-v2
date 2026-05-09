@@ -9,7 +9,7 @@ from pathlib import Path
 from app.core.artifacts import ArtifactStore
 from app.core.sandbox.config import SandboxConfig
 from app.core.sandbox.policy import SandboxDecision, SandboxProfile
-from app.core.sandbox.runner import SandboxRunContext, _request_json
+from app.core.sandbox.runner import SandboxRunContext, SandboxSkillRunner, _request_json
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -120,3 +120,43 @@ def test_unified_sandbox_adapter_generates_drawio_and_png(tmp_path: Path) -> Non
     assert "规则引擎" in values
     assert "AI 复判" in values
     assert "edgeStyle=orthogonalEdgeStyle" in drawio_path.read_text(encoding="utf-8")
+
+
+def test_local_subprocess_runner_generates_drawio_outputs(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("local-subprocess-drawio")
+    profile = SandboxProfile(
+        name="drawio",
+        command=f"python {PROJECT_ROOT / 'sandbox' / 'skills' / 'run_skill.py'} --request {{request_path}} --outputs {{outputs_dir}}",
+        timeout_seconds=60,
+    )
+    decision = SandboxDecision(
+        skill_name="drawio-generation",
+        eligible=True,
+        use_sandbox=True,
+        execution_mode="sandbox",
+        provider="local_subprocess",
+        profile_name="drawio",
+        profile=profile,
+        request_schema_version="skill-run.v1",
+        fallback_to_local=True,
+        reason="test",
+    )
+    context = SandboxRunContext(
+        skill_name="drawio-generation",
+        spec={
+            "title": "本地子进程架构图",
+            "nodes": ["设备接入", "规则引擎"],
+            "edges": [["设备接入", "规则引擎"]],
+        },
+        paths=paths,
+        decision=decision,
+        config=SandboxConfig(provider="local_subprocess", executor_enabled=True),
+    )
+
+    result = SandboxSkillRunner(store).run(context)
+
+    assert result.data["execution_mode"] == "local_subprocess"
+    assert {artifact.name for artifact in result.outputs} == {"architecture.drawio", "architecture.png"}
+    assert (paths.outputs / "architecture.drawio").is_file()
+    assert (paths.outputs / "architecture.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
