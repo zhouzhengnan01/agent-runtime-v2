@@ -44,3 +44,12 @@ def test_workbench_deep_execution_toggle_is_in_visible_composer_toolbar() -> Non
     assert '<label class="small-action toggle-action" title="复杂任务使用 autonomous 模式，允许更多工具循环">' in html
     assert '<input id="deepExecution" type="checkbox">' in html
     assert '<label class="tool-pill" title="复杂任务使用 autonomous 模式，允许更多工具循环">' not in html
+
+
+def test_workbench_does_not_restore_old_artifacts_after_thread_switch() -> None:
+    html = WORKBENCH.read_text()
+
+    assert "const threadId = ensureThread();" in html
+    assert "if (ensureThread() !== threadId) return;" in html
+    assert "const previousThread = els.threadMini.textContent;" in html
+    assert "resetThreadUiState({ clearCapabilities: true });" in html

@@ -4,6 +4,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 const APP_URL = process.env.APP_URL || 'http://127.0.0.1:18012/static/workbench.html';
+const RUNTIME_TOKEN = process.env.RUNTIME_API_TOKEN || '';
 const WORK_DIR = process.env.WORKBENCH_UI_SMOKE_DIR || '/tmp/jetlinks-workbench-ui-smoke';
 const IMAGE_PATH = path.join(WORK_DIR, 'smoke-upload.png');
 
@@ -65,6 +66,56 @@ function writeSmokePng(filePath) {
   fs.writeFileSync(filePath, png);
 }
 
+function sseFrame(type, data) {
+  return `data: ${JSON.stringify({ type, data })}\n\n`;
+}
+
+function artifact(name, kind, mimeType, size = 256) {
+  return {
+    name,
+    kind,
+    mime_type: mimeType,
+    size,
+    path: `/mnt/user-data/outputs/${name}`,
+    preview_url: `/api/artifacts/thread/preview/${name}`,
+    download_url: `/api/artifacts/thread/download/${name}`,
+  };
+}
+
+async function fulfillRunStream(route, requestIndex) {
+  const artifacts =
+    requestIndex === 0
+      ? [artifact('annotations.coco.json', 'text', 'application/json', 512)]
+      : [
+          artifact('annotations.coco.json', 'text', 'application/json', 512),
+          artifact('coco-summary.md', 'markdown', 'text/markdown', 320),
+        ];
+  const reply =
+    requestIndex === 0
+      ? '已自动标注完成，COCO JSON 文件已生成：annotations.coco.json'
+      : '已读取当前会话已有的 annotations.coco.json，并生成 coco-summary.md';
+  const result = {
+    status: 'completed',
+    reply,
+    artifacts,
+    metadata: { tool_rounds: requestIndex === 0 ? 2 : 4, tool_call_count: requestIndex === 0 ? 1 : 3, mode: 'autonomous' },
+  };
+  const body = [
+    sseFrame('run.started', { workflow: requestIndex === 0 ? 'data-auto-annotation' : 'agent_loop', thread_id: 'ui-smoke' }),
+    sseFrame('llm.request.started', { round: 1, tool_count: 3, tools: [{ name: 'local_read_file' }] }),
+    sseFrame('tool.started', { tool_name: requestIndex === 0 ? 'data-auto-annotation' : 'artifact_read' }),
+    sseFrame('tool.completed', { tool_name: requestIndex === 0 ? 'data-auto-annotation' : 'artifact_read', duration_ms: 12 }),
+    ...artifacts.map((item) => sseFrame('artifact.created', { artifact: item })),
+    sseFrame('agent.message.delta', { text: reply }),
+    sseFrame('run.completed', { result }),
+  ].join('');
+  await route.fulfill({
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store' },
+    body,
+  });
+}
+
 test('app center upload, skill execution, and same-thread continuation', async ({ page }) => {
   test.setTimeout(180000);
   writeSmokePng(IMAGE_PATH);
@@ -91,10 +142,26 @@ test('app center upload, skill execution, and same-thread continuation', async (
       apiResponses.push({ url, status: response.status() });
     }
   });
+  await page.addInitScript(() => {
+    localStorage.removeItem('jetlinks.runtime.threadId');
+    const token = window.__WORKBENCH_UI_SMOKE_TOKEN__;
+    if (token) localStorage.setItem('jetlinks.runtime.adminToken', token);
+  });
+  await page.exposeFunction('__workbenchUiSmokeToken', () => RUNTIME_TOKEN);
+  await page.addInitScript(async () => {
+    window.__WORKBENCH_UI_SMOKE_TOKEN__ = await window.__workbenchUiSmokeToken();
+  });
+  let runRequestCount = 0;
+  await page.route('**/api/agents/default/runs/stream', async (route) => {
+    const index = runRequestCount;
+    runRequestCount += 1;
+    await fulfillRunStream(route, index);
+  });
 
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
   await page.locator('#transport').selectOption('sse');
   await page.locator('#thread').fill(`pw-ui-audit-${Date.now()}`);
+  await expect(page.locator('#threadMini')).toContainText('pw-ui-audit-');
   await expect(page.locator('#runStatus')).toContainText('Ready');
 
   await page.locator('[data-view="apps"]').first().click();

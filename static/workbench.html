@@ -6952,8 +6952,9 @@
 
     async function refreshArtifacts() {
       const threadId = ensureThread();
-      const res = await fetch(`/api/artifacts/${threadId}`, { cache: 'no-store' });
+      const res = await fetch(`/api/artifacts/${encodeURIComponent(threadId)}`, { cache: 'no-store' });
       const data = await res.json();
+      if (ensureThread() !== threadId) return;
       state.artifacts = data.artifacts || [];
       renderPanel();
     }
@@ -6969,6 +6970,7 @@
       try {
         const threadId = ensureThread();
         state.artifacts = await loadArtifactsForThread(threadId);
+        if (ensureThread() !== threadId) return;
         if (state.artifacts.length) {
           renderPanel();
           return;
@@ -6979,6 +6981,7 @@
         const data = await res.json().catch(() => ({}));
         const runs = Array.isArray(data.runs) ? data.runs : [];
         for (const run of runs) {
+          if (ensureThread() !== threadId) return;
           const candidate = String(run.thread_id || '').trim();
           if (!candidate || candidate === threadId) continue;
           const artifacts = await loadArtifactsForThread(candidate);
@@ -7422,7 +7425,13 @@
       });
     });
     els.newThread.addEventListener('click', startNewThread);
-    els.thread.addEventListener('input', ensureThread);
+    els.thread.addEventListener('input', () => {
+      const previousThread = els.threadMini.textContent;
+      const nextThread = ensureThread();
+      if (previousThread && previousThread !== nextThread) {
+        resetThreadUiState({ clearCapabilities: true });
+      }
+    });
     els.thread.addEventListener('change', () => {
       refreshArtifacts().catch((err) => console.debug('artifact refresh skipped', err));
     });
