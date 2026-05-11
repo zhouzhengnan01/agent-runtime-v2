@@ -755,11 +755,17 @@ SMOKE_MIN_TEMPLATES=16 ./quality-gate.sh
 SMOKE_EXPECT_CONFIG_APPS=true ./quality-gate.sh
 SMOKE_FAIL_ON_RETRY=true ./quality-gate.sh
 SMOKE_TOKEN=your-runtime-token ./quality-gate.sh
+RUN_UI_SMOKE=true ./quality-gate.sh
 RUN_SMOKE=false ./quality-gate.sh
 ```
 
 `quality-gate.sh` 默认 `SMOKE_FAIL_ON_RETRY=true`。live smoke 中任何模板如果先超时/断连、再靠重试成功，
 门禁仍会失败，用来提前暴露线上应用链路不稳定；临时排查时可以设置 `SMOKE_FAIL_ON_RETRY=false`。
+如果要把浏览器页面也纳入发版前验证，可以设置 `RUN_UI_SMOKE=true`。该检查会用 Playwright 打开
+Workbench，完整走一遍“应用中心选择 `data-auto-annotation` -> 查看 JSON -> 上传图片 -> 深度执行 ->
+生成 `annotations.coco.json` -> 同一会话继续生成 `coco-summary.md`”，并断言请求体确实带有上传路径、
+`selected_skills`、`autonomous` 和 `max_tool_rounds=12`。运行前需要 Runtime 可访问，且
+`frontend/workbench/node_modules` 已安装。
 
 仓库也提供了 GitHub Actions 工作流 `.github/workflows/quality-gate.yml`。PR 和主分支 push 会自动执行
 `RUN_SMOKE=false ./quality-gate.sh`，覆盖关键 pytest、应用模板静态检查和 smoke matrix 单元测试。

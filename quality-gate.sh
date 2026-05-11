@@ -18,6 +18,7 @@ APP_HOST="${APP_HOST:-127.0.0.1}"
 APP_PORT="${APP_PORT:-18012}"
 BASE_URL="${BASE_URL:-http://${APP_HOST}:${APP_PORT}}"
 RUN_SMOKE="${RUN_SMOKE:-auto}"
+RUN_UI_SMOKE="${RUN_UI_SMOKE:-false}"
 SMOKE_OUTPUT="${SMOKE_OUTPUT:-/tmp/jetlinks-app-smoke-matrix.json}"
 SMOKE_REPORT="${SMOKE_REPORT:-/tmp/jetlinks-app-smoke-matrix.md}"
 SMOKE_RETRIES="${SMOKE_RETRIES:-1}"
@@ -39,6 +40,27 @@ echo "== pytest quality gate =="
   tests/test_workbench_runtime_events.py \
   tests/test_observability.py \
   -q
+
+case "${RUN_UI_SMOKE}" in
+  0|false|False|no|No)
+    ;;
+  1|true|True|yes|Yes)
+    if ! curl -fsS "${BASE_URL}/health" >/dev/null 2>&1; then
+      echo "Workbench UI smoke requires reachable Runtime: ${BASE_URL}/health" >&2
+      exit 1
+    fi
+    if [ ! -d "frontend/workbench/node_modules" ]; then
+      echo "Workbench UI smoke requires frontend dependencies: cd frontend/workbench && npm install" >&2
+      exit 1
+    fi
+    echo "== workbench UI smoke =="
+    (cd frontend/workbench && APP_URL="${BASE_URL}/static/workbench.html" npm run test:ui)
+    ;;
+  *)
+    echo "Invalid RUN_UI_SMOKE=${RUN_UI_SMOKE}; expected true/false" >&2
+    exit 2
+    ;;
+esac
 
 case "${RUN_SMOKE}" in
   0|false|False|no|No)

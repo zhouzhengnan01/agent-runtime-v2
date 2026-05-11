@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "test:ui": "playwright test tests/workbench-flow.spec.mjs --reporter=line --workers=1"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
