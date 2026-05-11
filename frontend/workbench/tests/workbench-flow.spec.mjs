@@ -142,15 +142,10 @@ test('app center upload, skill execution, and same-thread continuation', async (
       apiResponses.push({ url, status: response.status() });
     }
   });
-  await page.addInitScript(() => {
+  await page.addInitScript((token) => {
     localStorage.removeItem('jetlinks.runtime.threadId');
-    const token = window.__WORKBENCH_UI_SMOKE_TOKEN__;
     if (token) localStorage.setItem('jetlinks.runtime.adminToken', token);
-  });
-  await page.exposeFunction('__workbenchUiSmokeToken', () => RUNTIME_TOKEN);
-  await page.addInitScript(async () => {
-    window.__WORKBENCH_UI_SMOKE_TOKEN__ = await window.__workbenchUiSmokeToken();
-  });
+  }, RUNTIME_TOKEN);
   let runRequestCount = 0;
   await page.route('**/api/agents/default/runs/stream', async (route) => {
     const index = runRequestCount;

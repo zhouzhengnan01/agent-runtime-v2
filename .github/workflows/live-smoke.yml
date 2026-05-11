@@ -39,6 +39,11 @@ on:
         required: false
         default: true
         type: boolean
+      run_ui_smoke:
+        description: "Also run Workbench Playwright UI smoke against base_url"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: live-smoke-${{ github.ref }}
@@ -73,6 +78,7 @@ jobs:
           DISPATCH_EXPECT_CONFIG_APPS: ${{ inputs.expect_config_apps }}
           DISPATCH_SKIP_CONTINUATION: ${{ inputs.skip_continuation_check }}
           DISPATCH_FAIL_ON_RETRY: ${{ inputs.fail_on_retry }}
+          DISPATCH_RUN_UI_SMOKE: ${{ inputs.run_ui_smoke }}
           LIVE_SMOKE_TOKEN: ${{ secrets.LIVE_SMOKE_TOKEN }}
         run: |
           base_url="${DISPATCH_BASE_URL:-${SECRET_BASE_URL:-}}"
@@ -89,6 +95,7 @@ jobs:
           echo "expect_config_apps=${DISPATCH_EXPECT_CONFIG_APPS:-true}" >> "${GITHUB_OUTPUT}"
           echo "skip_continuation_check=${DISPATCH_SKIP_CONTINUATION:-false}" >> "${GITHUB_OUTPUT}"
           echo "fail_on_retry=${DISPATCH_FAIL_ON_RETRY:-true}" >> "${GITHUB_OUTPUT}"
+          echo "run_ui_smoke=${DISPATCH_RUN_UI_SMOKE:-false}" >> "${GITHUB_OUTPUT}"
           if [ -n "${LIVE_SMOKE_TOKEN}" ]; then
             echo "has_token=true" >> "${GITHUB_OUTPUT}"
           else
@@ -122,6 +129,29 @@ jobs:
           else
             python tools/app_smoke_matrix.py "${args[@]}"
           fi
+
+      - name: Set up Node.js for UI smoke
+        if: steps.smoke-inputs.outputs.skip != 'true' && steps.smoke-inputs.outputs.run_ui_smoke == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/workbench/package-lock.json
+
+      - name: Install Workbench UI dependencies
+        if: steps.smoke-inputs.outputs.skip != 'true' && steps.smoke-inputs.outputs.run_ui_smoke == 'true'
+        working-directory: frontend/workbench
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run Workbench UI smoke
+        if: steps.smoke-inputs.outputs.skip != 'true' && steps.smoke-inputs.outputs.run_ui_smoke == 'true'
+        working-directory: frontend/workbench
+        env:
+          APP_URL: ${{ steps.smoke-inputs.outputs.base_url }}/static/workbench.html
+          RUNTIME_API_TOKEN: ${{ secrets.LIVE_SMOKE_TOKEN }}
+        run: npm run test:ui
 
       - name: Publish smoke summary
         if: always()
