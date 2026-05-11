@@ -10,6 +10,22 @@ v2 与原 `jetlinks-agent-runtime` v1 是不同架构：v2 默认不保存隐藏
 
 ## 快速启动
 
+推荐使用仓库自带脚本启动，脚本会写入 PID、日志并等待 `/health` 正常：
+
+```bash
+./install-deps.sh
+APP_PORT=18012 ./start.sh
+APP_PORT=18012 ./status.sh
+```
+
+打开 Vue Workbench：
+
+```text
+http://127.0.0.1:18012/workbench
+```
+
+也可以直接用 uvicorn 开发调试：
+
 ```bash
 export LLM_BASE_URL="http://192.168.32.11:11434/v1"
 # 如果 config/agents/default.json 或 default.local.json 已配置 model.api_key，这里可以不设置
@@ -19,10 +35,8 @@ export LLM_MODEL="qwen3.6:27b"
 uvicorn app.main:app --reload --port 8010
 ```
 
-打开工作台：
-
 ```text
-http://127.0.0.1:8010/static/workbench.html
+http://127.0.0.1:8010/workbench
 ```
 
 ### 一键进程管理脚本
@@ -30,10 +44,11 @@ http://127.0.0.1:8010/static/workbench.html
 仓库根目录提供了面向本地部署、Java `ProcessBuilder` 或其他进程管理器调用的脚本：
 
 ```bash
-./up.sh       # 后台启动
+./start.sh    # 后台启动，推荐入口
+./up.sh       # 后台启动，兼容旧入口
 ./status.sh   # 输出机器可读状态
 ./stop.sh     # 停止服务
-./restart.sh  # 重启服务
+./restart.sh  # 重启服务，内部调用 stop + start
 ```
 
 首次部署或 Python 依赖变化后先执行：
@@ -49,11 +64,13 @@ http://127.0.0.1:8010/static/workbench.html
 BASE_PYTHON=/usr/bin/python3.12 VENV_DIR=.venv ./install-deps.sh
 ```
 
-默认启动地址是 `http://127.0.0.1:8000`，Workbench 为：
+默认启动地址是 `http://127.0.0.1:8000`，Vue Workbench 为：
 
 ```text
-http://127.0.0.1:8000/static/workbench.html
+http://127.0.0.1:8000/workbench
 ```
+
+旧版静态 Workbench 仍保留在 `/static/workbench.html`，主要用于兼容和排障；日常测试优先使用 `/workbench`。
 
 运行状态文件默认写入 `.runtime/server/`：
 
@@ -65,7 +82,7 @@ http://127.0.0.1:8000/static/workbench.html
 可通过环境变量覆盖启动参数，适合 Java 调用前注入：
 
 ```bash
-APP_HOST=0.0.0.0 APP_PORT=8010 ./up.sh
+APP_HOST=0.0.0.0 APP_PORT=8010 ./start.sh
 APP_PORT=8010 ./status.sh
 APP_PORT=8010 ./restart.sh
 APP_PORT=8010 ./stop.sh
@@ -137,7 +154,7 @@ public class AgentRuntimeManager {
     }
 
     public CommandResult start() throws IOException, InterruptedException {
-        return run("./up.sh", Map.of(
+        return run("./start.sh", Map.of(
             "APP_HOST", "127.0.0.1",
             "APP_PORT", "8000"
         ));
@@ -177,7 +194,6 @@ public class AgentRuntimeManager {
             while ((line = reader.readLine()) != null) {
                 output.append(line).append('\n');
             }
-        }
         int exitCode = process.waitFor();
         return new CommandResult(exitCode, output.toString());
     }
@@ -223,7 +239,7 @@ System.out.println(fields.get("url"));
 Java 侧建议逻辑：
 
 1. 首次部署或升级后调用 `./install-deps.sh`
-2. 调用 `./up.sh`
+2. 调用 `./start.sh`
 3. 调用 `./status.sh`，退出码为 `0` 且 `status=running` 才认为启动成功
 4. 需要重载时调用 `./restart.sh`
 5. 停止时调用 `./stop.sh`
@@ -246,7 +262,7 @@ python -m app.cli acp-stdio --agent default
 - 完整的基础 agent loop：模型输出 `tool_calls`，运行时执行工具，再把 `role=tool` 结果回填给模型继续推理。
 - JSON 配置驱动：通用 agent 通过 `config/agents/default.json` 定义模型、工具、Skill 和运行参数。
 - 统一工具层：Skill、MCP/manual 工具、本地 workspace 工具都通过 `ToolRegistry` 和 `ToolInvocationService` 暴露。
-- Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection 等内置 Skill。
+- Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection、behavior-review 等内置 Skill。
 - Workflow 插件：`artifact_workflow`、`evidence_first_detection` 通过 `WorkflowRegistry` 注册，可选启用。
 - 多协议入口：HTTP、SSE、CLI、ACP WebSocket、ACP stdio、MCP HTTP。
 - Workbench 应用中心：通过预置模板一键套用 default agent、workflow、Skill、MCP 工具和示例提示词。
@@ -407,6 +423,35 @@ config/agents/default.local.json  # 本地私密覆盖，默认被 git 忽略
 }
 ```
 
+如果你在 `*.local.json` 中临时写入明文 `model.api_key`，运行时第一次加载该 agent 时会自动把
+明文改写为 `model.api_key_enc` 并删除 `model.api_key`。本次加载仍然会在内存中使用该 key，
+后续加载会从 `api_key_enc` 自动解密。
+
+这适合迁移场景：新机器上只需要临时写一次明文 local config，启动或执行一次 `show-agent`
+后，本地文件会自动变成加密形态：
+
+```json
+{
+  "model": {
+    "model": "gpt-5.4-mini",
+    "base_url": "https://rehdasu.cn/v1",
+    "api_key": "your-key"
+  }
+}
+```
+
+加载后会自动写回为：
+
+```json
+{
+  "model": {
+    "model": "gpt-5.4-mini",
+    "base_url": "https://rehdasu.cn/v1",
+    "api_key_enc": "enc.fernet.v1...."
+  }
+}
+```
+
 也可以使用加密写入命令：
 
 ```bash
@@ -513,14 +558,41 @@ tool calling，可以通过页面能力按钮、CLI `--workflow` 或 ACP `runtim
 ## 应用中心 / 智能体模板
 
 如果不希望每次在页面里反复选择 agent、Workflow、Skill 和 MCP 工具，可以把常用组合沉淀成
-Workbench 应用模板。模板配置保存在：
+Workbench 应用模板。应用中心不是写死在前端，Workbench 只调用后端 Apps 接口读取模板；模板配置保存在：
+
+```text
+config/apps/*.json
+```
+
+也兼容集合文件：
 
 ```text
 config/apps/templates.json
 ```
 
+当前推荐一个应用一个 JSON 文件，例如：
+
+```text
+config/apps/algorithm-dataset-curation.json
+config/apps/algorithm-engineer-full-cycle.json
+config/apps/algorithm-engineer-workbench.json
+config/apps/algorithm-evaluation-deployment.json
+config/apps/algorithm-research-benchmark.json
+config/apps/algorithm-training-orchestration.json
+config/apps/artifact-suite.json
+config/apps/behavior-review.json
+config/apps/behavior-safety-detector.json
+config/apps/data-auto-annotation.json
+config/apps/excel-template-builder.json
+config/apps/general-jetlinks-assistant.json
+config/apps/iot-architecture-diagram.json
+config/apps/mindmap-task-breakdown.json
+config/apps/project-report-ppt.json
+config/apps/technical-doc-writer.json
+```
+
 当前内置了通用助手、IoT 架构图、项目汇报 PPT、Excel 模板、技术文档、XMind 任务拆解、行为识别
-安全助手和产物生成全家桶等模板。每个模板可声明：
+安全助手、行为复判、数据自动标注、算法工程全流程和产物生成全家桶等模板。每个模板可声明：
 
 ```json
 {
@@ -532,9 +604,32 @@ config/apps/templates.json
   "selected_skills": ["drawio-generation"],
   "selected_mcp_tools": [],
   "prompt_examples": ["生成一份 JetLinks IoT 平台架构 Draw.io 图"],
-  "tags": ["Draw.io", "架构图"]
+  "tags": ["Draw.io", "架构图"],
+  "runtime_options": {
+    "skill_parameters": {
+      "drawio-generation": {
+        "style": "layered"
+      }
+    }
+  }
 }
 ```
+
+字段含义：
+
+| 字段 | 作用 |
+| --- | --- |
+| `name` | 模板唯一名，也是 `GET /api/apps/templates/{template_name}` 和 ACP `appTemplateName` 使用的标识。文件名通常与 `name` 一致。 |
+| `title` / `description` | 应用中心卡片展示名称和说明。 |
+| `category` | 应用中心筛选分类，目前前端按 `general`、`generation`、`vision` 等分类展示。 |
+| `icon` | 卡片图标语义名，前端会映射成简短图标。未知值会回退到通用图标。 |
+| `agent_name` | 点击“使用此应用”时切换到的 agent，例如 `default`。必须能在 `config/agents/*.json` 中找到。 |
+| `workflow` | 默认工作流，例如 `artifact_workflow`、`evidence_first_detection`；为 `null` 时走 agent 默认链路。 |
+| `selected_skills` | 本应用默认启用的 Skill 名称列表，名称来自 `config/skills/*.json` 或插件 Skill。 |
+| `selected_mcp_tools` | 本应用默认启用的 MCP 工具名称列表，名称来自 `config/mcp/tools.json`。 |
+| `prompt_examples` | 示例提示词。Workbench 点击“使用此应用”或“填入示例”时会填入第一个示例。 |
+| `tags` | 卡片标签，只用于展示和快速识别能力。 |
+| `runtime_options` | 更细的默认运行参数，例如 `skill_parameters`、模型参数、额外 workflow 参数等。请求显式传入的字段优先级更高。 |
 
 接口：
 
@@ -543,10 +638,194 @@ GET /api/apps/templates
 GET /api/apps/templates/{template_name}
 ```
 
+后端加载逻辑：
+
+- `app/api/apps.py` 注册 `/api/apps/templates` 和 `/api/apps/templates/{template_name}`。
+- `AppTemplateRegistry` 默认读取仓库根目录下的 `config/apps`。
+- `config/apps/<name>.json` 会按单个模板读取。
+- `config/apps/templates.json` 会按 `{ "templates": [...] }` 集合读取，主要用于兼容旧配置。
+- 列表接口会按 `category`、`title`、`name` 排序。
+- 无效 JSON、字段校验失败或类型错误的模板会被跳过；本地测试里会校验内置模板引用的 agent、workflow、Skill、MCP 工具是否存在。
+
 Workbench 左侧新增 **应用中心** 页面，也可以从输入框工具栏点 **应用** 快捷进入。点击“使用此应用”后，
 页面会自动切换到对应 agent，写入本轮 `runtime_options.workflow`、`selected_skills`、
 `selected_mcp_tools`，并填入第一个示例提示词；之后直接发送即可使用已经配置好的智能体。模板目前是
 轻量 JSON 配置，不会修改 agent 源配置，适合把常用场景预置成可点击入口。
+
+运行时优先级：
+
+1. Workbench 点击“使用此应用”：前端把模板里的 `agent_name`、`workflow`、`selected_skills`、
+   `selected_mcp_tools` 和 `runtime_options` 带入本轮请求。
+2. ACP WebSocket `session/new` 可以传 `appTemplateName`，服务端会把模板转换成 session 默认
+   `runtimeOptions`。
+3. 请求里显式传入的 `runtimeOptions` 优先级高于模板默认值；其中 `skill_parameters` 会按 Skill 名合并，
+   请求字段覆盖模板字段。
+4. 模板只是会话入口配置，不会修改 `config/agents/*.json`、Skill manifest 或 MCP 工具源配置。
+
+新增一个应用模板时，按这个流程做：
+
+1. 在 `config/apps/<name>.json` 新建模板，`name` 不要包含 `/` 或 `\`。
+2. 确认 `agent_name`、`workflow`、`selected_skills`、`selected_mcp_tools` 引用已存在。
+3. 运行 `GET /api/apps/templates` 或刷新 Workbench 应用中心确认卡片出现。
+4. 如需给定时任务复用，在应用中心点“建 Cron”，页面会把模板转换成 Cron 草稿。
+
+### 应用中心验收
+
+应用中心模板上线后，建议用 live smoke matrix 做一次端到端验收，确认模板配置、Skill 调用、产物生成、
+上传文件读取和右侧产物列表都能闭环。先启动服务，例如：
+
+```bash
+APP_PORT=18012 ./restart.sh
+```
+
+准备一张真实测试图片后运行：
+
+```bash
+python tools/app_smoke_matrix.py \
+  --base-url http://127.0.0.1:18012 \
+  --output /tmp/jetlinks-app-smoke-matrix.json \
+  --report-markdown /tmp/jetlinks-app-smoke-matrix.md \
+  --retries 1 \
+  --min-templates 16 \
+  --expect-config-apps
+```
+
+脚本会读取 `GET /api/apps/templates` 返回的所有模板，并逐个调用 `/api/agents/default/runs`。
+只有强依赖图片的模板（当前主要是 `data-auto-annotation`）会先通过 `/api/uploads/{thread_id}` 上传测试图片；
+行为识别和行为复判按 evidence-first 逻辑先验证“无视觉证据时不输出视觉确认结论”，不会在 smoke 中强行附加图片。
+默认测试图片会自动写到 `/tmp/jetlinks-app-smoke-image.jpg`；如果需要使用真实业务图片，可以显式传
+`--image /path/to/image.jpg`，显式指定的图片不存在时脚本会直接失败。
+每个应用会记录：
+
+- `status_completed`：本轮 run 是否完成。
+- `artifacts_present`：声明了 workflow、Skill 或 MCP 工具的应用是否至少生成了一个产物。
+- `expected_artifacts_present`：常见 Skill 的关键产物是否出现，例如 `annotations.coco.json`、
+  `behavior-review.json`、`behavior-review.md`、`*.drawio`、`*.pptx`、`*.xlsx`、`*.xmind` 等。
+- `artifact_contents_valid`：关键文件格式是否可读，例如 COCO JSON 结构、JSON 解析、PNG 文件头、
+  Draw.io XML、PPTX/XLSX/XMind/DOCX zip 容器、Markdown/TXT 非空。
+- `artifact_names`：生成的文件名，便于确认 COCO、PPT、Draw.io、XMind、Markdown 等产物是否出现。
+- `missing_expected_artifact_patterns`：缺失的关键产物模式，非空时该模板会被判定失败。
+- `artifact_content_errors`：内容级校验失败原因，非空时该模板会被判定失败。
+- `continuation_check`：对需要验证连续处理的模板，会在首轮成功后用同一个 `thread_id` 再发一轮请求，
+  检查智能体能否读取已有 outputs 并继续生成新产物，且新产物也必须通过内容级校验。
+- `tool_rounds` / `tool_call_count` / `mode`：用于确认复杂任务是否走了多轮工具调用。
+- `attached_smoke_image`：用于确认只有需要图片的应用才上传测试图片。
+
+只验证某几个模板时可以用：
+
+```bash
+python tools/app_smoke_matrix.py \
+  --base-url http://127.0.0.1:18012 \
+  --only data-auto-annotation,behavior-safety-detector
+```
+
+当前验收标准是：脚本最终输出的 `summary.failed` 为空；需要产物的模板必须能在 artifacts 接口看到产物；
+有已知关键产物的 Skill 还必须匹配 `expected_artifact_patterns`；已生成产物必须通过内容级校验；
+带连续处理检查的模板还必须通过 `continuation_check`。如果只想验证首轮应用运行，可以临时加
+`--skip-continuation-check`。
+`--retries` 只会重试超时、连接断开等临时错误，不会掩盖缺产物或内容校验失败；如果希望把
+“重试后才成功”也视为不稳定失败，可以加 `--fail-on-retry`，报告会保留首次失败的 thread、错误和耗时；
+`--report-markdown`
+会额外输出一份人工可读报告，适合发版前或线上排障时留档；`--min-templates` 用来防止应用中心模板
+意外为空或缺失时被误判为通过；`--expect-config-apps` 会要求远端 `/api/apps/templates` 至少包含本仓库
+`config/apps/*.json` 中声明的全部应用名，防止数量没变但核心应用被换错或漏掉。
+如果 Runtime 开启了 `RUNTIME_API_TOKEN`，可以传 `--token <token>`，也可以设置环境变量
+`RUNTIME_API_TOKEN`；报告不会输出 token。`quality-gate.sh` 和 GitHub live smoke 会优先通过环境变量
+传递 token，避免把 token 放进命令行参数。
+如果某个模板失败，先打开输出 JSON 查看该模板的 `thread_id`，再检查对应目录：
+
+```text
+.runtime/threads/<thread_id>/uploads
+.runtime/threads/<thread_id>/outputs
+```
+
+发版或部署前可以直接跑一键质量门禁：
+
+```bash
+./quality-gate.sh
+```
+
+它会先运行关键 pytest。默认 `RUN_SMOKE=auto`：如果 `http://127.0.0.1:18012/health` 可访问，就继续运行
+应用中心 live smoke；如果服务没启动，只跑测试并明确提示跳过 live smoke。常用覆盖变量：
+
+```bash
+APP_PORT=18012 RUN_SMOKE=true ./quality-gate.sh
+BASE_URL=http://127.0.0.1:18012 SMOKE_RETRIES=1 ./quality-gate.sh
+SMOKE_MIN_TEMPLATES=16 ./quality-gate.sh
+SMOKE_EXPECT_CONFIG_APPS=true ./quality-gate.sh
+SMOKE_FAIL_ON_RETRY=true ./quality-gate.sh
+SMOKE_TOKEN=your-runtime-token ./quality-gate.sh
+RUN_SMOKE=false ./quality-gate.sh
+```
+
+`quality-gate.sh` 默认 `SMOKE_FAIL_ON_RETRY=true`。live smoke 中任何模板如果先超时/断连、再靠重试成功，
+门禁仍会失败，用来提前暴露线上应用链路不稳定；临时排查时可以设置 `SMOKE_FAIL_ON_RETRY=false`。
+
+仓库也提供了 GitHub Actions 工作流 `.github/workflows/quality-gate.yml`。PR 和主分支 push 会自动执行
+`RUN_SMOKE=false ./quality-gate.sh`，覆盖关键 pytest、应用模板静态检查和 smoke matrix 单元测试。
+live smoke 依赖实际运行中的 Runtime、模型和外部服务，仍建议在部署机或发版环境用 `RUN_SMOKE=true`
+执行。
+
+如果需要从 GitHub 手动验证某个线上环境，可以触发 `.github/workflows/live-smoke.yml`，输入
+`base_url`、`retries`、`timeout` 和 `fail_on_retry`。该 workflow 会对指定 Runtime 执行完整应用中心 smoke，并上传：
+
+```text
+live-smoke-result.json
+live-smoke-report.md
+```
+
+`live-smoke.yml` 也会每天定时执行一次。定时任务读取仓库 secret `LIVE_SMOKE_BASE_URL` 作为目标
+Runtime 地址；如果没有配置该 secret，workflow 会明确跳过 live smoke，不会误报失败。live smoke
+报告会同时写入 GitHub Actions Step Summary，并作为 artifact 上传。如果目标 Runtime 需要 token，
+配置仓库 secret `LIVE_SMOKE_TOKEN`。workflow 配置了 30 分钟超时和 concurrency，避免巡检重叠执行；
+上传的 smoke 报告默认保留 14 天。
+
+同一个会话的后续任务会优先看到当前 thread 下的 `uploads` 和 `outputs`。例如自动标注生成
+`annotations.coco.json` 后，继续在同一会话里要求“基于已有 COCO 生成摘要”时，智能体应通过
+`present_files` / `local_read_file` / `artifact_read` 读取当前会话产物，而不是再次要求用户上传。
+
+### 深度执行与连续产物
+
+Workbench 输入区的“深度执行”开关会把本轮请求切到 `autonomous` 模式，并传入：
+
+```json
+{
+  "mode": "autonomous",
+  "config_options": {
+    "max_tool_rounds": 12
+  }
+}
+```
+
+这个模式适合需要多次调用工具或 Skill 的复杂任务，例如“上传图片 -> 自动标注 -> 校验 COCO ->
+生成报告 -> 继续修改报告”。它不是无限后台任务，而是受控的单次 run 多轮工具循环：
+
+- `plan`：只规划，最多 1 轮工具循环。
+- `safe`：只保留低风险工具，最多 2 轮。
+- `edit`：默认编辑模式，使用 agent 默认轮数。
+- `autonomous`：允许更宽的工具集合；未覆盖轮数时最多提升到 16，显式 `max_tool_rounds` 可在 1 到 32
+  之间覆盖基础轮数。
+
+复杂任务如果依赖上传文件或上一步产物，必须保持同一个 `thread_id`。线程目录里的文件会被注入到用户消息上下文，
+并可通过本地文件工具读取：
+
+```text
+/mnt/user-data/uploads/<file>
+/mnt/user-data/outputs/<file>
+```
+
+如果视觉类 Skill 返回 `input_required`，表示当前 thread 没有可用图片或数据集；用户补充上传后，
+继续用同一个会话发送下一轮即可，不需要创建新 thread。
+
+Workbench 右侧“执行”面板会展示 agent loop 的细粒度运行事件，包含：
+
+- `llm.request.started` / `llm.request.completed`：当前第几轮模型请求、可用工具数、模型是否选择工具。
+- `tool.calls.started` / `tool.started` / `tool.completed` / `tool.failed`：当前正在执行哪个工具、耗时、是否产生产物或失败码。
+- `context.compacted`：长上下文压缩后继续执行。
+
+这些事件用于排查“页面看起来卡住”的情况：如果只停在 `run.started`，通常说明后端还没有进入模型请求；
+如果停在某个 `tool.started`，优先检查对应 Skill、MCP 工具或外部服务；如果已经有 `artifact.created`
+但页面没有显示产物，则检查 artifacts API 或前端刷新逻辑。
 
 ## 工具、Skill 与 MCP
 
@@ -578,6 +857,7 @@ xmind-generation
 markdown-rendering
 deliverables-export
 behavior-detection
+behavior-review
 ```
 
 ### MCP/manual 工具
@@ -845,7 +1125,8 @@ memory_md_compress -> 把较大的 .md 记忆抽取压缩成 summary.md
 
 运行时核心只产生一套 typed events，不同协议负责适配这些事件：
 
-- Web Workbench：`/static/workbench.html`
+- Vue Workbench：`/workbench`
+- 旧版静态 Workbench：`/static/workbench.html`
 - 接口文档：`/static/api-docs.html`
 - HTTP：`POST /api/agents/{agent}/runs`
 - SSE：`POST /api/agents/{agent}/runs/stream`
@@ -862,6 +1143,83 @@ ACP prompt 会把官方 `TextContentBlock`、`ImageContentBlock`、`ResourceLink
 `ResourceContentBlock` 映射到内部 `Message` 与 `Attachment`。图片、音频和 blob resource 会以
 base64 attachment 传给 runtime；resource link 会保留虚拟路径；嵌入式文本 resource 会同时追加到
 用户消息正文，避免下游只读文本时丢上下文。
+
+当 agent loop 需要用户补充输入时，本轮 `session/prompt` 会结束。为了对齐官方 ACP SDK，
+顶层 `stopReason` 仍返回官方允许的 `end_turn`，JetLinks 扩展原因会放在
+`_meta.jetlinks.stopReason = "input_required"`，并在 `result.metadata` 中带出结构化需求。WebSocket
+连接保持打开，前端应把当前轮次视为“等待用户补充材料”，用户上传或填写后再发起下一次
+`session/prompt`。插件和 workflow 不需要自己管理会话状态；它们可以显式返回
+`metadata.requires_input=true` 和 `metadata.required_inputs`，协议层也会对常见“缺少上传文件”
+回复做保守推断。
+
+```json
+{
+  "stopReason": "end_turn",
+  "threadId": "web-001",
+  "agentName": "default",
+  "_meta": {
+    "jetlinks": {
+      "stopReason": "input_required",
+      "requiresInput": true
+    }
+  },
+  "result": {
+    "agent": "default",
+    "thread_id": "web-001",
+    "status": "completed",
+    "reply": "请上传图片后继续。",
+    "metadata": {
+      "requires_input": true,
+      "required_inputs": [
+        {
+          "type": "image",
+          "accept": "image/*",
+          "required": true,
+          "reason": "The agent requires an uploaded image."
+        }
+      ]
+    }
+  }
+}
+```
+
+`required_inputs[].type` 用于告诉客户端应该展示什么输入控件，当前约定如下：
+
+| type | 用途 | 默认 accept |
+| --- | --- | --- |
+| `file` | 通用文件或无法细分的附件 | `*/*` |
+| `image` | 图片、截图、照片 | `image/*` |
+| `video` | 视频证据或视频数据 | `video/*` |
+| `audio` | 音频、语音文件 | `audio/*` |
+| `dataset` | 数据集、COCO JSON、CSV、Parquet、压缩包 | `.zip,.tar,.tar.gz,.csv,.json,.jsonl,.parquet,.yaml,.yml` |
+| `model` | 模型权重、checkpoint、ONNX、safetensors 等 | `.onnx,.pt,.pth,.bin,.safetensors,.gguf,.pkl,.joblib` |
+| `model_config` | 模型配置文件 | `.json,.yaml,.yml,.toml` |
+| `text` | 文本参数 | `text/plain` |
+| `json` | JSON 参数 | `application/json` |
+| `number` | 数值参数 | `number` |
+| `boolean` | 布尔参数 | `boolean` |
+| `secret` | 密钥、token、密码类输入 | `password` |
+
+推荐插件或 workflow 显式返回 `required_inputs`，例如：
+
+```json
+{
+  "metadata": {
+    "requires_input": true,
+    "required_inputs": [
+      {
+        "type": "dataset",
+        "accept": ".zip,.json,.jsonl",
+        "reason": "COCO auto annotation requires a source image dataset."
+      },
+      {
+        "type": "model_config",
+        "reason": "SAM3 model configuration is required for this profile."
+      }
+    ]
+  }
+}
+```
 
 ACP WebSocket 的 `session/new` 可以传入 session 默认运行参数。调用方可以直接传
 `runtimeOptions`，也可以传 `appTemplateName` 引用 `config/apps/*.json`，由服务端自动带出模板里的
@@ -892,6 +1250,68 @@ ACP WebSocket 和 ACP stdio 都支持 `session/list`、`session/close`、`sessio
 session 扩展方法，并提供 `session/cancel`。取消是 best-effort：协议层会取消当前 prompt task，
 并向 external ACP backend 转发 cancel；已经进入同步线程、沙箱或远端 provider 的底层操作可能不会瞬时停止，
 但协议响应会返回 `stopReason=cancelled`，客户端不会再被正在执行的 prompt 阻塞。
+
+### ACP 支持矩阵
+
+当前实现是面向 JetLinks Workbench、服务端 Agent Runtime 和外部 ACP stdio backend 的 ACP 兼容实现。
+核心会话链路、流式更新、文件、终端、权限请求、模型切换、应用模板和成果工作区都已经接入；IDE 侧
+diff/plan 富 UI 目前通过 `session/update._meta.jetlinksRuntimeEvent` 传递原始运行事件，前端可按需渲染。
+
+| 能力 | WebSocket | stdio Agent Server | external ACP backend client 回调 | 说明 |
+| --- | --- | --- | --- | --- |
+| JSON-RPC 2.0 request/result/error | 支持 | 由 ACP SDK 支持 | 由 ACP SDK 支持 | WebSocket 错误码遵循 JSON-RPC。 |
+| `initialize` | 支持 | 支持 | 支持 | WebSocket 在 `_meta.jetlinks.methods` 暴露 JetLinks 当前方法列表。 |
+| `authenticate` | 支持 | 支持 | - | 当前为无交互成功返回；生产鉴权仍由 HTTP/WebSocket token 控制。 |
+| `session/new` | 支持 | 支持 | 支持 | WebSocket 支持 `appTemplateName` 和 `runtimeOptions`。 |
+| `session/load` / `session/resume` | 支持 | 支持 `resume` | 由后端能力决定 | 用于恢复或更新当前运行 session；历史记忆由 `.runtime/threads/<thread_id>/memory` 负责。 |
+| `session/prompt` | 支持 | 支持 | 支持 | 进入本地 agent loop 或 external ACP backend。 |
+| `session/update` | 支持 | 支持 | 支持 | 原始事件在 `_meta.jetlinksRuntimeEvent`。 |
+| `session/cancel` | 支持 | - | 支持转发 | best-effort 取消当前 prompt。 |
+| `session/list` / `session/close` / `session/fork` | 支持 | 支持 | - | JetLinks 会话管理扩展。 |
+| `session/set_model` | 支持 | JetLinks 扩展 | - | 服务端模型托管场景使用。 |
+| `session/set_mode` | 支持 | 支持 | - | `plan` 禁用工具只规划；`safe` 只保留低风险/只读工具；`edit` 为默认编辑模式但禁用本地 shell；`autonomous` 放宽工具并提高工具轮数上限。 |
+| `session/set_config_option` | 支持 | 支持 | - | 可更新 `modelName`、`temperature`、`selectedSkills`、`workflow`、`sandboxProfile` 等 session 运行配置。 |
+| `session/request_permission` | 支持 | - | 支持 | WebSocket 会先发 `session/update: permission_request` 给前端；无交互 fallback 默认拒绝。可传 `approved=true` 或 `selectedOptionId` 返回批准/选择。external backend 默认拒绝，避免静默授权。 |
+| `fs/read_text_file` | 支持 | - | 支持 | WebSocket 只允许读取 session `cwd` 内文件或 `/mnt/user-data` 虚拟路径。 |
+| `fs/write_text_file` | 支持 | - | 支持 | WebSocket 只允许写 session `cwd` 内文件或 `/mnt/user-data/workspace|outputs`；`uploads` 只读。 |
+| `terminal/create` / `terminal/output` / `terminal/wait_for_exit` / `terminal/kill` / `terminal/release` | 支持 | - | 支持 | WebSocket 终端默认 cwd 为当前 thread workspace；输出有大小上限。 |
+| text / image / audio content block | 支持 | 支持 | 支持 | image/audio 会转为内部 Attachment。 |
+| resource link / embedded resource | 支持 | 支持 | 支持 | resource link 保留路径；embedded text 会追加到用户消息正文。 |
+| `input_required` | 支持 | WebSocket 支持 | 由后端返回决定 | 顶层 `stopReason=end_turn` 保持官方兼容；JetLinks 扩展为 `_meta.jetlinks.stopReason=input_required`，并返回 `metadata.required_inputs`。 |
+| artifact workspace | 支持 | 支持 | 支持 | 线程目录为 `.runtime/threads/<thread_id>/outputs` 等。 |
+| plan/diff 稳定更新 | 支持 | 支持 | 支持 | 除原始 `_meta.jetlinksRuntimeEvent` 外，每条 update 还会尽量附带 `_meta.jetlinksPlan` 与 `_meta.jetlinksDiff`，前端可直接渲染计划和文件/产物变化。 |
+
+ACP mode 影响 agent loop：
+
+- `plan`：只做方案规划，不向模型暴露工具。
+- `safe`：保留只读或低风险工具，过滤 skill、本地写文件和本地 shell，工具轮数最多 2 轮。
+- `edit`：默认模式，允许编辑类工具，但过滤本地 shell。
+- `autonomous`：允许更宽的工具集合；未覆盖轮数时最多提升到原配置的 2 倍且不超过 16，显式
+  `configOptions.max_tool_rounds` 可在 1 到 32 之间覆盖基础轮数。
+
+ACP config options 当前支持：
+
+- `modelName` / `modelId`：切换托管模型或兼容旧模型名。
+- `temperature`：覆盖本 session 后续 prompt 的采样温度。
+- `selectedSkills`：覆盖本 session 默认 skill 列表。
+- `workflow`：覆盖本 session 默认 workflow。
+- `sandboxProfile`：记录本 session 的沙箱 profile 偏好，供 skill/sandbox 策略消费。
+
+权限请求闭环：
+
+1. 服务端收到 `session/request_permission` 且没有 `approved` / `selectedOptionId` 时，先向该 session 发送
+   `session/update`，其中 `update.sessionUpdate = "permission_request"`。
+2. 前端展示确认弹窗或选择控件。
+3. 用户确认后，前端再次调用 `session/request_permission`，带 `approved=true` 或 `selectedOptionId`。
+4. 如果没有前端确认，服务端默认返回 `cancelled`，避免无感授权。
+
+WebSocket 文件路径规则：
+
+- `/mnt/user-data/workspace/...` 映射到当前 thread 的 `workspace/`。
+- `/mnt/user-data/uploads/...` 映射到当前 thread 的 `uploads/`，只读。
+- `/mnt/user-data/outputs/...` 映射到当前 thread 的 `outputs/`。
+- 本机绝对路径必须位于 session `cwd` 目录内；如果 `cwd=/`，会拒绝本机绝对路径，避免暴露整机文件系统。
+- 相对路径按当前 thread `workspace/` 解析。
 
 JetLinks 额外提供一个非官方 ACP 扩展方法，用于清理当前 session 绑定 thread 的运行文件：
 WebSocket 使用 `jetlinks/session/delete_files`，stdio 按 ACP SDK 扩展约定使用

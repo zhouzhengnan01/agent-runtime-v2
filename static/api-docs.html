@@ -189,6 +189,7 @@ ws.onmessage = (event) =&gt; {
             <li>发送 <code>session/new</code> 创建会话。产品入口推荐传 <code>appTemplateName</code>，由服务端从 <code>config/apps/*.json</code> 带出默认 agent、workflow、skill 和示例配置。</li>
             <li>需要切换模型时发送 <code>session/set_model</code>，只传后端模型管理里的 <code>modelId</code>。</li>
             <li>发送 <code>session/prompt</code>，持续接收 <code>session/update</code>，最后收到同 id 的 JSON-RPC result。</li>
+            <li>如果最终 <code>_meta.jetlinks.stopReason</code> 为 <code>input_required</code>，表示本轮已经结束但需要用户补充输入；前端应展示上传或参数输入控件，补齐后再发送下一次 <code>session/prompt</code>。顶层 <code>stopReason</code> 保持官方兼容值 <code>end_turn</code>。</li>
             <li>会话结束后发送 <code>session/close</code>；需要中断时发送 <code>session/cancel</code>。</li>
           </ol>
           <h3>应用模板与 runtimeOptions 优先级</h3>
@@ -323,7 +324,16 @@ ws.send(JSON.stringify({
     "_meta": {
       "jetlinks": {
         "modelManagement": "server",
-        "artifactWorkspace": true
+        "artifactWorkspace": true,
+        "methods": [
+          "initialize",
+          "session/new",
+          "session/prompt",
+          "session/request_permission",
+          "fs/read_text_file",
+          "fs/write_text_file",
+          "terminal/create"
+        ]
       }
     }
   }
@@ -338,6 +348,7 @@ ws.send(JSON.stringify({
                 <tr><td><code>_meta.jetlinks.modelManagement</code></td><td>string</td><td>模型托管模式，当前为 <code>server</code>。</td></tr>
                 <tr><td><code>_meta.jetlinks.runtimeOptions</code></td><td>string[]</td><td>当前支持的 runtimeOptions 字段名列表。</td></tr>
                 <tr><td><code>_meta.jetlinks.artifactWorkspace</code></td><td>boolean</td><td>是否启用线程成果工作区。</td></tr>
+                <tr><td><code>_meta.jetlinks.methods</code></td><td>string[]</td><td>当前 WebSocket 入口支持的 ACP/JetLinks 方法列表。</td></tr>
               </tbody>
             </table>
           </div>
@@ -417,12 +428,58 @@ ws.send(JSON.stringify({
             <table>
               <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
               <tbody>
-                <tr><td><code>stopReason</code></td><td>string</td><td>结束原因，当前通常为 <code>end_turn</code>，取消时为 <code>cancelled</code>。</td></tr>
+                <tr><td><code>stopReason</code></td><td>string</td><td>官方 ACP 结束原因。当前保持 <code>end_turn</code>、<code>max_tokens</code>、<code>max_turn_requests</code>、<code>refusal</code>、<code>cancelled</code> 这些 SDK 允许值；需要用户补充输入时使用 <code>_meta.jetlinks.stopReason=input_required</code>。</td></tr>
                 <tr><td><code>threadId</code></td><td>string</td><td>执行线程 ID。</td></tr>
                 <tr><td><code>agentName</code></td><td>string</td><td>执行 agent 名称。</td></tr>
                 <tr><td><code>result</code></td><td>object</td><td><code>AgentRunResult</code> 的完整结果对象。</td></tr>
               </tbody>
             </table>
+            <h3><code>input_required</code> 状态</h3>
+            <p class="muted"><code>input_required</code> 不是 JSON-RPC 错误，也不会关闭 WebSocket。为了通过官方 ACP SDK <code>PromptResponse</code> 校验，顶层 <code>stopReason</code> 仍为 <code>end_turn</code>，JetLinks 扩展原因放在 <code>_meta.jetlinks.stopReason</code>。服务端会在 <code>result.metadata.requires_input</code> 和 <code>result.metadata.required_inputs</code> 中返回结构化需求；插件或 workflow 可显式返回这些字段，协议层也会对常见“请上传/缺少附件”回复做保守推断。</p>
+            <pre><code>{
+  "stopReason": "end_turn",
+  "threadId": "web-001",
+  "agentName": "default",
+  "_meta": {
+    "jetlinks": {
+      "stopReason": "input_required",
+      "requiresInput": true
+    }
+  },
+  "result": {
+    "status": "completed",
+    "reply": "请上传图片后继续。",
+    "metadata": {
+      "requires_input": true,
+      "required_inputs": [
+        {
+          "type": "image",
+          "accept": "image/*",
+          "required": true,
+          "reason": "The agent requires an uploaded image."
+        }
+      ]
+    }
+  }
+}</code></pre>
+            <table>
+              <thead><tr><th>required_inputs[].type</th><th>说明</th><th>默认 accept / 控件提示</th></tr></thead>
+              <tbody>
+                <tr><td><code>file</code></td><td>通用文件或无法细分的附件。</td><td><code>*/*</code></td></tr>
+                <tr><td><code>image</code></td><td>图片、截图、照片。</td><td><code>image/*</code></td></tr>
+                <tr><td><code>video</code></td><td>视频证据或视频数据。</td><td><code>video/*</code></td></tr>
+                <tr><td><code>audio</code></td><td>音频、语音文件。</td><td><code>audio/*</code></td></tr>
+                <tr><td><code>dataset</code></td><td>数据集、COCO JSON、CSV、Parquet、压缩包。</td><td><code>.zip,.tar,.tar.gz,.csv,.json,.jsonl,.parquet,.yaml,.yml</code></td></tr>
+                <tr><td><code>model</code></td><td>模型权重、checkpoint、ONNX、safetensors 等。</td><td><code>.onnx,.pt,.pth,.bin,.safetensors,.gguf,.pkl,.joblib</code></td></tr>
+                <tr><td><code>model_config</code></td><td>模型配置文件。</td><td><code>.json,.yaml,.yml,.toml</code></td></tr>
+                <tr><td><code>text</code></td><td>文本参数。</td><td><code>text/plain</code></td></tr>
+                <tr><td><code>json</code></td><td>JSON 参数。</td><td><code>application/json</code></td></tr>
+                <tr><td><code>number</code></td><td>数值参数。</td><td><code>number</code></td></tr>
+                <tr><td><code>boolean</code></td><td>布尔参数。</td><td><code>boolean</code></td></tr>
+                <tr><td><code>secret</code></td><td>密钥、token、密码类输入。</td><td><code>password</code></td></tr>
+              </tbody>
+            </table>
+            <p class="muted">前端处理建议：收到 <code>_meta.jetlinks.stopReason=input_required</code> 或 <code>result.metadata.requires_input=true</code> 后保留当前 <code>sessionId</code> 和 <code>threadId</code>，根据 <code>required_inputs</code> 渲染上传控件或参数表单；用户补齐后，把新文件或参数作为下一次 <code>session/prompt.prompt</code> 的 content blocks 发送。不要把它当作失败重试，也不需要重新创建 session。</p>
           </div>
           <div class="method">
             <div class="method-head"><div class="method-name"><span class="tag ws">RPC</span><h3>session/set_model</h3></div></div>
@@ -462,10 +519,93 @@ ws.send(JSON.stringify({
               <tr><td><code>session/resume</code></td><td>恢复会话；如果不存在则创建。</td><td><code>sessionId</code> 必填；可选 <code>agentName</code>、<code>threadId</code>、<code>cwd</code>、<code>appTemplateName</code>、<code>runtimeOptions</code>。</td></tr>
               <tr><td><code>session/cancel</code></td><td>取消当前会话正在执行的 prompt。</td><td><code>sessionId</code> 必填。</td></tr>
               <tr><td><code>session/close</code></td><td>关闭会话并清理外部 ACP backend。</td><td><code>sessionId</code> 必填。</td></tr>
+              <tr><td><code>session/request_permission</code></td><td>权限请求。没有显式结果时会先发送 <code>session/update: permission_request</code> 给前端，并默认返回 cancelled；前端确认后可再次调用并传 <code>approved=true</code> 或 <code>selectedOptionId</code>。</td><td><code>sessionId</code> 必填。</td></tr>
+              <tr><td><code>fs/read_text_file</code></td><td>读取文本文件。</td><td><code>sessionId</code>、<code>path</code> 必填；可选 <code>line</code>、<code>limit</code>。</td></tr>
+              <tr><td><code>fs/write_text_file</code></td><td>写入文本文件。</td><td><code>sessionId</code>、<code>path</code>、<code>content</code> 必填。</td></tr>
+              <tr><td><code>terminal/create</code></td><td>创建受控终端进程。</td><td><code>sessionId</code>、<code>command</code> 必填；可选 <code>args</code>、<code>cwd</code>、<code>env</code>、<code>outputByteLimit</code>。</td></tr>
+              <tr><td><code>terminal/output</code></td><td>读取终端已捕获输出和退出状态。</td><td><code>sessionId</code>、<code>terminalId</code> 必填。</td></tr>
+              <tr><td><code>terminal/wait_for_exit</code></td><td>等待终端进程退出。</td><td><code>sessionId</code>、<code>terminalId</code> 必填。</td></tr>
+              <tr><td><code>terminal/kill</code></td><td>终止终端进程。</td><td><code>sessionId</code>、<code>terminalId</code> 必填。</td></tr>
+              <tr><td><code>terminal/release</code></td><td>释放终端资源。</td><td><code>sessionId</code>、<code>terminalId</code> 必填。</td></tr>
               <tr><td><code>list_agents</code></td><td>列出可用 agent。</td><td>无，返回当前 loader 中的 agent 列表。</td></tr>
               <tr><td><code>jetlinks/session/delete_files</code></td><td>删除线程工作区文件，可 dry run。</td><td><code>sessionId</code> 必填；可选 <code>scopes</code>、<code>dryRun</code>。</td></tr>
             </tbody>
           </table>
+          <h3>文件和终端路径规则</h3>
+          <p class="muted">WebSocket 的文件和终端能力是服务端受控能力，不会默认开放整机文件系统。<code>/mnt/user-data/workspace</code>、<code>/mnt/user-data/uploads</code>、<code>/mnt/user-data/outputs</code> 会映射到当前 <code>threadId</code> 的运行目录；<code>uploads</code> 对 <code>fs/write_text_file</code> 只读。本机绝对路径必须位于 session <code>cwd</code> 内；如果 <code>cwd=/</code>，会拒绝本机绝对路径。相对路径默认按当前 thread 的 <code>workspace/</code> 解析。</p>
+          <pre><code>// 写入当前 thread workspace
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 20,
+  method: 'fs/write_text_file',
+  params: {
+    sessionId: 'acp-session-abc123',
+    path: '/mnt/user-data/workspace/notes.md',
+    content: '# Notes'
+  }
+}));
+
+// 创建受控终端
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 21,
+  method: 'terminal/create',
+  params: {
+    sessionId: 'acp-session-abc123',
+    command: '/bin/sh',
+    args: ['-c', 'pwd && ls']
+  }
+}));</code></pre>
+          <h3>Mode 与配置项</h3>
+          <p class="muted"><code>session/set_mode</code> 会真正影响 agent loop 的工具暴露和自动执行程度：<code>plan</code> 不暴露工具；<code>safe</code> 只保留低风险/只读工具并限制工具轮数；<code>edit</code> 是默认编辑模式但不暴露本地 shell；<code>autonomous</code> 放宽工具集合并提高工具轮数上限。</p>
+          <table>
+            <thead><tr><th>mode</th><th>行为</th></tr></thead>
+            <tbody>
+              <tr><td><code>plan</code></td><td>只规划，不执行工具。</td></tr>
+              <tr><td><code>safe</code></td><td>过滤 skill、本地写文件、本地 shell，最多 2 轮工具调用。</td></tr>
+              <tr><td><code>edit</code></td><td>默认模式，允许编辑类工具，但过滤本地 shell。</td></tr>
+              <tr><td><code>autonomous</code></td><td>允许更宽工具集合，工具轮数最多提升到原配置 2 倍，上限 16。</td></tr>
+            </tbody>
+          </table>
+          <p class="muted"><code>session/set_config_option</code> 当前支持 <code>modelName</code>、<code>temperature</code>、<code>selectedSkills</code>、<code>workflow</code>、<code>sandboxProfile</code>。这些值会写入当前 session 的 <code>runtimeOptions</code>，后续 <code>session/prompt</code> 自动继承；本轮 prompt 里显式传入的 <code>runtimeOptions</code> 仍然优先。</p>
+          <pre><code>ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 22,
+  method: 'session/set_mode',
+  params: { sessionId: 'acp-session-abc123', modeId: 'safe' }
+}));
+
+ws.send(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 23,
+  method: 'session/set_config_option',
+  params: { sessionId: 'acp-session-abc123', configId: 'temperature', value: 0.1 }
+}));</code></pre>
+
+          <h3>Plan / Diff 元数据</h3>
+          <p class="muted">每条 <code>session/update</code> 仍会保留原始 <code>_meta.jetlinksRuntimeEvent</code>。为了前端稳定渲染计划和变更，服务端还会尽量附带 <code>_meta.jetlinksPlan</code> 与 <code>_meta.jetlinksDiff</code>：前者描述 run、LLM、tool、skill 的稳定状态；后者描述文件或 artifact 的创建/更新路径。</p>
+          <pre><code>{
+  "method": "session/update",
+  "params": {
+    "sessionId": "acp-session-abc123",
+    "update": {
+      "sessionUpdate": "tool_call_update",
+      "_meta": {
+        "jetlinksPlan": {
+          "type": "tool",
+          "status": "completed",
+          "title": "local_write_file"
+        },
+        "jetlinksDiff": {
+          "type": "file_change",
+          "status": "completed",
+          "path": "/mnt/user-data/workspace/demo.txt",
+          "operation": "updated"
+        }
+      }
+    }
+  }
+}</code></pre>
         </section>
 
         <section id="runtime-options" class="section">
@@ -622,6 +762,9 @@ ws.send(JSON.stringify({
               <tr><td><code>max_tokens</code></td><td>integer|null</td><td>否</td><td>null</td><td>最大输出 token。</td></tr>
               <tr><td><code>request_timeout_seconds</code></td><td>number|null</td><td>否</td><td>null</td><td>请求超时。</td></tr>
               <tr><td><code>response_format</code></td><td><code>text|json</code></td><td>否</td><td><code>text</code></td><td>响应格式约束。</td></tr>
+              <tr><td><code>mode</code></td><td><code>plan|edit|autonomous|safe|null</code></td><td>否</td><td>null</td><td>ACP 工作模式，影响 agent loop 工具暴露和自动执行程度。</td></tr>
+              <tr><td><code>config_options</code></td><td>object</td><td>否</td><td>{}</td><td>session 配置项快照。</td></tr>
+              <tr><td><code>sandbox_profile</code></td><td>string|null</td><td>否</td><td>null</td><td>沙箱 profile 偏好，供 skill/sandbox 策略消费。</td></tr>
             </tbody>
           </table>
 
@@ -1015,7 +1158,7 @@ GET /api/artifacts/thread-001/outputs/report.pdf?download=true</code></pre>
 
         <section id="apps" class="section">
           <h2>Apps 应用模板接口</h2>
-          <p class="muted">应用模板是会话初始 JSON 配置，文件位于 <code>config/apps/*.json</code>。模板用于把一个产品入口绑定到默认 <code>agent_name</code>、<code>workflow</code>、<code>selected_skills</code>、<code>selected_mcp_tools</code>、<code>runtime_options</code> 和示例 prompt。ACP WebSocket 可在 <code>session/new</code> 中传 <code>appTemplateName</code> 引用模板。</p>
+          <p class="muted">应用模板是会话初始 JSON 配置，文件位于 <code>config/apps/*.json</code>，也兼容 <code>config/apps/templates.json</code> 集合文件。Workbench 应用中心不写死模板，只调用 <code>GET /api/apps/templates</code>；模板用于把一个产品入口绑定到默认 <code>agent_name</code>、<code>workflow</code>、<code>selected_skills</code>、<code>selected_mcp_tools</code>、<code>runtime_options</code> 和示例 prompt。ACP WebSocket 可在 <code>session/new</code> 中传 <code>appTemplateName</code> 引用模板。</p>
           <table>
             <thead><tr><th>接口</th><th>说明</th><th>响应</th></tr></thead>
             <tbody>
@@ -1033,11 +1176,29 @@ curl http://127.0.0.1:8010/api/apps/templates/iot-architecture-diagram</code></p
           <pre><code>{
   "name": "iot-architecture-diagram",
   "title": "IoT 架构图",
+  "description": "一键配置架构图生成 Agent",
+  "category": "generation",
+  "icon": "diagram",
   "agent_name": "default",
   "workflow": "artifact_workflow",
   "selected_skills": ["drawio-generation"],
+  "selected_mcp_tools": [],
+  "prompt_examples": ["生成一份 JetLinks IoT 平台架构 Draw.io 图"],
+  "tags": ["Draw.io", "架构图"],
   "runtime_options": {}
 }</code></pre>
+          <table>
+            <thead><tr><th>配置项</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td><code>name</code></td><td>模板唯一名，用于 URL 路径和 ACP <code>appTemplateName</code>。</td></tr>
+              <tr><td><code>category</code> / <code>icon</code> / <code>tags</code></td><td>应用中心卡片展示与筛选信息。</td></tr>
+              <tr><td><code>agent_name</code></td><td>默认 agent，必须引用已有 <code>config/agents/*.json</code>。</td></tr>
+              <tr><td><code>workflow</code></td><td>默认工作流；为空时走 agent 默认链路。</td></tr>
+              <tr><td><code>selected_skills</code></td><td>默认启用的 Skill 列表。</td></tr>
+              <tr><td><code>selected_mcp_tools</code></td><td>默认启用的 MCP 工具列表。</td></tr>
+              <tr><td><code>runtime_options</code></td><td>模板默认运行参数；请求显式传入的 <code>runtimeOptions</code> 优先级更高，<code>skill_parameters</code> 会按 Skill 合并。</td></tr>
+            </tbody>
+          </table>
         </section>
 
         <section id="plugins" class="section">

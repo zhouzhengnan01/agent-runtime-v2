@@ -13,7 +13,7 @@ from acp import helpers as acp_helpers
 from app.core.agent import AgentRuntime
 from app.core.artifacts import ArtifactStore
 from app.core.runtime import ModelManager
-from app.protocols.acp.transport_stdio import JetLinksAcpStdioAgent
+from app.protocols.acp.transport_stdio import JetLinksAcpStdioAgent, _event_to_sdk_updates
 from app.schemas import ChatEvent, ChatRequest
 
 
@@ -52,6 +52,30 @@ def test_acp_stdio_cancel_interrupts_active_prompt() -> None:
 
 def test_acp_stdio_delete_session_files_extension(tmp_path: Path) -> None:
     asyncio.run(_run_acp_stdio_delete_files_flow(tmp_path))
+
+
+def test_acp_stdio_maps_tool_events_to_sdk_updates() -> None:
+    started = _event_to_sdk_updates(
+        ChatEvent(type="tool.started", data={"tool_name": "artifact_write", "tool_call_id": "call-write"}),
+        "message-1",
+    )
+    completed = _event_to_sdk_updates(
+        ChatEvent(
+            type="tool.completed",
+            data={
+                "tool_name": "artifact_write",
+                "tool_call_id": "call-write",
+                "structured_content": {"path": "outputs/result.md"},
+            },
+        ),
+        "message-1",
+    )
+    delta = _event_to_sdk_updates(ChatEvent(type="agent.message.delta", data={"text": "hello"}), "message-1")
+
+    assert started[0].field_meta["jetlinksRuntimeEvent"]["type"] == "tool.started"
+    assert completed[0].field_meta["jetlinksRuntimeEvent"]["type"] == "tool.completed"
+    assert completed[0].raw_output == {"path": "outputs/result.md"}
+    assert delta[0].field_meta["jetlinksRuntimeEvent"]["type"] == "agent.message.delta"
 
 
 async def _run_acp_stdio_flow() -> None:

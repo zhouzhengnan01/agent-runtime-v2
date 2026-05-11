@@ -106,24 +106,41 @@ class ArtifactWorkflow:
             },
         )
 
+        selected_skill_names = self._selected_skill_names(agent_config, runtime_options)
         skill = self.skill_registry.get(skill_name)
         recorder.emit(
             "skill.selected",
             {
                 "skill": skill.to_event_payload(),
+                "selected_skills": selected_skill_names,
             },
         )
-        sandbox_config = load_sandbox_config()
-        sandbox_policy = load_sandbox_policy(sandbox_config)
-        sandbox_decision = sandbox_policy.resolve(skill_name, sandbox_config)
-        recorder.emit("sandbox.policy", sandbox_decision.model_dump())
-        spec["sandbox"] = sandbox_decision.model_dump()
 
         retry_count = 0
-        run_result = self._run_skill_attempt(recorder, skill_name, spec, paths, retry_count, sandbox_decision)
-        verification = self._verify_attempt(recorder, spec, run_result, retry_count)
+        if len(selected_skill_names) > 1:
+            run_result, verification = self._run_selected_skill_sequence(
+                recorder,
+                agent_config,
+                messages,
+                attachments,
+                paths,
+                runtime_options,
+                selected_skill_names,
+                spec,
+                retry_count,
+            )
+        else:
+            sandbox_config = load_sandbox_config()
+            sandbox_policy = load_sandbox_policy(sandbox_config)
+            sandbox_decision = sandbox_policy.resolve(skill_name, sandbox_config)
+            recorder.emit("sandbox.policy", sandbox_decision.model_dump())
+            spec["sandbox"] = sandbox_decision.model_dump()
+            run_result = self._run_skill_attempt(recorder, skill_name, spec, paths, retry_count, sandbox_decision)
+            verification = self._verify_attempt(recorder, spec, run_result, retry_count)
 
         if (
+            len(selected_skill_names) <= 1
+            and
             not verification.passed
             and agent_config.quality.auto_repair
             and agent_config.runtime.max_retries > 0
@@ -237,6 +254,92 @@ class ArtifactWorkflow:
             recorder.emit("preview.ready", {"artifact": artifact_data, "attempt": attempt})
         return run_result
 
+    def _run_selected_skill_sequence(
+        self,
+        recorder: EventRecorder,
+        agent_config: AgentConfig,
+        messages: list[Message],
+        attachments: list[Attachment],
+        paths: ThreadPaths,
+        runtime_options: RuntimeOptions | None,
+        selected_skill_names: list[str],
+        initial_spec: dict[str, Any],
+        retry_count: int,
+    ) -> tuple[SkillRunResult, VerificationResult]:
+        outputs = []
+        data: dict[str, Any] = {
+            "sequence": [],
+            "selected_skill_count": len(selected_skill_names),
+        }
+        checks = []
+        failed_checks: list[str] = []
+        sandbox_config = load_sandbox_config()
+        sandbox_policy = load_sandbox_policy(sandbox_config)
+        for index, selected_skill_name in enumerate(selected_skill_names, start=1):
+            selected_spec = self.spec_builder.build(
+                messages,
+                attachments,
+                self._allowed_skills(agent_config),
+                selected_skill=selected_skill_name,
+            )
+            selected_spec.update(
+                {
+                    "sequence": {
+                        "index": index,
+                        "total": len(selected_skill_names),
+                        "selected_skills": selected_skill_names,
+                    },
+                    "planner": initial_spec.get("planner", selected_spec.get("planner", {})),
+                }
+            )
+            if runtime_options is not None:
+                selected_spec["runtime_options"] = runtime_options.model_dump()
+            sandbox_decision = sandbox_policy.resolve(selected_skill_name, sandbox_config)
+            recorder.emit(
+                "sandbox.policy",
+                {
+                    **sandbox_decision.model_dump(),
+                    "skill_name": selected_skill_name,
+                    "sequence_index": index,
+                },
+            )
+            selected_spec["sandbox"] = sandbox_decision.model_dump()
+            run_result = self._run_skill_attempt(
+                recorder,
+                selected_skill_name,
+                selected_spec,
+                paths,
+                retry_count,
+                sandbox_decision,
+            )
+            verification = self._verify_attempt(recorder, selected_spec, run_result, retry_count)
+            outputs.extend(run_result.outputs)
+            data["sequence"].append(
+                {
+                    "skill_name": selected_skill_name,
+                    "status": "completed" if verification.passed else "failed",
+                    "output_count": len(run_result.outputs),
+                    "artifact_names": [artifact.name for artifact in run_result.outputs],
+                    "failed_checks": verification.failed_checks,
+                    "data": run_result.data,
+                }
+            )
+            checks.extend(verification.checks)
+            failed_checks.extend(f"{selected_skill_name}:{name}" for name in verification.failed_checks)
+
+        sequence_result = SkillRunResult(
+            skill_name=selected_skill_names[0],
+            outputs=outputs,
+            data=data,
+        )
+        sequence_verification = VerificationResult(
+            passed=not failed_checks,
+            retry_count=retry_count,
+            checks=checks,
+            failed_checks=failed_checks,
+        )
+        return sequence_result, sequence_verification
+
     def _run_sandbox_skill_attempt(
         self,
         recorder: EventRecorder,
@@ -321,6 +424,7 @@ class ArtifactWorkflow:
         plugin_reply = self.skill_runner.plugin_manager.format_reply(skill_name, verification, run_result)
         if plugin_reply:
             return plugin_reply
+        error_text = self._run_error_text(run_result)
         artifact_lines = [
             f"- {artifact.name}（{artifact.kind}，{artifact.mime_type}，{artifact.path}）"
             for artifact in run_result.outputs
@@ -328,7 +432,23 @@ class ArtifactWorkflow:
         artifact_text = "\n".join(artifact_lines) if artifact_lines else "- 无文件产物"
         if verification.passed:
             return f"已生成以下文件并通过内容校验。重试次数：{verification.retry_count}。\n{artifact_text}\n可在右侧「文件」面板预览或下载。"
+        if error_text:
+            return f"执行失败，未生成可用结果。重试次数：{verification.retry_count}。\n\n原因：{error_text}\n\n{artifact_text}"
         return f"已生成以下文件，但内容校验未完全通过。重试次数：{verification.retry_count}。\n{artifact_text}\n可在右侧「校验」面板查看失败项。"
+
+    @staticmethod
+    def _run_error_text(run_result: SkillRunResult) -> str:
+        returncode = run_result.data.get("returncode")
+        if returncode in (None, 0):
+            return ""
+        error_type = str(run_result.data.get("error_type") or "").strip()
+        message = str(run_result.data.get("message") or run_result.data.get("stderr") or "").strip()
+        if not message:
+            return f"工具进程退出码 {returncode}"
+        first_line = message.splitlines()[0].strip()
+        if error_type:
+            return f"{error_type}: {first_line}"
+        return first_line
 
     def _allowed_skills(self, agent_config: AgentConfig) -> list[str]:
         if agent_config.skills:
@@ -352,3 +472,22 @@ class ArtifactWorkflow:
             if skill.runner_path is not None:
                 return skill.name
         return None
+
+    def _selected_skill_names(self, agent_config: AgentConfig, runtime_options: RuntimeOptions | None) -> list[str]:
+        if runtime_options is None:
+            return []
+        allowed_skills = self._allowed_skills(agent_config)
+        names: list[str] = []
+        for raw_name in runtime_options.selected_skills:
+            skill_name = raw_name.strip()
+            if not skill_name or skill_name in names:
+                continue
+            if allowed_skills and skill_name not in allowed_skills:
+                continue
+            try:
+                skill = self.skill_registry.get(skill_name)
+            except KeyError:
+                continue
+            if skill.runner_path is not None:
+                names.append(skill.name)
+        return names

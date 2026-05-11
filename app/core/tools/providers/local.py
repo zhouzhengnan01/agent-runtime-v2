@@ -212,8 +212,10 @@ class LocalToolProvider:
         max_results = self._bounded_int(arguments.get("max_results"), default=100, minimum=1, maximum=500)
         outputs = self._file_entries(paths, paths.outputs, "outputs", max_results)
         remaining = max(0, max_results - len(outputs))
+        uploads = self._file_entries(paths, paths.uploads, "uploads", remaining) if remaining else []
+        remaining = max(0, max_results - len(outputs) - len(uploads))
         workspace = self._file_entries(paths, paths.workspace, "workspace", remaining) if include_workspace and remaining else []
-        files = outputs + workspace
+        files = outputs + uploads + workspace
         text = "\n".join(f"- {item['scope']}/{item['path']} ({item['size']} bytes)" for item in files) or "No files."
         return ToolInvocationResult(
             content=[{"type": "text", "text": text}],
@@ -293,6 +295,10 @@ class LocalToolProvider:
     @staticmethod
     def _display_path(paths: ThreadPaths, path: Path) -> str:
         try:
+            return f"/mnt/user-data/uploads/{path.resolve().relative_to(paths.uploads.resolve()).as_posix()}"
+        except ValueError:
+            pass
+        try:
             return path.resolve().relative_to(paths.workspace.resolve()).as_posix()
         except ValueError:
             return path.name
@@ -301,7 +307,18 @@ class LocalToolProvider:
     def _workspace_path(paths: ThreadPaths, raw_path: str) -> Path:
         if not raw_path.strip():
             raise ValueError("path is required")
-        normalized = raw_path.replace("\\", "/").lstrip("/")
+        normalized_raw = raw_path.replace("\\", "/")
+        uploads_prefix = "/mnt/user-data/uploads"
+        if normalized_raw == uploads_prefix or normalized_raw.startswith(uploads_prefix + "/"):
+            suffix = normalized_raw[len(uploads_prefix):].lstrip("/")
+            candidate = (paths.uploads / suffix).resolve()
+            uploads = paths.uploads.resolve()
+            try:
+                candidate.relative_to(uploads)
+            except ValueError as exc:
+                raise ValueError("Upload path traversal blocked") from exc
+            return candidate
+        normalized = normalized_raw.lstrip("/")
         candidate = (paths.workspace / normalized).resolve()
         workspace = paths.workspace.resolve()
         try:
@@ -316,8 +333,8 @@ def local_tool_definitions() -> list[ToolDefinition]:
     return [
         ToolDefinition(
             name="local_read_file",
-            title="Read Workspace File",
-            description="Read a UTF-8 text file from the current thread workspace.",
+            title="Read Thread File",
+            description="Read a UTF-8 text file from the current thread workspace or uploaded files.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -398,7 +415,7 @@ def local_tool_definitions() -> list[ToolDefinition]:
         ToolDefinition(
             name="present_files",
             title="Present Thread Files",
-            description="List files generated in the current thread outputs, and optionally workspace files.",
+            description="List files generated in outputs, uploaded by the user, and optionally workspace files.",
             input_schema={
                 "type": "object",
                 "properties": {

@@ -97,7 +97,7 @@ class JetLinksAcpStdioAgent:
                 version="0.1.0",
             ),
             agent_capabilities=AgentCapabilities(
-                load_session=False,
+                load_session=True,
                 prompt_capabilities=PromptCapabilities(
                     image=True,
                     audio=True,
@@ -404,6 +404,11 @@ def _runtime_options_from_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         "max_tokens": "max_tokens",
         "requestTimeoutSeconds": "request_timeout_seconds",
         "request_timeout_seconds": "request_timeout_seconds",
+        "mode": "mode",
+        "modeId": "mode",
+        "mode_id": "mode",
+        "configOptions": "config_options",
+        "config_options": "config_options",
     }
     for source in (runtime_options, kwargs, jetlinks_meta):
         for raw_name, field_name in aliases.items():

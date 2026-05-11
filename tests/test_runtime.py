@@ -461,6 +461,184 @@ def test_agent_workflow_config_does_not_auto_run_workflow(tmp_path: Path, monkey
     assert "spec.started" not in [event.type for event in events]
 
 
+def test_agent_runtime_enriches_missing_image_input_for_all_transports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(content="我现在仍然没有收到可用的图片附件，请重新上传图片。")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="missing-image-agent",
+        display_name="Missing Image Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        tools=["jetlinks_runtime_status"],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="请把我上传的图片自动标注成 COCO JSON")],
+        runtime_options=RuntimeOptions(thread_id="missing-image"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.metadata["requires_input"] is True
+    assert result.metadata["required_inputs"][0]["type"] == "image"
+    completed = next(event for event in reversed(events) if event.type == "run.completed")
+    event_result = completed.data["result"]
+    assert event_result["metadata"]["requires_input"] is True
+    assert event_result["metadata"]["required_inputs"][0]["accept"] == "image/*"
+
+
+def test_agent_runtime_preflights_data_auto_annotation_without_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        raise AssertionError("LLM should not be called when data auto annotation has no image attachment.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="data-auto-preflight-agent",
+        display_name="Data Auto Preflight Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="请把我上传的图片自动标注成 COCO JSON，类别 labels: person car helmet")],
+        runtime_options=RuntimeOptions(thread_id="data-auto-preflight", selected_skills=["data-auto-annotation"]),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.reply == "请先上传图片后继续。"
+    assert result.metadata["requires_input"] is True
+    assert result.metadata["required_inputs"][0]["type"] == "image"
+    assert [event.type for event in events] == ["run.started", "agent.message", "run.completed"]
+    completed = events[-1].data["result"]
+    assert completed["metadata"]["required_inputs"][0]["accept"] == "image/*"
+
+
+def test_agent_runtime_uses_existing_thread_upload_for_selected_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, tools
+        seen_messages.append(messages)
+        return LlmChatResponse(content="已使用当前会话里的图片继续处理。")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("existing-upload-skill")
+    image_path = paths.uploads / "scene.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    runtime = AgentRuntime(artifact_store=store)
+    agent = AgentConfig(
+        name="existing-upload-skill-agent",
+        display_name="Existing Upload Skill Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="继续用刚才上传的图片做 COCO 标注")],
+        runtime_options=RuntimeOptions(
+            thread_id="existing-upload-skill",
+            selected_skills=["data-auto-annotation"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert "requires_input" not in result.metadata
+    assert result.reply == "已使用当前会话里的图片继续处理。"
+    assert "run.completed" in [event.type for event in events]
+    assert seen_messages
+    assert "/mnt/user-data/uploads/scene.png" in str(seen_messages[-1])
+
+
+def test_agent_runtime_merges_runtime_selected_skill_into_workflow_allowlist(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="selected-skill-agent",
+        display_name="Selected Skill Agent",
+        skills=["behavior-detection"],
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="请把图片自动标注成 COCO JSON")],
+        attachments=[Attachment(name="scene.png", path="/mnt/user-data/uploads/scene.png", mime_type="image/png")],
+        runtime_options=RuntimeOptions(
+            thread_id="selected-skill-allowlist",
+            workflow="artifact_workflow",
+            selected_skills=["data-auto-annotation"],
+        ),
+    )
+
+    effective_agent, effective_request = runtime._prepare_execution(agent, request)
+
+    assert effective_request.runtime_options.selected_skills == ["data-auto-annotation"]
+    assert effective_agent.skills == ["behavior-detection", "data-auto-annotation"]
+
+
+def test_agent_runtime_does_not_infer_input_required_from_successful_upload_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(
+            content=(
+                "已读取上传文件路径 /mnt/user-data/uploads/input.txt，"
+                "并创建 outputs/e2e-summary.md。"
+            )
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="upload-reference-agent",
+        display_name="Upload Reference Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        tools=["present_files"],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="继续同一个会话，确认上传文件和生成文件都能看到。")],
+        runtime_options=RuntimeOptions(thread_id="upload-reference"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert "requires_input" not in result.metadata
+    completed = events[-1].data["result"]
+    assert "requires_input" not in completed["metadata"]
+
+
 def test_unregistered_explicit_workflow_fails_fast(tmp_path: Path) -> None:
     runtime = AgentRuntime(
         artifact_store=ArtifactStore(root_dir=tmp_path),
@@ -1032,6 +1210,7 @@ def test_behavior_detector_text_only_is_honest(tmp_path: Path) -> None:
     assert result.verification is not None
     assert result.verification.passed is True
     assert result.metadata["skill_name"] == "behavior-detection"
+    assert [artifact.name for artifact in result.artifacts] == ["behavior-detection.md", "behavior-detection.json"]
 
 
 def test_behavior_detector_with_attachment_can_emit_visual_score(tmp_path: Path) -> None:
@@ -1048,6 +1227,7 @@ def test_behavior_detector_with_attachment_can_emit_visual_score(tmp_path: Path)
     assert result.spec is not None
     assert result.spec["evidence_mode"] == "visual_or_structured"
     assert "critical" in result.reply
+    assert [artifact.name for artifact in result.artifacts] == ["behavior-detection.md", "behavior-detection.json"]
 
 
 def test_generation_skills_create_verified_binary_artifacts(tmp_path: Path) -> None:

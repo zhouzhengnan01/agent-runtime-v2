@@ -719,6 +719,11 @@
       transition: background 120ms, border-color 120ms, color 120ms;
     }
 
+    .tool-pill input {
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
     .tool-pill.active {
       border-color: rgba(24, 104, 219, .28);
       background: var(--accent-soft);
@@ -955,6 +960,12 @@
       width: 100%;
       margin: 0 auto;
       padding-top: 12px;
+    }
+
+    .chat-frame.drag-active,
+    .composer-wrap.drag-active .composer {
+      border-color: rgba(21, 91, 212, .42);
+      box-shadow: 0 0 0 3px rgba(21, 91, 212, .1);
     }
 
     .composer {
@@ -1217,6 +1228,22 @@
       border-color: var(--line-strong);
     }
 
+    .toggle-action {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .toggle-action input {
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
+    .toggle-action:has(input:checked) {
+      border-color: rgba(24, 104, 219, .28);
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
     .send {
       width: 38px;
       height: 38px;
@@ -1263,6 +1290,98 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .attachment.uploading {
+      border-color: rgba(21, 91, 212, .28);
+      background: var(--accent-soft);
+    }
+
+    .attachment.error {
+      border-color: rgba(185, 28, 28, .28);
+      background: rgba(254, 226, 226, .65);
+      color: var(--red);
+    }
+
+    .attachment button {
+      width: 18px;
+      height: 18px;
+      margin-left: 6px;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 18px;
+    }
+
+    .attachment button:hover {
+      background: rgba(15, 23, 42, .08);
+    }
+
+    .required-input-panel {
+      margin: 0;
+      border: 1px solid rgba(21, 91, 212, .22);
+      background: var(--accent-soft);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: #244266;
+    }
+
+    .required-input-message .bubble {
+      border-color: rgba(21, 91, 212, .22);
+      background: transparent;
+      padding: 0;
+    }
+
+    .required-input-panel.active {
+      display: flex;
+    }
+
+    .required-input-text {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .required-input-title {
+      color: var(--text);
+      font-weight: 760;
+    }
+
+    .required-input-detail {
+      color: var(--muted);
+    }
+
+    .required-input-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .required-input-actions button {
+      min-height: 30px;
+      border-radius: var(--radius-full);
+      padding: 0 11px;
+      font-size: 12px;
+      font-weight: 720;
+      border: 1px solid rgba(21, 91, 212, .24);
+      background: #fff;
+      color: var(--accent);
+    }
+
+    .required-input-actions button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
     }
 
     .route-hint {
@@ -1727,6 +1846,21 @@
       align-items: center;
       justify-content: space-between;
       flex-wrap: wrap;
+    }
+
+    .app-template-json {
+      max-height: 320px;
+      overflow: auto;
+      margin: 0;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--code);
+      color: #e5eefb;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.55;
+      white-space: pre;
     }
 
     .skill-list-pane,
@@ -2845,6 +2979,10 @@
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z"></path><circle cx="12" cy="12" r="3"></circle></svg>
                     <span>视觉证据</span>
                   </button>
+                  <label class="small-action toggle-action" title="复杂任务使用 autonomous 模式，允许更多工具循环">
+                    <input id="deepExecution" type="checkbox">
+                    <span>深度执行</span>
+                  </label>
                   <span id="routeHint" class="route-hint"></span>
                 </div>
                 <div class="composer-actions">
@@ -2855,7 +2993,18 @@
               </div>
             </div>
             <div id="attachments" class="attachments"></div>
+            <div id="requiredInputPanel" class="required-input-panel" aria-live="polite">
+              <div class="required-input-text">
+                <div id="requiredInputTitle" class="required-input-title">需要补充输入</div>
+                <div id="requiredInputDetail" class="required-input-detail"></div>
+              </div>
+              <div class="required-input-actions">
+                <button id="requiredInputDismiss" type="button">稍后</button>
+                <button id="requiredInputChoose" class="primary" type="button">选择文件</button>
+              </div>
+            </div>
             <input id="fileInput" type="file" multiple hidden>
+            <input id="requiredInputFile" type="file" multiple hidden>
           </section>
         </section>
 
@@ -2881,6 +3030,7 @@
     </main>
   </div>
 
+  <script src="/static/workbench-upload.js"></script>
   <script>
     const skillCatalog = [
       { name: 'drawio-generation', agent: 'default', detail: '节点、连线、泳道、分层' },
@@ -2929,6 +3079,10 @@
     };
 
     const THREAD_STORAGE_KEY = 'jetlinks.runtime.threadId';
+    const MAX_TIMELINE_ITEMS = 120;
+    const MAX_CHAT_UPLOAD_BYTES = 128 * 1024 * 1024;
+    const CHAT_UPLOAD_CONCURRENCY = 3;
+    const CHAT_UPLOAD_TIMEOUT_MS = 120000;
 
     const state = {
       messages: [],
@@ -2960,6 +3114,7 @@
       appTemplatesLoaded: false,
       appFilter: 'all',
       selectedAppTemplateName: null,
+      selectedAppTemplateJsonName: null,
       cronJobs: [],
       selectedCronJobName: null,
       selectedCronJob: null,
@@ -2983,12 +3138,19 @@
       finalResultApplied: false,
       messageSeq: 0,
       messageUpdateFrame: 0,
-      pendingMessageIndexes: new Set()
+      panelUpdateFrame: 0,
+      pendingMessageIndexes: new Set(),
+      requiredInputAccept: '*/*',
+      requiredInputLabel: '文件',
+      pendingAutoContinueStatus: ''
     };
+
+    let uploadController = null;
 
     const els = {
       agent: document.getElementById('agent'),
       transport: document.getElementById('transport'),
+      deepExecution: document.getElementById('deepExecution'),
       agentList: document.getElementById('agentList'),
       activeAgentLabel: document.getElementById('activeAgentLabel'),
       sandboxStatus: document.getElementById('sandboxStatus'),
@@ -3006,6 +3168,12 @@
       send: document.getElementById('send'),
       attach: document.getElementById('attach'),
       fileInput: document.getElementById('fileInput'),
+      requiredInputFile: document.getElementById('requiredInputFile'),
+      requiredInputPanel: document.getElementById('requiredInputPanel'),
+      requiredInputTitle: document.getElementById('requiredInputTitle'),
+      requiredInputDetail: document.getElementById('requiredInputDetail'),
+      requiredInputChoose: document.getElementById('requiredInputChoose'),
+      requiredInputDismiss: document.getElementById('requiredInputDismiss'),
       skillPluginInput: document.getElementById('skillPluginInput'),
       attachments: document.getElementById('attachments'),
       panel: document.getElementById('panel'),
@@ -3043,6 +3211,26 @@
       cronList: document.getElementById('cronList'),
       cronEditor: document.getElementById('cronEditor')
     };
+
+    uploadController = window.createWorkbenchUploadController({
+      state,
+      els,
+      config: {
+        maxUploadBytes: MAX_CHAT_UPLOAD_BYTES,
+        uploadConcurrency: CHAT_UPLOAD_CONCURRENCY,
+        uploadTimeoutMs: CHAT_UPLOAD_TIMEOUT_MS
+      },
+      hooks: {
+        addTimeline,
+        ensureThread,
+        finishAssistantMessage
+      },
+      utils: {
+        escapeAttr,
+        escapeHtml,
+        formatBytes
+      }
+    });
 
     function loadAdminToken() {
       state.adminToken = localStorage.getItem('jetlinks.runtime.adminToken') || '';
@@ -3095,6 +3283,53 @@
       els.threadMini.textContent = els.thread.value.trim();
       localStorage.setItem(THREAD_STORAGE_KEY, els.thread.value.trim());
       return els.thread.value.trim();
+    }
+
+    function newLocalThreadId() {
+      return `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    }
+
+    function resetThreadUiState({ clearCapabilities = true } = {}) {
+      state.messages = [];
+      state.timeline = [];
+      state.artifacts = [];
+      state.verification = null;
+      state.spec = null;
+      state.files = [];
+      if (clearCapabilities) {
+        state.selectedChatSkills = [];
+        state.selectedChatMcpTools = [];
+        state.selectedChatWorkflow = null;
+        state.selectedAppTemplateName = null;
+      }
+      state.nextAgentOverride = null;
+      state.nextWorkflowOverride = null;
+      closeCapabilityPicker();
+      state.activeAssistantIndex = null;
+      state.finalResultApplied = false;
+      state.pendingAutoContinueStatus = '';
+      if (state.messageUpdateFrame) {
+        cancelAnimationFrame(state.messageUpdateFrame);
+        state.messageUpdateFrame = 0;
+      }
+      uploadController?.cancelAllUploads();
+      state.pendingMessageIndexes.clear();
+      if (els.fileInput) els.fileInput.value = '';
+      if (els.requiredInputFile) els.requiredInputFile.value = '';
+      hideRequiredInputPanel();
+      renderMessages();
+      renderAttachments();
+      renderComposerCapabilities();
+      renderPanel();
+      renderRouteHint();
+    }
+
+    function startNewThread() {
+      els.thread.value = newLocalThreadId();
+      els.threadMini.textContent = els.thread.value;
+      localStorage.setItem(THREAD_STORAGE_KEY, els.thread.value);
+      resetThreadUiState({ clearCapabilities: true });
+      els.input.focus();
     }
 
     function addMessage(role, content, options = {}) {
@@ -3158,7 +3393,18 @@
 
     function addTimeline(name, detail) {
       state.timeline.push({ name, detail });
-      renderPanel();
+      if (state.timeline.length > MAX_TIMELINE_ITEMS) {
+        state.timeline.splice(0, state.timeline.length - MAX_TIMELINE_ITEMS);
+      }
+      schedulePanelUpdate();
+    }
+
+    function schedulePanelUpdate() {
+      if (state.panelUpdateFrame) return;
+      state.panelUpdateFrame = requestAnimationFrame(() => {
+        state.panelUpdateFrame = 0;
+        renderPanel();
+      });
     }
 
     function renderMessages() {
@@ -3234,9 +3480,19 @@
     }
 
     function renderAttachments() {
-      els.attachments.innerHTML = state.files.map((file) => `
-        <span class="attachment">${escapeHtml(file.name)} · ${formatBytes(file.size)}</span>
-      `).join('');
+      uploadController?.renderAttachments();
+    }
+
+    function hasUploadingAttachments() {
+      return uploadController?.hasUploadingAttachments() || false;
+    }
+
+    function hasFailedAttachments() {
+      return uploadController?.hasFailedAttachments() || false;
+    }
+
+    function updateComposerControls() {
+      uploadController?.updateComposerControls();
     }
 
     function renderComposerCapabilities() {
@@ -3539,28 +3795,33 @@
         els.appTemplateList.innerHTML = '<div class="empty-panel">暂无匹配模板</div>';
         return;
       }
-      els.appTemplateList.innerHTML = templates.map((template) => `
-        <article class="app-template-card">
-          <div class="app-template-head">
-            <div class="app-template-icon">${escapeHtml(appTemplateIcon(template.icon))}</div>
-            <div class="app-template-title">
-              <strong>${escapeHtml(template.title || template.name)}</strong>
-              <span>${escapeHtml(template.agent_name || 'default')} ${template.workflow ? `· ${template.workflow}` : ''}</span>
+      els.appTemplateList.innerHTML = templates.map((template) => {
+        const jsonOpen = state.selectedAppTemplateJsonName === template.name;
+        return `
+          <article class="app-template-card">
+            <div class="app-template-head">
+              <div class="app-template-icon">${escapeHtml(appTemplateIcon(template.icon))}</div>
+              <div class="app-template-title">
+                <strong>${escapeHtml(template.title || template.name)}</strong>
+                <span>${escapeHtml(template.agent_name || 'default')} ${template.workflow ? `· ${template.workflow}` : ''}</span>
+              </div>
             </div>
-          </div>
-          <p>${escapeHtml(template.description || '')}</p>
-          <div class="skill-badges">
-            <span class="skill-badge sandbox">${escapeHtml(categoryLabel(template.category))}</span>
-            ${(template.tags || []).slice(0, 4).map((tag) => `<span class="skill-badge">${escapeHtml(tag)}</span>`).join('')}
-          </div>
-          <div class="skill-file-line">Skills: ${escapeHtml((template.selected_skills || []).join(', ') || '按 Agent 默认')}</div>
-          <div class="app-template-actions">
-            <button class="secondary-btn" type="button" data-app-template-prompt="${escapeAttr(template.name)}">填入示例</button>
-            <button class="secondary-btn" type="button" data-app-template-cron="${escapeAttr(template.name)}">建 Cron</button>
-            <button class="primary-btn" type="button" data-app-template-use="${escapeAttr(template.name)}">使用此应用</button>
-          </div>
-        </article>
-      `).join('');
+            <p>${escapeHtml(template.description || '')}</p>
+            <div class="skill-badges">
+              <span class="skill-badge sandbox">${escapeHtml(categoryLabel(template.category))}</span>
+              ${(template.tags || []).slice(0, 4).map((tag) => `<span class="skill-badge">${escapeHtml(tag)}</span>`).join('')}
+            </div>
+            <div class="skill-file-line">Skills: ${escapeHtml((template.selected_skills || []).join(', ') || '按 Agent 默认')}</div>
+            ${jsonOpen ? `<pre class="app-template-json">${escapeHtml(JSON.stringify(template, null, 2))}</pre>` : ''}
+            <div class="app-template-actions">
+              <button class="secondary-btn" type="button" data-app-template-json="${escapeAttr(template.name)}">${jsonOpen ? '收起 JSON' : '查看 JSON'}</button>
+              <button class="secondary-btn" type="button" data-app-template-prompt="${escapeAttr(template.name)}">填入示例</button>
+              <button class="secondary-btn" type="button" data-app-template-cron="${escapeAttr(template.name)}">建 Cron</button>
+              <button class="primary-btn" type="button" data-app-template-use="${escapeAttr(template.name)}">使用此应用</button>
+            </div>
+          </article>
+        `;
+      }).join('');
     }
 
     function appTemplateIcon(icon) {
@@ -6103,12 +6364,24 @@
     async function send() {
       const content = els.input.value.trim();
       if (!content || state.running) return;
+      if (hasUploadingAttachments()) {
+        addTimeline('附件上传中', '上传完成后即可发送');
+        return;
+      }
+      if (hasFailedAttachments()) {
+        addTimeline('附件上传失败', '请移除失败附件后重试');
+        return;
+      }
       els.input.value = '';
       addMessage('user', content);
       const outboundMessages = applyCapabilityContext(state.messages
         .filter((message) => !message.streaming)
         .map(({ role, content }) => ({ role, content })));
       beginAssistantMessage();
+      if (state.pendingAutoContinueStatus) {
+        setAssistantProgress(state.pendingAutoContinueStatus);
+        state.pendingAutoContinueStatus = '';
+      }
       const requestAgent = state.nextAgentOverride || agentFromSelectedCapabilities() || els.agent.value;
       const requestWorkflow = state.nextWorkflowOverride || state.selectedChatWorkflow;
       state.timeline = [];
@@ -6117,12 +6390,13 @@
       state.spec = null;
       state.finalResultApplied = false;
       state.running = true;
+      hideRequiredInputPanel();
       setBusy(true);
       renderPanel();
 
       try {
         const threadId = ensureThread();
-        const attachments = await Promise.all(state.files.map(fileToAttachment));
+        const attachments = await attachmentsForRequest();
         if (els.transport.value === 'acp-ws') {
           try {
             await sendViaAcpWs(requestAgent, content, threadId, attachments, outboundMessages, requestWorkflow);
@@ -6150,6 +6424,7 @@
         setBusy(false);
         renderAttachments();
         renderRouteHint();
+        await refreshArtifacts().catch((error) => addTimeline('刷新文件失败', error.message || String(error)));
         renderPanel();
       }
     }
@@ -6165,6 +6440,10 @@
         selected_skills: [...state.selectedChatSkills],
         selected_mcp_tools: [...state.selectedChatMcpTools]
       };
+      if (els.deepExecution?.checked) {
+        runtimeOptions.mode = 'autonomous';
+        runtimeOptions.config_options = { max_tool_rounds: 12 };
+      }
       if (workflow) runtimeOptions.workflow = workflow;
       return runtimeOptions;
     }
@@ -6175,6 +6454,10 @@
         selectedSkills: [...state.selectedChatSkills],
         selectedMcpTools: [...state.selectedChatMcpTools]
       };
+      if (els.deepExecution?.checked) {
+        runtimeOptions.mode = 'autonomous';
+        runtimeOptions.configOptions = { max_tool_rounds: 12 };
+      }
       if (workflow) runtimeOptions.workflow = workflow;
       return runtimeOptions;
     }
@@ -6217,7 +6500,7 @@
           return;
         }
         if (packet.method === 'session/update') {
-          handleAcpUpdate(packet.params);
+          handleAcpUpdate(packet.params, rpc);
           return;
         }
         if (packet.id != null && pending.has(packet.id)) {
@@ -6303,9 +6586,32 @@
       });
     }
 
-    function handleAcpUpdate(params) {
+    function handleAcpUpdate(params, rpc = null) {
+      const update = params?.update || {};
+      if (update.sessionUpdate === 'permission_request' && rpc) {
+        handlePermissionRequest(params.sessionId, update.permissionRequest, rpc);
+      }
       const event = params?.update?._meta?.jetlinksRuntimeEvent;
       if (event) handleEvent(event);
+    }
+
+    async function handlePermissionRequest(sessionId, request, rpc) {
+      const title = request?.title || 'Permission request';
+      const description = request?.description || '';
+      const options = Array.isArray(request?.options) ? request.options : [];
+      const approved = window.confirm(`${title}${description ? `\n\n${description}` : ''}`);
+      const selected = approved && options.length ? (options[0].id || options[0].optionId || options[0].name) : null;
+      try {
+        await rpc('session/request_permission', {
+          sessionId,
+          permissionRequestId: request?.id,
+          approved,
+          ...(selected ? { selectedOptionId: selected } : {})
+        });
+        addTimeline('权限确认', approved ? (selected ? `已选择 ${selected}` : '已批准') : '已拒绝');
+      } catch (error) {
+        addTimeline('权限确认失败', String(error.message || error));
+      }
     }
 
     async function readEventStream(body) {
@@ -6347,6 +6653,34 @@
           setAssistantProgress('任务已启动，正在准备上下文…');
           addTimeline('启动', `${data.workflow || 'workflow'} · ${data.thread_id || ''}`);
           break;
+        case 'context.compacted':
+          setAssistantProgress('上下文较长，正在压缩后继续执行…');
+          addTimeline('压缩上下文', runtimeRoundText(data));
+          break;
+        case 'llm.request.started':
+          setAssistantProgress(`正在调用模型${runtimeRoundText(data)}…`);
+          addTimeline('模型请求', llmRequestText(data));
+          break;
+        case 'llm.request.completed':
+          setAssistantProgress(llmCompletedProgressText(data));
+          addTimeline('模型响应', llmCompletedText(data));
+          break;
+        case 'tool.calls.started':
+          setAssistantProgress(toolCallsProgressText(data));
+          addTimeline('准备工具', toolCallsText(data));
+          break;
+        case 'tool.started':
+          setAssistantProgress(toolProgressText(data.tool_name));
+          addTimeline('调用工具', data.tool_name || '');
+          break;
+        case 'tool.completed':
+          setAssistantProgress(toolCompletedProgressText(data));
+          addTimeline('工具完成', toolCompletedText(data));
+          break;
+        case 'tool.failed':
+          setAssistantProgress(toolFailedProgressText(data));
+          addTimeline('工具失败', toolFailedText(data));
+          break;
         case 'spec.started':
           setAssistantProgress('正在理解需求并选择可用技能…');
           addTimeline('理解需求', `${data.allowed_skills?.length || 0} 个可用技能`);
@@ -6365,7 +6699,6 @@
         case 'spec.completed':
           state.spec = data.spec || null;
           addTimeline('生成 Spec', data.skill_name || '');
-          renderPanel();
           break;
         case 'skill.selected':
           addTimeline('选择技能', data.skill?.name || '');
@@ -6386,7 +6719,7 @@
           addTimeline('沙盒降级', data.reason || 'fallback to local');
           break;
         case 'skill.started':
-          setAssistantProgress('正在生成 Draw.io 源文件和 PNG 预览…');
+          setAssistantProgress(skillProgressText(data.skill_name));
           addTimeline('执行技能', `${data.skill_name || ''} · attempt ${data.attempt || 0}`);
           break;
         case 'skill.completed':
@@ -6395,11 +6728,10 @@
         case 'artifact.created':
           upsertArtifact(data.artifact);
           addTimeline('生成文件', data.artifact?.name || '');
-          renderPanel();
           break;
         case 'preview.ready':
           upsertArtifact(data.artifact);
-          renderPanel();
+          schedulePanelUpdate();
           break;
         case 'verifier.started':
           setAssistantProgress('正在校验生成文件…');
@@ -6408,7 +6740,6 @@
         case 'verifier.completed':
           state.verification = data.verification || null;
           addTimeline('校验完成', state.verification?.passed ? '通过' : '未通过');
-          renderPanel();
           break;
         case 'retry.started':
           addTimeline('自动重试', (data.failed_checks || []).join(', '));
@@ -6435,6 +6766,94 @@
       return data?.text || data?.message || '';
     }
 
+    function runtimeRoundText(data) {
+      const round = Number(data?.round || 0);
+      return round > 0 ? `第 ${round} 轮` : '';
+    }
+
+    function compactListText(items, fallback = '') {
+      if (!Array.isArray(items) || !items.length) return fallback;
+      return items
+        .map((item) => typeof item === 'string' ? item : (item?.name || item?.tool_name || item?.id || ''))
+        .filter(Boolean)
+        .slice(0, 4)
+        .join('、');
+    }
+
+    function llmRequestText(data) {
+      const round = runtimeRoundText(data);
+      const tools = compactListText(data?.tools);
+      const count = Number(data?.tool_count || 0);
+      return [round, count ? `${count} 个工具可用` : '', tools].filter(Boolean).join(' · ');
+    }
+
+    function llmCompletedProgressText(data) {
+      const callCount = Number(data?.tool_call_count || 0);
+      if (callCount > 0) return `模型已选择 ${callCount} 个工具，正在执行…`;
+      return '模型已返回结果，正在整理回复…';
+    }
+
+    function llmCompletedText(data) {
+      const parts = [runtimeRoundText(data)];
+      if (data?.finish_reason) parts.push(String(data.finish_reason));
+      if (Number(data?.tool_call_count || 0) > 0) parts.push(`${data.tool_call_count} 个工具调用`);
+      if (Number(data?.duration_ms || 0) > 0) parts.push(`${data.duration_ms}ms`);
+      return parts.filter(Boolean).join(' · ');
+    }
+
+    function toolCallsProgressText(data) {
+      const count = Array.isArray(data?.tool_calls) ? data.tool_calls.length : 0;
+      return count ? `正在执行 ${count} 个工具…` : '正在执行工具…';
+    }
+
+    function toolCallsText(data) {
+      const tools = compactListText(data?.tool_calls);
+      return [runtimeRoundText(data), tools].filter(Boolean).join(' · ');
+    }
+
+    function toolProgressText(toolName) {
+      if (toolName === 'skill_run') return '正在执行 Skill…';
+      if (toolName === 'local_read_file' || toolName === 'present_files') return '正在读取当前会话文件…';
+      if (toolName === 'artifact_read' || toolName === 'artifact_list') return '正在读取当前会话产物…';
+      if (toolName === 'artifact_write' || toolName === 'artifact_patch') return '正在写入当前会话产物…';
+      return toolName ? `正在调用工具 ${toolName}…` : '正在调用工具…';
+    }
+
+    function toolCompletedProgressText(data) {
+      const toolName = data?.tool_name || '工具';
+      return `${toolName} 执行完成，正在继续分析…`;
+    }
+
+    function toolCompletedText(data) {
+      const parts = [data?.tool_name || ''];
+      if (Number(data?.duration_ms || 0) > 0) parts.push(`${data.duration_ms}ms`);
+      const artifacts = data?.structured_content?.artifacts;
+      if (Array.isArray(artifacts) && artifacts.length) parts.push(`${artifacts.length} 个产物`);
+      return parts.filter(Boolean).join(' · ');
+    }
+
+    function toolFailedProgressText(data) {
+      const toolName = data?.tool_name || '工具';
+      return `${toolName} 调用失败，正在等待模型恢复或返回错误…`;
+    }
+
+    function toolFailedText(data) {
+      const parts = [data?.tool_name || ''];
+      if (data?.error_code) parts.push(String(data.error_code));
+      if (Number(data?.duration_ms || 0) > 0) parts.push(`${data.duration_ms}ms`);
+      return parts.filter(Boolean).join(' · ');
+    }
+
+    function skillProgressText(skillName) {
+      if (skillName === 'data-auto-annotation') return '正在调用图像标注服务生成 COCO JSON…';
+      if (skillName === 'drawio-generation') return '正在生成 Draw.io 源文件和 PNG 预览…';
+      if (skillName === 'pptx-generation') return '正在生成 PPTX 文件…';
+      if (skillName === 'excel-generation') return '正在生成 Excel 文件…';
+      if (skillName === 'xmind-generation') return '正在生成 XMind 文件…';
+      if (skillName === 'markdown-rendering') return '正在生成 Markdown 文档…';
+      return '正在执行技能…';
+    }
+
     function applyFinalResult(result) {
       if (!result) return;
       state.finalResultApplied = true;
@@ -6447,7 +6866,81 @@
       state.artifacts = result.artifacts || state.artifacts;
       state.verification = result.verification || state.verification;
       state.spec = result.spec || state.spec;
-      renderPanel();
+      maybePromptForRequiredInputs(result);
+      schedulePanelUpdate();
+    }
+
+    function maybePromptForRequiredInputs(result) {
+      const meta = result?.metadata || {};
+      if (!meta.requires_input || !Array.isArray(meta.required_inputs) || !meta.required_inputs.length) return;
+      const fileInputs = meta.required_inputs.filter((item) => requiredInputUsesFile(item));
+      if (!fileInputs.length || !els.requiredInputFile) return;
+      const accept = [...new Set(fileInputs.map((item) => item.accept || acceptForRequiredInputType(item.type)).filter(Boolean))].join(',');
+      const label = fileInputs.map((item) => requiredInputLabel(item.type)).join('、');
+      state.requiredInputAccept = accept || '*/*';
+      state.requiredInputLabel = label || '文件';
+      els.requiredInputFile.accept = state.requiredInputAccept === '*/*' ? '' : state.requiredInputAccept;
+      els.requiredInputFile.value = '';
+      addTimeline('等待补充输入', `${label || '文件'} · ${state.requiredInputAccept}`);
+      showRequiredInputPanel(state.requiredInputLabel, state.requiredInputAccept, fileInputs);
+    }
+
+    function showRequiredInputPanel(label, accept, inputs) {
+      if (!els.requiredInputPanel) return;
+      const reasons = inputs
+        .map((item) => item.reason)
+        .filter(Boolean)
+        .slice(0, 2)
+        .join('；');
+      els.requiredInputTitle.textContent = `需要上传${label || '文件'}`;
+      els.requiredInputDetail.textContent = `${accept || '*/*'}${reasons ? ` · ${reasons}` : ''}`;
+      const container = ensureRequiredInputMessageNode();
+      const bubble = container.querySelector('.bubble');
+      if (bubble && els.requiredInputPanel.parentElement !== bubble) {
+        bubble.appendChild(els.requiredInputPanel);
+      }
+      els.requiredInputPanel.classList.add('active');
+      els.messages.scrollTop = els.messages.scrollHeight;
+    }
+
+    function hideRequiredInputPanel() {
+      els.requiredInputPanel?.classList.remove('active');
+      document.getElementById('requiredInputMessage')?.remove();
+    }
+
+    function ensureRequiredInputMessageNode() {
+      let node = document.getElementById('requiredInputMessage');
+      if (node) return node;
+      node = document.createElement('div');
+      node.id = 'requiredInputMessage';
+      node.className = 'message assistant required-input-message';
+      node.innerHTML = '<div class="role">Agent</div><div class="bubble"></div>';
+      els.messages.appendChild(node);
+      return node;
+    }
+
+    function requiredInputUsesFile(item) {
+      return ['file', 'image', 'video', 'audio', 'dataset', 'model', 'model_config'].includes(String(item?.type || 'file'));
+    }
+
+    function acceptForRequiredInputType(type) {
+      if (type === 'image') return 'image/*';
+      if (type === 'video') return 'video/*';
+      if (type === 'audio') return 'audio/*';
+      if (type === 'dataset') return '.zip,.tar,.tar.gz,.csv,.json,.jsonl,.parquet,.yaml,.yml';
+      if (type === 'model') return '.onnx,.pt,.pth,.bin,.safetensors,.gguf,.pkl,.joblib';
+      if (type === 'model_config') return '.json,.yaml,.yml,.toml';
+      return '*/*';
+    }
+
+    function requiredInputLabel(type) {
+      if (type === 'image') return '图片';
+      if (type === 'video') return '视频';
+      if (type === 'audio') return '音频';
+      if (type === 'dataset') return '数据集';
+      if (type === 'model') return '模型文件';
+      if (type === 'model_config') return '模型配置';
+      return '文件';
     }
 
     function upsertArtifact(artifact) {
@@ -6522,24 +7015,31 @@
         : `<pre>${escapeHtml(clipped)}</pre>`;
     }
 
-    async function fileToAttachment(file) {
-      const dataBase64 = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
+    async function attachmentsForRequest() {
+      return uploadController.attachmentsForRequest();
+    }
+
+    async function uploadChatFiles(files) {
+      return uploadController.uploadChatFiles(files);
+    }
+
+    function uploadDroppedOrPastedFiles(files, source = '上传文件') {
+      const selected = Array.from(files || []).filter((file) => file && file.size >= 0);
+      if (!selected.length) return;
+      addTimeline(source, selected.map((file) => file.name).join('、'));
+      uploadChatFiles(selected).catch((err) => {
+        addTimeline('上传失败', err.message || String(err));
       });
-      return {
-        name: file.name,
-        mime_type: file.type || null,
-        data_base64: dataBase64,
-        metadata: { size: file.size }
-      };
+    }
+
+    function setChatDragActive(active) {
+      els.chatFrame?.classList.toggle('drag-active', active);
+      els.composerWrap?.classList.toggle('drag-active', active);
     }
 
     function setBusy(busy) {
-      els.send.disabled = busy;
-      els.attach.disabled = busy;
+      state.running = busy;
+      updateComposerControls();
       els.send.classList.toggle('running', busy);
       els.send.innerHTML = busy
         ? '运行中'
@@ -6792,10 +7292,77 @@
         send();
       }
     });
-    els.attach.addEventListener('click', () => els.fileInput.click());
+    els.attach.addEventListener('click', () => {
+      els.fileInput.value = '';
+      els.fileInput.click();
+    });
     els.fileInput.addEventListener('change', () => {
-      state.files = [...els.fileInput.files];
-      renderAttachments();
+      uploadChatFiles(els.fileInput.files).finally(() => {
+        els.fileInput.value = '';
+      });
+    });
+    els.attachments.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-remove-attachment]');
+      if (!button) return;
+      uploadController.removeAttachment(button.dataset.removeAttachment);
+    });
+    els.requiredInputFile?.addEventListener('change', async () => {
+      const selected = [...els.requiredInputFile.files];
+      if (!selected.length) return;
+      const label = selected.map((file) => file.name).join('、');
+      hideRequiredInputPanel();
+      addTimeline('已选择补充输入', label);
+      try {
+        const result = await uploadChatFiles(selected);
+        if (result?.failed?.length) {
+          els.input.focus();
+          return;
+        }
+        addTimeline('补充输入已上传', label);
+        state.pendingAutoContinueStatus = '已检测到会话文件，正在继续处理…';
+        els.input.value = `继续处理刚上传的文件。`;
+        await send();
+      } finally {
+        els.requiredInputFile.value = '';
+      }
+    });
+    els.requiredInputChoose?.addEventListener('click', () => {
+      if (els.requiredInputFile) {
+        els.requiredInputFile.accept = state.requiredInputAccept === '*/*' ? '' : state.requiredInputAccept;
+        els.requiredInputFile.value = '';
+        els.requiredInputFile.click();
+      }
+    });
+    els.requiredInputDismiss?.addEventListener('click', hideRequiredInputPanel);
+    [els.chatFrame, els.composerWrap].forEach((target) => {
+      target?.addEventListener('dragenter', (event) => {
+        if (!event.dataTransfer?.types?.includes('Files')) return;
+        event.preventDefault();
+        setChatDragActive(true);
+      });
+      target?.addEventListener('dragover', (event) => {
+        if (!event.dataTransfer?.types?.includes('Files')) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        setChatDragActive(true);
+      });
+      target?.addEventListener('dragleave', (event) => {
+        if (target.contains(event.relatedTarget)) return;
+        setChatDragActive(false);
+      });
+      target?.addEventListener('drop', (event) => {
+        if (!event.dataTransfer?.files?.length) return;
+        event.preventDefault();
+        setChatDragActive(false);
+        uploadDroppedOrPastedFiles(event.dataTransfer.files, '拖拽上传');
+      });
+    });
+    document.addEventListener('paste', (event) => {
+      if (state.view !== 'chat') return;
+      const files = [...(event.clipboardData?.files || [])];
+      if (!files.length) return;
+      event.preventDefault();
+      uploadDroppedOrPastedFiles(files, '粘贴上传');
     });
     els.skillPluginInput?.addEventListener('change', () => {
       const file = els.skillPluginInput.files?.[0];
@@ -6854,36 +7421,7 @@
         renderSkillEditor({ type: 'error', text: err.message });
       });
     });
-    els.newThread.addEventListener('click', () => {
-      els.thread.value = `local-${Date.now().toString(36)}`;
-      els.threadMini.textContent = els.thread.value;
-      localStorage.setItem(THREAD_STORAGE_KEY, els.thread.value);
-      state.messages = [];
-      state.timeline = [];
-      state.artifacts = [];
-      state.verification = null;
-      state.spec = null;
-      state.files = [];
-      state.selectedChatSkills = [];
-      state.selectedChatMcpTools = [];
-      state.selectedChatWorkflow = null;
-      state.selectedAppTemplateName = null;
-      state.nextAgentOverride = null;
-      state.nextWorkflowOverride = null;
-      closeCapabilityPicker();
-      state.activeAssistantIndex = null;
-      state.finalResultApplied = false;
-      if (state.messageUpdateFrame) {
-        cancelAnimationFrame(state.messageUpdateFrame);
-        state.messageUpdateFrame = 0;
-      }
-      state.pendingMessageIndexes.clear();
-      els.fileInput.value = '';
-      renderMessages();
-      renderAttachments();
-      renderComposerCapabilities();
-      renderPanel();
-    });
+    els.newThread.addEventListener('click', startNewThread);
     els.thread.addEventListener('input', ensureThread);
     els.thread.addEventListener('change', () => {
       refreshArtifacts().catch((err) => console.debug('artifact refresh skipped', err));
@@ -7171,10 +7709,18 @@
       const appFilterButton = event.target.closest('[data-app-filter]');
       if (appFilterButton) {
         state.appFilter = appFilterButton.dataset.appFilter || 'all';
+        state.selectedAppTemplateJsonName = null;
         document.querySelectorAll('[data-app-filter]').forEach((item) => {
           item.classList.toggle('active', item.dataset.appFilter === state.appFilter);
         });
         renderAppTemplateSummary();
+        renderAppTemplateList();
+        return;
+      }
+      const appJsonButton = event.target.closest('[data-app-template-json]');
+      if (appJsonButton) {
+        const name = appJsonButton.dataset.appTemplateJson || '';
+        state.selectedAppTemplateJsonName = state.selectedAppTemplateJsonName === name ? null : name;
         renderAppTemplateList();
         return;
       }

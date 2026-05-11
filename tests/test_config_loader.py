@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 from app.cli import set_encrypted_api_key
@@ -8,8 +9,12 @@ from app.core.config.secrets import SecretCodec
 from app.core.tools import ToolInvocationService
 
 
-def test_load_builtin_agent() -> None:
-    agent = AgentConfigLoader().load("default")
+def test_load_builtin_agent(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    shutil.copyfile(Path("config/agents/default.json"), config_dir / "default.json")
+
+    agent = AgentConfigLoader(tmp_path).load("default")
     assert agent.name == "default"
     assert agent.runtime.stateless is True
     assert "markdown-rendering" in agent.skills
@@ -184,6 +189,41 @@ def test_plain_api_key_takes_precedence_over_encrypted_api_key(tmp_path: Path) -
     agent = loader.load("default")
 
     assert agent.model.api_key == "plain-key"
+
+
+def test_plain_local_api_key_is_auto_encrypted_on_load(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    base_config = {
+        "name": "default",
+        "display_name": "Default",
+        "model": {"model": "json-model", "base_url": "http://base.local/v1"},
+    }
+    local_path = config_dir / "default.local.json"
+    (config_dir / "default.json").write_text(json.dumps(base_config), encoding="utf-8")
+    local_path.write_text(
+        json.dumps(
+            {
+                "model": {
+                    "model": "local-model",
+                    "base_url": "http://local.local/v1",
+                    "api_key": "plain-local-key",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loader = AgentConfigLoader(root_dir=tmp_path)
+    agent = loader.load("default")
+    saved = json.loads(local_path.read_text(encoding="utf-8"))
+
+    assert agent.model.model == "local-model"
+    assert agent.model.base_url == "http://local.local/v1"
+    assert agent.model.api_key == "plain-local-key"
+    assert "api_key" not in saved["model"]
+    assert saved["model"]["api_key_enc"].startswith("enc.fernet.v1.")
+    assert loader.load("default").model.api_key == "plain-local-key"
 
 
 def test_set_encrypted_api_key_writes_local_override_and_master_key(tmp_path: Path) -> None:

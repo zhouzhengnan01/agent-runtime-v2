@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -227,3 +228,82 @@ def test_run_observability_api_returns_saved_timeline(tmp_path: Path, monkeypatc
     assert bundle.status_code == 200
     assert bundle.json()["schema"] == "jetlinks-agent-run-debug-bundle.v1"
     assert bundle.json()["run"]["run_id"] == run_id
+
+
+def test_agent_stream_api_emits_tool_loop_events_as_sse(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    calls = 0
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        nonlocal calls
+        del self, system_prompt, messages, tools
+        calls += 1
+        if calls == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_status",
+                        name="jetlinks_runtime_status",
+                        arguments='{"probe": true}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="streamed done", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        run_event_store=RunEventStore(tmp_path / "runs"),
+    )
+    monkeypatch.setattr(agents_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/agents/default/runs/stream",
+        json={
+            "messages": [{"role": "user", "content": "检查运行时状态"}],
+            "runtime_options": {
+                "thread_id": "sse-tool-loop-thread",
+                "selected_mcp_tools": ["jetlinks_runtime_status"],
+                "mode": "autonomous",
+                "config_options": {"max_tool_rounds": 4},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    event_types = [event["type"] for event in events]
+    assert event_types[0] == "run.started"
+    assert "llm.request.started" in event_types
+    assert "llm.request.completed" in event_types
+    assert "tool.calls.started" in event_types
+    assert "tool.started" in event_types
+    assert "tool.completed" in event_types
+    assert "agent.message.delta" in event_types
+    assert event_types[-1] == "run.completed"
+
+    started = next(event for event in events if event["type"] == "llm.request.started")
+    completed = next(event for event in events if event["type"] == "tool.completed")
+    final = events[-1]["data"]["result"]
+    assert started["data"]["mode"] == "tool_calling"
+    assert "jetlinks_runtime_status" in started["data"]["tools"]
+    assert completed["data"]["tool_name"] == "jetlinks_runtime_status"
+    assert final["reply"] == "streamed done"
+    assert final["metadata"]["mode"] == "autonomous"
+
+
+def _parse_sse_events(text: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for frame in text.strip().split("\n\n"):
+        data_lines = [line[5:].lstrip() for line in frame.splitlines() if line.startswith("data:")]
+        if not data_lines:
+            continue
+        payload = json.loads("\n".join(data_lines))
+        events.append(payload)
+    return events

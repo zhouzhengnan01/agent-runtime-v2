@@ -1,0 +1,25 @@
+{
+  "name": "deployment-candidate-reviewer",
+  "description": "Review whether a trained detector is safe to deploy: package completeness, service load test, AGX performance, rollback, and full reprocess plan.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "Use for deciding whether best.pt can replace production baseline and what rollback/reprocess plan is required.",
+    "keywords": ["上线", "部署", "替换线上", "回滚", "推理服务", "候选模型", "AGX 推理"],
+    "examples": ["评审这个 best.pt 能不能上线", "给我模型替换和回滚计划"]
+  },
+  "quality_template": ["package", "baseline_comparison", "service_smoke", "speed_memory", "rollback", "reprocess_plan"],
+  "input_schema": {
+    "type": "object",
+    "required": ["skill_name"],
+    "properties": {
+      "skill_name": { "const": "deployment-candidate-reviewer" },
+      "model_path": { "type": "string" },
+      "baseline_model": { "type": "string" },
+      "conf": { "type": "number" }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": { "type": "object", "required": ["artifacts"], "properties": { "artifacts": { "type": "array" } }, "additionalProperties": true },
+  "sandbox": { "enabled": false, "profile": null, "request_schema_version": "skill-run.v1", "fallback_to_local": true }
+}

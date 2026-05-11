@@ -42,6 +42,10 @@ class OutputVerifier:
                     detail=", ".join(names),
                 )
             )
+        elif skill_name == "data-auto-annotation":
+            checks.extend(self._verify_coco_output(run_result))
+        elif skill_name == "behavior-review":
+            checks.extend(self._verify_behavior_review(run_result))
 
         failed = [check.name for check in checks if not check.passed]
         return VerificationResult(passed=not failed, retry_count=retry_count, checks=checks, failed_checks=failed)
@@ -177,11 +181,46 @@ class OutputVerifier:
             VerificationCheck(name="has_notes", passed=notes_count >= 1, detail=f"notes={notes_count}"),
         ]
 
+    def _verify_coco_output(self, run_result: SkillRunResult) -> list[VerificationCheck]:
+        coco_artifacts = [artifact for artifact in run_result.outputs if artifact.name == "annotations.coco.json"]
+        checks = [
+            VerificationCheck(
+                name="has_coco_json",
+                passed=bool(coco_artifacts),
+                detail=", ".join(artifact.name for artifact in run_result.outputs) or "no outputs",
+            )
+        ]
+        if not coco_artifacts:
+            return checks
+
+        artifact = coco_artifacts[0]
+        try:
+            actual_path = self.artifact_store.resolve_virtual_path(artifact.thread_id, artifact.path)
+            payload = json.loads(actual_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return checks + [VerificationCheck(name="coco_json_valid", passed=False, detail=str(exc))]
+
+        images = payload.get("images")
+        annotations = payload.get("annotations")
+        categories = payload.get("categories")
+        checks.extend(
+            [
+                VerificationCheck(name="coco_json_valid", passed=isinstance(payload, dict), detail=artifact.name),
+                VerificationCheck(name="coco_has_images", passed=isinstance(images, list) and bool(images), detail=str(type(images).__name__)),
+                VerificationCheck(name="coco_has_annotations", passed=isinstance(annotations, list), detail=str(type(annotations).__name__)),
+                VerificationCheck(name="coco_has_categories", passed=isinstance(categories, list), detail=str(type(categories).__name__)),
+            ]
+        )
+        return checks
+
     @staticmethod
     def _verify_behavior(run_result: SkillRunResult, retry_count: int) -> VerificationResult:
         data = run_result.data
         evidence_mode = data.get("evidence_mode")
+        names = [artifact.name for artifact in run_result.outputs]
         checks = [
+            VerificationCheck(name="has_detection_markdown", passed="behavior-detection.md" in names, detail=", ".join(names)),
+            VerificationCheck(name="has_detection_json", passed="behavior-detection.json" in names, detail=", ".join(names)),
             VerificationCheck(
                 name="evidence_mode_declared",
                 passed=evidence_mode in {"text_only", "visual_or_structured"},
@@ -200,3 +239,32 @@ class OutputVerifier:
         ]
         failed = [check.name for check in checks if not check.passed]
         return VerificationResult(passed=not failed, retry_count=retry_count, checks=checks, failed_checks=failed)
+
+    def _verify_behavior_review(self, run_result: SkillRunResult) -> list[VerificationCheck]:
+        data = run_result.data
+        names = [artifact.name for artifact in run_result.outputs]
+        actions = data.get("actions")
+        return [
+            VerificationCheck(name="has_review_markdown", passed="behavior-review.md" in names, detail=", ".join(names)),
+            VerificationCheck(name="has_review_json", passed="behavior-review.json" in names, detail=", ".join(names)),
+            VerificationCheck(
+                name="review_decision_declared",
+                passed=data.get("review_decision") in {"confirm_incident", "need_more_evidence"},
+                detail=str(data.get("review_decision")),
+            ),
+            VerificationCheck(
+                name="evidence_mode_declared",
+                passed=data.get("evidence_mode") in {"text_only", "visual_or_structured"},
+                detail=str(data.get("evidence_mode")),
+            ),
+            VerificationCheck(
+                name="actions_declared",
+                passed=isinstance(actions, list) and bool(actions),
+                detail=str(actions),
+            ),
+            VerificationCheck(
+                name="no_visual_score_without_evidence",
+                passed=not (data.get("evidence_mode") == "text_only" and float(data.get("confidence", 0.0)) > 0.0),
+                detail=f"confidence={data.get('confidence')}",
+            ),
+        ]

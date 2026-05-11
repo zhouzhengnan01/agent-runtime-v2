@@ -1,0 +1,16 @@
+{
+  "name": "algorithm-training-orchestration",
+  "title": "GPU 训练编排",
+  "description": "标准化小样本 benchmark、正式训练、断点恢复、日志监控、显存检查和训练参数记录。",
+  "category": "algorithm",
+  "icon": "package",
+  "agent_name": "default",
+  "workflow": "artifact_workflow",
+  "selected_skills": ["remote-gpu-ops", "gpu-training-orchestrator", "experiment-ledger"],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "帮我为 RT-DETR-L 生成 AGX 和 5090 两套训练编排方案：先跑 epochs=1 fraction=0.1 benchmark，再决定正式训练参数。",
+    "检查远端 GPU 训练前置条件，并生成 rsync 数据同步、nvidia-smi、df -h、docker ps 和 results.csv 监控方案。"
+  ],
+  "tags": ["GPU", "训练", "benchmark", "AGX", "5090"]
+}

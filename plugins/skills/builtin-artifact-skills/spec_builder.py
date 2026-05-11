@@ -40,6 +40,8 @@ class SpecBuilder:
             base.update(self._markdown_spec())
         elif skill_name == "behavior-detection":
             base.update(self._behavior_spec(user_text, attachments))
+        elif skill_name == "behavior-review":
+            base.update(self._behavior_review_spec(user_text, attachments))
         return base
 
     @staticmethod
@@ -146,6 +148,7 @@ class SpecBuilder:
     def _select_skill(user_text: str, attachments: list[Attachment], allowed_skills: list[str]) -> str:
         text = SpecBuilder._normalized_text(user_text)
         candidates: list[tuple[str, tuple[str, ...]]] = [
+            ("behavior-review", ("复判", "复核", "二次审核", "人工审核", "告警审核", "review")),
             ("behavior-detection", ("翻越", "摔倒", "逗留", "禁区", "行为", "识别", "intrusion")),
             (
                 "drawio-generation",
@@ -194,6 +197,7 @@ class SpecBuilder:
             "xmind-generation": ["multi_level_topics", "notes", "tasks"],
             "markdown-rendering": ["mermaid", "table", "echarts_block", "attachment_block"],
             "behavior-detection": ["evidence_first", "no_visual_score_without_visual_evidence"],
+            "behavior-review": ["evidence_first", "review_decision", "evidence_gaps", "actions"],
         }
         return defaults.get(skill_name, [])
 
@@ -367,6 +371,19 @@ class SpecBuilder:
             "must_not_emit_visual_score_without_evidence": True,
         }
 
+    @staticmethod
+    def _behavior_review_spec(user_text: str, attachments: list[Attachment]) -> dict[str, Any]:
+        spec = SpecBuilder._behavior_spec(user_text, attachments)
+        spec.update(
+            {
+                "event_id": "待生成",
+                "original_decision": "critical" if attachments else "needs_visual_confirmation",
+                "review_policy": "evidence_first",
+                "manual_review_required": not bool(attachments),
+            }
+        )
+        return spec
+
 
 def score_skill(
     skill_name: str,
@@ -403,4 +420,6 @@ def build_spec(
         spec.update(builder._markdown_spec())
     elif skill_name == "behavior-detection":
         spec.update(builder._behavior_spec(user_text, attachments))
+    elif skill_name == "behavior-review":
+        spec.update(builder._behavior_review_spec(user_text, attachments))
     return spec

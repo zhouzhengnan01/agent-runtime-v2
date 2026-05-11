@@ -209,6 +209,7 @@ def _configured_output_artifacts(
         except ValueError:
             continue
         if candidate.is_file():
+            artifact_store.upsert_artifact(paths, candidate)
             artifacts.append(artifact_store.to_artifact_ref(paths.thread_id, candidate))
     return artifacts
 
@@ -225,7 +226,7 @@ def _python_script_stdin(input_mode: str, skill_name: str, spec: dict[str, Any],
         return json.dumps(
             {
                 "skill_name": skill_name,
-                "spec": _public_spec(spec),
+                "spec": _expand_runtime_tokens(_public_spec(spec), paths),
                 "thread_id": paths.thread_id,
                 "workspace_dir": str(paths.workspace.resolve()),
                 "uploads_dir": str(paths.uploads.resolve()),
@@ -236,7 +237,10 @@ def _python_script_stdin(input_mode: str, skill_name: str, spec: dict[str, Any],
     if input_mode in {"args", "none", "json_file"}:
         if input_mode == "json_file":
             payload_path = paths.workspace / f"{skill_name}-input.json"
-            payload_path.write_text(json.dumps(_public_spec(spec), ensure_ascii=False, indent=2), encoding="utf-8")
+            payload_path.write_text(
+                json.dumps(_expand_runtime_tokens(_public_spec(spec), paths), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         return None
     raise ValueError(f"Unsupported python_script input_mode: {input_mode}")
 
@@ -255,6 +259,7 @@ def _python_script_outputs(
         existing = {artifact.path for artifact in outputs}
         for file_path in sorted(paths.outputs.rglob("*")):
             if file_path.is_file():
+                artifact_store.upsert_artifact(paths, file_path)
                 artifact = artifact_store.to_artifact_ref(paths.thread_id, file_path)
                 if artifact.path not in existing:
                     outputs.append(artifact)
@@ -286,6 +291,7 @@ def _declared_result_outputs(stdout: str, paths: ThreadPaths, artifact_store: Ar
         except ValueError:
             continue
         if candidate.is_file():
+            artifact_store.upsert_artifact(paths, candidate)
             artifacts.append(artifact_store.to_artifact_ref(paths.thread_id, candidate))
     return artifacts
 
@@ -344,7 +350,19 @@ def _expand_runtime_token(value: str, paths: ThreadPaths) -> str:
         .replace("{workspace}", str(paths.workspace.resolve()))
         .replace("{uploads}", str(paths.uploads.resolve()))
         .replace("{outputs}", str(paths.outputs.resolve()))
+        .replace("/mnt/user-data/uploads/", str(paths.uploads.resolve()) + "/")
+        .replace("/mnt/user-data/outputs/", str(paths.outputs.resolve()) + "/")
     )
+
+
+def _expand_runtime_tokens(value: Any, paths: ThreadPaths) -> Any:
+    if isinstance(value, str):
+        return _expand_runtime_token(value, paths)
+    if isinstance(value, list):
+        return [_expand_runtime_tokens(item, paths) for item in value]
+    if isinstance(value, dict):
+        return {key: _expand_runtime_tokens(item, paths) for key, item in value.items()}
+    return value
 
 
 def _public_spec(spec: dict[str, Any]) -> dict[str, Any]:

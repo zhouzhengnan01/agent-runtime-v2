@@ -1,0 +1,16 @@
+{
+  "name": "algorithm-evaluation-deployment",
+  "title": "模型评估与上线评审",
+  "description": "把检测指标转换成业务计数判断，比较 baseline 和候选模型，并生成上线包、回滚和全量回刷计划。",
+  "category": "algorithm",
+  "icon": "shield",
+  "agent_name": "default",
+  "workflow": "artifact_workflow",
+  "selected_skills": ["detector-evaluator", "deployment-candidate-reviewer", "experiment-ledger"],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "比较生产 YOLO baseline、RT-DETR best.pt 和 last.pt：同时看 mAP50、mAP50-95、recall、totalAccuracy、netTotalAccuracy 和 absDiffAvg，给出上线建议。",
+    "评审这个 best.pt 是否能替换线上模型，要求包含推荐 conf、AGX 推理验证、回滚路径和全量 ledger 回刷计划。"
+  ],
+  "tags": ["评估", "上线", "A/B", "回滚", "计数误差"]
+}

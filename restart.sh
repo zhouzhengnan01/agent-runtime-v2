@@ -4,4 +4,4 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ./stop.sh
-./up.sh
+./start.sh

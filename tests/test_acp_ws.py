@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from acp.schema import SessionNotification
+from acp.schema import PromptResponse, SessionNotification
 from fastapi.testclient import TestClient
 
 from app.api import acp as acp_api
@@ -76,8 +77,54 @@ class ToolEventAcpRuntime(AgentRuntime):
         yield ChatEvent(type="run.completed", data={"result": result.model_dump(), "sequence": 4})
 
 
+class PlanDiffEventAcpRuntime(AgentRuntime):
+    def __init__(self, artifact_store: ArtifactStore) -> None:
+        self.artifact_store = artifact_store
+
+    async def iter_events(self, agent_config: Any, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        result = AgentRunResult(
+            agent=agent_config.name,
+            thread_id=request.runtime_options.thread_id or "acp-plan-diff",
+            reply="ok",
+        )
+        yield ChatEvent(type="run.started", data={"workflow": "agent_loop"})
+        yield ChatEvent(type="tool.started", data={"tool_name": "local_write_file", "tool_call_id": "call-write"})
+        yield ChatEvent(
+            type="tool.completed",
+            data={
+                "tool_name": "local_write_file",
+                "tool_call_id": "call-write",
+                "structured_content": {"path": "/mnt/user-data/workspace/demo.txt"},
+            },
+        )
+        yield ChatEvent(type="run.completed", data={"result": result.model_dump()})
+
+
+class InputRequiredAcpRuntime(AgentRuntime):
+    def __init__(
+        self,
+        artifact_store: ArtifactStore,
+        *,
+        reply: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self.artifact_store = artifact_store
+        self.reply = reply
+        self.metadata = metadata or {}
+
+    async def iter_events(self, agent_config: Any, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        result = AgentRunResult(
+            agent=agent_config.name,
+            thread_id=request.runtime_options.thread_id or "acp-input-required",
+            reply=self.reply,
+            metadata=dict(self.metadata),
+        )
+        yield ChatEvent(type="run.completed", data={"result": result.model_dump()})
+
+
 def test_acp_websocket_prompt_streams_runtime_events() -> None:
     client = TestClient(create_app())
+    thread_id = f"acp-ws-test-{uuid.uuid4().hex}"
 
     with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
         websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
@@ -89,11 +136,11 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "new_session",
-                "params": {
-                    "agentName": "default",
-                    "threadId": "acp-ws-test",
-                    "cwd": "/tmp",
-                },
+                    "params": {
+                        "agentName": "default",
+                        "threadId": thread_id,
+                        "cwd": "/tmp",
+                    },
             }
         )
         created = websocket.receive_json()
@@ -104,13 +151,13 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "prompt",
-                "params": {
-                    "sessionId": session_id,
-                    "agentName": "default",
-                    "threadId": "acp-ws-test",
-                    "prompt": [{"type": "text", "text": "人员翻越围栏进入禁区"}],
-                    "runtimeOptions": {"workflow": "evidence_first_detection"},
-                },
+                    "params": {
+                        "sessionId": session_id,
+                        "agentName": "default",
+                        "threadId": thread_id,
+                        "prompt": [{"type": "text", "text": "人员翻越围栏进入禁区"}],
+                        "runtimeOptions": {"workflow": "evidence_first_detection"},
+                    },
             }
         )
 
@@ -126,8 +173,25 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
                 break
 
         assert final is not None
+        PromptResponse.model_validate(final["result"])
         assert final["result"]["stopReason"] == "end_turn"
+        assert final["result"]["_meta"]["jetlinks"]["stopReason"] == "input_required"
         assert "待上传" in final["result"]["result"]["reply"]
+        assert final["result"]["result"]["metadata"]["requires_input"] is True
+        assert final["result"]["result"]["metadata"]["required_inputs"] == [
+            {
+                "type": "image",
+                "accept": "image/*",
+                "required": True,
+                "reason": "The agent requires an uploaded image.",
+            },
+            {
+                "type": "video",
+                "accept": "video/*",
+                "required": True,
+                "reason": "The agent requires an uploaded video.",
+            },
+        ]
         event_types = [
             update["params"]["update"]["_meta"]["jetlinksRuntimeEvent"]["type"]
             for update in updates
@@ -140,6 +204,121 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
         assert "agent_thought_chunk" in session_update_types
         assert "runtime_event" not in session_update_types
         assert "agent_message" not in session_update_types
+
+
+def test_acp_websocket_prompt_returns_input_required_from_result_metadata(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = InputRequiredAcpRuntime(
+        ArtifactStore(root_dir=tmp_path / "threads"),
+        reply="请上传模型配置后继续。",
+        metadata={
+            "requires_input": True,
+            "required_inputs": [
+                {
+                    "type": "model_config",
+                    "reason": "model configuration is required",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "new_session",
+                "params": {"agentName": "default", "threadId": "acp-explicit-input-required"},
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "继续训练"}],
+                },
+            }
+        )
+
+        final = _receive_final_packet(websocket, 3)
+
+    PromptResponse.model_validate(final["result"])
+    assert final["result"]["stopReason"] == "end_turn"
+    assert final["result"]["_meta"]["jetlinks"]["stopReason"] == "input_required"
+    result = final["result"]["result"]
+    assert result["status"] == "completed"
+    assert result["metadata"]["requires_input"] is True
+    assert result["metadata"]["required_inputs"] == [
+        {
+            "type": "model_config",
+            "reason": "model configuration is required",
+            "accept": ".json,.yaml,.yml,.toml",
+            "required": True,
+        }
+    ]
+
+
+def test_acp_websocket_prompt_infers_input_required_image(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = InputRequiredAcpRuntime(
+        ArtifactStore(root_dir=tmp_path / "threads"),
+        reply="当前没有检测到这次上传图片的可用附件路径，请重新上传图片。",
+    )
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "new_session",
+                "params": {
+                    "agentName": "default",
+                    "threadId": "acp-inferred-input-required",
+                    "runtimeOptions": {"selectedSkills": ["data-auto-annotation"]},
+                },
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "请把我上传的图片自动标注成 COCO JSON"}],
+                },
+            }
+        )
+
+        final = _receive_final_packet(websocket, 3)
+
+    PromptResponse.model_validate(final["result"])
+    assert final["result"]["stopReason"] == "end_turn"
+    assert final["result"]["_meta"]["jetlinks"]["stopReason"] == "input_required"
+    required_inputs = final["result"]["result"]["metadata"]["required_inputs"]
+    assert required_inputs == [
+        {
+            "type": "image",
+            "accept": "image/*",
+            "required": True,
+            "reason": "The agent requires an uploaded image.",
+        }
+    ]
 
 
 def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -538,6 +717,275 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
     assert second.max_tokens == 2000
 
 
+def test_acp_websocket_supports_session_scoped_fs_methods(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    host_file = cwd / "notes.txt"
+    host_file.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {"agentName": "default", "threadId": "acp-fs", "cwd": str(cwd)},
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "fs/read_text_file",
+                "params": {"sessionId": session_id, "path": str(host_file), "line": 2, "limit": 1},
+            }
+        )
+        read_host = websocket.receive_json()["result"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "fs/write_text_file",
+                "params": {
+                    "sessionId": session_id,
+                    "path": "/mnt/user-data/workspace/generated.txt",
+                    "content": "generated",
+                },
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "fs/read_text_file",
+                "params": {"sessionId": session_id, "path": "/mnt/user-data/workspace/generated.txt"},
+            }
+        )
+        read_workspace = websocket.receive_json()["result"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "fs/read_text_file",
+                "params": {"sessionId": session_id, "path": str(tmp_path / "outside.txt")},
+            }
+        )
+        outside = websocket.receive_json()
+
+    assert read_host["content"] == "two"
+    assert read_workspace["content"] == "generated"
+    assert outside["error"]["code"] == -32602
+    assert "must stay within session cwd" in outside["error"]["message"]
+
+
+def test_acp_websocket_supports_terminal_methods(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {"agentName": "default", "threadId": "acp-terminal", "cwd": str(tmp_path)},
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "terminal/create",
+                "params": {
+                    "sessionId": session_id,
+                    "command": "/bin/sh",
+                    "args": ["-c", "printf terminal-ok"],
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        terminal_id = created["terminalId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "terminal/wait_for_exit",
+                "params": {"sessionId": session_id, "terminalId": terminal_id},
+            }
+        )
+        exited = websocket.receive_json()["result"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "terminal/output",
+                "params": {"sessionId": session_id, "terminalId": terminal_id},
+            }
+        )
+        output = websocket.receive_json()["result"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "terminal/release",
+                "params": {"sessionId": session_id, "terminalId": terminal_id},
+            }
+        )
+        released = websocket.receive_json()["result"]
+
+    assert exited["exitCode"] == 0
+    assert output["output"] == "terminal-ok"
+    assert output["exitStatus"]["exitCode"] == 0
+    assert released == {}
+
+
+def test_acp_websocket_session_mode_and_config_options_affect_runtime_options(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {"agentName": "default", "threadId": "acp-mode-config", "cwd": str(tmp_path)},
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/set_mode",
+                "params": {"sessionId": session_id, "modeId": "safe"},
+            }
+        )
+        mode_result = websocket.receive_json()["result"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/set_config_option",
+                "params": {"sessionId": session_id, "configId": "temperature", "value": 0.1},
+            }
+        )
+        config_result = websocket.receive_json()["result"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "session/prompt",
+                "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "hello"}]},
+            }
+        )
+        _receive_final_packet(websocket, 4)
+
+    assert mode_result["modeId"] == "safe"
+    assert config_result["values"]["temperature"] == 0.1
+    assert runtime.requests[0].runtime_options.mode == "safe"
+    assert runtime.requests[0].runtime_options.temperature == 0.1
+
+
+def test_acp_websocket_permission_request_emits_update_then_returns_cancelled(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {"agentName": "default", "threadId": "acp-permission", "cwd": str(tmp_path)},
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": session_id,
+                    "title": "Run command",
+                    "description": "Allow shell command",
+                    "options": [{"id": "allow"}],
+                },
+            }
+        )
+        update = websocket.receive_json()
+        final = websocket.receive_json()
+
+    assert update["method"] == "session/update"
+    assert update["params"]["update"]["sessionUpdate"] == "permission_request"
+    assert update["params"]["update"]["permissionRequest"]["title"] == "Run command"
+    assert final["result"]["outcome"]["outcome"] == "cancelled"
+
+
+def test_acp_websocket_updates_include_plan_and_diff_metadata(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = PlanDiffEventAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {"agentName": "default", "threadId": "acp-plan-diff", "cwd": str(tmp_path)},
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "write"}]},
+            }
+        )
+        updates: list[dict[str, Any]] = []
+        for _ in range(10):
+            packet = websocket.receive_json()
+            if packet.get("method") == "session/update":
+                updates.append(packet)
+            if packet.get("id") == 2:
+                break
+
+    metas = [packet["params"]["update"].get("_meta", {}) for packet in updates]
+    assert any(meta.get("jetlinksPlan", {}).get("type") == "tool" for meta in metas)
+    assert any((meta.get("jetlinksDiff") or {}).get("path") == "/mnt/user-data/workspace/demo.txt" for meta in metas)
+
+
 def test_acp_websocket_resolves_server_managed_model_id(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -623,7 +1071,8 @@ def test_acp_websocket_exposes_default_agent_model_when_model_manager_is_empty(
 ) -> None:
     runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
     model_manager = ModelManager()
-    model_manager.configure_from_agent_default(acp_api.loader.load("default"))
+    agent_default = acp_api.loader.load("default")
+    model_manager.configure_from_agent_default(agent_default)
     monkeypatch.setattr(acp_api, "runtime", runtime)
     monkeypatch.setattr(acp_api, "model_manager", model_manager)
     client = TestClient(create_app())
@@ -639,12 +1088,14 @@ def test_acp_websocket_exposes_default_agent_model_when_model_manager_is_empty(
         )
         created = websocket.receive_json()["result"]
 
-    assert created["models"]["currentModelId"] == "qwen3.6-27b"
-    assert created["models"]["currentModelName"] == "qwen3.6-27b"
-    assert created["runtimeOptions"]["modelName"] == "qwen3.6-27b"
-    assert created["runtimeOptions"]["baseUrl"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    assert created["models"]["availableModels"][0]["id"] == "qwen3.6-27b"
-    assert created["models"]["availableModels"][0]["model"] == "qwen3.6-27b"
+    expected_model = agent_default.model.model
+    expected_base_url = agent_default.model.base_url
+    assert created["models"]["currentModelId"] == expected_model
+    assert created["models"]["currentModelName"] == expected_model
+    assert created["runtimeOptions"]["modelName"] == expected_model
+    assert created["runtimeOptions"]["baseUrl"] == expected_base_url
+    assert created["models"]["availableModels"][0]["id"] == expected_model
+    assert created["models"]["availableModels"][0]["model"] == expected_model
 
 
 def test_default_agent_model_registration_uses_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:

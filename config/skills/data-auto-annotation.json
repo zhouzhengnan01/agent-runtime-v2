@@ -33,12 +33,18 @@
     "script": "scripts/sam3-predict.py",
     "input_mode": "none",
     "args": [
+      "--url",
+      "https://192-168-33-140-8800.proxy.jetlinks.cn/sam3/predict",
       "--input-json",
       "$spec_json",
+      "--connect-timeout",
+      "5",
+      "--timeout",
+      "12",
       "--output",
       "{outputs}/annotations.coco.json"
     ],
-    "timeout_seconds": 180,
+    "timeout_seconds": 25,
     "collect_outputs": true,
     "outputs": [
       {

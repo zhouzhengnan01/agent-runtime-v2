@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import acp, agents, apps, artifacts, cron, health, mcp, sandbox, skills, workflows
+from app.api import acp, agents, apps, artifacts, cron, health, mcp, sandbox, skills, uploads, workflows
 from app.core.runtime import RuntimeBootstrapConfig, default_container
 
 
@@ -42,6 +42,7 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict | None = None) -> FastAP
     app.include_router(sandbox.router)
     app.include_router(cron.router)
     app.include_router(skills.router)
+    app.include_router(uploads.router)
     app.include_router(workflows.router)
     app.include_router(mcp.router)
 
@@ -61,6 +62,17 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict | None = None) -> FastAP
             response = FileResponse(api_docs_path)
             response.headers["Cache-Control"] = "no-store, max-age=0"
             return response
+
+    workbench_dist = Path(__file__).resolve().parents[1] / "frontend" / "workbench" / "dist"
+    workbench_index = workbench_dist / "index.html"
+    if workbench_index.is_file():
+        @app.get("/workbench", include_in_schema=False)
+        async def workbench_app() -> FileResponse:
+            response = FileResponse(workbench_index)
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
+
+        app.mount("/workbench", StaticFiles(directory=workbench_dist, html=True), name="workbench")
 
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")

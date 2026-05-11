@@ -1,0 +1,16 @@
+{
+  "name": "algorithm-dataset-curation",
+  "title": "算法数据治理",
+  "description": "把散乱图片、人工标签、训练标签和 review queue 整理成可复现 YOLO 数据集，并输出去重、冲突和统计报告。",
+  "category": "algorithm",
+  "icon": "table",
+  "agent_name": "default",
+  "workflow": "artifact_workflow",
+  "selected_skills": ["dataset-curator"],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "审计 /data/palm_fruit_datasets/organized/latest_integrated_dedup，输出去重、标签冲突、空标签、缺标签和 YOLO data.yaml 构建方案。",
+    "把棕榈果去重图库整理成训练集 palm_integrated_exact_dedup_v1，manual 标签优先，training 次之，review queue 再次。"
+  ],
+  "tags": ["数据治理", "YOLO", "去重", "标签冲突"]
+}

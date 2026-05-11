@@ -10,3 +10,5 @@ __pycache__/
 *.py[cod]
 config/agents/*.local.json
 config/sandbox/*.local.json
+frontend/workbench/dist/
+frontend/workbench/node_modules/

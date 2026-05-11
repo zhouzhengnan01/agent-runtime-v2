@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,9 @@ from PIL import Image
 DEFAULT_URL = "http://192.168.33.140:8800/sam3/predict"
 DEFAULT_TOKEN = "abc@123"
 DEFAULT_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+DEFAULT_CONNECT_TIMEOUT = 5
+DEFAULT_READ_TIMEOUT = 12
+DEFAULT_MIN_IMAGE_SIZE = 16
 
 
 def build_args() -> argparse.Namespace:
@@ -46,7 +50,9 @@ def build_args() -> argparse.Namespace:
     )
     parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
     parser.add_argument("--iou", type=float, default=0.5, help="IoU threshold")
-    parser.add_argument("--timeout", type=int, default=120, help="Request timeout in seconds")
+    parser.add_argument("--min-image-size", type=int, default=DEFAULT_MIN_IMAGE_SIZE, help="Minimum accepted image width/height")
+    parser.add_argument("--connect-timeout", type=int, default=DEFAULT_CONNECT_TIMEOUT, help="Connection timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_READ_TIMEOUT, help="Read timeout in seconds")
     parser.add_argument("--workers", type=int, default=4, help="Number of concurrent request workers (reserved)")
     parser.add_argument(
         "--output",
@@ -155,6 +161,18 @@ def get_category_id(category_map: dict[str, int], categories: list[dict[str, Any
     return category_id
 
 
+def seed_categories(labels: list[str], category_map: dict[str, int], categories: list[dict[str, Any]]) -> None:
+    for label in labels:
+        normalized = label.strip()
+        if normalized:
+            get_category_id(category_map, categories, normalized)
+
+
+def image_size(image_path: Path) -> tuple[int, int]:
+    with Image.open(image_path) as img:
+        return img.size
+
+
 def response_to_coco(
     payload: Any,
     image_path: Path,
@@ -200,12 +218,50 @@ def post_image(args: argparse.Namespace, headers: dict[str, str], data: dict[str
     content_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
     with image_path.open("rb") as f:
         files = {"file": (image_path.name, f, content_type)}
-        response = requests.post(args.url, headers=headers, data=data, files=files, timeout=args.timeout)
+        response = requests.post(
+            args.url,
+            headers=headers,
+            data=data,
+            files=files,
+            timeout=(args.connect_timeout, args.timeout),
+        )
     response.raise_for_status()
     return response.json()
 
 
-def main() -> None:
+def _error_payload(error_type: str, message: str, args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error_type": error_type,
+        "message": message,
+        "url": args.url,
+        "hint": "SAM3 annotation endpoint is unreachable. Check the endpoint host/port, VPN/network route, or configure a reachable --url.",
+    }
+
+
+def _http_error_payload(exc: requests.exceptions.HTTPError, args: argparse.Namespace) -> dict[str, Any]:
+    response = exc.response
+    status_code = response.status_code if response is not None else None
+    response_text = response.text[:2000] if response is not None else ""
+    payload = _error_payload("sam3_http_error", str(exc), args)
+    payload.update(
+        {
+            "status_code": status_code,
+            "response_body": response_text,
+            "hint": "SAM3 endpoint returned an HTTP error. Check the endpoint contract, request fields, labels, and model server logs.",
+        }
+    )
+    if response_text:
+        payload["message"] = f"{exc}: {response_text}"
+    return payload
+
+
+def _print_error(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    print(payload["message"], file=sys.stderr)
+
+
+def main() -> int:
     args = build_args()
     image_paths = resolve_image_paths(args)
 
@@ -221,21 +277,48 @@ def main() -> None:
     annotations: list[dict[str, Any]] = []
     categories: list[dict[str, Any]] = []
     category_map: dict[str, int] = {}
+    seed_categories(prompts, category_map, categories)
     next_annotation_id = 1
 
-    for image_id, image_path in enumerate(image_paths, start=1):
-        payload = post_image(args, headers, data, image_path)
-        image_info, image_annotations = response_to_coco(
-            payload,
-            image_path,
-            image_id=image_id,
-            category_map=category_map,
-            categories=categories,
-            annotation_start_id=next_annotation_id,
-        )
-        images.append(image_info)
-        annotations.extend(image_annotations)
-        next_annotation_id += len(image_annotations)
+    try:
+        for image_id, image_path in enumerate(image_paths, start=1):
+            width, height = image_size(image_path)
+            if width < args.min_image_size or height < args.min_image_size:
+                payload = _error_payload(
+                    "image_too_small",
+                    f"Image is too small for SAM3 inference: {image_path.name} ({width}x{height}), minimum is {args.min_image_size}x{args.min_image_size}.",
+                    args,
+                )
+                payload["image"] = {"path": str(image_path), "width": width, "height": height}
+                _print_error(payload)
+                return 2
+            payload = post_image(args, headers, data, image_path)
+            image_info, image_annotations = response_to_coco(
+                payload,
+                image_path,
+                image_id=image_id,
+                category_map=category_map,
+                categories=categories,
+                annotation_start_id=next_annotation_id,
+            )
+            images.append(image_info)
+            annotations.extend(image_annotations)
+            next_annotation_id += len(image_annotations)
+    except requests.exceptions.ConnectTimeout as exc:
+        _print_error(_error_payload("sam3_connect_timeout", str(exc), args))
+        return 2
+    except requests.exceptions.ReadTimeout as exc:
+        _print_error(_error_payload("sam3_read_timeout", str(exc), args))
+        return 2
+    except requests.exceptions.ConnectionError as exc:
+        _print_error(_error_payload("sam3_connection_error", str(exc), args))
+        return 2
+    except requests.exceptions.HTTPError as exc:
+        _print_error(_http_error_payload(exc, args))
+        return 2
+    except requests.exceptions.RequestException as exc:
+        _print_error(_error_payload("sam3_request_error", str(exc), args))
+        return 2
 
     coco = {
         "images": images,
@@ -249,7 +332,8 @@ def main() -> None:
         save_json(Path(args.output), coco)
     else:
         print(json.dumps(coco, ensure_ascii=False, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

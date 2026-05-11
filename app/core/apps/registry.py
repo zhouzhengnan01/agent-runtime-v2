@@ -33,16 +33,23 @@ class AppTemplateRegistry:
     def _read_templates(self) -> builtins.list[AppTemplate]:
         if not self.config_dir.is_dir():
             return []
-        templates: builtins.list[AppTemplate] = []
-        for path in sorted(self.config_dir.glob("*.json")):
+        templates_by_name: dict[str, AppTemplate] = {}
+        collection_path = self.config_dir / "templates.json"
+        if collection_path.is_file():
             try:
-                if path.name == "templates.json":
-                    templates.extend(self._load_template_collection(path))
-                else:
-                    templates.append(self._load_template(path))
+                for template in self._load_template_collection(collection_path):
+                    templates_by_name[template.name] = template
             except (ValueError, TypeError, json.JSONDecodeError):
+                pass
+        for path in sorted(self.config_dir.glob("*.json")):
+            if path.name.startswith(".") or path.name == "templates.json":
                 continue
-        return templates
+            try:
+                template = self._load_template(path)
+            except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            templates_by_name[template.name] = template
+        return list(templates_by_name.values())
 
     @staticmethod
     def _load_template(path: Path) -> AppTemplate:

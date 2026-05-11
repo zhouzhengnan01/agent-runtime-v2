@@ -330,6 +330,56 @@ def test_agent_loop_exposes_runtime_selected_skill_not_declared_on_agent(
     assert tools_event.data["tools"] == ["data-auto-annotation"]
 
 
+def test_agent_loop_runtime_selected_skill_hides_other_agent_skills(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="只暴露本轮选中的 Skill。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="selected-skill-filter-agent",
+        display_name="Selected Skill Filter Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["artifact_list"],
+        skills=["behavior-detection", "data-auto-annotation"],
+        workflows={"default": "agent_loop"},
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=artifact_store))
+    recorder = EventRecorder(agent=agent.name, thread_id="selected-skill-filter")
+
+    asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="把上传图片自动标注成 COCO")],
+            thread_id="selected-skill-filter",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="selected-skill-filter",
+                selected_skills=["data-auto-annotation"],
+            ),
+        )
+    )
+
+    assert "data-auto-annotation" in seen_tools
+    assert "artifact_list" in seen_tools
+    assert "behavior-detection" not in seen_tools
+    tools_event = next(event for event in recorder.events if event.type == "tools.available")
+    assert "data-auto-annotation" in tools_event.data["tools"]
+    assert "behavior-detection" not in tools_event.data["tools"]
+
+
 def test_agent_loop_exposes_runtime_selected_mcp_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -515,6 +565,98 @@ def test_agent_loop_runtime_selected_mcp_tools_respect_registered_tool_safety(
     assert seen_tools == ["local_write_file"]
     tools_event = next(event for event in events if event.type == "tools.available")
     assert tools_event.data["tools"] == ["local_write_file"]
+
+
+def test_agent_loop_modes_control_tool_exposure(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    seen_tools_by_call: list[list[str]] = []
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Message],
+    ) -> str:
+        del self, system_prompt, messages
+        return "只规划，不执行。"
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools_by_call.append([tool["function"]["name"] for tool in tools])
+        return LlmChatResponse(content="ok", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="mode-agent",
+        display_name="Mode Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    plan_result, plan_events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="plan")],
+                runtime_options=RuntimeOptions(
+                    thread_id="plan-mode",
+                    mode="plan",
+                    selected_mcp_tools=["local_write_file"],
+                ),
+            ),
+        )
+    )
+    safe_result, safe_events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="safe")],
+                runtime_options=RuntimeOptions(
+                    thread_id="safe-mode",
+                    mode="safe",
+                    selected_mcp_tools=["local_read_file", "local_write_file"],
+                ),
+            ),
+        )
+    )
+
+    assert plan_result.metadata["mode"] == "plan"
+    assert next(event for event in plan_events if event.type == "tools.available").data["tools"] == []
+    assert safe_result.metadata["mode"] == "safe"
+    assert seen_tools_by_call == [["local_read_file"]]
+    assert next(event for event in safe_events if event.type == "tools.available").data["tools"] == ["local_read_file"]
+
+
+def test_agent_loop_allows_request_scoped_tool_round_override() -> None:
+    agent = AgentConfig(
+        name="round-agent",
+        display_name="Round Agent",
+        runtime=RuntimeConfig(max_tool_rounds=6),
+    )
+
+    assert ToolCallingAgentLoop._max_tool_rounds(agent, RuntimeOptions()) == 6
+    assert ToolCallingAgentLoop._max_tool_rounds(
+        agent,
+        RuntimeOptions(config_options={"max_tool_rounds": 14}),
+    ) == 14
+    assert ToolCallingAgentLoop._max_tool_rounds(
+        agent,
+        RuntimeOptions(mode="autonomous", config_options={"max_tool_rounds": 14}),
+    ) == 16
+    assert ToolCallingAgentLoop._max_tool_rounds(
+        agent,
+        RuntimeOptions(mode="safe", config_options={"max_tool_rounds": 14}),
+    ) == 2
+    assert ToolCallingAgentLoop._max_tool_rounds(
+        agent,
+        RuntimeOptions(config_options={"max_tool_rounds": 100}),
+    ) == 32
 
 
 def test_agent_loop_truncates_large_tool_results_before_returning_to_model(

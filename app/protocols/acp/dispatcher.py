@@ -47,6 +47,22 @@ class AcpDispatcher:
             return self.adapter.set_session_model(sessions, session_id, model_name)
         if normalized in {"session/set_config_option", "set_config_option"}:
             return self.adapter.set_config_option(sessions, params)
+        if normalized in {"session/request_permission", "request_permission"}:
+            return await self.adapter.request_permission(sessions, params, send_update)
+        if normalized in {"fs/read_text_file", "read_text_file"}:
+            return self.adapter.read_text_file(sessions, params)
+        if normalized in {"fs/write_text_file", "write_text_file"}:
+            return self.adapter.write_text_file(sessions, params)
+        if normalized in {"terminal/create", "create_terminal"}:
+            return await self.adapter.create_terminal(sessions, params)
+        if normalized in {"terminal/output", "terminal_output"}:
+            return self.adapter.terminal_output(sessions, params)
+        if normalized in {"terminal/wait_for_exit", "wait_for_terminal_exit"}:
+            return await self.adapter.wait_for_terminal_exit(sessions, params)
+        if normalized in {"terminal/kill", "kill_terminal"}:
+            return await self.adapter.kill_terminal(sessions, params)
+        if normalized in {"terminal/release", "release_terminal"}:
+            return await self.adapter.release_terminal(sessions, params)
         if normalized == "authenticate":
             return self.adapter.authenticate(params)
         if normalized in {"list_agents", "jetlinks/list_agents", "jetlinks/agents/list"}:

@@ -1,0 +1,187 @@
+from __future__ import annotations
+
+from typing import Any
+
+from app.schemas import AgentRunResult, Attachment, ChatRequest
+
+
+_DEFAULT_ACCEPT_BY_TYPE = {
+    "file": "*/*",
+    "image": "image/*",
+    "video": "video/*",
+    "audio": "audio/*",
+    "dataset": ".zip,.tar,.tar.gz,.csv,.json,.jsonl,.parquet,.yaml,.yml",
+    "model": ".onnx,.pt,.pth,.bin,.safetensors,.gguf,.pkl,.joblib",
+    "model_config": ".json,.yaml,.yml,.toml",
+    "text": "text/plain",
+    "json": "application/json",
+    "number": "number",
+    "boolean": "boolean",
+    "secret": "password",
+}
+_KNOWN_TYPES = set(_DEFAULT_ACCEPT_BY_TYPE)
+
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".mpeg", ".mpg"}
+_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}
+_DATASET_EXTENSIONS = {".zip", ".tar", ".gz", ".csv", ".json", ".jsonl", ".parquet", ".yaml", ".yml"}
+_MODEL_EXTENSIONS = {".onnx", ".pt", ".pth", ".bin", ".safetensors", ".gguf", ".pkl", ".joblib"}
+_MODEL_CONFIG_EXTENSIONS = {".json", ".yaml", ".yml", ".toml"}
+
+
+def required_inputs_for_result(result: AgentRunResult, request: ChatRequest) -> list[dict[str, Any]]:
+    explicit = _explicit_required_inputs(result.metadata)
+    if explicit:
+        return explicit
+    inferred = _infer_required_inputs(result, request)
+    if inferred:
+        return inferred
+    if result.metadata.get("requires_input") is True:
+        return [_requirement("file", reason="The agent requires additional user input.")]
+    return []
+
+
+def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
+    selected_skills = {name.strip() for name in request.runtime_options.selected_skills if name.strip()}
+    if "data-auto-annotation" in selected_skills and not _has_attachment(request.attachments, "image"):
+        return [_requirement("image", reason="Data auto annotation requires an uploaded image.")]
+    return []
+
+
+def _explicit_required_inputs(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_inputs = metadata.get("required_inputs")
+    if not isinstance(raw_inputs, list):
+        return []
+    normalized = [_normalize_requirement(item) for item in raw_inputs]
+    return [item for item in normalized if item is not None]
+
+
+def _normalize_requirement(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    raw_type = value.get("type")
+    input_type = raw_type if isinstance(raw_type, str) and raw_type in _KNOWN_TYPES else "file"
+    requirement = {key: item for key, item in value.items() if item is not None}
+    requirement["type"] = input_type
+    requirement.setdefault("accept", _DEFAULT_ACCEPT_BY_TYPE[input_type])
+    requirement.setdefault("required", True)
+    return requirement
+
+
+def _infer_required_inputs(result: AgentRunResult, request: ChatRequest) -> list[dict[str, Any]]:
+    reply_text = result.reply.lower()
+    if not _looks_like_input_request(reply_text):
+        return []
+
+    requirements: list[dict[str, Any]] = []
+    if _mentions_any(reply_text, ("图片", "图像", "照片", "截图", "image", "photo", "picture")) and not _has_attachment(
+        request.attachments, "image"
+    ):
+        requirements.append(_requirement("image", reason="The agent requires an uploaded image."))
+    if _mentions_any(reply_text, ("视频", "video")) and not _has_attachment(request.attachments, "video"):
+        requirements.append(_requirement("video", reason="The agent requires an uploaded video."))
+    if _mentions_any(reply_text, ("音频", "语音", "audio")) and not _has_attachment(request.attachments, "audio"):
+        requirements.append(_requirement("audio", reason="The agent requires an uploaded audio file."))
+    if _mentions_any(reply_text, ("数据集", "dataset", "coco json", "coco-json")) and not _has_attachment(
+        request.attachments, "dataset"
+    ):
+        requirements.append(_requirement("dataset", reason="The agent requires an uploaded dataset."))
+    if _mentions_any(reply_text, ("模型配置", "model config", "model_config")) and not _has_attachment(
+        request.attachments, "model_config"
+    ):
+        requirements.append(_requirement("model_config", reason="The agent requires a model configuration file."))
+    if (
+        _mentions_any(reply_text, ("模型文件", "权重", "model weights", "model file", "checkpoint"))
+        and not _has_attachment(request.attachments, "model")
+    ):
+        requirements.append(_requirement("model", reason="The agent requires an uploaded model file."))
+    if requirements:
+        return requirements
+    if _looks_like_generic_file_request(reply_text) and not request.attachments:
+        return [_requirement("file", reason="The agent requires an uploaded file.")]
+    return []
+
+
+def _requirement(input_type: str, *, reason: str) -> dict[str, Any]:
+    return {
+        "type": input_type,
+        "accept": _DEFAULT_ACCEPT_BY_TYPE[input_type],
+        "required": True,
+        "reason": reason,
+    }
+
+
+def _looks_like_input_request(text: str) -> bool:
+    return _mentions_any(
+        text,
+        (
+            "待上传",
+            "请上传",
+            "重新上传",
+            "没有检测到",
+            "没有收到",
+            "没有附件",
+            "缺少",
+            "需要提供",
+            "需要上传",
+            "requires",
+            "required",
+            "missing",
+        ),
+    )
+
+
+def _looks_like_generic_file_request(text: str) -> bool:
+    return _mentions_any(
+        text,
+        (
+            "请上传文件",
+            "请重新上传文件",
+            "需要上传文件",
+            "需要提供文件",
+            "没有收到文件",
+            "没有检测到文件",
+            "没有附件",
+            "缺少文件",
+            "upload a file",
+            "upload the file",
+            "please upload",
+            "requires an uploaded file",
+            "requires a file",
+            "file is required",
+            "attachment is required",
+            "missing file",
+            "missing attachment",
+        ),
+    )
+
+
+def _mentions_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def _has_attachment(attachments: list[Attachment], input_type: str) -> bool:
+    return any(_attachment_matches(attachment, input_type) for attachment in attachments)
+
+
+def _attachment_matches(attachment: Attachment, input_type: str) -> bool:
+    mime_type = (attachment.mime_type or "").lower()
+    name = attachment.name.lower()
+    metadata_type = str(attachment.metadata.get("acp_type") or attachment.metadata.get("type") or "").lower()
+    if input_type == "image":
+        return metadata_type == "image" or mime_type.startswith("image/") or _has_extension(name, _IMAGE_EXTENSIONS)
+    if input_type == "video":
+        return metadata_type == "video" or mime_type.startswith("video/") or _has_extension(name, _VIDEO_EXTENSIONS)
+    if input_type == "audio":
+        return metadata_type == "audio" or mime_type.startswith("audio/") or _has_extension(name, _AUDIO_EXTENSIONS)
+    if input_type == "dataset":
+        return metadata_type == "dataset" or _has_extension(name, _DATASET_EXTENSIONS)
+    if input_type == "model":
+        return metadata_type == "model" or _has_extension(name, _MODEL_EXTENSIONS)
+    if input_type == "model_config":
+        return metadata_type == "model_config" or ("config" in name and _has_extension(name, _MODEL_CONFIG_EXTENSIONS))
+    return bool(attachment.path or attachment.data_base64)
+
+
+def _has_extension(name: str, extensions: set[str]) -> bool:
+    return any(name.endswith(extension) for extension in extensions)

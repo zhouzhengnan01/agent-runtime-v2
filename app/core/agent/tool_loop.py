@@ -128,12 +128,13 @@ class ToolCallingAgentLoop:
                 last_context_event=last_context_event,
                 emit_message_delta=emit_message_delta,
                 run_id=recorder.run_id,
+                mode=self._runtime_mode(runtime_options),
             )
 
         rounds = 0
         tool_call_count = 0
         final_response = LlmChatResponse()
-        max_rounds = max(1, agent_config.runtime.max_tool_rounds)
+        max_rounds = self._max_tool_rounds(agent_config, runtime_options)
         for round_index in range(max_rounds):
             rounds = round_index + 1
             compaction = self._compact_context(agent_config, conversation)
@@ -188,6 +189,7 @@ class ToolCallingAgentLoop:
                     last_context_event=last_context_event,
                     emit_message_delta=emit_message_delta,
                     run_id=recorder.run_id,
+                    mode=self._runtime_mode(runtime_options),
                 )
 
             recorder.emit(
@@ -236,6 +238,7 @@ class ToolCallingAgentLoop:
             last_context_event=last_context_event,
             emit_message_delta=emit_message_delta,
             run_id=recorder.run_id,
+            mode=self._runtime_mode(runtime_options),
         )
 
     @staticmethod
@@ -269,6 +272,9 @@ class ToolCallingAgentLoop:
         agent_config: AgentConfig,
         runtime_options: RuntimeOptions | None = None,
     ) -> list[dict[str, Any]]:
+        mode = self._runtime_mode(runtime_options)
+        if mode == "plan":
+            return []
         allowed_names = self._allowed_tool_names(agent_config)
         selected_skill_names = self._selected_skill_names(runtime_options)
         selected_mcp_tool_names = self._selected_mcp_tool_names(runtime_options)
@@ -285,11 +291,26 @@ class ToolCallingAgentLoop:
         definitions = [
             tool
             for tool in definitions
-            if tool.name in allowed_names
-            or (tool.name in selected_skill_names and tool.source.get("type") == "skill")
-            or (tool.name in selected_mcp_tool_names and self._runtime_selectable_mcp_tool(tool))
+            if self._tool_selected_for_run(tool, allowed_names, selected_skill_names, selected_mcp_tool_names)
         ]
+        definitions = [tool for tool in definitions if self._tool_allowed_in_mode(tool, mode)]
         return [self._openai_tool(tool) for tool in definitions]
+
+    @staticmethod
+    def _tool_selected_for_run(
+        tool: ToolDefinition,
+        allowed_names: set[str],
+        selected_skill_names: set[str],
+        selected_mcp_tool_names: set[str],
+    ) -> bool:
+        if tool.source.get("type") == "skill":
+            if selected_skill_names:
+                return tool.name in selected_skill_names
+            return tool.name in allowed_names
+        return (
+            tool.name in allowed_names
+            or (tool.name in selected_mcp_tool_names and ToolCallingAgentLoop._runtime_selectable_mcp_tool(tool))
+        )
 
     @staticmethod
     def _allowed_tool_names(agent_config: AgentConfig) -> set[str]:
@@ -318,6 +339,52 @@ class ToolCallingAgentLoop:
             "delegate",
             "skill",
         }
+
+    @staticmethod
+    def _runtime_mode(runtime_options: RuntimeOptions | None) -> str:
+        if runtime_options is None or runtime_options.mode is None:
+            return "edit"
+        return runtime_options.mode
+
+    @staticmethod
+    def _max_tool_rounds(agent_config: AgentConfig, runtime_options: RuntimeOptions | None) -> int:
+        base = ToolCallingAgentLoop._base_tool_rounds(agent_config, runtime_options)
+        mode = ToolCallingAgentLoop._runtime_mode(runtime_options)
+        if mode == "plan":
+            return 1
+        if mode == "safe":
+            return min(base, 2)
+        if mode == "autonomous":
+            return max(base, min(base * 2, 16))
+        return base
+
+    @staticmethod
+    def _base_tool_rounds(agent_config: AgentConfig, runtime_options: RuntimeOptions | None) -> int:
+        configured = max(1, agent_config.runtime.max_tool_rounds)
+        if runtime_options is None:
+            return configured
+        raw_value = runtime_options.config_options.get("max_tool_rounds")
+        try:
+            requested = int(raw_value)
+        except (TypeError, ValueError):
+            return configured
+        return min(max(1, requested), 32)
+
+    @staticmethod
+    def _tool_allowed_in_mode(tool: ToolDefinition, mode: str) -> bool:
+        if mode == "autonomous":
+            return True
+        source_type = tool.source.get("type")
+        operation = tool.source.get("operation")
+        if mode == "safe":
+            if source_type == "skill":
+                return False
+            if source_type == "local" and operation in {"write_file", "shell_command"}:
+                return False
+            return True
+        if mode == "edit":
+            return not (source_type == "local" and operation == "shell_command")
+        return True
 
     @staticmethod
     def _openai_tool(tool: ToolDefinition) -> dict[str, Any]:
@@ -521,6 +588,7 @@ class ToolCallingAgentLoop:
         last_context_event: dict[str, Any] | None = None,
         emit_message_delta: bool = False,
         run_id: str = "",
+        mode: str = "edit",
     ) -> ToolLoopResult:
         final_messages = list(messages)
         if reply and (
@@ -543,6 +611,7 @@ class ToolCallingAgentLoop:
                 **llm_metadata,
                 "tool_rounds": rounds,
                 "tool_call_count": tool_call_count,
+                "mode": mode,
                 "context_compaction_count": context_compactions,
                 "last_context_compaction": last_context_event or {},
             },

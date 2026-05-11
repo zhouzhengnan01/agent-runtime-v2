@@ -1,0 +1,26 @@
+{
+  "name": "algorithm-engineer-full-cycle",
+  "title": "算法工程师全流程",
+  "description": "从业务目标、数据治理、候选算法、GPU benchmark、正式训练、业务评估到上线评审和实验台账的一站式算法迭代入口。",
+  "category": "algorithm",
+  "icon": "package",
+  "agent_name": "default",
+  "workflow": "artifact_workflow",
+  "selected_skills": [
+    "algorithm-engineer",
+    "algorithm-research-scout",
+    "dataset-curator",
+    "model-candidate-selector",
+    "remote-gpu-ops",
+    "gpu-training-orchestrator",
+    "detector-evaluator",
+    "deployment-candidate-reviewer",
+    "experiment-ledger"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "帮我把棕榈果检测算法工程师全流程跑起来：先盘点数据和 baseline，再选择候选算法，安排 AGX/5090 benchmark、正式训练、评估、上线评审和实验台账。",
+    "围绕 /data/palm_fruit_datasets/organized/latest_integrated_dedup 做一轮目标检测算法迭代，生产 baseline 是 YOLO，候选考虑 RT-DETR、DEIM/D-FINE、RF-DETR 和 DAMO-YOLO。"
+  ],
+  "tags": ["算法工程师", "全流程", "训练", "评估", "上线"]
+}

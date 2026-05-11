@@ -1,0 +1,11 @@
+{
+  "id": "algorithm-engineer",
+  "name": "Algorithm Engineer Skill Suite",
+  "version": "0.1.0",
+  "description": "End-to-end computer vision algorithm iteration skills: research, dataset curation, training orchestration, evaluation, deployment review, and experiment ledger.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/*/manifest.json"
+  ]
+}

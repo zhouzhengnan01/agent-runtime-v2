@@ -383,6 +383,72 @@ print(json.dumps({"message": "ok"}, ensure_ascii=False))
     assert (paths.outputs / "result.md").read_text(encoding="utf-8") == "# Python Skill\n"
 
 
+def test_python_script_skill_expands_thread_virtual_paths_in_spec(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugins" / "skills" / "virtual-path-plugin"
+    skill_root = plugin_root / "skills" / "virtual-path-skill"
+    script_root = skill_root / "scripts"
+    script_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "virtual-path-plugin",
+  "name": "Virtual Path Plugin",
+  "version": "1.0.0",
+  "skills": ["skills/*/manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (skill_root / "manifest.json").write_text(
+        """
+{
+  "name": "virtual-path-skill",
+  "description": "Virtual path skill",
+  "output_kind": "markdown",
+  "generation": true,
+  "quality_template": [],
+  "execution": {
+    "type": "python_script",
+    "script": "scripts/run_skill.py"
+  },
+  "input_schema": {"type": "object"},
+  "output_schema": {"type": "object"},
+  "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
+}
+""",
+        encoding="utf-8",
+    )
+    (script_root / "run_skill.py").write_text(
+        """
+import json
+import sys
+from pathlib import Path
+
+payload = json.load(sys.stdin)
+image_path = Path(payload["spec"]["image_path"])
+outputs = Path(payload["outputs_dir"])
+content = image_path.read_text(encoding="utf-8")
+(outputs / "result.md").write_text(str(image_path) + "\\n" + content, encoding="utf-8")
+print(json.dumps({"image_path": str(image_path)}, ensure_ascii=False))
+""",
+        encoding="utf-8",
+    )
+
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("virtual-path-skill")
+    (paths.uploads / "input.txt").write_text("uploaded content", encoding="utf-8")
+    result = SkillRunner(store, root_dir=tmp_path).run(
+        "virtual-path-skill",
+        {"image_path": "/mnt/user-data/uploads/input.txt"},
+        paths,
+    )
+
+    output = (paths.outputs / "result.md").read_text(encoding="utf-8")
+    assert str(paths.uploads / "input.txt") in result.data["image_path"]
+    assert str(paths.uploads / "input.txt") in output
+    assert "uploaded content" in output
+
+
 def test_python_script_manifest_rejects_missing_script_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

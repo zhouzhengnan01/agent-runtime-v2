@@ -127,7 +127,9 @@ class SkillRunner:
         if skill_name == "xmind-generation":
             return self._xmind(spec, paths)
         if skill_name == "behavior-detection":
-            return self._behavior(spec)
+            return self._behavior(spec, paths)
+        if skill_name == "behavior-review":
+            return self._behavior_review(spec, paths)
         raise KeyError(f"Unsupported skill: {skill_name}")
 
     def _drawio(self, spec: dict[str, Any], paths: ThreadPaths) -> SkillRunResult:
@@ -406,7 +408,7 @@ flowchart LR
         )
         return SkillRunResult("xmind-generation", [artifact], {"root_topic": root_topic, "topics": len(topics)})
 
-    def _behavior(self, spec: dict[str, Any]) -> SkillRunResult:
+    def _behavior(self, spec: dict[str, Any], paths: ThreadPaths) -> SkillRunResult:
         has_visual_evidence = bool(spec.get("has_visual_evidence"))
         candidates = [str(item) for item in spec.get("text_rule_candidates", [])] or ["待确认行为类型"]
         if not has_visual_evidence:
@@ -418,7 +420,7 @@ flowchart LR
                 "evidence_mode": "text_only",
                 "reason": "仅收到文本描述，不能输出视觉识别结果，需要上传图片/视频或结构化视觉证据确认。",
             }
-            return SkillRunResult("behavior-detection", [], data)
+            return self._behavior_detection_result(paths, data)
         data = {
             "decision": "critical",
             "category": candidates[0],
@@ -426,7 +428,103 @@ flowchart LR
             "evidence_mode": "visual_or_structured",
             "reason": "已提供视觉或结构化证据，可以进行行为识别判断。",
         }
-        return SkillRunResult("behavior-detection", [], data)
+        return self._behavior_detection_result(paths, data)
+
+    def _behavior_detection_result(self, paths: ThreadPaths, payload: dict[str, Any]) -> SkillRunResult:
+        md_artifact = self.artifact_store.write_text_artifact(paths, "behavior-detection.md", self._behavior_detection_markdown(payload))
+        json_artifact = self.artifact_store.write_text_artifact(
+            paths,
+            "behavior-detection.json",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+        return SkillRunResult("behavior-detection", [md_artifact, json_artifact], payload)
+
+    @staticmethod
+    def _behavior_detection_markdown(payload: dict[str, Any]) -> str:
+        return "\n".join(
+            [
+                "# 行为识别报告",
+                "",
+                "## 结论",
+                "",
+                f"- 决策：{payload.get('decision')}",
+                f"- 类别：{payload.get('category')}",
+                f"- 置信度：{payload.get('confidence')}",
+                f"- 证据模式：{payload.get('evidence_mode')}",
+                "",
+                "## 说明",
+                "",
+                str(payload.get("reason") or ""),
+                "",
+            ]
+        )
+
+    def _behavior_review(self, spec: dict[str, Any], paths: ThreadPaths) -> SkillRunResult:
+        has_visual_evidence = bool(spec.get("has_visual_evidence"))
+        candidates = [str(item) for item in spec.get("text_rule_candidates", [])] or ["待确认行为类型"]
+        event_id = str(spec.get("event_id") or "待生成")
+        original_decision = str(spec.get("original_decision") or ("critical" if has_visual_evidence else "needs_visual_confirmation"))
+        payload = {
+            "event_id": event_id,
+            "category": candidates[0],
+            "original_decision": original_decision,
+            "review_decision": "confirm_incident" if has_visual_evidence else "need_more_evidence",
+            "risk_level": "high" if has_visual_evidence else "pending",
+            "evidence_mode": "visual_or_structured" if has_visual_evidence else "text_only",
+            "confidence": 0.86 if has_visual_evidence else 0.0,
+            "text_rule_confidence": 0.72,
+            "evidence_gaps": [] if has_visual_evidence else ["缺少图片、视频或结构化视觉证据", "不能仅凭文本规则输出视觉置信度"],
+            "actions": (
+                ["生成告警工单", "保留证据截图/视频片段", "通知值班人员复核", "记录处置闭环"]
+                if has_visual_evidence
+                else ["请求上传图片/视频/结构化检测结果", "保留文本规则命中记录", "暂不升级为视觉确认事件"]
+            ),
+            "manual_review_required": not has_visual_evidence,
+            "reason": "复判遵循证据优先原则：有视觉证据才确认事件，缺证据时只给文本规则命中和补证建议。",
+        }
+        md_artifact = self.artifact_store.write_text_artifact(paths, "behavior-review.md", self._behavior_review_markdown(payload))
+        json_artifact = self.artifact_store.write_text_artifact(
+            paths,
+            "behavior-review.json",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+        return SkillRunResult("behavior-review", [md_artifact, json_artifact], payload)
+
+    @staticmethod
+    def _behavior_review_markdown(payload: dict[str, Any]) -> str:
+        lines = [
+            "# 行为识别复判报告",
+            "",
+            "## 结论",
+            "",
+            f"- 事件ID: {payload['event_id']}",
+            f"- 行为类型: {payload['category']}",
+            f"- 原始判断: {payload['original_decision']}",
+            f"- 复判结论: {payload['review_decision']}",
+            f"- 风险等级: {payload['risk_level']}",
+            f"- 证据模式: {payload['evidence_mode']}",
+            f"- 视觉置信度: {payload['confidence']}",
+            f"- 文本规则置信度: {payload['text_rule_confidence']}",
+            "",
+            "## 证据缺口",
+            "",
+        ]
+        for item in payload["evidence_gaps"] or ["暂无缺口"]:
+            lines.append(f"- {item}")
+        lines.extend(["", "## 处置建议", ""])
+        for item in payload["actions"]:
+            lines.append(f"- {item}")
+        lines.extend(
+            [
+                "",
+                "## 复判规则",
+                "",
+                "- 没有图片、视频或结构化视觉证据时，不输出视觉确认结论。",
+                "- 文本规则命中只能作为疑似告警，不能替代视觉证据。",
+                "- 高风险事件需要保留证据、处理动作和复判人/复判系统记录。",
+            ]
+        )
+        return "\n".join(lines) + "\n"
 
     @staticmethod
     def _string_pairs(value: object) -> list[list[str]]:

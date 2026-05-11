@@ -33,6 +33,7 @@ class AgentConfigLoader:
         local_path = self.config_dir / f"{safe_name}.local.json"
         if local_path.is_file():
             local_data = json.loads(local_path.read_text(encoding="utf-8"))
+            local_data = self._encrypt_plain_local_model_secrets(safe_name, local_path, local_data)
             data = self._deep_merge(data, local_data)
         data = self._decrypt_model_secrets(safe_name, data)
         return AgentConfig.model_validate(data)
@@ -71,6 +72,38 @@ class AgentConfigLoader:
         merged_model["api_key"] = decrypted
         merged["model"] = merged_model
         return merged
+
+    def _encrypt_plain_local_model_secrets(
+        self,
+        agent_name: str,
+        local_path: Path,
+        local_data: Any,
+    ) -> dict[str, Any]:
+        if not isinstance(local_data, dict):
+            return {}
+        model = local_data.get("model")
+        if not isinstance(model, dict):
+            return local_data
+        api_key = model.get("api_key")
+        if not isinstance(api_key, str) or not api_key.strip():
+            return local_data
+
+        encrypted = self.secret_codec.encrypt(api_key, purpose=self._secret_purpose(agent_name, "api_key"))
+        sanitized_model = dict(model)
+        sanitized_model.pop("api_key", None)
+        sanitized_model["api_key_enc"] = encrypted
+        sanitized_data = dict(local_data)
+        sanitized_data["model"] = sanitized_model
+        local_path.write_text(json.dumps(sanitized_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        local_path.chmod(0o600)
+
+        # Keep the plaintext only in memory for the current load. Future loads
+        # will decrypt api_key_enc from disk.
+        runtime_model = dict(sanitized_model)
+        runtime_model["api_key"] = api_key
+        runtime_data = dict(sanitized_data)
+        runtime_data["model"] = runtime_model
+        return runtime_data
 
     @staticmethod
     def _secret_purpose(agent_name: str, field_name: str) -> str:
