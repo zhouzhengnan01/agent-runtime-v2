@@ -3,6 +3,7 @@ import json
 
 from tools.app_smoke_matrix import (
     auth_headers,
+    continuation_spec,
     continuation_runtime_options,
     config_app_names,
     expected_artifact_patterns,
@@ -16,6 +17,7 @@ from tools.app_smoke_matrix import (
     render_markdown_report,
     runtime_options,
     should_check_continuation,
+    smoke_template,
     template_expects_artifacts,
     unexpected_skill_artifacts,
     validate_artifact_content,
@@ -45,6 +47,7 @@ def test_smoke_matrix_attaches_image_only_for_image_required_skills() -> None:
 def test_smoke_matrix_behavior_detection_can_pass_without_artifacts() -> None:
     assert template_expects_artifacts({"workflow": "evidence_first_detection", "selected_skills": ["behavior-detection"]}) is False
     assert template_expects_artifacts({"workflow": "evidence_first_detection", "selected_skills": ["behavior-review"]}) is True
+    assert expected_artifact_patterns({"workflow": "evidence_first_detection", "selected_skills": ["behavior-detection"]}) == []
 
 
 def test_smoke_matrix_expected_artifact_patterns_cover_known_skills() -> None:
@@ -55,6 +58,7 @@ def test_smoke_matrix_expected_artifact_patterns_cover_known_skills() -> None:
             "drawio-generation",
             "pptx-generation",
             "dataset-curator",
+            "cpu-training-runner",
         ]
     }
 
@@ -67,6 +71,11 @@ def test_smoke_matrix_expected_artifact_patterns_cover_known_skills() -> None:
         "*.pptx",
         "dataset-curator.md",
         "dataset-curator.json",
+        "training-summary.md",
+        "weights/best.pt",
+        "weights/last.pt",
+        "results.csv",
+        "args.yaml",
     ]
 
 
@@ -78,10 +87,27 @@ def test_smoke_matrix_reports_missing_expected_artifacts() -> None:
 
 def test_smoke_matrix_reports_unexpected_skill_artifacts() -> None:
     template = {"selected_skills": ["data-auto-annotation"]}
-    names = ["annotations.coco.json", "behavior-review.md", "behavior-review.json"]
+    names = [
+        "annotations.coco.json",
+        "data-auto-annotation-stderr.txt",
+        "behavior-review.md",
+        "behavior-review.json",
+        "deck.pptx",
+    ]
 
-    assert unexpected_skill_artifacts(template, names) == ["behavior-review.md", "behavior-review.json"]
-    assert unexpected_skill_artifacts({"selected_skills": ["behavior-review"]}, names) == ["annotations.coco.json"]
+    assert unexpected_skill_artifacts(template, names) == ["behavior-review.md", "behavior-review.json", "deck.pptx"]
+    assert unexpected_skill_artifacts({"selected_skills": ["behavior-review"]}, names) == [
+        "annotations.coco.json",
+        "data-auto-annotation-stderr.txt",
+        "deck.pptx",
+    ]
+    assert unexpected_skill_artifacts({"selected_skills": ["pptx-generation"]}, ["deck.pptx"]) == []
+    assert unexpected_skill_artifacts({"selected_skills": ["markdown-rendering"]}, ["result.md"]) == []
+    assert unexpected_skill_artifacts({"selected_skills": []}, ["deck.pptx", "device-template.xlsx", "mindmap.xmind"]) == [
+        "deck.pptx",
+        "device-template.xlsx",
+        "mindmap.xmind",
+    ]
 
 
 def test_smoke_matrix_runtime_options_force_autonomous_mode() -> None:
@@ -129,12 +155,28 @@ def test_smoke_matrix_continuation_options_reuse_thread_outputs_without_workflow
     ]
 
 
+def test_smoke_matrix_continuation_specs_cover_image_and_markdown_apps() -> None:
+    image_spec = continuation_spec({"selected_skills": ["data-auto-annotation"]})
+    markdown_spec = continuation_spec({"selected_skills": ["markdown-rendering"]})
+
+    assert should_check_continuation({"selected_skills": ["data-auto-annotation"]}) is True
+    assert image_spec is not None
+    assert image_spec["expected_name"] == "coco-summary.md"
+    assert "annotations.coco.json" in image_spec["prompt"]
+    assert should_check_continuation({"selected_skills": ["markdown-rendering"]}) is True
+    assert markdown_spec is not None
+    assert markdown_spec["expected_name"] == "continuation-summary.md"
+    assert "result.md" in markdown_spec["prompt"]
+    assert should_check_continuation({"selected_skills": ["pptx-generation"]}) is False
+
+
 def test_smoke_matrix_renders_human_readable_markdown_report() -> None:
     report = render_markdown_report(
         {"total": 1, "ok": 1, "failed": []},
         [
             {
                 "name": "data-auto-annotation",
+                "agent_name": "default",
                 "ok": True,
                 "artifact_count": 2,
                 "missing_expected_artifact_patterns": [],
@@ -148,7 +190,7 @@ def test_smoke_matrix_renders_human_readable_markdown_report() -> None:
     assert "# JetLinks App Smoke Matrix" in report
     assert "- Total templates: 1" in report
     assert "- base_url: `http://runtime`" in report
-    assert "| data-auto-annotation | yes | 2 | - | ok | `thread-1` |" in report
+    assert "| data-auto-annotation | default | yes | 2 | - | ok | `thread-1` |" in report
 
 
 def test_smoke_matrix_report_explains_retry_instability_failure() -> None:
@@ -201,6 +243,7 @@ def test_smoke_matrix_validates_known_artifact_content_formats() -> None:
 def test_smoke_matrix_retries_only_transient_failures() -> None:
     assert is_retryable_failure({"error": "TimeoutError('timed out')"}) is True
     assert is_retryable_failure({"error": "ConnectionRefusedError('down')"}) is True
+    assert is_retryable_failure({"artifact_content_errors": ["remote-gpu-ops.md: unable to read artifact (TimeoutError('timed out'))"]}) is True
     assert is_retryable_failure({"artifact_content_errors": ["invalid JSON"]}) is False
     assert is_retryable_failure({"error": ""}) is False
 
@@ -278,6 +321,82 @@ def test_smoke_matrix_http_helpers_send_bearer_token(monkeypatch) -> None:
     assert seen[1]["headers"]["Authorization"] == "Bearer secret"
     assert seen[1]["headers"]["Content-type"] == "application/json"
     assert json.loads(seen[1]["data"].decode("utf-8")) == {"hello": "world"}
+
+
+def test_smoke_matrix_uses_template_agent_name_for_runs(monkeypatch, tmp_path) -> None:
+    from tools import app_smoke_matrix
+
+    seen: list[dict[str, object]] = []
+
+    def fake_post_json(base_url, path, payload, timeout, token=""):
+        seen.append({"kind": "post", "base_url": base_url, "path": path, "payload": payload, "timeout": timeout, "token": token})
+        return {"status": "completed", "reply": "ok", "metadata": {}}
+
+    def fake_get_json(base_url, path, timeout, token=""):
+        seen.append({"kind": "get", "base_url": base_url, "path": path, "timeout": timeout, "token": token})
+        return {"artifacts": []}
+
+    monkeypatch.setattr(app_smoke_matrix, "post_json", fake_post_json)
+    monkeypatch.setattr(app_smoke_matrix, "get_json", fake_get_json)
+
+    entry = smoke_template(
+        base_url="http://runtime",
+        template={
+            "name": "custom-agent-app",
+            "agent_name": "custom-agent",
+            "prompt_examples": ["hello"],
+            "selected_skills": [],
+            "selected_mcp_tools": [],
+        },
+        image_path=tmp_path / "image.jpg",
+        timeout=9,
+        max_tool_rounds=12,
+        check_continuation=False,
+        token="secret",
+    )
+
+    assert entry["agent_name"] == "custom-agent"
+    assert seen[0]["path"] == "/api/agents/custom-agent/runs"
+
+
+def test_smoke_matrix_fails_when_uploaded_input_is_still_required(monkeypatch, tmp_path) -> None:
+    from tools import app_smoke_matrix
+
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"\xff\xd8\xff\xd9")
+
+    def fake_upload_image(base_url, thread_id, path, timeout, token=""):
+        return {"name": "image.jpg", "path": "/mnt/user-data/uploads/image.jpg", "mime_type": "image/jpeg", "size": 4}
+
+    def fake_post_json(base_url, path, payload, timeout, token=""):
+        return {"status": "completed", "reply": "请上传图片后继续。", "metadata": {"requires_input": True}}
+
+    def fake_get_json(base_url, path, timeout, token=""):
+        return {"artifacts": []}
+
+    monkeypatch.setattr(app_smoke_matrix, "upload_image", fake_upload_image)
+    monkeypatch.setattr(app_smoke_matrix, "post_json", fake_post_json)
+    monkeypatch.setattr(app_smoke_matrix, "get_json", fake_get_json)
+
+    entry = smoke_template(
+        base_url="http://runtime",
+        template={
+            "name": "data-auto-annotation",
+            "agent_name": "default",
+            "selected_skills": ["data-auto-annotation"],
+            "prompt_examples": ["标注图片"],
+        },
+        image_path=image_path,
+        timeout=9,
+        max_tool_rounds=12,
+        check_continuation=False,
+        token="",
+    )
+
+    assert entry["attached_smoke_image"] is True
+    assert entry["requires_input"] is True
+    assert entry["ok"] is False
+    assert entry["checks"]["input_requirement_satisfied"] is False
 
 
 def test_smoke_matrix_compares_remote_apps_to_config_apps(tmp_path) -> None:

@@ -32,7 +32,12 @@ class SpecBuilder:
         user_text = self._last_user_text(messages)
         context_text = self._user_text_context(messages)
         routing_text = self._routing_text(user_text, context_text)
-        skill_name = self._selected_skill(selected_skill, allowed_skills) or self.plugin_manager.select_skill(
+        skill_name = self._selected_skill(selected_skill, allowed_skills) or self._followup_generation_skill(
+            user_text,
+            self._prior_user_text_context(messages),
+            attachments,
+            allowed_skills,
+        ) or self.plugin_manager.select_skill(
             routing_text,
             attachments,
             allowed_skills,
@@ -62,7 +67,7 @@ class SpecBuilder:
             skill = self.skill_registry.get(skill_name)
         except KeyError:
             return None
-        return skill.name if skill.runner_path is not None else None
+        return skill.name if skill.executable else None
 
     @staticmethod
     def _last_user_text(messages: list[Message]) -> str:
@@ -75,6 +80,35 @@ class SpecBuilder:
     def _user_text_context(messages: list[Message]) -> str:
         parts = [message.content.strip() for message in messages if message.role == "user" and message.content.strip()]
         return "\n".join(parts)
+
+    @staticmethod
+    def _prior_user_text_context(messages: list[Message]) -> str:
+        user_parts = [message.content.strip() for message in messages if message.role == "user" and message.content.strip()]
+        return "\n".join(user_parts[:-1])
+
+    def _followup_generation_skill(
+        self,
+        user_text: str,
+        prior_context_text: str,
+        attachments: list[Attachment],
+        allowed_skills: list[str],
+    ) -> str | None:
+        if not prior_context_text:
+            return None
+        if not (self._is_contextual_format_followup(user_text) or self._is_artifact_refinement_followup(user_text)):
+            return None
+        skill_name, score = self.plugin_manager.select_skill_candidate(
+            prior_context_text,
+            attachments,
+            allowed_skills,
+        )
+        if not skill_name or score <= 0:
+            return None
+        try:
+            skill = self.skill_registry.get(skill_name)
+        except KeyError:
+            return None
+        return skill.name if skill.generation else None
 
     @classmethod
     def _routing_text(cls, user_text: str, context_text: str) -> str:

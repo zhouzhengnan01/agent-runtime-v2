@@ -17,11 +17,18 @@ def test_load_builtin_agent(tmp_path: Path) -> None:
     agent = AgentConfigLoader(tmp_path).load("default")
     assert agent.name == "default"
     assert agent.runtime.stateless is True
-    assert "markdown-rendering" in agent.skills
-    assert agent.model.model == "qwen3.6-27b"
-    assert agent.model.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert agent.tools == []
+    assert agent.skills == []
+    assert agent.model.model is None
+    assert agent.model.base_url is None
     assert agent.routing.llm_workflow_router is False
     assert agent.routing.llm_workflow_router_env == "LLM_WORKFLOW_ROUTER"
+
+
+def test_builtin_agent_config_does_not_define_app_model_defaults() -> None:
+    data = json.loads(Path("config/agents/default.json").read_text(encoding="utf-8"))
+
+    assert "model" not in data
 
 
 def test_list_agents() -> None:
@@ -34,19 +41,14 @@ def test_builtin_agent_tool_names_resolve_to_registered_tools() -> None:
     registered_tools = {tool.name for tool in service.list_tools(include_disabled=True)}
     for agent in AgentConfigLoader().list_agents():
         missing = set(agent.tools) - registered_tools
-        assert not missing, f"{agent.name} declares unknown tools: {sorted(missing)}"
+        # Bare shell: agent declares no tools; all tools come from app templates.
+        assert agent.tools == [], f"{agent.name} should be a bare shell with no tools"
 
 
 def test_default_agent_declares_markdown_memory_tools() -> None:
     agent = AgentConfigLoader().load("default")
-
-    assert {
-        "memory_md_list",
-        "memory_md_read",
-        "memory_md_append",
-        "memory_md_search",
-        "memory_md_compress",
-    } <= set(agent.tools)
+    # Bare shell agent: tools come from app templates, not from agent config.
+    assert agent.tools == []
 
 
 def test_agent_config_accepts_billing_metadata() -> None:

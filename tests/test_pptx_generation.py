@@ -6,6 +6,7 @@ from pathlib import Path
 from pptx import Presentation
 
 from app.core.artifacts import ArtifactStore
+from app.core.skills.runner_types import SkillRunResult
 from app.core.skills.runner import SkillRunner
 from app.core.workflow.verifier import OutputVerifier
 
@@ -58,3 +59,21 @@ def test_pptx_generation_outputs_openable_office_deck(tmp_path: Path) -> None:
 
     verification = OutputVerifier(store).verify({"skill_name": "pptx-generation"}, result)
     assert verification.passed, verification.failed_checks
+
+
+def test_coco_verifier_fails_when_auto_annotation_has_no_detected_objects(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("empty-coco")
+    artifact = store.write_text_artifact(
+        paths,
+        "annotations.coco.json",
+        '{"images":[{"id":1,"file_name":"scene.jpg","width":640,"height":480}],"annotations":[],"categories":[{"id":1,"name":"person"}]}',
+    )
+
+    verification = OutputVerifier(store).verify(
+        {"skill_name": "data-auto-annotation"},
+        SkillRunResult(skill_name="data-auto-annotation", outputs=[artifact]),
+    )
+
+    assert not verification.passed
+    assert "coco_has_detected_objects" in verification.failed_checks

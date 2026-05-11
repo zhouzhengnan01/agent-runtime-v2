@@ -71,6 +71,15 @@ SKILL_KEYWORDS: dict[str, tuple[str, ...]] = {
         "断点恢复",
         "results.csv",
     ),
+    "cpu-training-runner": (
+        "cpu 训练",
+        "CPU 训练",
+        "沙盒训练",
+        "启动沙盒",
+        "best.pt",
+        "device=cpu",
+        "yolo train",
+    ),
     "detector-evaluator": (
         "评估",
         "map50",
@@ -137,6 +146,12 @@ def build_spec(
     spec["domain"] = _domain(user_text or routing_text)
     spec["baseline"] = _baseline(user_text or routing_text)
     spec["dataset_path"] = _extract_path(user_text or routing_text)
+    spec["data_yaml"] = _extract_data_yaml(user_text or routing_text)
+    spec["model"] = _model(user_text or routing_text)
+    spec["epochs"] = _int_after_key(user_text or routing_text, "epochs", default=1)
+    spec["imgsz"] = _int_after_key(user_text or routing_text, "imgsz", default=320)
+    spec["batch"] = _int_after_key(user_text or routing_text, "batch", default=1)
+    spec["mock"] = "mock" in _normalize(user_text or routing_text) or "模拟" in _normalize(user_text or routing_text)
     spec["machines"] = _machines(user_text or routing_text)
     spec["candidate_algorithms"] = _candidate_algorithms(user_text or routing_text)
     spec["business_metrics"] = ["totalAccuracy", "netTotalAccuracy", "absDiffAvg", "per-tree count error"]
@@ -182,8 +197,53 @@ def _baseline(text: str) -> str:
 
 
 def _extract_path(text: str) -> str:
-    match = re.search(r"(/[A-Za-z0-9._/\\-]+)", text)
-    return match.group(1) if match else "/data/palm_fruit_datasets/organized/latest_integrated_dedup"
+    for match in re.finditer(r"(?<![A-Za-z0-9])(/[A-Za-z0-9._/\\-]+)", text):
+        path = match.group(1)
+        if _looks_like_filesystem_path(path):
+            return path
+    return "/data/palm_fruit_datasets/organized/latest_integrated_dedup"
+
+
+def _extract_data_yaml(text: str) -> str:
+    keyed = re.search(r"(?:data_yaml|data)\s*[=:：]\s*([^\s'\"，。；;]+?\.ya?ml)", text, flags=re.IGNORECASE)
+    if keyed:
+        return keyed.group(1)
+    for match in re.finditer(r"(?<![A-Za-z0-9])(/[^\s'\"，。；;]+?\.ya?ml)", text):
+        return match.group(1)
+    return ""
+
+
+def _model(text: str) -> str:
+    normalized = _normalize(text)
+    for item in ("yolo11n.pt", "yolo11s.pt", "yolo11m.pt", "yolov8n.pt", "yolov8s.pt", "rtdetr-l.pt"):
+        if item.lower() in normalized:
+            return item
+    return "yolo11n.pt"
+
+
+def _int_after_key(text: str, key: str, *, default: int) -> int:
+    normalized = _normalize(text)
+    patterns = [
+        rf"{re.escape(key)}\s*[=:：]\s*(\d+)",
+        rf"{re.escape(key)}\s+(\d+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return default
+    return default
+
+
+def _looks_like_filesystem_path(path: str) -> bool:
+    lowered = path.lower()
+    if any(part in lowered for part in ("/data/", "/mnt/", "/home/", "/Users/".lower(), "/workspace/", "/datasets/")):
+        return True
+    if lowered.endswith((".yaml", ".yml", ".json", ".csv", ".txt", ".jpg", ".jpeg", ".png", ".pt")):
+        return True
+    return len(path.split("/")) >= 3
 
 
 def _machines(text: str) -> list[str]:

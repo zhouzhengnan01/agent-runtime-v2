@@ -533,6 +533,40 @@ def test_agent_runtime_preflights_data_auto_annotation_without_image(
     assert completed["metadata"]["required_inputs"][0]["accept"] == "image/*"
 
 
+def test_agent_runtime_preflights_data_auto_annotation_intent_without_selected_skill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        raise AssertionError("LLM should not be called for an image annotation request without an image.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="data-auto-intent-preflight-agent",
+        display_name="Data Auto Intent Preflight Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="请把图片自动标注成 COCO JSON，类别 labels: person car helmet")],
+        runtime_options=RuntimeOptions(thread_id="data-auto-intent-preflight"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.reply == "请先上传图片后继续。"
+    assert result.metadata["requires_input"] is True
+    assert result.metadata["required_inputs"][0]["type"] == "image"
+    assert [event.type for event in events] == ["run.started", "agent.message", "run.completed"]
+
+
 def test_agent_runtime_uses_existing_thread_upload_for_selected_skill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -576,6 +610,53 @@ def test_agent_runtime_uses_existing_thread_upload_for_selected_skill(
     assert "run.completed" in [event.type for event in events]
     assert seen_messages
     assert "/mnt/user-data/uploads/scene.png" in str(seen_messages[-1])
+
+
+def test_agent_runtime_recovers_selected_skill_from_workbench_message_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="已调用自动标注工具。")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("message-selected-skill")
+    (paths.uploads / "scene.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    runtime = AgentRuntime(artifact_store=store)
+    agent = AgentConfig(
+        name="message-selected-skill-agent",
+        display_name="Message Selected Skill Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content=(
+                    "继续处理刚上传的文件。\n\n"
+                    "[Workbench selected capabilities]\n"
+                    "Selected Skills: data-auto-annotation"
+                ),
+            )
+        ],
+        runtime_options=RuntimeOptions(thread_id="message-selected-skill"),
+    )
+
+    result, _events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert "requires_input" not in result.metadata
+    assert "data-auto-annotation" in seen_tools
 
 
 def test_agent_runtime_merges_runtime_selected_skill_into_workflow_allowlist(tmp_path: Path) -> None:
@@ -685,8 +766,11 @@ def test_workflow_router_llm_can_select_from_skill_descriptions(monkeypatch: pyt
         return '{"skill_name": "drawio-generation"}'
 
     monkeypatch.setenv("LLM_WORKFLOW_ROUTER", "1")
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
     router = WorkflowRouter(available_workflows={"artifact_workflow", "evidence_first_detection"})
     agent = AgentConfigLoader().load("default")
     request = ChatRequest(messages=[Message(role="user", content="给我做一个系统蓝图")])
@@ -696,7 +780,7 @@ def test_workflow_router_llm_can_select_from_skill_descriptions(monkeypatch: pyt
     assert selection.workflow_name == "artifact_workflow"
     assert selection.skill_name == "drawio-generation"
     assert selection.mode == "llm"
-    assert seen_clients == [(agent.model.model, agent.model.base_url)]
+    assert seen_clients == [(agent.model.model or agent.model.default_model, agent.model.base_url or "")]
 
 
 def test_workflow_router_respects_agent_json_routing_switch(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -949,6 +1033,7 @@ def test_generation_skills_use_llm_spec_planner_when_enabled(
     monkeypatch.setenv("LLM_SPEC_PLANNER", "1")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("default")
     request = ChatRequest(
@@ -1004,6 +1089,7 @@ def test_drawio_llm_planner_can_enrich_architecture_spec(tmp_path: Path, monkeyp
     monkeypatch.setenv("LLM_SPEC_PLANNER", "1")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
     store = ArtifactStore(root_dir=tmp_path)
     runtime = AgentRuntime(artifact_store=store)
     agent = AgentConfigLoader().load("default")
@@ -1145,6 +1231,38 @@ def test_selected_generation_skill_uses_explicit_artifact_workflow_without_agent
     assert result.spec["skill_name"] == "markdown-rendering"
     assert result.verification is not None
     assert result.verification.passed is True
+    assert "direct_skill.started" not in event_types
+    assert "verifier.completed" in event_types
+
+
+def test_selected_generic_execution_skill_uses_explicit_artifact_workflow(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="generic-execution-agent",
+        display_name="Generic Execution Agent",
+        skills=["public-skill-demo"],
+        workflows={},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="运行 public demo skill")],
+        runtime_options=RuntimeOptions(
+            thread_id="selected-generic-execution-skill",
+            workflow="artifact_workflow",
+            selected_skills=["public-skill-demo"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+    event_types = [event.type for event in events]
+
+    assert result.status == "completed"
+    assert result.metadata["workflow"] == "artifact_workflow"
+    assert result.spec is not None
+    assert result.spec["skill_name"] == "public-skill-demo"
+    assert result.verification is not None
+    assert result.verification.passed is True
+    assert result.artifacts
+    assert result.artifacts[0].name.endswith(".md")
     assert "direct_skill.started" not in event_types
     assert "verifier.completed" in event_types
 

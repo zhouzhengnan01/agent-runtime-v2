@@ -28,7 +28,7 @@ http://127.0.0.1:18012/workbench
 
 ```bash
 export LLM_BASE_URL="http://192.168.32.11:11434/v1"
-# 如果 config/agents/default.json 或 default.local.json 已配置 model.api_key，这里可以不设置
+# 应用模板默认通过 api_key_env=LLM_API_KEY 读取密钥
 export LLM_API_KEY="..."
 export LLM_MODEL="qwen3.6:27b"
 
@@ -260,7 +260,8 @@ python -m app.cli acp-stdio --agent default
 当前 `agent-v2` 已经具备轻量 agent runtime 的核心能力：
 
 - 完整的基础 agent loop：模型输出 `tool_calls`，运行时执行工具，再把 `role=tool` 结果回填给模型继续推理。
-- JSON 配置驱动：通用 agent 通过 `config/agents/default.json` 定义模型、工具、Skill 和运行参数。
+- JSON 配置驱动：通用 agent 通过 `config/agents/default.json` 定义工具、Skill、运行行为和提示词；模型参数由
+  `config/apps/*.json` 的 `runtime_options` 定义。
 - 统一工具层：Skill、MCP/manual 工具、本地 workspace 工具都通过 `ToolRegistry` 和 `ToolInvocationService` 暴露。
 - Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection、behavior-review 等内置 Skill。
 - Workflow 插件：`artifact_workflow`、`evidence_first_detection` 通过 `WorkflowRegistry` 注册，可选启用。
@@ -344,7 +345,6 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 
 通用智能体由 `config/agents/default.json` 驱动。稳定的智能体行为建议放在这里：
 
-- `model.model`、`model.base_url`、`model.api_key`、`model.api_key_enc`、`model.tool_choice`、`model.temperature`、`model.max_tokens`、`model.request_timeout_seconds`
 - `runtime.stateless`、`runtime.max_tool_rounds`、`runtime.max_tool_result_chars`、`runtime.context_compression_enabled`、
   `runtime.context_max_chars`、`runtime.context_keep_first_messages`、`runtime.context_keep_last_messages`、
   `runtime.max_retries`、`runtime.require_verification`
@@ -354,20 +354,60 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 - `quality`
 - `prompts.system`
 
-运行时配置优先级如下：
+模型配置不要写在 `config/agents/default.json`。应用中心入口应把模型参数写在 `config/apps/*.json` 的
+`runtime_options` 中，例如：
 
-```text
-runtime_options -> 环境变量 -> agent JSON
+```json
+{
+  "model_tags": ["chat", "reasoning", "tool_call"],
+  "runtime_options": {
+    "model_name": "Qwen3.6-35B-A3B",
+    "base_url": "http://124.132.152.75:62092/v1",
+    "api_key_env": "LLM_API_KEY",
+    "temperature": 0.4,
+    "max_tokens": 2048
+  }
+}
 ```
 
-环境变量仍然可以覆盖 agent JSON：
+`model_tags` 是给应用中心、Java 模型绑定和前端筛选使用的模型能力标签，不会作为运行时调用参数传给模型，
+也不会进入 Skill 的 `input_schema`。Skill manifest 也可以声明同名顶层字段，用来表达该 skill 需要哪类模型能力；
+真正生效的模型连接参数仍然由应用模板的 `runtime_options` 绑定。当前支持的标签：
 
-- `LLM_MODEL` 覆盖 `model.model`
-- `LLM_BASE_URL` 覆盖 `model.base_url`
-- `LLM_API_KEY` 覆盖 `model.api_key`
+```text
+chat
+reasoning
+vision
+embedding
+tool_call
+image_generation
+video_generation
+audio_generation
+text_to_speech
+speech_to_text
+vision_segmentation
+rerank
+```
+
+历史配置里的 `tool_calling` 会归一化为 `tool_call`；`vision_segmentation` 和 `rerank` 已加入允许列表。
+
+运行时模型配置优先级如下：
+
+```text
+请求显式 runtime_options -> 应用模板 runtime_options -> 环境变量 / Runtime bootstrap fallback
+```
+
+如果应用模板只配置 `*_env` 而没有配置具体值，运行时会从环境变量读取：
+
+- `LLM_MODEL` 可作为 `model_env` 的模型名来源
+- `LLM_BASE_URL` 可作为 `base_url_env` 的模型服务地址来源
+- `LLM_API_KEY` 可作为 `api_key_env` 的密钥来源
 - `LLM_REQUEST_TIMEOUT_SECONDS` 覆盖模型请求超时时间，默认 120 秒，取值会限制在 1 到 3600 秒之间
 
-`model.tool_choice` 用于控制是否向 OpenAI-compatible API 发送 `tools` 和 `tool_choice=auto`：
+如果请求或应用模板已经显式给出 `model_name` / `base_url`，这些显式值优先于环境变量。
+
+`tool_choice` 属于模型调用兼容性开关。需要按应用或请求控制时，放在 Runtime bootstrap 的模型配置或后续模型管理配置中；
+不建议再写入默认 agent JSON。
 
 ```json
 {
@@ -386,45 +426,32 @@ runtime_options -> 环境变量 -> agent JSON
 "auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set
 ```
 
-说明 provider 还没有开启自动工具调用解析，需要把当前 agent 的 `model.tool_choice` 设为 `none`，或者在模型服务侧开启 tool parser。当前 `default` agent 已设为 `none`。
-
-私有部署时可以直接把 `api_key` 放在本地 agent JSON 中：
-
-```json
-{
-  "model": {
-    "provider": "openai_compatible",
-    "model": "Qwen3.6-35B-A3B",
-    "base_url": "http://124.132.152.75:62091/v1",
-    "api_key": "your-key"
-  }
-}
-```
-
-如果配置会提交或共享，建议不要把真实 key 放进公开 JSON，而是使用本地覆盖文件。运行时也支持
-`api_key_enc`，可以把 key 加密后写入本地覆盖文件。
+说明 provider 还没有开启自动工具调用解析，需要在模型服务侧开启 tool parser，或者把对应模型入口切到不使用工具调用的模式。
+私有部署不要把真实 key 放进公开 JSON；当前内置应用模板使用 `api_key_env=LLM_API_KEY`，推荐通过环境变量注入。
 
 ## 本地私密配置
 
-公开配置和本地私密配置可以分开：
+公开 agent 配置和本地私密配置可以分开：
 
 ```text
 config/agents/default.json        # 公开默认配置，可以上传
 config/agents/default.local.json  # 本地私密覆盖，默认被 git 忽略
 ```
 
-`*.local.json` 可以只写需要覆盖的字段，加载时会深度合并到公开 agent JSON 上：
+`*.local.json` 可以只写需要覆盖的字段，加载时会深度合并到公开 agent JSON 上。历史版本允许在这里覆盖
+`model.api_key` / `model.api_key_enc`；应用中心模型配置迁移到 `config/apps/*.json` 后，推荐改用
+`LLM_API_KEY` 环境变量给应用模板的 `api_key_env` 供值：
 
 ```json
 {
-  "model": {
-    "api_key": "your-key"
+  "runtime": {
+    "max_tool_rounds": 8
   }
 }
 ```
 
-如果你在 `*.local.json` 中临时写入明文 `model.api_key`，运行时第一次加载该 agent 时会自动把
-明文改写为 `model.api_key_enc` 并删除 `model.api_key`。本次加载仍然会在内存中使用该 key，
+如果你仍在旧的 `*.local.json` 中临时写入明文 `model.api_key`，运行时第一次加载该 agent 时会自动把
+明文改写为 `model.api_key_enc` 并删除 `model.api_key`。本次加载仍然会在内存中使用该 key；
 后续加载会从 `api_key_enc` 自动解密。
 
 这适合迁移场景：新机器上只需要临时写一次明文 local config，启动或执行一次 `show-agent`
@@ -484,6 +511,30 @@ config/agents/default.local.json
 ```text
 JETLINKS_AGENT_SECRET_KEY -> .runtime/secrets/master.key
 ```
+
+### 加解密主密钥
+
+`api_key_enc` 不是独立可解密的密文，必须配合加密时使用的主密钥才能还原。推荐生产、测试等固定部署环境显式配置
+`JETLINKS_AGENT_SECRET_KEY`，这样重启、换目录或重新拉代码后仍然能解密历史 `api_key_enc`：
+
+```bash
+export JETLINKS_AGENT_SECRET_KEY="replace-with-a-long-random-secret"
+uv run python -m app.cli secrets set-api-key --agent default --value "your-key"
+uv run python -m app.cli show-agent default
+```
+
+`JETLINKS_AGENT_SECRET_KEY` 可以是 Fernet key，也可以是普通长随机字符串；如果是普通字符串，运行时会先通过
+SHA-256 派生出 Fernet 可用密钥。只要字符串内容不变，已有 `api_key_enc` 就可以继续解密。
+
+如果没有配置 `JETLINKS_AGENT_SECRET_KEY`，首次加密或首次加载明文 `model.api_key` 时会自动生成本地文件：
+
+```text
+.runtime/secrets/master.key
+```
+
+这个文件默认只适合单机本地开发使用。迁移到新机器时，如果需要沿用旧的 `api_key_enc`，必须同时迁移
+`.runtime/secrets/master.key`，或者在新环境配置与旧环境一致的 `JETLINKS_AGENT_SECRET_KEY`。如果主密钥丢失或更换，
+旧的 `api_key_enc` 无法解密，需要重新执行 `secrets set-api-key` 或临时写入明文 `model.api_key` 让运行时重新加密。
 
 `config/agents/*.local.json` 和 `.runtime/` 都已加入 `.gitignore`，不会上传到 GitHub。HTTP agent
 详情接口和 `python -m app.cli show-agent` 会把 `model.api_key`、`model.api_key_enc` 脱敏为
@@ -690,9 +741,12 @@ python tools/app_smoke_matrix.py \
   --expect-config-apps
 ```
 
-脚本会读取 `GET /api/apps/templates` 返回的所有模板，并逐个调用 `/api/agents/default/runs`。
+脚本会读取 `GET /api/apps/templates` 返回的所有模板，并按模板里的 `agent_name` 逐个调用
+`/api/agents/{agent_name}/runs`。
 只有强依赖图片的模板（当前主要是 `data-auto-annotation`）会先通过 `/api/uploads/{thread_id}` 上传测试图片；
 行为识别和行为复判按 evidence-first 逻辑先验证“无视觉证据时不输出视觉确认结论”，不会在 smoke 中强行附加图片。
+其中 `behavior-detection` 无视觉证据时允许只返回 `requires_input=true` 和补充证据提示，不强制生成
+`behavior-detection.md/json`；`behavior-review` 仍要求生成复判报告产物。
 默认测试图片会自动写到 `/tmp/jetlinks-app-smoke-image.jpg`；如果需要使用真实业务图片，可以显式传
 `--image /path/to/image.jpg`，显式指定的图片不存在时脚本会直接失败。
 每个应用会记录：
@@ -707,7 +761,9 @@ python tools/app_smoke_matrix.py \
 - `missing_expected_artifact_patterns`：缺失的关键产物模式，非空时该模板会被判定失败。
 - `artifact_content_errors`：内容级校验失败原因，非空时该模板会被判定失败。
 - `continuation_check`：对需要验证连续处理的模板，会在首轮成功后用同一个 `thread_id` 再发一轮请求，
-  检查智能体能否读取已有 outputs 并继续生成新产物，且新产物也必须通过内容级校验。
+  检查智能体能否读取已有 outputs 并继续生成新产物，且新产物也必须通过内容级校验。当前覆盖
+  `data-auto-annotation` 的 `annotations.coco.json -> coco-summary.md`，以及 Markdown 文档类应用的
+  `result.md -> continuation-summary.md`。
 - `tool_rounds` / `tool_call_count` / `mode`：用于确认复杂任务是否走了多轮工具调用。
 - `attached_smoke_image`：用于确认只有需要图片的应用才上传测试图片。
 
@@ -745,27 +801,39 @@ python tools/app_smoke_matrix.py \
 ./quality-gate.sh
 ```
 
-它会先运行关键 pytest。默认 `RUN_SMOKE=auto`：如果 `http://127.0.0.1:18012/health` 可访问，就继续运行
-应用中心 live smoke；如果服务没启动，只跑测试并明确提示跳过 live smoke。常用覆盖变量：
+它会先运行关键 pytest。默认 `RUN_SMOKE=auto`，只跑本地测试和静态/单元级检查；如果要把应用中心
+live smoke 或 Workbench Playwright 页面流程也纳入门禁，显式打开对应开关：
 
 ```bash
-APP_PORT=18012 RUN_SMOKE=true ./quality-gate.sh
-BASE_URL=http://127.0.0.1:18012 SMOKE_RETRIES=1 ./quality-gate.sh
+RUN_SMOKE=true ./quality-gate.sh
+RUN_UI_SMOKE=true RUN_SMOKE=true ./quality-gate.sh
+BASE_URL=http://127.0.0.1:18012 RUN_SMOKE=true SMOKE_RETRIES=1 ./quality-gate.sh
 SMOKE_MIN_TEMPLATES=16 ./quality-gate.sh
 SMOKE_EXPECT_CONFIG_APPS=true ./quality-gate.sh
 SMOKE_FAIL_ON_RETRY=true ./quality-gate.sh
+SMOKE_ONLY=data-auto-annotation,technical-doc-writer ./quality-gate.sh
 SMOKE_TOKEN=your-runtime-token ./quality-gate.sh
-RUN_UI_SMOKE=true ./quality-gate.sh
 RUN_SMOKE=false ./quality-gate.sh
+```
+
+当 `RUN_SMOKE=true` 或 `RUN_UI_SMOKE=true` 且没有显式传 `BASE_URL` 时，`quality-gate.sh` 会自动在随机空闲端口
+启动当前工作区代码的临时 Runtime，等待 `/health` 正常后再跑 smoke，结束时自动停止临时进程。这样可以避免
+本机 `18012` 上残留的旧进程污染验证结果。只有显式传 `BASE_URL=...` 时，门禁才会连接已有服务或线上环境。
+如果需要关闭自动启动，可以设置：
+
+```bash
+AUTO_START_RUNTIME=false BASE_URL=http://127.0.0.1:18012 RUN_SMOKE=true ./quality-gate.sh
 ```
 
 `quality-gate.sh` 默认 `SMOKE_FAIL_ON_RETRY=true`。live smoke 中任何模板如果先超时/断连、再靠重试成功，
 门禁仍会失败，用来提前暴露线上应用链路不稳定；临时排查时可以设置 `SMOKE_FAIL_ON_RETRY=false`。
+设置 `SMOKE_ONLY` 时，门禁会自动把 `SMOKE_MIN_TEMPLATES` 调整为 only 列表数量；如果你显式设置
+`SMOKE_MIN_TEMPLATES`，则以显式值为准。
 如果要把浏览器页面也纳入发版前验证，可以设置 `RUN_UI_SMOKE=true`。该检查会用 Playwright 打开
 Workbench，完整走一遍“应用中心选择 `data-auto-annotation` -> 查看 JSON -> 上传图片 -> 深度执行 ->
 生成 `annotations.coco.json` -> 同一会话继续生成 `coco-summary.md`”，并断言请求体确实带有上传路径、
-`selected_skills`、`autonomous` 和 `max_tool_rounds=12`。运行前需要 Runtime 可访问，且
-`frontend/workbench/node_modules` 已安装。
+`selected_skills`、`autonomous` 和 `max_tool_rounds=12`。运行前需要 `frontend/workbench/node_modules`
+已安装；Runtime 可以由门禁自动临时启动，也可以通过 `BASE_URL` 指向已有环境。
 
 仓库也提供了 GitHub Actions 工作流 `.github/workflows/quality-gate.yml`。PR 和主分支 push 会自动执行
 `RUN_SMOKE=false ./quality-gate.sh`，覆盖关键 pytest、应用模板静态检查和 smoke matrix 单元测试。
@@ -774,7 +842,9 @@ live smoke 依赖实际运行中的 Runtime、模型和外部服务，仍建议�
 
 如果需要从 GitHub 手动验证某个线上环境，可以触发 `.github/workflows/live-smoke.yml`，输入
 `base_url`、`retries`、`timeout`、`fail_on_retry`，也可以打开 `run_ui_smoke` 让 workflow 额外跑
-Workbench Playwright 页面 smoke。该 workflow 会对指定 Runtime 执行完整应用中心 smoke，并上传：
+Workbench Playwright 页面 smoke。`data-auto-annotation` 依赖外部 SAM3 服务，workflow 支持通过
+`sam3_predict_url` 手动输入，或通过仓库 secret `SAM3_PREDICT_URL` 注入。该 workflow 会对指定 Runtime
+执行完整应用中心 smoke，并上传：
 
 ```text
 live-smoke-result.json
@@ -784,8 +854,20 @@ live-smoke-report.md
 `live-smoke.yml` 也会每天定时执行一次。定时任务读取仓库 secret `LIVE_SMOKE_BASE_URL` 作为目标
 Runtime 地址；如果没有配置该 secret，workflow 会明确跳过 live smoke，不会误报失败。live smoke
 报告会同时写入 GitHub Actions Step Summary，并作为 artifact 上传。如果目标 Runtime 需要 token，
-配置仓库 secret `LIVE_SMOKE_TOKEN`。workflow 配置了 30 分钟超时和 concurrency，避免巡检重叠执行；
-上传的 smoke 报告默认保留 14 天。
+配置仓库 secret `LIVE_SMOKE_TOKEN`；如果自动标注需要固定 SAM3 代理，配置仓库 secret
+`SAM3_PREDICT_URL`。workflow 配置了 30 分钟超时和 concurrency，避免巡检重叠执行；上传的 smoke
+报告默认保留 14 天。
+
+`data-auto-annotation` 依赖外部 SAM3 HTTP 服务。默认脚本会读取环境变量覆盖预测地址：
+
+```bash
+SAM3_PREDICT_URL="https://192-168-33-25-8093.proxy.jetlinks.cn/sam3/predict"
+```
+
+也兼容 `SAM3_URL`。如果这两个变量都没有设置，会回退到脚本内置默认地址。线上或 VPN/内网穿透地址变化时，
+优先改环境变量，不需要修改 skill JSON 或重新发版。live smoke 中如果 `data-auto-annotation` 失败，
+先看 `data-auto-annotation-stderr.txt` 里的 `sam3_connect_timeout`、`sam3_read_timeout`、
+`sam3_http_error` 等错误类型，再确认 `SAM3_PREDICT_URL` 是否可从 Runtime 机器访问。
 
 同一个会话的后续任务会优先看到当前 thread 下的 `uploads` 和 `outputs`。例如自动标注生成
 `annotations.coco.json` 后，继续在同一会话里要求“基于已有 COCO 生成摘要”时，智能体应通过

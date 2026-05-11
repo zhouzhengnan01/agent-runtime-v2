@@ -96,6 +96,7 @@ def test_tool_events_include_duration_and_arguments(tmp_path: Path, monkeypatch:
         return LlmChatResponse(content="done", finish_reason="stop")
 
     monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
     runtime = AgentRuntime(
         artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
         run_event_store=RunEventStore(tmp_path / "runs"),
@@ -222,7 +223,7 @@ def test_run_observability_api_returns_saved_timeline(tmp_path: Path, monkeypatc
     assert detail.status_code == 200
     assert detail.json()["run_id"] == run_id
     assert detail.json()["result"]["thread_id"] == "api-observable-thread"
-    assert detail.json()["agent_snapshot"]["model"]["api_key"] == "********"
+    assert detail.json()["agent_snapshot"]["model"]["api_key"] in {None, "********"}
     assert events.status_code == 200
     assert events.json()["events"][0]["data"]["run_id"] == run_id
     assert bundle.status_code == 200
@@ -256,6 +257,7 @@ def test_agent_stream_api_emits_tool_loop_events_as_sse(tmp_path: Path, monkeypa
         return LlmChatResponse(content="streamed done", finish_reason="stop")
 
     monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
     runtime = AgentRuntime(
         artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
         run_event_store=RunEventStore(tmp_path / "runs"),

@@ -6,11 +6,56 @@
   "icon": "mindmap",
   "agent_name": "default",
   "workflow": "artifact_workflow",
-  "selected_skills": ["algorithm-research-scout", "model-candidate-selector"],
-  "selected_mcp_tools": [],
+  "selected_skills": [
+    "algorithm-research-scout",
+    "model-candidate-selector"
+  ],
+  "selected_mcp_tools": [
+    "present_files",
+    "artifact_manifest_read",
+    "artifact_manifest_update",
+    "artifact_list",
+    "artifact_read",
+    "artifact_write",
+    "artifact_patch",
+    "local_read_file",
+    "local_write_file",
+    "local_search_text",
+    "local_todo",
+    "local_shell_command",
+    "delegate_task",
+    "memory_remember",
+    "memory_search",
+    "memory_forget",
+    "memory_md_list",
+    "memory_md_read",
+    "memory_md_append",
+    "memory_md_search",
+    "memory_md_compress"
+  ],
   "prompt_examples": [
     "找几个比 YOLO 更适合棕榈果密集检测和计数的候选算法，重点比较 RT-DETR、DEIM/D-FINE、RF-DETR 和 DAMO-YOLO。",
     "根据 AGX 部署、5090 训练、小目标遮挡和计数误差约束，筛选 2-3 个值得 benchmark 的候选模型。"
   ],
-  "tags": ["算法调研", "候选模型", "RT-DETR", "RF-DETR"]
+  "tags": [
+    "算法调研",
+    "候选模型",
+    "RT-DETR",
+    "RF-DETR"
+  ],
+  "runtime_options": {
+    "model_name": "Qwen3.6-35B-A3B",
+    "model_env": "LLM_MODEL",
+    "base_url": "http://124.132.152.75:62092/v1",
+    "base_url_env": "LLM_BASE_URL",
+    "api_key_env": "LLM_API_KEY",
+    "temperature": 0.4,
+    "max_tokens": 2048
+  },
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call",
+    "rerank"
+  ]
 }

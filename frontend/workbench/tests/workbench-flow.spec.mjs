@@ -82,14 +82,17 @@ function artifact(name, kind, mimeType, size = 256) {
   };
 }
 
+function artifactsForRequest(requestIndex) {
+  return requestIndex === 0
+    ? [artifact('annotations.coco.json', 'text', 'application/json', 512)]
+    : [
+        artifact('annotations.coco.json', 'text', 'application/json', 512),
+        artifact('coco-summary.md', 'markdown', 'text/markdown', 320),
+      ];
+}
+
 async function fulfillRunStream(route, requestIndex) {
-  const artifacts =
-    requestIndex === 0
-      ? [artifact('annotations.coco.json', 'text', 'application/json', 512)]
-      : [
-          artifact('annotations.coco.json', 'text', 'application/json', 512),
-          artifact('coco-summary.md', 'markdown', 'text/markdown', 320),
-        ];
+  const artifacts = artifactsForRequest(requestIndex);
   const reply =
     requestIndex === 0
       ? '已自动标注完成，COCO JSON 文件已生成：annotations.coco.json'
@@ -97,7 +100,7 @@ async function fulfillRunStream(route, requestIndex) {
   const result = {
     status: 'completed',
     reply,
-    artifacts,
+    artifacts: requestIndex === 0 ? [] : artifacts,
     metadata: { tool_rounds: requestIndex === 0 ? 2 : 4, tool_call_count: requestIndex === 0 ? 1 : 3, mode: 'autonomous' },
   };
   const body = [
@@ -147,10 +150,23 @@ test('app center upload, skill execution, and same-thread continuation', async (
     if (token) localStorage.setItem('jetlinks.runtime.adminToken', token);
   }, RUNTIME_TOKEN);
   let runRequestCount = 0;
+  let latestArtifacts = [];
   await page.route('**/api/agents/default/runs/stream', async (route) => {
     const index = runRequestCount;
     runRequestCount += 1;
+    latestArtifacts = artifactsForRequest(index);
     await fulfillRunStream(route, index);
+  });
+  await page.route('**/api/artifacts/**', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify({ thread_id: 'ui-smoke', artifacts: latestArtifacts }),
+    });
   });
 
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
@@ -185,11 +201,15 @@ test('app center upload, skill execution, and same-thread continuation', async (
   await expect(page.locator('#messages')).toContainText('annotations.coco.json', { timeout: 15000 });
   await page.locator('[data-tab="artifacts"]').click();
   await expect(page.locator('#panel')).toContainText('annotations.coco.json', { timeout: 15000 });
+  await expect(page.locator('[data-tab="artifacts"]')).toContainText('文件 1');
 
   expect(runRequests.length).toBeGreaterThanOrEqual(1);
   const firstRequest = runRequests[0];
   expect(firstRequest.attachments?.[0]?.path).toMatch(/^\/mnt\/user-data\/uploads\//);
   expect(firstRequest.runtime_options?.selected_skills).toContain('data-auto-annotation');
+  expect(firstRequest.runtime_options?.model_name).toBe('Qwen3.6-35B-A3B');
+  expect(firstRequest.runtime_options?.base_url).toBe('http://124.132.152.75:62092/v1');
+  expect(firstRequest.runtime_options?.api_key_env).toBe('LLM_API_KEY');
   expect(firstRequest.runtime_options?.mode).toBe('autonomous');
   expect(firstRequest.runtime_options?.config_options?.max_tool_rounds).toBe(12);
 
@@ -200,6 +220,7 @@ test('app center upload, skill execution, and same-thread continuation', async (
   await expect(page.locator('#runStatus')).toContainText('Ready', { timeout: 90000 });
   await page.locator('[data-tab="artifacts"]').click();
   await expect(page.locator('#panel')).toContainText('coco-summary.md', { timeout: 15000 });
+  await expect(page.locator('[data-tab="artifacts"]')).toContainText('文件 2');
 
   expect(apiResponses.filter((item) => item.status >= 500)).toEqual([]);
   expect(consoleErrors).toEqual([]);

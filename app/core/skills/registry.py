@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from app.core.model_tags import normalize_model_tags
+
 if TYPE_CHECKING:
     from app.core.skills.plugins import SkillPluginManager
 
@@ -33,6 +35,7 @@ class SkillDefinition:
     description: str
     output_kind: str
     generation: bool = True
+    model_tags: tuple[str, ...] = ()
     quality_template: tuple[str, ...] = ()
     routing: dict[str, Any] | None = None
     execution: dict[str, Any] | None = None
@@ -48,19 +51,24 @@ class SkillDefinition:
     runner_path: Path | None = None
     spec_builder_path: Path | None = None
 
+    @property
+    def executable(self) -> bool:
+        return self.runner_path is not None or _has_generic_execution(self.execution)
+
     def to_event_payload(self) -> dict[str, object]:
         return {
             "name": self.name,
             "description": self.description,
             "output_kind": self.output_kind,
             "generation": self.generation,
+            "model_tags": list(self.model_tags),
             "quality_template": list(self.quality_template),
             "routing": self.routing or {},
             "execution": self.execution or {},
             "input_schema": self.input_schema or {},
             "output_schema": self.output_schema or {},
             "sandbox": self.sandbox.to_payload(),
-            "executable": self.runner_path is not None,
+            "executable": self.executable,
             "source": {
                 "type": self.source_type,
                 "plugin_id": self.plugin_id,
@@ -90,6 +98,7 @@ class SkillDefinition:
             description=self.description,
             output_kind=self.output_kind,
             generation=self.generation,
+            model_tags=self.model_tags,
             quality_template=self.quality_template,
             routing=self.routing,
             execution=self.execution,
@@ -119,7 +128,7 @@ class SkillRegistry:
         names = allowed if allowed is not None else sorted(self._skills)
         skills = [self._skills[name] for name in names if name in self._skills]
         if executable_only:
-            return [skill for skill in skills if skill.runner_path is not None]
+            return [skill for skill in skills if skill.executable]
         return skills
 
     def get(self, name: str) -> SkillDefinition:
@@ -187,6 +196,7 @@ def definition_from_manifest(data: object, path: Path) -> SkillDefinition:
         description=description,
         output_kind=output_kind,
         generation=bool(data.get("generation", True)),
+        model_tags=tuple(normalize_model_tags(data.get("model_tags"))),
         quality_template=_string_tuple(data.get("quality_template")),
         routing=_dict_value(data.get("routing")),
         execution=_dict_value(data.get("execution")),
@@ -241,3 +251,9 @@ def _dict_value(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     return dict(value)
+
+
+def _has_generic_execution(execution: dict[str, Any] | None) -> bool:
+    if not isinstance(execution, dict):
+        return False
+    return _string_value(execution.get("type")) in {"python_script", "template", "http", "command"}

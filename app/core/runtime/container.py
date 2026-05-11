@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from app.core.agent import AgentRuntime
 from app.core.config import AgentConfig, AgentConfigLoader
 from app.core.config.agent_config import ModelConfig
+from app.core.model_tags import normalize_model_tags
 from app.schemas import RuntimeOptions
 
 
@@ -35,6 +36,7 @@ class ManagedModel(BaseModel):
         )
 
     def public_payload(self) -> dict[str, Any]:
+        model_tags = normalize_model_tags(self.capabilities)
         return {
             "id": self.id,
             "name": self.display_name or self.id,
@@ -43,7 +45,8 @@ class ManagedModel(BaseModel):
             "model": self.config.model or self.config.default_model,
             "baseUrlConfigured": bool(self.config.base_url or self.config.base_url_env),
             "apiKeyConfigured": bool(self.config.api_key or self.config.api_key_env),
-            "capabilities": list(self.capabilities),
+            "capabilities": model_tags,
+            "model_tags": model_tags,
             "metadata": dict(self.metadata),
         }
 
@@ -140,7 +143,7 @@ class ModelManager:
                 display_name=config.model or config.default_model or normalized_id,
                 description=f"Default model for agent {agent_config.name}.",
                 config=config,
-                capabilities=["chat", "tool_calling"] if config.tool_choice == "auto" else ["chat"],
+                capabilities=["chat", "tool_call"] if config.tool_choice == "auto" else ["chat"],
                 metadata={"source": "agent_default", "agent": agent_config.name},
             )
         )
@@ -160,6 +163,7 @@ class ModelManager:
             config_data = {key: data.pop(key) for key in list(data) if key in config_fields}
             config = ModelConfig.model_validate(config_data)
         data["config"] = config
+        data["capabilities"] = normalize_model_tags(data.get("capabilities"))
         return ManagedModel.model_validate(data)
 
 

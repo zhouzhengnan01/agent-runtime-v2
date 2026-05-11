@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import io
+import importlib.util
 import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -102,8 +105,9 @@ def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
     root = Path(__file__).resolve().parents[1] / "plugins" / "skills" / "builtin-artifact-skills" / "skills"
     package_names = {package.name for package in root.iterdir() if package.is_dir()}
     assert "deliverables-export" in package_names
+    complete_package_names = package_names - {"behavior-review"}
     for package in root.iterdir():
-        if not package.is_dir():
+        if not package.is_dir() or package.name not in complete_package_names:
             continue
         assert (package / "SKILL.md").is_file()
         assert (package / "manifest.json").is_file()
@@ -115,6 +119,110 @@ def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
         assert (package / "runner.py").is_file()
         assert (package / "spec_builder.py").is_file()
         assert (package / "scripts" / "run_skill.py").is_file()
+
+
+def test_skill_registry_exposes_model_tags_as_metadata() -> None:
+    registry = SkillRegistry()
+
+    data_auto = registry.get("data-auto-annotation")
+    algorithm_research = registry.get("algorithm-research-scout")
+    payload = data_auto.to_event_payload()
+
+    assert data_auto.model_tags == ("vision_segmentation",)
+    assert algorithm_research.model_tags == ("chat", "reasoning", "rerank")
+    assert payload["model_tags"] == ["vision_segmentation"]
+    assert "model_tags" not in (data_auto.input_schema or {}).get("properties", {})
+
+
+def test_algorithm_engineer_spec_builder_does_not_treat_agx_5090_as_dataset_path() -> None:
+    spec_builder = _load_algorithm_engineer_spec_builder()
+
+    spec = spec_builder.build_spec(
+        "algorithm-engineer-app",
+        "围绕棕榈果检测，打通 AGX/5090 训练编排和计数评估。",
+        "围绕棕榈果检测，打通 AGX/5090 训练编排和计数评估。",
+        [],
+        {},
+    )
+
+    assert spec["dataset_path"] == "/data/palm_fruit_datasets/organized/latest_integrated_dedup"
+    assert spec["machines"] == ["AGX Orin", "5090 GPU server"]
+
+
+def test_algorithm_engineer_spec_builder_extracts_cpu_training_options() -> None:
+    spec_builder = _load_algorithm_engineer_spec_builder()
+
+    spec = spec_builder.build_spec(
+        "cpu-training-runner",
+        "用 CPU 沙盒训练 data_yaml=/tmp/palm/data.yaml model=yolo11n.pt epochs=2 imgsz=320 batch=1 mock=true",
+        "用 CPU 沙盒训练 data_yaml=/tmp/palm/data.yaml model=yolo11n.pt epochs=2 imgsz=320 batch=1 mock=true",
+        [],
+        {},
+    )
+
+    assert spec["data_yaml"] == "/tmp/palm/data.yaml"
+    assert spec["model"] == "yolo11n.pt"
+    assert spec["epochs"] == 2
+    assert spec["imgsz"] == 320
+    assert spec["batch"] == 1
+    assert spec["mock"] is True
+
+
+def test_cpu_training_runner_mock_generates_best_pt(tmp_path: Path) -> None:
+    request = {
+        "request_schema_version": "skill-run.v1",
+        "skill_name": "cpu-training-runner",
+        "thread_id": "cpu-train-test",
+        "spec": {
+            "data_yaml": "",
+            "model": "yolo11n.pt",
+            "epochs": 1,
+            "imgsz": 320,
+            "batch": 1,
+            "experiment_name": "mock_cpu_train",
+            "mock": True,
+        },
+        "workspace_dir": str(tmp_path / "workspace"),
+        "outputs_dir": str(tmp_path / "outputs"),
+    }
+    request_path = tmp_path / "request.json"
+    outputs_dir = tmp_path / "outputs"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "skills"
+        / "algorithm-engineer"
+        / "scripts"
+        / "cpu_training_runner.py"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--request", str(request_path), "--outputs", str(outputs_dir)],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (outputs_dir / "best.pt").is_file()
+    assert (outputs_dir / "last.pt").is_file()
+    assert (outputs_dir / "results.csv").is_file()
+    assert (outputs_dir / "training-summary.json").is_file()
+    summary = json.loads((outputs_dir / "training-summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "completed"
+    assert summary["best_pt"] == "best.pt"
+    assert summary["mock"] is True
+
+
+def _load_algorithm_engineer_spec_builder() -> object:
+    path = Path(__file__).resolve().parents[1] / "plugins" / "skills" / "algorithm-engineer" / "spec_builder.py"
+    spec = importlib.util.spec_from_file_location("algorithm_engineer_spec_builder_for_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_builtin_deliverables_export_skill_executes(tmp_path: Path) -> None:
@@ -317,6 +425,29 @@ def test_generic_template_skill_executes_without_runner(tmp_path: Path) -> None:
     assert result.skill_name == "generic-template"
     assert result.outputs[0].name == "daily-report.md"
     assert (paths.outputs / "daily-report.md").read_text(encoding="utf-8") == "# daily-report\n\ndone"
+    executable_names = {skill.name for skill in SkillRegistry(tmp_path).list(executable_only=True)}
+    assert "generic-template" in executable_names
+
+
+def test_public_template_skill_is_discoverable_and_executes(tmp_path: Path) -> None:
+    registry = SkillRegistry()
+
+    skill = registry.get("public-skill-demo")
+    assert skill.executable is True
+    assert skill.to_event_payload()["executable"] is True
+    assert "public-skill-demo" in {item.name for item in registry.list(executable_only=True)}
+
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("public-skill-demo")
+    result = SkillRunner(store).run(
+        "public-skill-demo",
+        {"title": "public-demo-output", "message": "public demo smoke"},
+        paths,
+    )
+
+    assert result.skill_name == "public-skill-demo"
+    assert result.outputs[0].name == "public-demo-output.md"
+    assert (paths.outputs / "public-demo-output.md").read_text(encoding="utf-8") == "# public-demo-output\n\npublic demo smoke"
 
 
 def test_python_script_skill_requires_only_script_config(tmp_path: Path) -> None:

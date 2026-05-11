@@ -121,5 +121,8 @@
     "request_schema_version": "skill-run.v1",
     "adapter_command": "python /opt/jetlinks/skills/run_skill.py --request {request_path} --outputs {outputs_dir}",
     "fallback_to_local": true
-  }
+  },
+  "model_tags": [
+    "chat"
+  ]
 }

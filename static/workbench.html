@@ -3278,11 +3278,20 @@
 
     function ensureThread() {
       if (!els.thread.value.trim()) {
-        els.thread.value = localStorage.getItem(THREAD_STORAGE_KEY) || `local-${Date.now().toString(36)}`;
+        els.thread.value = initialThreadFromUrl() || localStorage.getItem(THREAD_STORAGE_KEY) || `local-${Date.now().toString(36)}`;
       }
       els.threadMini.textContent = els.thread.value.trim();
       localStorage.setItem(THREAD_STORAGE_KEY, els.thread.value.trim());
       return els.thread.value.trim();
+    }
+
+    function initialThreadFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const requested = (params.get('thread') || params.get('thread_id') || '').trim();
+      if (requested) return requested.replace(/[^a-zA-Z0-9_.-]+/g, '-').slice(0, 120);
+      const newThread = (params.get('newThread') || '').toLowerCase();
+      if (['1', 'true', 'yes'].includes(newThread)) return newLocalThreadId();
+      return '';
     }
 
     function newLocalThreadId() {
@@ -3396,6 +3405,7 @@
       if (state.timeline.length > MAX_TIMELINE_ITEMS) {
         state.timeline.splice(0, state.timeline.length - MAX_TIMELINE_ITEMS);
       }
+      renderInspectorTabs();
       schedulePanelUpdate();
     }
 
@@ -3405,6 +3415,31 @@
         state.panelUpdateFrame = 0;
         renderPanel();
       });
+    }
+
+    function renderInspectorTabs() {
+      document.querySelectorAll('.tab').forEach((tab) => {
+        const key = tab.dataset.tab;
+        tab.classList.toggle('active', key === state.activeTab);
+        const label = tab.dataset.label || tab.textContent.replace(/\s+\d+$/, '').trim();
+        tab.dataset.label = label;
+        const count = inspectorTabCount(key);
+        tab.textContent = count ? `${label} ${count}` : label;
+      });
+    }
+
+    function inspectorTabCount(key) {
+      if (key === 'artifacts') return state.artifacts.length;
+      if (key === 'verification') return state.verification ? 1 : 0;
+      if (key === 'spec') return state.spec ? 1 : 0;
+      if (key === 'timeline') return state.timeline.length;
+      return 0;
+    }
+
+    function selectInspectorTab(tabName) {
+      state.activeTab = tabName || 'artifacts';
+      renderInspectorTabs();
+      renderPanel();
     }
 
     function renderMessages() {
@@ -3884,6 +3919,11 @@
       if (threadId) runtimeOptions.thread_id = threadId;
       if (template.workflow) runtimeOptions.workflow = template.workflow;
       return runtimeOptions;
+    }
+
+    function selectedAppTemplateRuntimeOptions() {
+      const template = state.selectedAppTemplateName ? getAppTemplate(state.selectedAppTemplateName) : null;
+      return template?.runtime_options && typeof template.runtime_options === 'object' ? template.runtime_options : {};
     }
 
     function createCronFromAppTemplate(name) {
@@ -4931,44 +4971,34 @@
         item.classList.toggle('active', item.dataset.view === state.view);
       });
       if (isApps) {
-        state.activeTab = 'abilities';
-        document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item.dataset.tab === 'abilities'));
-        renderPanel();
+        selectInspectorTab('abilities');
         loadAppTemplates().catch((err) => {
           if (els.appTemplateList) els.appTemplateList.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
           renderAppTemplateSummary(err.message);
         });
       } else if (isSkills) {
-        state.activeTab = 'abilities';
         state.abilityMode = 'skills';
-        document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item.dataset.tab === 'abilities'));
-        renderPanel();
+        selectInspectorTab('abilities');
         loadAbilities().catch((err) => {
           renderSkillEditor({ type: 'error', text: err.message });
           els.panel.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
         });
       } else if (isTools) {
-        state.activeTab = 'abilities';
         state.abilityMode = 'mcp';
-        document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item.dataset.tab === 'abilities'));
-        renderPanel();
+        selectInspectorTab('abilities');
         loadAbilities().catch((err) => {
           renderToolEditor({ type: 'error', text: err.message });
           els.panel.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
         });
       } else if (isWorkflows) {
-        state.activeTab = 'abilities';
         state.abilityMode = 'workflows';
-        document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item.dataset.tab === 'abilities'));
-        renderPanel();
+        selectInspectorTab('abilities');
         loadWorkflows().catch((err) => {
           renderWorkflowEditor({ type: 'error', text: err.message });
           els.panel.innerHTML = `<div class="empty-panel">${escapeHtml(err.message)}</div>`;
         });
       } else if (isCron) {
-        state.activeTab = 'timeline';
-        document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item.dataset.tab === 'timeline'));
-        renderPanel();
+        selectInspectorTab('timeline');
         loadCronJobs().catch((err) => {
           renderCronEditor({ type: 'error', text: err.message });
         });
@@ -6392,6 +6422,7 @@
       state.running = true;
       hideRequiredInputPanel();
       setBusy(true);
+      renderInspectorTabs();
       renderPanel();
 
       try {
@@ -6436,6 +6467,7 @@
 
     function buildRuntimeOptions(threadId, workflow) {
       const runtimeOptions = {
+        ...selectedAppTemplateRuntimeOptions(),
         thread_id: threadId,
         selected_skills: [...state.selectedChatSkills],
         selected_mcp_tools: [...state.selectedChatMcpTools]
@@ -6450,6 +6482,7 @@
 
     function buildAcpRuntimeOptions(threadId, workflow) {
       const runtimeOptions = {
+        ...selectedAppTemplateRuntimeOptions(),
         threadId,
         selectedSkills: [...state.selectedChatSkills],
         selectedMcpTools: [...state.selectedChatMcpTools]
@@ -6536,6 +6569,7 @@
       };
 
       try {
+        const runtimeOptions = buildAcpRuntimeOptions(threadId, workflow);
         await rpc('initialize', {
           protocolVersion: 1,
           clientInfo: { name: 'jetlinks-workbench', version: '0.1.0' }
@@ -6543,9 +6577,9 @@
         const session = await rpc('new_session', {
           cwd: '/',
           agentName: agentName,
-          threadId
+          threadId,
+          runtimeOptions
         });
-        const runtimeOptions = buildAcpRuntimeOptions(threadId, workflow);
         const promptResult = await rpc('prompt', {
           sessionId: session.sessionId,
           agentName: agentName,
@@ -6728,9 +6762,11 @@
         case 'artifact.created':
           upsertArtifact(data.artifact);
           addTimeline('生成文件', data.artifact?.name || '');
+          if (state.activeTab === 'artifacts') renderPanel();
           break;
         case 'preview.ready':
           upsertArtifact(data.artifact);
+          renderInspectorTabs();
           schedulePanelUpdate();
           break;
         case 'verifier.started':
@@ -6867,6 +6903,7 @@
       state.verification = result.verification || state.verification;
       state.spec = result.spec || state.spec;
       maybePromptForRequiredInputs(result);
+      renderInspectorTabs();
       schedulePanelUpdate();
     }
 
@@ -6948,54 +6985,17 @@
       const idx = state.artifacts.findIndex((item) => item.path === artifact.path);
       if (idx >= 0) state.artifacts[idx] = artifact;
       else state.artifacts.push(artifact);
+      renderInspectorTabs();
     }
 
     async function refreshArtifacts() {
       const threadId = ensureThread();
-      const res = await fetch(`/api/artifacts/${encodeURIComponent(threadId)}`, { cache: 'no-store' });
+      const res = await fetch(`/api/artifacts/${encodeURIComponent(threadId)}`, fetchOptions({ cache: 'no-store' }));
       const data = await res.json();
       if (ensureThread() !== threadId) return;
       state.artifacts = data.artifacts || [];
+      renderInspectorTabs();
       renderPanel();
-    }
-
-    async function loadArtifactsForThread(threadId) {
-      const res = await fetch(`/api/artifacts/${encodeURIComponent(threadId)}`, { cache: 'no-store' });
-      if (!res.ok) return [];
-      const data = await res.json().catch(() => ({}));
-      return Array.isArray(data.artifacts) ? data.artifacts : [];
-    }
-
-    async function restoreRecentArtifacts() {
-      try {
-        const threadId = ensureThread();
-        state.artifacts = await loadArtifactsForThread(threadId);
-        if (ensureThread() !== threadId) return;
-        if (state.artifacts.length) {
-          renderPanel();
-          return;
-        }
-
-        const res = await fetch('/api/agents/runs/recent?limit=20', fetchOptions({ cache: 'no-store' }));
-        if (!res.ok) return;
-        const data = await res.json().catch(() => ({}));
-        const runs = Array.isArray(data.runs) ? data.runs : [];
-        for (const run of runs) {
-          if (ensureThread() !== threadId) return;
-          const candidate = String(run.thread_id || '').trim();
-          if (!candidate || candidate === threadId) continue;
-          const artifacts = await loadArtifactsForThread(candidate);
-          if (!artifacts.length) continue;
-          els.thread.value = candidate;
-          els.threadMini.textContent = candidate;
-          localStorage.setItem(THREAD_STORAGE_KEY, candidate);
-          state.artifacts = artifacts;
-          renderPanel();
-          return;
-        }
-      } catch (err) {
-        console.debug('artifact restore skipped', err);
-      }
     }
 
     async function preview(url, kind, target) {
@@ -7583,10 +7583,7 @@
 
     document.querySelectorAll('.tab').forEach((tab) => {
       tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach((item) => item.classList.remove('active'));
-        tab.classList.add('active');
-        state.activeTab = tab.dataset.tab;
-        renderPanel();
+        selectInspectorTab(tab.dataset.tab);
       });
     });
 
@@ -7943,7 +7940,7 @@
     renderAttachments();
     renderComposerCapabilities();
     renderPanel();
-    restoreRecentArtifacts();
+    refreshArtifacts().catch((err) => console.debug('artifact refresh skipped', err));
   </script>
 </body>
 </html>

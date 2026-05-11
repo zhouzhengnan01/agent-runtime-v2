@@ -16,6 +16,7 @@ export type AppTemplate = {
   selected_mcp_tools?: string[];
   prompt_examples?: string[];
   tags?: string[];
+  model_tags?: string[];
   runtime_options?: Record<string, unknown>;
 };
 

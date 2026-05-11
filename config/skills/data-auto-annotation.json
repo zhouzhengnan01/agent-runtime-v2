@@ -34,7 +34,7 @@
     "input_mode": "none",
     "args": [
       "--url",
-      "https://192-168-33-140-8800.proxy.jetlinks.cn/sam3/predict",
+      "$SAM3_PREDICT_URL",
       "--input-json",
       "$spec_json",
       "--connect-timeout",
@@ -123,5 +123,8 @@
     "request_schema_version": "skill-run.v1",
     "adapter_command": "python {package_dir}/scripts/run_skill.py --request {request_path} --outputs {outputs_dir}",
     "fallback_to_local": true
-  }
+  },
+  "model_tags": [
+    "vision_segmentation"
+  ]
 }

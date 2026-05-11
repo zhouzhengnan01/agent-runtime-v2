@@ -41,12 +41,16 @@ async def get_sandbox_status(config: SandboxConfig | None = None) -> SandboxStat
     active_skill_profiles = sandbox_policy.active_skill_profiles(sandbox_config)
     sdk_installed = is_opensandbox_sdk_installed()
 
-    if sandbox_config.provider == "local":
-        message = "Using local thread workspace."
+    if sandbox_config.provider in {"local", "local_subprocess"}:
+        message = (
+            "Using local subprocess sandbox executor."
+            if sandbox_config.provider == "local_subprocess" and sandbox_config.executor_enabled
+            else "Using local thread workspace."
+        )
         if not sandbox_config.provider_valid:
             message = f"Unknown SANDBOX_PROVIDER={sandbox_config.raw_provider!r}; using local thread workspace."
         return SandboxStatus(
-            provider="local",
+            provider=sandbox_config.provider,
             configured=sandbox_config.provider_valid,
             available=True,
             sdk_installed=sdk_installed,

@@ -44,6 +44,11 @@ on:
         required: false
         default: false
         type: boolean
+      sam3_predict_url:
+        description: "Optional SAM3 prediction endpoint for data-auto-annotation smoke"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: live-smoke-${{ github.ref }}
@@ -79,9 +84,12 @@ jobs:
           DISPATCH_SKIP_CONTINUATION: ${{ inputs.skip_continuation_check }}
           DISPATCH_FAIL_ON_RETRY: ${{ inputs.fail_on_retry }}
           DISPATCH_RUN_UI_SMOKE: ${{ inputs.run_ui_smoke }}
+          DISPATCH_SAM3_PREDICT_URL: ${{ inputs.sam3_predict_url }}
           LIVE_SMOKE_TOKEN: ${{ secrets.LIVE_SMOKE_TOKEN }}
+          SECRET_SAM3_PREDICT_URL: ${{ secrets.SAM3_PREDICT_URL }}
         run: |
           base_url="${DISPATCH_BASE_URL:-${SECRET_BASE_URL:-}}"
+          sam3_predict_url="${DISPATCH_SAM3_PREDICT_URL:-${SECRET_SAM3_PREDICT_URL:-}}"
           if [ -z "${base_url}" ]; then
             echo "skip=true" >> "${GITHUB_OUTPUT}"
             echo "Live smoke skipped: set LIVE_SMOKE_BASE_URL secret or provide workflow_dispatch base_url."
@@ -96,6 +104,11 @@ jobs:
           echo "skip_continuation_check=${DISPATCH_SKIP_CONTINUATION:-false}" >> "${GITHUB_OUTPUT}"
           echo "fail_on_retry=${DISPATCH_FAIL_ON_RETRY:-true}" >> "${GITHUB_OUTPUT}"
           echo "run_ui_smoke=${DISPATCH_RUN_UI_SMOKE:-false}" >> "${GITHUB_OUTPUT}"
+          if [ -n "${sam3_predict_url}" ]; then
+            echo "sam3_predict_configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "sam3_predict_configured=false" >> "${GITHUB_OUTPUT}"
+          fi
           if [ -n "${LIVE_SMOKE_TOKEN}" ]; then
             echo "has_token=true" >> "${GITHUB_OUTPUT}"
           else
@@ -106,7 +119,10 @@ jobs:
         if: steps.smoke-inputs.outputs.skip != 'true'
         env:
           LIVE_SMOKE_TOKEN: ${{ secrets.LIVE_SMOKE_TOKEN }}
+          DISPATCH_SAM3_PREDICT_URL: ${{ inputs.sam3_predict_url }}
+          SECRET_SAM3_PREDICT_URL: ${{ secrets.SAM3_PREDICT_URL }}
         run: |
+          export SAM3_PREDICT_URL="${DISPATCH_SAM3_PREDICT_URL:-${SECRET_SAM3_PREDICT_URL:-}}"
           args=(
             --base-url "${{ steps.smoke-inputs.outputs.base_url }}"
             --timeout "${{ steps.smoke-inputs.outputs.timeout }}"

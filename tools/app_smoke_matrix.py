@@ -27,6 +27,7 @@ MINIMAL_JPEG = bytes.fromhex(
 SKILL_ARTIFACT_PATTERNS = {
     "behavior-detection": ["behavior-detection.md", "behavior-detection.json"],
     "behavior-review": ["behavior-review.md", "behavior-review.json"],
+    "cpu-training-runner": ["training-summary.md", "weights/best.pt", "weights/last.pt", "results.csv", "args.yaml"],
     "data-auto-annotation": ["annotations.coco.json"],
     "deliverables-export": ["*.txt", "*.docx"],
     "drawio-generation": ["*.drawio", "*.png"],
@@ -36,17 +37,21 @@ SKILL_ARTIFACT_PATTERNS = {
     "xmind-generation": ["*.xmind"],
 }
 
+OPTIONAL_SKILL_ARTIFACT_PATTERNS = {
+    "data-auto-annotation": ["data-auto-annotation-stderr.txt"],
+}
+
 ALGORITHM_SKILLS = {
     "algorithm-engineer-app",
     "algorithm-engineer",
     "algorithm-research-scout",
     "dataset-curator",
-    "model-candidate-selector",
-    "remote-gpu-ops",
-    "gpu-training-orchestrator",
     "detector-evaluator",
     "deployment-candidate-reviewer",
     "experiment-ledger",
+    "gpu-training-orchestrator",
+    "model-candidate-selector",
+    "remote-gpu-ops",
 }
 
 
@@ -180,6 +185,11 @@ def continuation_runtime_options(template: dict[str, Any], thread_id: str, max_t
     return options
 
 
+def template_agent_name(template: dict[str, Any]) -> str:
+    raw_name = str(template.get("agent_name") or "").strip()
+    return raw_name or "default"
+
+
 def needs_smoke_image(template: dict[str, Any]) -> bool:
     selected_skills = set(template.get("selected_skills") or [])
     return "data-auto-annotation" in selected_skills
@@ -189,13 +199,15 @@ def template_expects_artifacts(template: dict[str, Any]) -> bool:
     selected_skills = {str(skill_name) for skill_name in template.get("selected_skills") or []}
     if selected_skills and selected_skills <= {"behavior-detection"}:
         return False
-    return bool(template.get("workflow") or selected_skills or template.get("selected_mcp_tools"))
+    return bool(template.get("workflow") or selected_skills)
 
 
 def expected_artifact_patterns(template: dict[str, Any]) -> list[str]:
     patterns: list[str] = []
     for skill_name in template.get("selected_skills") or []:
         skill = str(skill_name)
+        if skill == "behavior-detection" and not needs_smoke_image(template):
+            continue
         if skill in ALGORITHM_SKILLS:
             patterns.extend([f"{skill}.md", f"{skill}.json"])
             continue
@@ -213,22 +225,39 @@ def missing_artifact_patterns(artifact_names: list[str], expected_patterns: list
 
 def unexpected_skill_artifacts(template: dict[str, Any], artifact_names: list[str]) -> list[str]:
     selected_skills = {str(skill_name) for skill_name in template.get("selected_skills") or []}
-    known_patterns: list[tuple[str, str]] = []
-    for skill_name, patterns in SKILL_ARTIFACT_PATTERNS.items():
-        for pattern in patterns:
-            if any(char in pattern for char in "*?["):
-                continue
-            known_patterns.append((skill_name, pattern))
-    for skill_name in ALGORITHM_SKILLS:
-        known_patterns.extend([(skill_name, f"{skill_name}.md"), (skill_name, f"{skill_name}.json")])
+    known_patterns = _unexpected_artifact_patterns()
+
+    selected_patterns: list[str] = []
+    for skill_name in selected_skills:
+        if skill_name in ALGORITHM_SKILLS:
+            selected_patterns.extend([f"{skill_name}.md", f"{skill_name}.json"])
+            continue
+        selected_patterns.extend(SKILL_ARTIFACT_PATTERNS.get(skill_name, []))
+        selected_patterns.extend(OPTIONAL_SKILL_ARTIFACT_PATTERNS.get(skill_name, []))
 
     unexpected: list[str] = []
     for artifact_name in artifact_names:
+        if any(fnmatch.fnmatchcase(artifact_name, pattern) for pattern in selected_patterns):
+            continue
         for skill_name, pattern in known_patterns:
             if skill_name not in selected_skills and fnmatch.fnmatchcase(artifact_name, pattern):
                 unexpected.append(artifact_name)
                 break
     return list(dict.fromkeys(unexpected))
+
+
+def _unexpected_artifact_patterns() -> list[tuple[str, str]]:
+    known_patterns: list[tuple[str, str]] = []
+    for skill_name, patterns in SKILL_ARTIFACT_PATTERNS.items():
+        for pattern in patterns:
+            if pattern == "*.md":
+                continue
+            known_patterns.append((skill_name, pattern))
+    for skill_name, patterns in OPTIONAL_SKILL_ARTIFACT_PATTERNS.items():
+        known_patterns.extend((skill_name, pattern) for pattern in patterns)
+    for skill_name in ALGORITHM_SKILLS:
+        known_patterns.extend([(skill_name, f"{skill_name}.md"), (skill_name, f"{skill_name}.json")])
+    return known_patterns
 
 
 def validate_artifact_content(name: str, content: bytes) -> str | None:
@@ -284,9 +313,14 @@ def validate_artifact_contents(base_url: str, artifacts: list[dict[str, Any]], t
 
 def is_retryable_failure(entry: dict[str, Any]) -> bool:
     error = str(entry.get("error") or "")
-    if not error:
+    content_errors = " ".join(str(item) for item in entry.get("artifact_content_errors") or [])
+    retry_text = " ".join(item for item in [error, content_errors] if item)
+    if not retry_text:
         return False
-    return any(marker in error for marker in ["TimeoutError", "ConnectionResetError", "ConnectionRefusedError", "RemoteDisconnected"])
+    return any(
+        marker in retry_text
+        for marker in ["TimeoutError", "ConnectionResetError", "ConnectionRefusedError", "RemoteDisconnected"]
+    )
 
 
 def config_app_names(root_dir: Path | None = None) -> list[str]:
@@ -311,7 +345,28 @@ def missing_expected_apps(templates: list[dict[str, Any]], expected_names: list[
 
 
 def should_check_continuation(template: dict[str, Any]) -> bool:
-    return "data-auto-annotation" in set(template.get("selected_skills") or [])
+    return continuation_spec(template) is not None
+
+
+def continuation_spec(template: dict[str, Any]) -> dict[str, str] | None:
+    selected_skills = set(template.get("selected_skills") or [])
+    if "data-auto-annotation" in selected_skills:
+        return {
+            "expected_name": "coco-summary.md",
+            "prompt": (
+                "请读取当前会话已有的 annotations.coco.json，生成一份 COCO 标注摘要 Markdown，"
+                "保存为 outputs/coco-summary.md。"
+            ),
+        }
+    if selected_skills == {"markdown-rendering"}:
+        return {
+            "expected_name": "continuation-summary.md",
+            "prompt": (
+                "请读取当前会话已有的 result.md，提炼一份连续处理摘要 Markdown，"
+                "保存为 outputs/continuation-summary.md。"
+            ),
+        }
+    return None
 
 
 def run_continuation_check(
@@ -323,21 +378,28 @@ def run_continuation_check(
     max_tool_rounds: int,
     token: str,
 ) -> dict[str, Any]:
-    expected_name = "coco-summary.md"
+    agent_name = template_agent_name(template)
+    spec = continuation_spec(template)
+    if spec is None:
+        raise ValueError(f"Template does not define a continuation check: {template.get('name')}")
+    expected_name = spec["expected_name"]
     payload = {
         "messages": [
             {
                 "role": "user",
-                "content": (
-                    "请读取当前会话已有的 annotations.coco.json，生成一份 COCO 标注摘要 Markdown，"
-                    "保存为 outputs/coco-summary.md。"
-                ),
+                "content": spec["prompt"],
             }
         ],
         "attachments": [],
         "runtime_options": continuation_runtime_options(template, thread_id, max_tool_rounds),
     }
-    result = post_json(base_url, "/api/agents/default/runs", payload, timeout, token)
+    result = post_json(
+        base_url,
+        f"/api/agents/{urllib.parse.quote(agent_name, safe='')}/runs",
+        payload,
+        timeout,
+        token,
+    )
     artifacts = get_json(base_url, f"/api/artifacts/{urllib.parse.quote(thread_id)}", timeout, token).get("artifacts", [])
     artifact_names = [str(item.get("name") or "") for item in artifacts if item.get("name")]
     followup_artifacts = [item for item in artifacts if item.get("name") == expected_name]
@@ -394,8 +456,8 @@ def render_markdown_report(
             "",
             "## Results",
             "",
-            "| App | OK | Artifacts | Missing expected | Continuation | Thread |",
-            "| --- | --- | ---: | --- | --- | --- |",
+            "| App | Agent | OK | Artifacts | Missing expected | Continuation | Thread |",
+            "| --- | --- | --- | ---: | --- | --- | --- |",
         ]
     )
     for item in results:
@@ -406,8 +468,9 @@ def render_markdown_report(
         else:
             continuation_text = "ok" if continuation.get("ok") else "failed"
         lines.append(
-            "| {name} | {ok} | {count} | {missing} | {continuation} | `{thread}` |".format(
+            "| {name} | {agent} | {ok} | {count} | {missing} | {continuation} | `{thread}` |".format(
                 name=item.get("name", ""),
+                agent=item.get("agent_name", ""),
                 ok="yes" if item.get("ok") else "no",
                 count=item.get("artifact_count", 0),
                 missing=missing,
@@ -496,6 +559,7 @@ def smoke_template(
     token: str,
 ) -> dict[str, Any]:
     name = str(template["name"])
+    agent_name = template_agent_name(template)
     thread_id = f"app-smoke-{name}-{int(time.time())}"[:96]
     prompt = (template.get("prompt_examples") or [f"Run a minimum viable smoke task for app {name}."])[0]
     attachments = []
@@ -517,13 +581,20 @@ def smoke_template(
     started = time.time()
     entry: dict[str, Any] = {
         "name": name,
+        "agent_name": agent_name,
         "thread_id": thread_id,
         "workflow": template.get("workflow"),
         "selected_skills": template.get("selected_skills") or [],
         "attached_smoke_image": bool(attachments),
     }
     try:
-        result = post_json(base_url, "/api/agents/default/runs", payload, timeout, token)
+        result = post_json(
+            base_url,
+            f"/api/agents/{urllib.parse.quote(agent_name, safe='')}/runs",
+            payload,
+            timeout,
+            token,
+        )
         artifacts = get_json(base_url, f"/api/artifacts/{urllib.parse.quote(thread_id)}", timeout, token).get("artifacts", [])
         metadata = result.get("metadata") or {}
         artifact_names = [str(item.get("name") or "") for item in artifacts if item.get("name")]
@@ -532,12 +603,14 @@ def smoke_template(
         missing_patterns = missing_artifact_patterns(artifact_names, expected_patterns)
         unexpected_artifacts = unexpected_skill_artifacts(template, artifact_names)
         content_errors = validate_artifact_contents(base_url, artifacts, timeout, token)
+        requires_input = bool(metadata.get("requires_input"))
         checks = {
             "status_completed": result.get("status") == "completed",
             "artifacts_present": (not expected_artifacts) or bool(artifacts),
             "expected_artifacts_present": not missing_patterns,
             "no_unexpected_skill_artifacts": not unexpected_artifacts,
             "artifact_contents_valid": not content_errors,
+            "input_requirement_satisfied": (not attachments) or (not requires_input),
         }
         continuation_check = None
         if all(checks.values()) and check_continuation and should_check_continuation(template):
@@ -566,7 +639,7 @@ def smoke_template(
                 "tool_rounds": metadata.get("tool_rounds"),
                 "tool_call_count": metadata.get("tool_call_count"),
                 "mode": metadata.get("mode"),
-                "requires_input": bool(metadata.get("requires_input")),
+                "requires_input": requires_input,
             }
         )
     except Exception as exc:  # pragma: no cover - live smoke diagnostics

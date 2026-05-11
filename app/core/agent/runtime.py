@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import uuid4
@@ -461,7 +462,8 @@ class AgentRuntime:
         return agent_config.model_copy(update=updates, deep=True)
 
     def _effective_request(self, request: ChatRequest) -> ChatRequest:
-        runtime_options = self._effective_runtime_options(request.runtime_options)
+        runtime_options = self._runtime_options_with_message_capabilities(request.runtime_options, request.messages)
+        runtime_options = self._effective_runtime_options(runtime_options)
         attachments = request.attachments
         if not attachments and runtime_options.thread_id:
             attachments = self._thread_file_attachments(runtime_options.thread_id)
@@ -472,6 +474,31 @@ class AgentRuntime:
             update={"runtime_options": runtime_options, "messages": messages, "attachments": attachments},
             deep=True,
         )
+
+    def _runtime_options_with_message_capabilities(
+        self,
+        runtime_options: RuntimeOptions,
+        messages: list[Message],
+    ) -> RuntimeOptions:
+        if runtime_options.selected_skills:
+            return runtime_options
+        selected_skills = self._selected_skills_from_messages(messages)
+        if not selected_skills:
+            return runtime_options
+        data = runtime_options.model_dump(mode="python")
+        data["selected_skills"] = selected_skills
+        return RuntimeOptions.model_validate(data)
+
+    @classmethod
+    def _selected_skills_from_messages(cls, messages: list[Message]) -> list[str]:
+        for message in reversed(messages):
+            if message.role != "user" or "Selected Skills:" not in message.content:
+                continue
+            match = re.search(r"(?im)^\s*Selected Skills:\s*(.+?)\s*$", message.content)
+            if match is None:
+                continue
+            return cls._normalize_skills([item.strip() for item in match.group(1).split(",")]) or []
+        return []
 
     def _thread_file_attachments(self, thread_id: str) -> list[Attachment]:
         paths = self.artifact_store.prepare_thread(thread_id)

@@ -89,7 +89,11 @@ export const useWorkbenchStore = defineStore("workbench", {
       return state.agents.find((agent) => agent.name === state.selectedAgent);
     },
     runtimeOptions(state): Record<string, unknown> {
+      const template = state.appTemplates.find((item) => item.name === state.selectedAppTemplateName);
+      const templateOptions =
+        template?.runtime_options && typeof template.runtime_options === "object" ? template.runtime_options : {};
       return {
+        ...templateOptions,
         thread_id: state.threadId,
         selected_skills: [...state.selectedSkills],
         selected_mcp_tools: [...state.selectedMcpTools],
@@ -97,7 +101,11 @@ export const useWorkbenchStore = defineStore("workbench", {
       };
     },
     acpRuntimeOptions(state): Record<string, unknown> {
+      const template = state.appTemplates.find((item) => item.name === state.selectedAppTemplateName);
+      const templateOptions =
+        template?.runtime_options && typeof template.runtime_options === "object" ? template.runtime_options : {};
       return {
+        ...templateOptions,
         threadId: state.threadId,
         selectedSkills: [...state.selectedSkills],
         selectedMcpTools: [...state.selectedMcpTools],
@@ -577,7 +585,7 @@ export const useWorkbenchStore = defineStore("workbench", {
           this.finishAssistantMessage(result.reply);
         }
       }
-      this.artifacts = result.artifacts || this.artifacts;
+      if (result.artifacts?.length) this.artifacts = result.artifacts;
       this.verification = result.verification || this.verification;
       this.spec = result.spec ?? this.spec;
       this.maybePromptForRequiredInputs(result);
@@ -682,6 +690,10 @@ export const useWorkbenchStore = defineStore("workbench", {
       } finally {
         this.finishAssistantMessage();
         this.running = false;
+        await this.refreshArtifacts().catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.addTimeline("刷新文件失败", message);
+        });
         if (!this.requiredInputs.length) this.attachments = [];
       }
     },

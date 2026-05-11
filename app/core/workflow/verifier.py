@@ -208,6 +208,11 @@ class OutputVerifier:
                 VerificationCheck(name="coco_json_valid", passed=isinstance(payload, dict), detail=artifact.name),
                 VerificationCheck(name="coco_has_images", passed=isinstance(images, list) and bool(images), detail=str(type(images).__name__)),
                 VerificationCheck(name="coco_has_annotations", passed=isinstance(annotations, list), detail=str(type(annotations).__name__)),
+                VerificationCheck(
+                    name="coco_has_detected_objects",
+                    passed=isinstance(annotations, list) and bool(annotations),
+                    detail=f"annotations={len(annotations) if isinstance(annotations, list) else 0}",
+                ),
                 VerificationCheck(name="coco_has_categories", passed=isinstance(categories, list), detail=str(type(categories).__name__)),
             ]
         )

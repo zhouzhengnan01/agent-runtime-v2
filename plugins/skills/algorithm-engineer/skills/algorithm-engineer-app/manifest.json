@@ -5,8 +5,19 @@
   "generation": true,
   "routing": {
     "summary": "Use as the single application entry for end-to-end algorithm engineering work. It produces a full workspace package with stage board, routing, permission gates, commands, metrics, artifacts, and next actions.",
-    "keywords": ["完整算法工程师应用", "算法工程师应用", "完整应用", "一站式", "工作台", "全流程搞定", "整合"],
-    "examples": ["帮我整合一个完整的算法工程师应用", "把算法工程师从数据到训练评估上线做成一个工作台"]
+    "keywords": [
+      "完整算法工程师应用",
+      "算法工程师应用",
+      "完整应用",
+      "一站式",
+      "工作台",
+      "全流程搞定",
+      "整合"
+    ],
+    "examples": [
+      "帮我整合一个完整的算法工程师应用",
+      "把算法工程师从数据到训练评估上线做成一个工作台"
+    ]
   },
   "quality_template": [
     "dashboard",
@@ -20,22 +31,60 @@
   ],
   "input_schema": {
     "type": "object",
-    "required": ["skill_name", "objective"],
+    "required": [
+      "skill_name",
+      "objective"
+    ],
     "properties": {
-      "skill_name": { "const": "algorithm-engineer-app" },
-      "objective": { "type": "string" },
-      "dataset_path": { "type": "string" },
-      "baseline": { "type": "string" },
-      "machines": { "type": "array", "items": { "type": "string" } },
-      "candidate_algorithms": { "type": "array", "items": { "type": "string" } }
+      "skill_name": {
+        "const": "algorithm-engineer-app"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "dataset_path": {
+        "type": "string"
+      },
+      "baseline": {
+        "type": "string"
+      },
+      "machines": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "candidate_algorithms": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
     },
     "additionalProperties": true
   },
   "output_schema": {
     "type": "object",
-    "required": ["artifacts"],
-    "properties": { "artifacts": { "type": "array" } },
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
     "additionalProperties": true
   },
-  "sandbox": { "enabled": false, "profile": null, "request_schema_version": "skill-run.v1", "fallback_to_local": true }
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call",
+    "rerank"
+  ]
 }

@@ -5,21 +5,73 @@
   "generation": true,
   "routing": {
     "summary": "Use for dataset deduplication, label conflict checks, YOLO dataset construction, split planning, and dataset audit statistics.",
-    "keywords": ["数据集", "数据治理", "去重", "标签冲突", "YOLO 格式", "data.yaml", "空标签", "缺标签"],
-    "examples": ["把去重图库构建成 YOLO 训练集", "审计这个数据集有没有标签冲突和空标签"]
+    "keywords": [
+      "数据集",
+      "数据治理",
+      "去重",
+      "标签冲突",
+      "YOLO 格式",
+      "data.yaml",
+      "空标签",
+      "缺标签"
+    ],
+    "examples": [
+      "把去重图库构建成 YOLO 训练集",
+      "审计这个数据集有没有标签冲突和空标签"
+    ]
   },
-  "quality_template": ["dedup", "conflict_report", "split", "data_yaml", "statistics", "reproducibility"],
+  "quality_template": [
+    "dedup",
+    "conflict_report",
+    "split",
+    "data_yaml",
+    "statistics",
+    "reproducibility"
+  ],
   "input_schema": {
     "type": "object",
-    "required": ["skill_name"],
+    "required": [
+      "skill_name"
+    ],
     "properties": {
-      "skill_name": { "const": "dataset-curator" },
-      "source_path": { "type": "string" },
-      "output_path": { "type": "string" },
-      "label_priority": { "type": "array", "items": { "type": "string" } }
+      "skill_name": {
+        "const": "dataset-curator"
+      },
+      "source_path": {
+        "type": "string"
+      },
+      "output_path": {
+        "type": "string"
+      },
+      "label_priority": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
     },
     "additionalProperties": true
   },
-  "output_schema": { "type": "object", "required": ["artifacts"], "properties": { "artifacts": { "type": "array" } }, "additionalProperties": true },
-  "sandbox": { "enabled": false, "profile": null, "request_schema_version": "skill-run.v1", "fallback_to_local": true }
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning"
+  ]
 }

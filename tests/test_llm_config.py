@@ -8,6 +8,7 @@ from pytest import MonkeyPatch
 
 from app.core.config.agent_config import AgentConfig, ModelConfig
 from app.core.llm import OpenAICompatibleClient
+from app.core.runtime import ModelManager
 from app.schemas import Message, RuntimeOptions
 
 
@@ -208,6 +209,23 @@ def test_runtime_selected_mcp_tools_enable_tool_choice_auto(monkeypatch: MonkeyP
     assert client.tool_choice == "auto"
     assert payload["tool_choice"] == "auto"
     assert payload["tools"][0]["function"]["name"] == "selected_status_tool"
+
+
+def test_model_manager_normalizes_model_tags_for_public_payload() -> None:
+    manager = ModelManager(
+        [
+            {
+                "id": "vision-model",
+                "config": {"model": "vision-model", "base_url": "http://llm.local/v1"},
+                "capabilities": ["chat", "tool_calling", "vision-segmentation", "reranking", "unknown"],
+            }
+        ]
+    )
+
+    payload = manager.list_public_payloads()[0]
+
+    assert payload["capabilities"] == ["chat", "tool_call", "vision_segmentation", "rerank"]
+    assert payload["model_tags"] == ["chat", "tool_call", "vision_segmentation", "rerank"]
 
 
 def test_complete_uses_json_model_config_without_authorization_header(monkeypatch: MonkeyPatch) -> None:

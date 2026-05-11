@@ -5,21 +5,69 @@
   "generation": true,
   "routing": {
     "summary": "Use for choosing which models to benchmark instead of trying unlimited algorithms.",
-    "keywords": ["候选模型", "模型选择", "baseline", "显存", "部署难度", "推理成本", "训练成本"],
-    "examples": ["帮我选 2-3 个最值得训练的检测模型", "RT-DETR 和 YOLO 谁更适合上线"]
+    "keywords": [
+      "候选模型",
+      "模型选择",
+      "baseline",
+      "显存",
+      "部署难度",
+      "推理成本",
+      "训练成本"
+    ],
+    "examples": [
+      "帮我选 2-3 个最值得训练的检测模型",
+      "RT-DETR 和 YOLO 谁更适合上线"
+    ]
   },
-  "quality_template": ["baseline", "candidate_shortlist", "cost", "deployment_fit", "business_metric_fit"],
+  "quality_template": [
+    "baseline",
+    "candidate_shortlist",
+    "cost",
+    "deployment_fit",
+    "business_metric_fit"
+  ],
   "input_schema": {
     "type": "object",
-    "required": ["skill_name"],
+    "required": [
+      "skill_name"
+    ],
     "properties": {
-      "skill_name": { "const": "model-candidate-selector" },
-      "baseline": { "type": "string" },
-      "dataset_size": { "type": "integer" },
-      "deployment_target": { "type": "string" }
+      "skill_name": {
+        "const": "model-candidate-selector"
+      },
+      "baseline": {
+        "type": "string"
+      },
+      "dataset_size": {
+        "type": "integer"
+      },
+      "deployment_target": {
+        "type": "string"
+      }
     },
     "additionalProperties": true
   },
-  "output_schema": { "type": "object", "required": ["artifacts"], "properties": { "artifacts": { "type": "array" } }, "additionalProperties": true },
-  "sandbox": { "enabled": false, "profile": null, "request_schema_version": "skill-run.v1", "fallback_to_local": true }
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "rerank"
+  ]
 }

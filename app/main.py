@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +15,9 @@ from app.api import acp, agents, apps, artifacts, cron, health, mcp, sandbox, sk
 from app.core.runtime import RuntimeBootstrapConfig, default_container
 
 
+RUNTIME_BOOTSTRAP_ENV = "JETLINKS_RUNTIME_BOOTSTRAP"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     del app
@@ -24,8 +29,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app(bootstrap: RuntimeBootstrapConfig | dict | None = None) -> FastAPI:
-    if bootstrap is not None:
-        default_container.configure(bootstrap)
+    bootstrap_config = bootstrap if bootstrap is not None else _runtime_bootstrap_from_env()
+    if bootstrap_config is not None:
+        default_container.configure(bootstrap_config)
     app = FastAPI(title="JetLinks Agent Runtime v2", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
@@ -77,6 +83,19 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict | None = None) -> FastAP
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
     return app
+
+
+def _runtime_bootstrap_from_env() -> RuntimeBootstrapConfig | None:
+    raw_path = os.getenv(RUNTIME_BOOTSTRAP_ENV, "").strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parents[1] / path
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{RUNTIME_BOOTSTRAP_ENV} must point to a JSON object: {path}")
+    return RuntimeBootstrapConfig.model_validate(data)
 
 
 app = create_app()

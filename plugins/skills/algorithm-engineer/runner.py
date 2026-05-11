@@ -13,6 +13,7 @@ SKILL_TITLES = {
     "model-candidate-selector": "候选模型选择方案",
     "remote-gpu-ops": "远端 GPU 作业检查方案",
     "gpu-training-orchestrator": "GPU 训练编排方案",
+    "cpu-training-runner": "CPU 训练沙盒",
     "detector-evaluator": "检测与业务指标评估方案",
     "deployment-candidate-reviewer": "模型上线候选评审",
     "experiment-ledger": "实验台账记录",
@@ -20,6 +21,8 @@ SKILL_TITLES = {
 
 
 def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) -> dict[str, Any]:
+    if skill_name == "cpu-training-runner":
+        return _cpu_training_local_notice(skill_name, spec, paths, artifact_store)
     title = str(spec.get("title") or SKILL_TITLES.get(skill_name, skill_name))
     payload = _payload(skill_name, spec)
     markdown = _markdown(skill_name, title, spec, payload)
@@ -45,6 +48,36 @@ def format_reply(skill_name: str, verification: object, run_result: Any) -> str:
     data = getattr(run_result, "data", {}) or {}
     artifacts = getattr(run_result, "outputs", []) or []
     names = [getattr(item, "name", "") for item in artifacts if getattr(item, "name", "")]
+    if skill_name == "cpu-training-runner":
+        status = str(data.get("status") or "completed")
+        execution = str(data.get("execution_mode") or data.get("execution_type") or "")
+        if status == "completed" or "best.pt" in names:
+            return "\n".join(
+                [
+                    "CPU 训练沙盒已完成。",
+                    f"执行模式：{execution or 'cpu_training'}",
+                    f"产物：{', '.join(names)}" if names else "",
+                    "如果这是 mock smoke run，best.pt 只用于验证链路，不是可上线模型。",
+                ]
+            ).strip()
+        return "\n".join(
+            [
+                "CPU 训练沙盒未完成。",
+                str(data.get("error") or data.get("message") or "请检查 data.yaml、依赖和 train.log。"),
+                f"产物：{', '.join(names)}" if names else "",
+            ]
+        ).strip()
+    sequence = data.get("sequence") if isinstance(data, dict) else None
+    if isinstance(sequence, list) and sequence:
+        completed = [str(item.get("skill_name") or "") for item in sequence if isinstance(item, dict)]
+        return "\n".join(
+            [
+                "算法工程师工作台已进入多阶段执行链路。",
+                f"已打通阶段：{', '.join(name for name in completed if name)}",
+                f"产物：{', '.join(names)}" if names else "",
+                "下一步请从任务澄清、数据治理或 GPU 只读检查中选择一个动作继续推进。",
+            ]
+        ).strip()
     return "\n".join(
         [
             f"{SKILL_TITLES.get(skill_name, skill_name)}已生成。",
@@ -90,6 +123,8 @@ def _summary(skill_name: str, base: dict[str, Any]) -> str:
         return "把散乱图像和标签整理成可复现 YOLO 训练集，并输出冲突、空标签和类别统计。"
     if skill_name == "gpu-training-orchestrator":
         return "先跑小 benchmark，再按显存和耗时决定正式训练参数，并持续记录日志。"
+    if skill_name == "cpu-training-runner":
+        return "在本机 CPU 沙盒中启动受限 YOLO 训练任务，并收集 best.pt、last.pt、results.csv 和训练摘要。"
     if skill_name == "detector-evaluator":
         return "同时解释检测指标和棕榈果计数业务指标，避免只按 mAP 上线。"
     if skill_name == "deployment-candidate-reviewer":
@@ -114,6 +149,7 @@ def _phases(skill_name: str, base: dict[str, Any]) -> list[dict[str, Any]]:
         "model-candidate-selector": [common[0], common[2], {"name": "成本评估", "outputs": ["训练显存", "推理速度", "部署难度", "业务风险"]}],
         "remote-gpu-ops": [common[0], {"name": "远端检查", "outputs": ["nvidia-smi", "df -h", "docker ps", "CUDA/PyTorch/Ultralytics 版本"]}],
         "gpu-training-orchestrator": [common[3], common[4], {"name": "监控", "outputs": ["tail results.csv", "nvidia-smi", "ETA", "best/last 权重"]}],
+        "cpu-training-runner": [common[3], common[4], {"name": "产物收集", "outputs": ["best.pt", "last.pt", "results.csv", "args.yaml", "training-summary.md"]}],
         "detector-evaluator": [common[5], {"name": "候选排序", "outputs": ["mAP50-95 best", "mAP50 best", "recall best", "业务误差最低"]}],
         "deployment-candidate-reviewer": [common[5], common[6]],
         "experiment-ledger": [common[7], {"name": "实验对比", "outputs": ["compare_experiments", "summarize_results_csv", "复盘 notes"]}],
@@ -140,6 +176,9 @@ def _commands(skill_name: str, base: dict[str, Any]) -> list[str]:
             "yolo detect train model=rtdetr-l.pt data=data.yaml epochs=30 batch=2 imgsz=640 patience=8 amp=False name=rtdetr_l_integrated_dedup_v1_e30_ampoff",
             "tail -f runs/detect/<name>/results.csv",
         ],
+        "cpu-training-runner": [
+            "yolo detect train model=yolo11n.pt data=<data.yaml> epochs=1 imgsz=320 batch=1 device=cpu workers=0 name=cpu_train_smoke",
+        ],
         "detector-evaluator": [
             "yolo detect val model=runs/detect/<name>/weights/best.pt data=data.yaml imgsz=640 conf=0.25",
             "python scripts/compare_counting_ab.py --baseline <baseline.pt> --candidate <best.pt> --review-set <review.csv>",
@@ -164,6 +203,8 @@ def _metrics(skill_name: str) -> list[str]:
         return ["unique images", "labeled images", "empty labels", "box count", "class distribution", "conflict groups"]
     if skill_name == "gpu-training-orchestrator":
         return ["epoch time", "GPU memory peak", "GPU utilization", "best mAP50-95", "ETA"]
+    if skill_name == "cpu-training-runner":
+        return ["best.pt exists", "results.csv exists", "epoch time", "CPU smoke status"]
     return ["feasibility", "risk", "cost", "deployment fit"]
 
 
@@ -175,6 +216,7 @@ def _deliverables(skill_name: str) -> list[str]:
         "model-candidate-selector": ["candidate_model_plan.md"],
         "remote-gpu-ops": ["remote_gpu_snapshot.md", "sync_plan.sh"],
         "gpu-training-orchestrator": ["training_plan.md", "monitoring_checklist.md"],
+        "cpu-training-runner": ["best.pt", "last.pt", "results.csv", "args.yaml", "training-summary.md", "train.log"],
         "detector-evaluator": ["evaluation_report.md", "business_ab_table.csv"],
         "deployment-candidate-reviewer": ["deployment_review.md", "rollback_plan.md"],
         "experiment-ledger": ["experiment_ledger.yaml", "experiment_summary.md"],
@@ -200,6 +242,8 @@ def _next_actions(skill_name: str) -> list[str]:
         return ["确认源数据路径", "运行去重和标签冲突脚本", "生成 YOLO data.yaml", "抽样人工复核"]
     if skill_name == "gpu-training-orchestrator":
         return ["确认 GPU 空闲和磁盘空间", "跑 epochs=1 benchmark", "评估显存和耗时", "启动正式训练"]
+    if skill_name == "cpu-training-runner":
+        return ["提供 YOLO data.yaml", "确认 CPU smoke 参数", "安装 ultralytics/torch 依赖", "启动 epochs=1 训练并收集 best.pt"]
     if skill_name == "detector-evaluator":
         return ["收集 baseline 和候选权重", "在同一审核集上跑检测和计数评估", "按业务误差排序"]
     return ["补齐输入路径和约束", "生成执行命令", "记录实验结论"]
@@ -252,6 +296,35 @@ def _markdown(skill_name: str, title: str, spec: dict[str, Any], payload: dict[s
 
 def _safe_name(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value).strip("-") or "algorithm-output"
+
+
+def _cpu_training_local_notice(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) -> dict[str, Any]:
+    content = "\n".join(
+        [
+            "# CPU 训练沙盒需要沙盒执行",
+            "",
+            "当前请求没有进入 sandbox/local_subprocess 执行路径，因此没有启动真实训练。",
+            "",
+            "请确认：",
+            "",
+            "- `SANDBOX_PROVIDER=local_subprocess`",
+            "- `SANDBOX_EXECUTOR_ENABLED=true`",
+            "- `cpu-training-runner` 的 sandbox profile 为 `python-skill`",
+            "- 已提供 `data_yaml`，或者仅 smoke test 时设置 `mock=true`",
+            "",
+        ]
+    )
+    artifact = artifact_store.write_text_artifact(paths, "cpu-training-runner-not-started.md", content)
+    return {
+        "skill_name": skill_name,
+        "outputs": [artifact],
+        "data": {
+            "status": "not_started",
+            "execution_mode": "local_notice",
+            "message": "cpu-training-runner must run through sandbox/local_subprocess to start training.",
+            "spec": spec,
+        },
+    }
 
 
 def _algorithm_engineer_app_payload(base: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:

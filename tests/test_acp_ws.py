@@ -324,6 +324,8 @@ def test_acp_websocket_prompt_infers_input_required_image(
 def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypatch: pytest.MonkeyPatch) -> None:
     reply = "我可以处理 JetLinks 对话、文件生成和证据优先的行为识别。"
 
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
+
     async def fake_complete(
         self: OpenAICompatibleClient,
         system_prompt: str,
@@ -1069,6 +1071,10 @@ def test_acp_websocket_resolves_server_managed_model_id(
 def test_acp_websocket_exposes_default_agent_model_when_model_manager_is_empty(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+
     runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
     model_manager = ModelManager()
     agent_default = acp_api.loader.load("default")
@@ -1088,12 +1094,15 @@ def test_acp_websocket_exposes_default_agent_model_when_model_manager_is_empty(
         )
         created = websocket.receive_json()["result"]
 
-    expected_model = agent_default.model.model
+    expected_model = agent_default.model.model or agent_default.model.default_model
     expected_base_url = agent_default.model.base_url
     assert created["models"]["currentModelId"] == expected_model
     assert created["models"]["currentModelName"] == expected_model
     assert created["runtimeOptions"]["modelName"] == expected_model
-    assert created["runtimeOptions"]["baseUrl"] == expected_base_url
+    if expected_base_url is None:
+        assert "baseUrl" not in created["runtimeOptions"]
+    else:
+        assert created["runtimeOptions"]["baseUrl"] == expected_base_url
     assert created["models"]["availableModels"][0]["id"] == expected_model
     assert created["models"]["availableModels"][0]["model"] == expected_model
 

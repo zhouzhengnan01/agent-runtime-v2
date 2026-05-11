@@ -5,71 +5,135 @@
   "generation": true,
   "routing": {
     "summary": "Use for architecture diagrams, topology diagrams, flowcharts, prototype wireframes, and Draw.io source plus PNG preview generation.",
-    "keywords": ["drawio", "draw.io", "架构图", "拓扑", "流程图", "原型图", "线框图", "diagram", "prototype", "wireframe"],
-    "examples": ["生成一份 JetLinks IoT 平台架构 Draw.io 图", "画一个原型图", "生成系统拓扑图"]
+    "keywords": [
+      "drawio",
+      "draw.io",
+      "架构图",
+      "拓扑",
+      "流程图",
+      "原型图",
+      "线框图",
+      "diagram",
+      "prototype",
+      "wireframe"
+    ],
+    "examples": [
+      "生成一份 JetLinks IoT 平台架构 Draw.io 图",
+      "画一个原型图",
+      "生成系统拓扑图"
+    ]
   },
-  "quality_template": ["nodes", "edges", "swimlanes", "layering", "semantic_colors"],
+  "quality_template": [
+    "nodes",
+    "edges",
+    "swimlanes",
+    "layering",
+    "semantic_colors"
+  ],
   "input_schema": {
     "type": "object",
-    "required": ["skill_name", "title", "nodes", "edges"],
+    "required": [
+      "skill_name",
+      "title",
+      "nodes",
+      "edges"
+    ],
     "properties": {
-      "skill_name": { "const": "drawio-generation" },
-      "title": { "type": "string", "description": "Diagram title." },
+      "skill_name": {
+        "const": "drawio-generation"
+      },
+      "title": {
+        "type": "string",
+        "description": "Diagram title."
+      },
       "diagram_type": {
         "type": "string",
-        "enum": ["layered_architecture", "prototype_wireframe", "flowchart"],
+        "enum": [
+          "layered_architecture",
+          "prototype_wireframe",
+          "flowchart"
+        ],
         "default": "layered_architecture"
       },
       "nodes": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "minItems": 2
       },
       "edges": {
         "type": "array",
         "items": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "minItems": 2,
           "maxItems": 2
         }
       },
       "swimlanes": {
         "type": "array",
-        "items": { "type": "string" }
+        "items": {
+          "type": "string"
+        }
       },
       "lane_nodes": {
         "type": "object",
         "additionalProperties": {
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         }
       },
       "visual_style": {
         "type": "string",
-        "enum": ["standard", "polished"],
+        "enum": [
+          "standard",
+          "polished"
+        ],
         "default": "standard"
       },
       "color_semantics": {
         "type": "object",
-        "additionalProperties": { "type": "string" }
+        "additionalProperties": {
+          "type": "string"
+        }
       }
     },
     "additionalProperties": true
   },
   "output_schema": {
     "type": "object",
-    "required": ["artifacts"],
+    "required": [
+      "artifacts"
+    ],
     "properties": {
       "artifacts": {
         "type": "array",
         "items": {
           "type": "object",
-          "required": ["name", "mime_type", "kind"],
+          "required": [
+            "name",
+            "mime_type",
+            "kind"
+          ],
           "properties": {
-            "name": { "type": "string" },
-            "mime_type": { "type": "string" },
-            "kind": { "type": "string", "enum": ["text", "image"] }
+            "name": {
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "text",
+                "image"
+              ]
+            }
           }
         }
       }
@@ -81,5 +145,8 @@
     "request_schema_version": "skill-run.v1",
     "adapter_command": "python /opt/jetlinks/skills/run_skill.py --request {request_path} --outputs {outputs_dir}",
     "fallback_to_local": true
-  }
+  },
+  "model_tags": [
+    "chat"
+  ]
 }

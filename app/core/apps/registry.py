@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 
 from app.core.apps.models import AppTemplate
+from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfigLoader
 from app.core.mcp import McpToolRegistry
 from app.core.skills import SkillRegistry
+from app.core.workflow import WorkflowRegistry
 
 
 class AppTemplateRegistry:
@@ -73,7 +75,7 @@ class AppTemplateRegistry:
         agents = {agent.name for agent in AgentConfigLoader(self.root_dir).list_agents()}
         skills = {skill.name for skill in SkillRegistry(self.root_dir).list()}
         mcp_tools = {tool.name for tool in McpToolRegistry(self.root_dir).list(include_disabled=True)}
-        workflows = {"agent_loop", "artifact_workflow", "evidence_first_detection"}
+        workflows = {"agent_loop", *WorkflowRegistry.builtin(ArtifactStore(), self.root_dir).names()}
         problems: builtins.list[str] = []
         for template in self._read_templates():
             prefix = f"{template.name}:"

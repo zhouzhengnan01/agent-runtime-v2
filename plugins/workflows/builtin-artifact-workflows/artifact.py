@@ -469,7 +469,7 @@ class ArtifactWorkflow:
                 skill = self.skill_registry.get(skill_name)
             except KeyError:
                 continue
-            if skill.runner_path is not None:
+            if skill.executable:
                 return skill.name
         return None
 
@@ -488,6 +488,6 @@ class ArtifactWorkflow:
                 skill = self.skill_registry.get(skill_name)
             except KeyError:
                 continue
-            if skill.runner_path is not None:
+            if skill.executable:
                 names.append(skill.name)
         return names

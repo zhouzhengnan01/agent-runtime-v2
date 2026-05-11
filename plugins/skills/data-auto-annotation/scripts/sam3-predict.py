@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ import requests
 from PIL import Image
 
 DEFAULT_URL = "http://192.168.33.140:8800/sam3/predict"
+URL_ENV_NAMES = ("SAM3_PREDICT_URL", "SAM3_URL")
 DEFAULT_TOKEN = "abc@123"
 DEFAULT_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DEFAULT_CONNECT_TIMEOUT = 5
@@ -60,6 +62,17 @@ def build_args() -> argparse.Namespace:
         help="Path to save COCO JSON output. If omitted, prints COCO JSON to stdout.",
     )
     return parser.parse_args()
+
+
+def effective_url(value: str) -> str:
+    normalized = str(value or "").strip()
+    if normalized in {"$SAM3_PREDICT_URL", "${SAM3_PREDICT_URL}", "$SAM3_URL", "${SAM3_URL}", ""}:
+        for env_name in URL_ENV_NAMES:
+            env_value = os.getenv(env_name, "").strip()
+            if env_value:
+                return env_value
+        return DEFAULT_URL
+    return normalized
 
 
 def resolve_prompts(args: argparse.Namespace) -> list[str]:
@@ -219,7 +232,7 @@ def post_image(args: argparse.Namespace, headers: dict[str, str], data: dict[str
     with image_path.open("rb") as f:
         files = {"file": (image_path.name, f, content_type)}
         response = requests.post(
-            args.url,
+            effective_url(args.url),
             headers=headers,
             data=data,
             files=files,
@@ -234,8 +247,8 @@ def _error_payload(error_type: str, message: str, args: argparse.Namespace) -> d
         "ok": False,
         "error_type": error_type,
         "message": message,
-        "url": args.url,
-        "hint": "SAM3 annotation endpoint is unreachable. Check the endpoint host/port, VPN/network route, or configure a reachable --url.",
+        "url": effective_url(args.url),
+        "hint": "SAM3 annotation endpoint is unreachable. Check the endpoint host/port, VPN/network route, or configure SAM3_PREDICT_URL.",
     }
 
 

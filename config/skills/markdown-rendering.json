@@ -5,25 +5,58 @@
   "generation": true,
   "routing": {
     "summary": "Use for Markdown documents, architecture notes, reports, tables, Mermaid diagrams, ECharts blocks, and rich text artifacts.",
-    "keywords": ["markdown", "md", "文档", "报告", "说明", "mermaid", "表格"],
-    "examples": ["生成一份 markdown 架构说明", "输出一份技术报告", "生成带 Mermaid 的文档"]
+    "keywords": [
+      "markdown",
+      "md",
+      "文档",
+      "报告",
+      "说明",
+      "mermaid",
+      "表格"
+    ],
+    "examples": [
+      "生成一份 markdown 架构说明",
+      "输出一份技术报告",
+      "生成带 Mermaid 的文档"
+    ]
   },
-  "quality_template": ["mermaid", "tables", "echarts_block", "attachment_block"],
+  "quality_template": [
+    "mermaid",
+    "tables",
+    "echarts_block",
+    "attachment_block"
+  ],
   "input_schema": {
     "type": "object",
-    "required": ["skill_name", "title"],
+    "required": [
+      "skill_name",
+      "title"
+    ],
     "properties": {
-      "skill_name": { "const": "markdown-rendering" },
-      "title": { "type": "string" },
-      "summary": { "type": "string" },
+      "skill_name": {
+        "const": "markdown-rendering"
+      },
+      "title": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      },
       "sections": {
         "type": "array",
         "items": {
           "type": "object",
-          "required": ["title", "content"],
+          "required": [
+            "title",
+            "content"
+          ],
           "properties": {
-            "title": { "type": "string" },
-            "content": { "type": "string" }
+            "title": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            }
           },
           "additionalProperties": true
         }
@@ -33,17 +66,32 @@
   },
   "output_schema": {
     "type": "object",
-    "required": ["artifacts"],
+    "required": [
+      "artifacts"
+    ],
     "properties": {
       "artifacts": {
         "type": "array",
         "items": {
           "type": "object",
-          "required": ["name", "mime_type", "kind"],
+          "required": [
+            "name",
+            "mime_type",
+            "kind"
+          ],
           "properties": {
-            "name": { "type": "string" },
-            "mime_type": { "type": "string" },
-            "kind": { "type": "string", "enum": ["markdown"] }
+            "name": {
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "markdown"
+              ]
+            }
           }
         }
       }
@@ -54,5 +102,8 @@
     "profile": null,
     "request_schema_version": "skill-run.v1",
     "fallback_to_local": true
-  }
+  },
+  "model_tags": [
+    "chat"
+  ]
 }

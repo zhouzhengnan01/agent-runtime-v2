@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.core.apps import AppTemplateRegistry
 from app.main import create_app
-from tools.app_smoke_matrix import expected_artifact_patterns
+from tools.app_smoke_matrix import expected_artifact_patterns, template_expects_artifacts
 
 
 def test_app_template_registry_lists_and_gets_templates(tmp_path: Path) -> None:
@@ -23,6 +23,7 @@ def test_app_template_registry_lists_and_gets_templates(tmp_path: Path) -> None:
                         "title": "Demo App",
                         "agent_name": "default",
                         "selected_skills": ["markdown-rendering"],
+                        "model_tags": ["chat", "tool_calling", "unknown"],
                         "prompt_examples": ["hello"],
                     }
                 ]
@@ -36,6 +37,7 @@ def test_app_template_registry_lists_and_gets_templates(tmp_path: Path) -> None:
 
     assert [template.name for template in templates] == ["demo"]
     assert registry.get("demo").selected_skills == ["markdown-rendering"]
+    assert registry.get("demo").model_tags == ["chat", "tool_call"]
 
 
 def test_app_template_registry_deduplicates_collection_and_file_templates(tmp_path: Path) -> None:
@@ -103,6 +105,145 @@ def test_preconfigured_app_templates_reference_existing_capabilities() -> None:
     assert registry.validate_references() == []
 
 
+def test_preconfigured_app_templates_carry_runtime_model_defaults() -> None:
+    registry = AppTemplateRegistry()
+
+    for template in registry.list():
+        options = template.runtime_options
+        assert options["model_name"] == "Qwen3.6-35B-A3B", template.name
+        assert options["model_env"] == "LLM_MODEL", template.name
+        assert options["base_url"] == "http://124.132.152.75:62092/v1", template.name
+        assert options["base_url_env"] == "LLM_BASE_URL", template.name
+        assert options["api_key_env"] == "LLM_API_KEY", template.name
+        assert options["temperature"] == 0.4, template.name
+        assert options["max_tokens"] == 2048, template.name
+
+
+def test_preconfigured_app_templates_carry_model_tags() -> None:
+    registry = AppTemplateRegistry()
+    allowed = {
+        "chat",
+        "reasoning",
+        "vision",
+        "embedding",
+        "tool_call",
+        "image_generation",
+        "video_generation",
+        "audio_generation",
+        "text_to_speech",
+        "speech_to_text",
+        "vision_segmentation",
+        "rerank",
+    }
+
+    for template in registry.list():
+        assert template.model_tags, template.name
+        assert set(template.model_tags) <= allowed, template.name
+        assert "tool_calling" not in template.model_tags, template.name
+
+    assert AppTemplateRegistry().get("data-auto-annotation").model_tags == [
+        "chat",
+        "vision_segmentation",
+        "tool_call",
+    ]
+
+
+def test_data_auto_annotation_template_does_not_preselect_mcp_tools() -> None:
+    template = AppTemplateRegistry().get("data-auto-annotation")
+
+    assert template.selected_skills == ["data-auto-annotation"]
+    assert template.selected_mcp_tools == []
+
+
+def test_algorithm_engineer_workbench_selects_full_stage_skill_chain() -> None:
+    template = AppTemplateRegistry().get("algorithm-engineer-workbench")
+
+    assert template.workflow == "artifact_workflow"
+    assert template.selected_skills == [
+        "algorithm-engineer-app",
+        "algorithm-engineer",
+        "dataset-curator",
+        "algorithm-research-scout",
+        "model-candidate-selector",
+        "remote-gpu-ops",
+        "gpu-training-orchestrator",
+        "detector-evaluator",
+        "deployment-candidate-reviewer",
+        "experiment-ledger",
+    ]
+
+
+def test_algorithm_cpu_training_sandbox_template_selects_training_runner() -> None:
+    template = AppTemplateRegistry().get("algorithm-cpu-training-sandbox")
+
+    assert template.workflow == "artifact_workflow"
+    assert template.selected_skills == ["cpu-training-runner"]
+
+
+def test_app_template_reference_validation_uses_installed_workflow_plugins(tmp_path: Path) -> None:
+    (tmp_path / "config" / "agents").mkdir(parents=True)
+    (tmp_path / "config" / "agents" / "default.json").write_text(
+        json.dumps({"name": "default", "display_name": "Default Agent"}),
+        encoding="utf-8",
+    )
+    apps_dir = tmp_path / "config" / "apps"
+    apps_dir.mkdir(parents=True)
+    (apps_dir / "custom.json").write_text(
+        json.dumps(
+            {
+                "name": "custom",
+                "title": "Custom Workflow App",
+                "agent_name": "default",
+                "workflow": "custom_workflow",
+            }
+        ),
+        encoding="utf-8",
+    )
+    plugin_root = tmp_path / "plugins" / "workflows" / "custom-workflow"
+    workflow_dir = plugin_root / "workflows" / "custom"
+    workflow_dir.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        json.dumps({"id": "custom-workflow", "name": "Custom Workflow", "workflows": ["workflows/*/workflow.json"]}),
+        encoding="utf-8",
+    )
+    (workflow_dir / "workflow.json").write_text(
+        json.dumps(
+            {
+                "name": "custom_workflow",
+                "display_name": "Custom Workflow",
+                "handler": "module.py:CustomWorkflow",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "module.py").write_text(
+        """
+class CustomWorkflow:
+    def run_with_events(self, *args, **kwargs):
+        raise NotImplementedError
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert AppTemplateRegistry(root_dir=tmp_path).validate_references() == []
+
+    (apps_dir / "custom.json").write_text(
+        json.dumps(
+            {
+                "name": "custom",
+                "title": "Custom Workflow App",
+                "agent_name": "default",
+                "workflow": "missing_workflow",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert AppTemplateRegistry(root_dir=tmp_path).validate_references() == [
+        "custom: unknown workflow missing_workflow"
+    ]
+
+
 def test_preconfigured_app_templates_have_no_duplicate_names_or_titles() -> None:
     registry = AppTemplateRegistry()
     templates = registry.list()
@@ -121,7 +262,7 @@ def test_preconfigured_app_templates_have_smoke_artifact_expectations() -> None:
     missing = [
         template.name
         for template in registry.list()
-        if template.selected_skills and not expected_artifact_patterns(template.model_dump())
+        if template_expects_artifacts(template.model_dump()) and not expected_artifact_patterns(template.model_dump())
     ]
 
     assert missing == []

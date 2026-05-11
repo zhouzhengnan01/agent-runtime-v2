@@ -5,21 +5,72 @@
   "generation": true,
   "routing": {
     "summary": "Use for mAP/precision/recall interpretation and conversion to business count accuracy decisions.",
-    "keywords": ["评估", "mAP50", "mAP50-95", "precision", "recall", "计数误差", "totalAccuracy", "A/B"],
-    "examples": ["解释这几个模型的 mAP 和计数误差", "用业务指标选择上线模型"]
+    "keywords": [
+      "评估",
+      "mAP50",
+      "mAP50-95",
+      "precision",
+      "recall",
+      "计数误差",
+      "totalAccuracy",
+      "A/B"
+    ],
+    "examples": [
+      "解释这几个模型的 mAP 和计数误差",
+      "用业务指标选择上线模型"
+    ]
   },
-  "quality_template": ["detection_metrics", "business_metrics", "ab_table", "error_examples", "conf_recommendation"],
+  "quality_template": [
+    "detection_metrics",
+    "business_metrics",
+    "ab_table",
+    "error_examples",
+    "conf_recommendation"
+  ],
   "input_schema": {
     "type": "object",
-    "required": ["skill_name"],
+    "required": [
+      "skill_name"
+    ],
     "properties": {
-      "skill_name": { "const": "detector-evaluator" },
-      "baseline_model": { "type": "string" },
-      "candidate_models": { "type": "array", "items": { "type": "string" } },
-      "review_set": { "type": "string" }
+      "skill_name": {
+        "const": "detector-evaluator"
+      },
+      "baseline_model": {
+        "type": "string"
+      },
+      "candidate_models": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "review_set": {
+        "type": "string"
+      }
     },
     "additionalProperties": true
   },
-  "output_schema": { "type": "object", "required": ["artifacts"], "properties": { "artifacts": { "type": "array" } }, "additionalProperties": true },
-  "sandbox": { "enabled": false, "profile": null, "request_schema_version": "skill-run.v1", "fallback_to_local": true }
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning"
+  ]
 }

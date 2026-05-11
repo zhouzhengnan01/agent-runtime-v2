@@ -84,5 +84,8 @@
     "profile": null,
     "request_schema_version": "skill-run.v1",
     "fallback_to_local": true
-  }
+  },
+  "model_tags": [
+    "chat"
+  ]
 }

@@ -380,6 +380,58 @@ def test_agent_loop_runtime_selected_skill_hides_other_agent_skills(
     assert "behavior-detection" not in tools_event.data["tools"]
 
 
+def test_default_agent_runtime_selected_skill_hides_default_agent_skills(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="只执行自动标注。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="default-like-agent",
+        display_name="Default Like Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["artifact_list", "artifact_read", "present_files", "local_read_file"],
+        skills=["drawio-generation", "behavior-detection", "data-auto-annotation"],
+        workflows={"default": "agent_loop"},
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=artifact_store))
+    recorder = EventRecorder(agent=agent.name, thread_id="default-selected-skill-filter")
+
+    asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="把上传图片自动标注成 COCO")],
+            thread_id="default-selected-skill-filter",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="default-selected-skill-filter",
+                selected_skills=["data-auto-annotation"],
+            ),
+        )
+    )
+
+    assert "data-auto-annotation" in seen_tools
+    assert "behavior-detection" not in seen_tools
+    assert "drawio-generation" not in seen_tools
+    assert "artifact_list" in seen_tools
+    tools_event = next(event for event in recorder.events if event.type == "tools.available")
+    assert "data-auto-annotation" in tools_event.data["tools"]
+    assert "behavior-detection" not in tools_event.data["tools"]
+    assert "drawio-generation" not in tools_event.data["tools"]
+
+
 def test_agent_loop_exposes_runtime_selected_mcp_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

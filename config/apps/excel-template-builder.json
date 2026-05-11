@@ -9,7 +9,29 @@
   "selected_skills": [
     "excel-generation"
   ],
-  "selected_mcp_tools": [],
+  "selected_mcp_tools": [
+    "present_files",
+    "artifact_manifest_read",
+    "artifact_manifest_update",
+    "artifact_list",
+    "artifact_read",
+    "artifact_write",
+    "artifact_patch",
+    "local_read_file",
+    "local_write_file",
+    "local_search_text",
+    "local_todo",
+    "local_shell_command",
+    "delegate_task",
+    "memory_remember",
+    "memory_search",
+    "memory_forget",
+    "memory_md_list",
+    "memory_md_read",
+    "memory_md_append",
+    "memory_md_search",
+    "memory_md_compress"
+  ],
   "prompt_examples": [
     "生成一份设备台账 Excel 模板，包含设备编号、名称、产品、状态、安装位置、负责人和备注",
     "做一个巡检记录 Excel，包含汇总页和明细页"
@@ -18,5 +40,18 @@
     "Excel",
     "模板",
     "台账"
+  ],
+  "runtime_options": {
+    "model_name": "Qwen3.6-35B-A3B",
+    "model_env": "LLM_MODEL",
+    "base_url": "http://124.132.152.75:62092/v1",
+    "base_url_env": "LLM_BASE_URL",
+    "api_key_env": "LLM_API_KEY",
+    "temperature": 0.4,
+    "max_tokens": 2048
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
   ]
 }
