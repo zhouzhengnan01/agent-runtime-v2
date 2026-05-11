@@ -773,7 +773,8 @@ live smoke 依赖实际运行中的 Runtime、模型和外部服务，仍建议�
 执行。
 
 如果需要从 GitHub 手动验证某个线上环境，可以触发 `.github/workflows/live-smoke.yml`，输入
-`base_url`、`retries`、`timeout` 和 `fail_on_retry`。该 workflow 会对指定 Runtime 执行完整应用中心 smoke，并上传：
+`base_url`、`retries`、`timeout`、`fail_on_retry`，也可以打开 `run_ui_smoke` 让 workflow 额外跑
+Workbench Playwright 页面 smoke。该 workflow 会对指定 Runtime 执行完整应用中心 smoke，并上传：
 
 ```text
 live-smoke-result.json
