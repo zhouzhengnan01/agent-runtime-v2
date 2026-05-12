@@ -24,6 +24,22 @@ def test_app_template_registry_lists_and_gets_templates(tmp_path: Path) -> None:
                         "agent_name": "default",
                         "selected_skills": ["markdown-rendering"],
                         "model_tags": ["chat", "tool_calling", "unknown"],
+                        "models": [
+                            {
+                                "name": "gpt-5.5",
+                                "features": ["vision", "reasoning", "chat"],
+                                "priority_features": ["chat"],
+                                "priority": 0,
+                                "provider": "openai-compatible",
+                                "model": "gpt-5.5",
+                                "base_url": "http://127.0.0.1:9100/api/llm/openai/v1/providers/test/",
+                                "default_model": "gpt-5.5",
+                                "api_key_enc": "enc.fernet.v1.test",
+                                "tool_choice": "auto",
+                                "temperature": 0.4,
+                                "max_tokens": 2048,
+                            }
+                        ],
                         "prompt_examples": ["hello"],
                     }
                 ]
@@ -38,6 +54,22 @@ def test_app_template_registry_lists_and_gets_templates(tmp_path: Path) -> None:
     assert [template.name for template in templates] == ["demo"]
     assert registry.get("demo").selected_skills == ["markdown-rendering"]
     assert registry.get("demo").model_tags == ["chat", "tool_call"]
+    assert registry.get("demo").models == [
+        {
+            "name": "gpt-5.5",
+            "features": ["vision", "reasoning", "chat"],
+            "priority_features": ["chat"],
+            "priority": 0,
+            "provider": "openai-compatible",
+            "model": "gpt-5.5",
+            "base_url": "http://127.0.0.1:9100/api/llm/openai/v1/providers/test/",
+            "default_model": "gpt-5.5",
+            "api_key_enc": "enc.fernet.v1.test",
+            "tool_choice": "auto",
+            "temperature": 0.4,
+            "max_tokens": 2048,
+        }
+    ]
 
 
 def test_app_template_registry_deduplicates_collection_and_file_templates(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ export type AppTemplate = {
   prompt_examples?: string[];
   tags?: string[];
   model_tags?: string[];
+  models?: Array<Record<string, unknown>>;
   runtime_options?: Record<string, unknown>;
 };
 

@@ -22,6 +22,7 @@ class AppTemplate(BaseModel):
     prompt_examples: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     model_tags: list[str] = Field(default_factory=list)
+    models: list[dict[str, Any]] = Field(default_factory=list)
     runtime_options: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("name", "title", "agent_name")
