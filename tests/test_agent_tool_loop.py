@@ -790,6 +790,42 @@ def test_agent_loop_surfaces_skill_required_inputs(
     assert {"dataset-curator", "remote-gpu-ops", "detector-evaluator", "deployment-candidate-reviewer"} <= stages
 
 
+def test_yolo_blocks_selected_skill_when_no_tool_is_available(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+    ) -> str:
+        del self, system_prompt, messages
+        return "当前棕榈果检测算法全流程已准备就绪。请提供数据路径。"
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="empty-agent",
+        display_name="Empty Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="chat-model"),
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="帮我把棕榈果检测算法全流程跑起来")],
+        runtime_options=RuntimeOptions(
+            thread_id="missing-selected-skill",
+            mode="yolo",
+            selected_skills=["1778483741456a5glxkmk"],
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert "没有可用工具可执行" in result.reply
+    assert "平台侧 ID" in result.reply
+    assert result.metadata["unavailable_selected_skills_blocked"] is True
+    assert result.metadata["selected_skills"] == ["1778483741456a5glxkmk"]
+
+
 def test_agent_loop_truncates_large_tool_results_before_returning_to_model(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

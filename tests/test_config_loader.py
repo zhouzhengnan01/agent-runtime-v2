@@ -2,7 +2,7 @@ import json
 import shutil
 from pathlib import Path
 
-from app.cli import set_encrypted_api_key
+from app.cli import app_model_api_key_purpose, encrypt_app_model_api_key, set_encrypted_api_key
 from app.core.config import AgentConfig, AgentConfigLoader
 from app.core.config.agent_config import BillingConfig
 from app.core.config.secrets import SecretCodec
@@ -246,3 +246,16 @@ def test_set_encrypted_api_key_writes_local_override_and_master_key(tmp_path: Pa
     assert "api_key" not in local_data["model"]
     assert (tmp_path / ".runtime" / "secrets" / "master.key").is_file()
     assert loader.load("default").model.api_key == "cli-secret-key"
+
+
+def test_encrypt_app_model_api_key_uses_app_model_purpose(tmp_path: Path) -> None:
+    loader = AgentConfigLoader(root_dir=tmp_path)
+
+    encrypted = encrypt_app_model_api_key(loader, "_debug-app", "gpt-5.5", "app-secret-key")
+
+    codec = SecretCodec(tmp_path)
+    assert encrypted.startswith("enc.fernet.v1.")
+    assert (
+        codec.decrypt(encrypted, purpose=app_model_api_key_purpose("_debug-app", "gpt-5.5"))
+        == "app-secret-key"
+    )

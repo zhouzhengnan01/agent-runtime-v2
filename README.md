@@ -522,6 +522,31 @@ config/agents/default.local.json
 
 运行时加载 agent 配置时会自动解密成 `model.api_key`，之后再调用 OpenAI-compatible API。
 
+如果密钥是写在应用模板模型配置里，也就是 `config/apps/*.json` 的 `models[].api_key_enc`，不要使用
+`set-api-key --agent ...` 生成。应用模板模型密钥绑定的是 app 名称和模型名称，使用：
+
+```bash
+uv run python -m app.cli secrets encrypt-app-api-key \
+  --app "_debug-1c81a222b0fa9000" \
+  --model "gpt-5.5" \
+  --value "your-key"
+```
+
+命令会输出可直接放入 `models[].api_key_enc` 的密文。这里的 `--model` 必须和 app JSON 中运行时选中的
+`models[].name` 一致；如果没有 `name`，再使用 `models[].model` 或 `models[].default_model`。运行时解密时会使用：
+
+```text
+app:<app-name>:model:<model-name>:api_key
+```
+
+`set-api-key --agent default` 生成的是 agent local override 密文，purpose 是：
+
+```text
+agent:default:model:api_key
+```
+
+两者不能混用。
+
 加密使用 `cryptography.Fernet`。解密主密钥来源优先级：
 
 ```text

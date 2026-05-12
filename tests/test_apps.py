@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from app.core.apps import AppTemplateRegistry
 from app.core.apps.models import AppModelOption, select_app_model
+from app.core.apps.runtime_options import merge_runtime_options_with_template
+from app.schemas import RuntimeOptions
 from app.main import create_app
 from tools.app_smoke_matrix import expected_artifact_patterns, template_expects_artifacts
 
@@ -117,6 +119,59 @@ def test_app_template_registry_rejects_unknown_template(tmp_path: Path) -> None:
 
     with pytest.raises(KeyError):
         registry.get("missing")
+
+
+def test_app_runtime_options_expand_platform_skill_aliases() -> None:
+    template = AppTemplateRegistry().get("_debug-1c81a222b0fa9000")
+
+    options = merge_runtime_options_with_template(
+        RuntimeOptions(app_template_name="_debug-1c81a222b0fa9000"),
+        template,
+    )
+
+    assert options.selected_skills == [
+        "algorithm-engineer",
+        "dataset-curator",
+        "data-auto-annotation",
+        "image-dataset-generation",
+        "algorithm-research-scout",
+        "model-candidate-selector",
+        "remote-gpu-ops",
+        "gpu-training-orchestrator",
+        "cpu-training-runner",
+        "detector-evaluator",
+        "deployment-candidate-reviewer",
+        "experiment-ledger",
+    ]
+
+
+def test_request_selected_skills_expand_platform_skill_aliases(tmp_path: Path) -> None:
+    apps_dir = tmp_path / "config" / "apps"
+    apps_dir.mkdir(parents=True)
+    (apps_dir / "demo.json").write_text(
+        json.dumps(
+            {
+                "name": "demo",
+                "title": "Demo App",
+                "agent_name": "default",
+                "selected_skills": ["markdown-rendering"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    template = AppTemplateRegistry(root_dir=tmp_path).get("demo")
+
+    options = merge_runtime_options_with_template(
+        RuntimeOptions(
+            app_template_name="demo",
+            selected_skills=["1778483741456a5glxkmk", "experiment-ledger"],
+        ),
+        template,
+    )
+
+    assert options.selected_skills[:2] == ["algorithm-engineer", "dataset-curator"]
+    assert options.selected_skills[-1] == "experiment-ledger"
+    assert options.selected_skills.count("experiment-ledger") == 1
 
 
 def test_app_templates_api_lists_preconfigured_templates() -> None:

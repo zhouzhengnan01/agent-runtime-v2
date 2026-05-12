@@ -494,12 +494,19 @@ class ToolCallingAgentLoop:
         if mode != "yolo":
             return reply, {}
         selected_skills = cls._selected_skill_names(runtime_options)
-        if not selected_skills or tool_count <= 0:
+        if not selected_skills:
             return reply, {}
+        if tool_count <= 0:
+            guarded = (
+                "已选择 skills，但本轮没有可用工具可执行，不能进入大流程执行。\n"
+                "请检查 app 配置中的 selected_skills 是否是本地已安装 skill 名称，而不是平台侧 ID。"
+            )
+            return guarded, {"unavailable_selected_skills_blocked": True, "selected_skills": sorted(selected_skills)}
         reply_lower = reply.lower()
         completion_markers = (
             "已生成",
             "已完成",
+            "准备就绪",
             "通过内容校验",
             "benchmark 完成",
             "训练完成",

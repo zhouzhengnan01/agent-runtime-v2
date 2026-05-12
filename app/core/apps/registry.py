@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from app.core.apps.models import AppTemplate
+from app.core.apps.runtime_options import expand_skill_aliases
 from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfigLoader
 from app.core.mcp import McpToolRegistry
@@ -58,7 +59,7 @@ class AppTemplateRegistry:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"App template must be a JSON object: {path}")
-        return AppTemplate.model_validate(data)
+        return _normalize_template(AppTemplate.model_validate(data))
 
     @staticmethod
     def _load_template_collection(path: Path) -> builtins.list[AppTemplate]:
@@ -68,7 +69,7 @@ class AppTemplateRegistry:
         raw_templates = data.get("templates")
         if not isinstance(raw_templates, list):
             raise ValueError(f"App template collection must contain templates list: {path}")
-        return [AppTemplate.model_validate(item) for item in raw_templates if isinstance(item, dict)]
+        return [_normalize_template(AppTemplate.model_validate(item)) for item in raw_templates if isinstance(item, dict)]
 
     def validate_references(self) -> builtins.list[str]:
         """Return template reference problems without failing template loading."""
@@ -99,3 +100,10 @@ class AppTemplateRegistry:
         if any(char in safe_name for char in "/\\"):
             raise ValueError("App template name must not contain path separators.")
         return safe_name
+
+
+def _normalize_template(template: AppTemplate) -> AppTemplate:
+    selected_skills = expand_skill_aliases(template.selected_skills)
+    if selected_skills == template.selected_skills:
+        return template
+    return template.model_copy(update={"selected_skills": selected_skills}, deep=True)

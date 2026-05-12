@@ -27,6 +27,10 @@ def build_parser() -> argparse.ArgumentParser:
     set_api_key = secrets_sub.add_parser("set-api-key", help="Encrypt and store an agent model API key locally.")
     set_api_key.add_argument("--agent", default="default")
     set_api_key.add_argument("--value", required=True)
+    encrypt_app_api_key = secrets_sub.add_parser("encrypt-app-api-key", help="Encrypt an app template model API key.")
+    encrypt_app_api_key.add_argument("--app", required=True, help="App template name, for example _debug-xxx.")
+    encrypt_app_api_key.add_argument("--model", required=True, help="App model name/model/default_model used by the app JSON.")
+    encrypt_app_api_key.add_argument("--value", required=True)
 
     acp_stdio = sub.add_parser("acp-stdio", help="Run a standard ACP stdio agent server.")
     acp_stdio.add_argument("--agent", default="default")
@@ -59,6 +63,16 @@ async def main_async(argv: list[str]) -> int:
         local_path = set_encrypted_api_key(loader, args.agent, args.value)
         print(f"Encrypted api_key written to {local_path}")
         print("Master key is stored outside Git in .runtime/secrets/master.key unless JETLINKS_AGENT_SECRET_KEY is set.")
+        return 0
+
+    if args.command == "secrets" and args.secrets_command == "encrypt-app-api-key":
+        encrypted = encrypt_app_model_api_key(loader, args.app, args.model, args.value)
+        print(encrypted)
+        print("Purpose:", app_model_api_key_purpose(args.app, args.model), file=sys.stderr)
+        print(
+            "Master key is stored outside Git in .runtime/secrets/master.key unless JETLINKS_AGENT_SECRET_KEY is set.",
+            file=sys.stderr,
+        )
         return 0
 
     if args.command == "acp-stdio":
@@ -121,6 +135,24 @@ def set_encrypted_api_key(loader: AgentConfigLoader, agent_name: str, value: str
         del data["model"]["api_key"]
     local_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return local_path
+
+
+def encrypt_app_model_api_key(loader: AgentConfigLoader, app_name: str, model_name: str, value: str) -> str:
+    safe_app = _clean_required(app_name, "app name")
+    safe_model = _clean_required(model_name, "model name")
+    codec = SecretCodec(loader.root_dir)
+    return codec.encrypt(value, purpose=app_model_api_key_purpose(safe_app, safe_model))
+
+
+def app_model_api_key_purpose(app_name: str, model_name: str) -> str:
+    return f"app:{_clean_required(app_name, 'app name')}:model:{_clean_required(model_name, 'model name')}:api_key"
+
+
+def _clean_required(value: str, label: str) -> str:
+    clean = value.strip().replace("/", "").replace("\\", "")
+    if not clean:
+        raise ValueError(f"{label} is required")
+    return clean
 
 
 def main() -> None:

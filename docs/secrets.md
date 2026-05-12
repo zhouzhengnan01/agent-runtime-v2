@@ -74,6 +74,57 @@ config/agents/default.local.json
 OpenAI-compatible 模型服务。详情接口和 `python -m app.cli show-agent` 会把 `model.api_key` 和
 `model.api_key_enc` 脱敏成 `********`。
 
+## 应用模板模型密钥
+
+如果密钥属于应用模板模型配置，也就是 `config/apps/*.json` 的 `models[].api_key_enc`，需要使用 app 专用
+purpose 加密。不要使用 `secrets set-api-key --agent ...`，那个命令只适用于
+`config/agents/*.local.json` 的 `model.api_key_enc`。
+
+应用模板模型密钥使用：
+
+```bash
+uv run python -m app.cli secrets encrypt-app-api-key \
+  --app "_debug-1c81a222b0fa9000" \
+  --model "gpt-5.5" \
+  --value "your-model-api-key"
+```
+
+命令会把密文打印到 stdout，可放入：
+
+```json
+{
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "model": "gpt-5.5",
+      "api_key_enc": "enc.fernet.v1...."
+    }
+  ]
+}
+```
+
+运行时解密 `models[].api_key_enc` 时会优先使用：
+
+```text
+app:<app-name>:model:<model-name>:api_key
+```
+
+其中 `<model-name>` 对应 app JSON 中选中模型的 `name`，如果没有 `name`，再使用 `model` 或
+`default_model`。例如：
+
+```text
+app:_debug-1c81a222b0fa9000:model:gpt-5.5:api_key
+```
+
+agent local override 的 purpose 是：
+
+```text
+agent:default:model:api_key
+```
+
+这两类密文不能互换。报错 `encrypted secret authentication failed` 通常表示主密钥不一致；报错
+`encrypted secret purpose mismatch` 才表示主密钥一致但 purpose 不一致。
+
 ## 加解密主密钥
 
 `api_key_enc` 不是独立可恢复的密文，必须配合加密时使用的主密钥才能解密。主密钥来源优先级：
@@ -132,4 +183,3 @@ uv run python -m app.cli secrets set-api-key --agent default --value "your-model
 - 不要提交：真实 API key、`.env`、`.runtime/secrets/master.key`、`JETLINKS_AGENT_SECRET_KEY`。
 - 谨慎提交：`api_key_enc`。只有在主密钥绝不泄漏的前提下才可以提交密文；密文和主密钥同时泄漏等同于明文泄漏。
 - 依赖要求：启用 `api_key_enc` 时，运行环境必须安装 `cryptography`。使用 `uv sync`、`.venv` 或项目启动脚本即可。
-
