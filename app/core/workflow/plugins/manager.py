@@ -53,6 +53,7 @@ class WorkflowPluginManager:
         self.project_root = Path(__file__).resolve().parents[4]
         self.root_dir = root_dir or self.project_root
         self.plugin_dir = self.root_dir / "plugins" / "workflows"
+        self.config_dir = self.root_dir / "config" / "workflows"
 
     def list_plugins(self) -> list[WorkflowPluginPackage]:
         plugins: list[WorkflowPluginPackage] = []
@@ -64,27 +65,24 @@ class WorkflowPluginManager:
         return sorted(plugins, key=lambda item: item.plugin_id)
 
     def load_workflows(self, artifact_store: ArtifactStore) -> dict[str, LoadedWorkflowPlugin]:
+        plugin_workflows = self._load_plugin_workflows(artifact_store)
         loaded: dict[str, LoadedWorkflowPlugin] = {}
-        for package in self.list_plugins():
-            for workflow_name, manifest_path in package.manifest_paths.items():
-                try:
-                    config = WorkflowConfig.model_validate(read_json(manifest_path))
-                    plugin, entrypoint_path, entrypoint_class = self._instantiate_plugin(
-                        package,
-                        config,
-                        artifact_store,
-                    )
-                    self._validate_plugin(plugin, config)
-                except (OSError, ValueError, TypeError, json.JSONDecodeError, AttributeError):
-                    continue
-                loaded[workflow_name] = LoadedWorkflowPlugin(
-                    config=config,
-                    manifest_path=manifest_path,
-                    plugin=plugin,
-                    package=package,
-                    entrypoint_path=entrypoint_path,
-                    entrypoint_class=entrypoint_class,
-                )
+        for entity_path in sorted(self.config_dir.glob("*.json")) if self.config_dir.is_dir() else []:
+            try:
+                config = WorkflowConfig.model_validate(read_json(entity_path))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            implementation = plugin_workflows.get(config.name)
+            if implementation is None:
+                continue
+            loaded[config.name] = LoadedWorkflowPlugin(
+                config=config,
+                manifest_path=entity_path,
+                plugin=implementation.plugin,
+                package=implementation.package,
+                entrypoint_path=implementation.entrypoint_path,
+                entrypoint_class=implementation.entrypoint_class,
+            )
         return loaded
 
     def install_zip(self, content: bytes) -> WorkflowPluginPackage:
@@ -124,7 +122,9 @@ class WorkflowPluginManager:
         if target_root.exists():
             shutil.rmtree(target_root)
         temp_root.replace(target_root)
-        return self._load_package(target_root)
+        plugin = self._load_package(target_root)
+        self._materialize_workflow_entities(plugin)
+        return plugin
 
     def delete_plugin(self, plugin_id: str) -> WorkflowPluginPackage:
         safe_id = validated_plugin_id(plugin_id.strip())
@@ -163,6 +163,42 @@ class WorkflowPluginManager:
             manifest_paths=manifest_paths,
             protected=bool(metadata.get("protected", False)),
         )
+
+    def _load_plugin_workflows(self, artifact_store: ArtifactStore) -> dict[str, LoadedWorkflowPlugin]:
+        loaded: dict[str, LoadedWorkflowPlugin] = {}
+        for package in self.list_plugins():
+            for workflow_name, manifest_path in package.manifest_paths.items():
+                try:
+                    config = WorkflowConfig.model_validate(read_json(manifest_path))
+                    plugin, entrypoint_path, entrypoint_class = self._instantiate_plugin(
+                        package,
+                        config,
+                        artifact_store,
+                    )
+                    self._validate_plugin(plugin, config)
+                except (OSError, ValueError, TypeError, json.JSONDecodeError, AttributeError):
+                    continue
+                loaded[workflow_name] = LoadedWorkflowPlugin(
+                    config=config,
+                    manifest_path=manifest_path,
+                    plugin=plugin,
+                    package=package,
+                    entrypoint_path=entrypoint_path,
+                    entrypoint_class=entrypoint_class,
+                )
+        return loaded
+
+    def _materialize_workflow_entities(self, plugin: WorkflowPluginPackage) -> None:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        for workflow_name, manifest_path in plugin.manifest_paths.items():
+            target = self.config_dir / f"{workflow_name}.json"
+            if target.is_file():
+                continue
+            try:
+                config = WorkflowConfig.model_validate(read_json(manifest_path))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            target.write_text(config.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     @staticmethod
     def _manifest_paths(plugin_root: Path, metadata: dict[str, Any]) -> dict[str, Path]:

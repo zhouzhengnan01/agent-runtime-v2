@@ -126,19 +126,82 @@ def test_skill_registry_exposes_model_tags_as_metadata() -> None:
 
     data_auto = registry.get("data-auto-annotation")
     algorithm_research = registry.get("algorithm-research-scout")
+    image_dataset_generation = registry.get("image-dataset-generation")
     payload = data_auto.to_event_payload()
 
     assert data_auto.model_tags == ("vision_segmentation",)
     assert algorithm_research.model_tags == ("chat", "reasoning", "rerank")
+    assert image_dataset_generation.executable is True
+    assert image_dataset_generation.model_tags == ("image_generation", "vision_segmentation")
     assert payload["model_tags"] == ["vision_segmentation"]
     assert "model_tags" not in (data_auto.input_schema or {}).get("properties", {})
+
+
+def test_skill_registry_uses_config_skills_as_entity_catalog() -> None:
+    registry = SkillRegistry()
+    skills = registry.list()
+    names = {skill.name for skill in skills}
+    config_names = {path.stem for path in (registry.root_dir / "config" / "skills").glob("*.json")}
+
+    assert names == config_names
+    assert "public-skill-demo" not in names
+    assert "algorithm-engineer-app" not in names
+    assert "behavior-review" in names
+    assert "deliverables-export" in names
+    for skill in skills:
+        assert skill.manifest_path is not None
+        assert "config/skills" in str(skill.manifest_path)
+
+
+def test_formal_skills_have_top_level_plugin_entities() -> None:
+    manager = SkillPluginManager()
+    root = manager.root_dir
+    config_names = {path.stem for path in (root / "config" / "skills").glob("*.json")}
+    plugin_roots = {
+        path.name
+        for path in (root / "plugins" / "skills").iterdir()
+        if path.is_dir() and (path / "plugin.json").is_file()
+    }
+    loaded = manager.load_skills()
+
+    assert config_names - plugin_roots == set()
+    for skill_name in config_names:
+        loaded_skill = loaded[skill_name]
+        assert loaded_skill.plugin is not None, skill_name
+        assert loaded_skill.plugin.plugin_id == skill_name
+        assert loaded_skill.plugin.root.name == skill_name
+
+
+def test_uploaded_plugin_is_materialized_as_local_skill_entity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/plugins",
+        files={"file": ("summary-plugin.zip", _plugin_zip(), "application/zip")},
+    )
+
+    assert response.status_code == 200
+    entity_path = tmp_path / "config" / "skills" / "uploaded-summary.json"
+    assert entity_path.is_file()
+    assert json.loads(entity_path.read_text(encoding="utf-8"))["name"] == "uploaded-summary"
+
+    listed = client.get("/api/skills")
+    assert listed.status_code == 200
+    skills = {skill["name"]: skill for skill in listed.json()["skills"]}
+    assert skills["uploaded-summary"]["source_path"] == str(entity_path)
+    assert skills["uploaded-summary"]["source"]["plugin_id"] == "summary-plugin"
 
 
 def test_algorithm_engineer_spec_builder_does_not_treat_agx_5090_as_dataset_path() -> None:
     spec_builder = _load_algorithm_engineer_spec_builder()
 
     spec = spec_builder.build_spec(
-        "algorithm-engineer-app",
+        "algorithm-engineer",
         "围绕棕榈果检测，打通 AGX/5090 训练编排和计数评估。",
         "围绕棕榈果检测，打通 AGX/5090 训练编排和计数评估。",
         [],
@@ -216,6 +279,53 @@ def test_cpu_training_runner_mock_generates_best_pt(tmp_path: Path) -> None:
     assert summary["mock"] is True
 
 
+def test_algorithm_engineer_sequence_reply_is_professional_status_card() -> None:
+    runner = _load_algorithm_engineer_runner()
+    run_result = type(
+        "RunResult",
+        (),
+        {
+            "data": {
+                "sequence": [
+                    {"skill_name": "algorithm-engineer"},
+                    {"skill_name": "dataset-curator"},
+                    {"skill_name": "algorithm-research-scout"},
+                    {"skill_name": "model-candidate-selector"},
+                    {"skill_name": "remote-gpu-ops"},
+                    {"skill_name": "gpu-training-orchestrator"},
+                    {"skill_name": "detector-evaluator"},
+                    {"skill_name": "deployment-candidate-reviewer"},
+                    {"skill_name": "experiment-ledger"},
+                ]
+            },
+            "outputs": [
+                type("Artifact", (), {"name": "algorithm-engineer.md"})(),
+                type("Artifact", (), {"name": "dataset-curator.md"})(),
+                type("Artifact", (), {"name": "gpu-training-orchestrator.md"})(),
+                type("Artifact", (), {"name": "detector-evaluator.md"})(),
+                type("Artifact", (), {"name": "experiment-ledger.md"})(),
+            ],
+        },
+    )()
+
+    reply = runner.format_reply("algorithm-engineer", object(), run_result)
+
+    assert reply.startswith("棕榈果检测算法工程师工作台已搭好。")
+    assert "当前看板：" in reply
+    assert "数据治理：已建立" in reply
+    assert "CPU 训练沙盒" in reply
+    assert "algorithm-engineer, dataset-curator" not in reply
+
+
+def _load_algorithm_engineer_runner() -> object:
+    path = Path(__file__).resolve().parents[1] / "plugins" / "skills" / "algorithm-engineer" / "runner.py"
+    spec = importlib.util.spec_from_file_location("algorithm_engineer_runner_for_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_algorithm_engineer_spec_builder() -> object:
     path = Path(__file__).resolve().parents[1] / "plugins" / "skills" / "algorithm-engineer" / "spec_builder.py"
     spec = importlib.util.spec_from_file_location("algorithm_engineer_spec_builder_for_test", path)
@@ -254,7 +364,7 @@ def test_skill_package_file_api_reads_and_updates_package_assets(tmp_path: Path)
     assert {"manifest", "skill-md", "requirements", "runner", "script-runner"} <= set(files)
     assert "input-schema" not in files
     assert "output-schema" not in files
-    assert Path(files["skill-md"]["path"]).parts[-6:] == ("plugins", "skills", "builtin-artifact-skills", "skills", "deliverables-export", "SKILL.md")
+    assert Path(files["skill-md"]["path"]).parts[-6:] == ("plugins", "skills", "deliverables-export", "skills", "deliverables-export", "SKILL.md")
 
     read_response = client.get("/api/skills/deliverables-export/files/skill-md")
     assert read_response.status_code == 200
@@ -426,16 +536,15 @@ def test_generic_template_skill_executes_without_runner(tmp_path: Path) -> None:
     assert result.outputs[0].name == "daily-report.md"
     assert (paths.outputs / "daily-report.md").read_text(encoding="utf-8") == "# daily-report\n\ndone"
     executable_names = {skill.name for skill in SkillRegistry(tmp_path).list(executable_only=True)}
-    assert "generic-template" in executable_names
+    assert "generic-template" not in executable_names
 
 
 def test_public_template_skill_is_discoverable_and_executes(tmp_path: Path) -> None:
     registry = SkillRegistry()
 
-    skill = registry.get("public-skill-demo")
-    assert skill.executable is True
-    assert skill.to_event_payload()["executable"] is True
-    assert "public-skill-demo" in {item.name for item in registry.list(executable_only=True)}
+    with pytest.raises(KeyError):
+        registry.get("public-skill-demo")
+    assert "public-skill-demo" not in {item.name for item in registry.list(executable_only=True)}
 
     store = ArtifactStore(root_dir=tmp_path / "runtime")
     paths = store.prepare_thread("public-skill-demo")

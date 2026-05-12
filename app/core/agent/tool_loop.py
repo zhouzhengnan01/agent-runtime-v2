@@ -354,7 +354,7 @@ class ToolCallingAgentLoop:
             return 1
         if mode == "safe":
             return min(base, 2)
-        if mode == "autonomous":
+        if mode in {"autonomous", "yolo"}:
             return max(base, min(base * 2, 16))
         return base
 
@@ -372,7 +372,7 @@ class ToolCallingAgentLoop:
 
     @staticmethod
     def _tool_allowed_in_mode(tool: ToolDefinition, mode: str) -> bool:
-        if mode == "autonomous":
+        if mode in {"autonomous", "yolo"}:
             return True
         source_type = tool.source.get("type")
         operation = tool.source.get("operation")

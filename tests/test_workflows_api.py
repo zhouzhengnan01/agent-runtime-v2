@@ -29,6 +29,17 @@ def test_list_workflow_plugins() -> None:
     assert artifact["request_example"]["runtime_options"]["workflow"] == "artifact_workflow"
 
 
+def test_workflows_are_registered_from_config_entities() -> None:
+    manager = WorkflowPluginManager()
+    registered = manager.load_workflows(ArtifactStore())
+    config_names = {path.stem for path in (manager.root_dir / "config" / "workflows").glob("*.json")}
+
+    assert set(registered) == config_names
+    assert {"artifact_workflow", "evidence_first_detection"} <= set(registered)
+    for workflow in registered.values():
+        assert "config/workflows" in str(workflow.manifest_path)
+
+
 def test_workflow_plugin_upload_list_and_delete(tmp_path, monkeypatch) -> None:
     artifact_store = ArtifactStore(root_dir=tmp_path / "threads")
     plugin_manager = WorkflowPluginManager(root_dir=tmp_path)
@@ -46,6 +57,8 @@ def test_workflow_plugin_upload_list_and_delete(tmp_path, monkeypatch) -> None:
     )
     assert upload.status_code == 200
     assert upload.json()["plugin"]["id"] == "custom-workflow-plugin"
+    entity_path = tmp_path / "config" / "workflows" / "custom_workflow.json"
+    assert entity_path.is_file()
 
     plugins = client.get("/api/workflows/plugins")
     assert plugins.status_code == 200
@@ -64,6 +77,7 @@ def test_workflow_plugin_upload_list_and_delete(tmp_path, monkeypatch) -> None:
     workflows_after_delete = client.get("/api/workflows")
     workflow_names_after_delete = {workflow["name"] for workflow in workflows_after_delete.json()["workflows"]}
     assert "custom_workflow" not in workflow_names_after_delete
+    assert entity_path.is_file()
 
 
 def test_workflow_plugin_delete_protected_builtin_is_forbidden() -> None:

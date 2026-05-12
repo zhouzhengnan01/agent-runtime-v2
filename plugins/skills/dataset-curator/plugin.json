@@ -1,0 +1,12 @@
+{
+  "id": "dataset-curator",
+  "name": "dataset-curator",
+  "version": "0.1.0",
+  "description": "Curate messy image and label collections into a reproducible YOLO train/val/test dataset with audit reports.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/dataset-curator/manifest.json"
+  ],
+  "source_suite": "algorithm-engineer"
+}

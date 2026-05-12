@@ -6,6 +6,6 @@
   "runner": "runner.py",
   "spec_builder": "spec_builder.py",
   "skills": [
-    "skills/*/manifest.json"
+    "skills/algorithm-engineer/manifest.json"
   ]
 }

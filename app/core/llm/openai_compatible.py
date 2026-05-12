@@ -71,8 +71,10 @@ class OpenAICompatibleClient:
             else os.getenv(model_config.request_timeout_env) or model_config.request_timeout_seconds
         )
         self.request_timeout_seconds = _bounded_timeout(raw_timeout)
-        selected_mcp_tools = any(name.strip() for name in runtime_options.selected_mcp_tools)
-        self.tool_choice = "auto" if selected_mcp_tools and model_config.tool_choice == "none" else model_config.tool_choice
+        selected_tools = any(name.strip() for name in runtime_options.selected_mcp_tools) or any(
+            name.strip() for name in runtime_options.selected_skills
+        )
+        self.tool_choice = "auto" if selected_tools and model_config.tool_choice == "none" else model_config.tool_choice
 
     @property
     def configured(self) -> bool:

@@ -677,12 +677,30 @@ def test_agent_loop_modes_control_tool_exposure(tmp_path: Path, monkeypatch: Mon
             ),
         )
     )
+    yolo_result, yolo_events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="yolo")],
+                runtime_options=RuntimeOptions(
+                    thread_id="yolo-mode",
+                    mode="yolo",
+                    selected_mcp_tools=["local_read_file", "local_write_file"],
+                ),
+            ),
+        )
+    )
 
     assert plan_result.metadata["mode"] == "plan"
     assert next(event for event in plan_events if event.type == "tools.available").data["tools"] == []
     assert safe_result.metadata["mode"] == "safe"
-    assert seen_tools_by_call == [["local_read_file"]]
+    assert yolo_result.metadata["mode"] == "yolo"
+    assert seen_tools_by_call == [["local_read_file"], ["local_read_file", "local_write_file"]]
     assert next(event for event in safe_events if event.type == "tools.available").data["tools"] == ["local_read_file"]
+    assert next(event for event in yolo_events if event.type == "tools.available").data["tools"] == [
+        "local_read_file",
+        "local_write_file",
+    ]
 
 
 def test_agent_loop_allows_request_scoped_tool_round_override() -> None:
@@ -700,6 +718,10 @@ def test_agent_loop_allows_request_scoped_tool_round_override() -> None:
     assert ToolCallingAgentLoop._max_tool_rounds(
         agent,
         RuntimeOptions(mode="autonomous", config_options={"max_tool_rounds": 14}),
+    ) == 16
+    assert ToolCallingAgentLoop._max_tool_rounds(
+        agent,
+        RuntimeOptions(mode="yolo", config_options={"max_tool_rounds": 14}),
     ) == 16
     assert ToolCallingAgentLoop._max_tool_rounds(
         agent,

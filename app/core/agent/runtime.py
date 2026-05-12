@@ -81,7 +81,14 @@ class AgentRuntime:
                     },
                 )
             ]
-            result = self._input_required_result(agent_config, paths.thread_id, input_required, recorder.run_id, workflow_name)
+            result = self._input_required_result(
+                agent_config,
+                paths.thread_id,
+                input_required,
+                recorder.run_id,
+                workflow_name,
+                request.runtime_options,
+            )
             events.append(recorder.emit("agent.message", {"text": result.reply}))
             events.append(recorder.emit("run.completed", {"result": result.model_dump()}))
             conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
@@ -316,7 +323,14 @@ class AgentRuntime:
                 "stateless": agent_config.runtime.stateless,
             },
         )
-        result = self._input_required_result(agent_config, paths.thread_id, required_inputs, recorder.run_id, workflow_name)
+        result = self._input_required_result(
+            agent_config,
+            paths.thread_id,
+            required_inputs,
+            recorder.run_id,
+            workflow_name,
+            request.runtime_options,
+        )
         yield recorder.emit("agent.message.delta", {"text": result.reply})
         yield recorder.emit("agent.message", {"text": result.reply})
         yield recorder.emit("run.completed", {"result": result.model_dump()})
@@ -341,6 +355,7 @@ class AgentRuntime:
         required_inputs: list[dict[str, object]],
         run_id: str,
         workflow_name: str | None,
+        runtime_options: RuntimeOptions | None = None,
     ) -> AgentRunResult:
         labels = "、".join(_input_type_label(item.get("type")) for item in required_inputs) or "文件"
         reply = f"请先上传{labels}后继续。"
@@ -355,6 +370,7 @@ class AgentRuntime:
                 "required_inputs": required_inputs,
                 "tool_rounds": 0,
                 "tool_call_count": 0,
+                "mode": (runtime_options.mode if runtime_options is not None and runtime_options.mode else "edit"),
             },
         )
 

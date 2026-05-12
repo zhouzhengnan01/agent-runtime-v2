@@ -16,6 +16,7 @@ from acp.schema import (
     AgentPlanUpdate,
     AgentThoughtChunk,
     AudioContentBlock,
+    AllowedOutcome,
     AvailableCommandsUpdate,
     ConfigOptionUpdate,
     CreateTerminalResponse,
@@ -93,6 +94,7 @@ class ExternalAcpClient:
         self.paths = artifact_store.prepare_thread(thread_id)
         self.frontend_session_id: str | None = None
         self.send_update: AcpUpdateSender | None = None
+        self.yolo_mode: bool = False
         self.terminals: dict[str, ExternalTerminal] = {}
 
     def on_connect(self, conn: Any) -> None:
@@ -104,7 +106,12 @@ class ExternalAcpClient:
             return
         await self.send_update(self.frontend_session_id, _model_payload(update))
 
-    async def request_permission(self, *_: Any, **__: Any) -> RequestPermissionResponse:
+    async def request_permission(
+        self, options: list[Any] | None = None, *_: Any, **__: Any
+    ) -> RequestPermissionResponse:
+        if self.yolo_mode:
+            option_id = self._permission_option_id(options)
+            return RequestPermissionResponse(outcome=AllowedOutcome(outcome="selected", optionId=option_id))
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
     async def read_text_file(
@@ -222,6 +229,25 @@ class ExternalAcpClient:
     async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
         del method, params
 
+    @staticmethod
+    def _permission_option_id(options: list[Any] | None) -> str:
+        if not isinstance(options, list) or not options:
+            return "allow"
+        fallback = "allow"
+        for item in options:
+            if not isinstance(item, dict):
+                continue
+            option_id = item.get("optionId") or item.get("option_id") or item.get("id") or item.get("name")
+            if not isinstance(option_id, str) or not option_id.strip():
+                continue
+            if fallback == "allow":
+                fallback = option_id
+            kind = str(item.get("kind") or "").lower()
+            name = str(item.get("name") or "").lower()
+            if kind in {"allow_once", "allow_always"} or "allow" in name or "approve" in name:
+                return option_id
+        return fallback
+
 
 class ExternalAcpSession:
     def __init__(
@@ -278,9 +304,11 @@ class ExternalAcpSession:
         prompt: list[PromptBlock],
         send_update: AcpUpdateSender,
         workflow: str | None = None,
+        yolo_mode: bool = False,
     ) -> PromptResponse:
         self.client.frontend_session_id = frontend_session_id
         self.client.send_update = send_update
+        self.client.yolo_mode = yolo_mode
         prompt_metadata: dict[str, Any] = {}
         if workflow:
             prompt_metadata = {"workflow": workflow, "jetlinks": {"workflow": workflow}}

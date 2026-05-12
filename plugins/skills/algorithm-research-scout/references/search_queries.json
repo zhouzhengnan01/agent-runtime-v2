@@ -1,0 +1,12 @@
+{
+  "base_queries": [
+    "{task_type} object detection",
+    "{task_type} dense object detection",
+    "{task_type} small object detection",
+    "oil palm fruit detection object detection",
+    "palm fruit dense detection",
+    "occluded small object detection fruit",
+    "agricultural fruit object detection"
+  ],
+  "algorithm_query_template": "{algorithm} {task_type} object detection"
+}

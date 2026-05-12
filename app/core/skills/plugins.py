@@ -98,7 +98,7 @@ class LoadedSkill:
 
     @property
     def executable(self) -> bool:
-        return self.runner_path is not None
+        return self.runner_path is not None or _can_run_generic(self.definition.to_event_payload())
 
 
 class SkillPluginManager:
@@ -120,48 +120,30 @@ class SkillPluginManager:
         return sorted(plugins, key=lambda plugin: plugin.plugin_id)
 
     def load_skills(self) -> dict[str, LoadedSkill]:
-        loaded: dict[str, LoadedSkill] = {}
-        for plugin in self.list_plugins():
-            for skill_name, manifest_path in plugin.manifest_paths.items():
-                try:
-                    definition = definition_from_manifest(_read_manifest_source(manifest_path), manifest_path)
-                except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                    continue
-                loaded[skill_name] = LoadedSkill(
-                    definition=_with_plugin_metadata(
-                        definition,
-                        plugin,
-                        manifest_path,
-                        runner_path=self._skill_runner_path(plugin, manifest_path),
-                        spec_builder_path=self._skill_spec_builder_path(plugin, manifest_path),
-                    ),
-                    manifest_path=manifest_path,
-                    plugin=plugin,
-                    runner_path=self._skill_runner_path(plugin, manifest_path),
-                    spec_builder_path=self._skill_spec_builder_path(plugin, manifest_path),
-                )
+        plugin_skills = self._load_plugin_skills()
 
-        for override_path in sorted(self.config_dir.glob("*.json")) if self.config_dir.is_dir() else []:
+        loaded: dict[str, LoadedSkill] = {}
+        for entity_path in sorted(self.config_dir.glob("*.json")) if self.config_dir.is_dir() else []:
             try:
-                definition = definition_from_manifest(_read_json(override_path), override_path)
+                definition = definition_from_manifest(_read_json(entity_path), entity_path)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
-            existing = loaded.get(definition.name)
-            if existing is None:
-                loaded[definition.name] = LoadedSkill(definition=definition, manifest_path=override_path, plugin=None)
+            implementation = plugin_skills.get(definition.name)
+            if implementation is None:
+                loaded[definition.name] = LoadedSkill(definition=definition, manifest_path=entity_path, plugin=None)
                 continue
             loaded[definition.name] = LoadedSkill(
                 definition=_with_plugin_metadata(
                     definition,
-                    existing.plugin,
-                    override_path,
-                    runner_path=existing.runner_path,
-                    spec_builder_path=existing.spec_builder_path,
+                    implementation.plugin,
+                    entity_path,
+                    runner_path=implementation.runner_path,
+                    spec_builder_path=implementation.spec_builder_path,
                 ),
-                manifest_path=override_path,
-                plugin=existing.plugin,
-                runner_path=existing.runner_path,
-                spec_builder_path=existing.spec_builder_path,
+                manifest_path=entity_path,
+                plugin=implementation.plugin,
+                runner_path=implementation.runner_path,
+                spec_builder_path=implementation.spec_builder_path,
             )
 
         return loaded
@@ -170,6 +152,9 @@ class SkillPluginManager:
         try:
             return self.load_skills()[skill_name]
         except KeyError as exc:
+            plugin_skill = self._load_plugin_skills().get(skill_name)
+            if plugin_skill is not None:
+                return plugin_skill
             raise KeyError(f"Unknown skill: {skill_name}") from exc
 
     def manifest_path_for(self, skill_name: str) -> Path:
@@ -232,7 +217,7 @@ class SkillPluginManager:
         return self._package_file(self.get_loaded_skill(skill_name), file_id), content
 
     def save_manifest(self, skill_name: str, manifest: dict[str, Any]) -> LoadedSkill:
-        existing = self.load_skills().get(skill_name)
+        existing = self.load_skills().get(skill_name) or self._load_plugin_skills().get(skill_name)
         path = self.manifest_path_for(skill_name)
         data = dict(manifest)
         data["name"] = skill_name
@@ -247,10 +232,8 @@ class SkillPluginManager:
         if (
             existing is not None
             and existing.plugin is not None
-            and existing.manifest_path.suffix.lower() == ".json"
-            and path.resolve() == existing.manifest_path.resolve()
         ):
-            package_root = self._loaded_package_root(existing)
+            package_root = self._sandbox_write_root(existing)
             if package_root is not None:
                 self._write_sandbox_package_file(package_root, data.get("sandbox"))
         loaded = self.load_skills().get(skill_name)
@@ -306,7 +289,52 @@ class SkillPluginManager:
         if target_root.exists():
             shutil.rmtree(target_root)
         temp_root.replace(target_root)
-        return self._load_plugin(target_root)
+        plugin = self._load_plugin(target_root)
+        self._materialize_plugin_entities(plugin)
+        return plugin
+
+    def _materialize_plugin_entities(self, plugin: SkillPlugin) -> None:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        for skill_name, manifest_path in plugin.manifest_paths.items():
+            target = self.config_dir / f"{skill_name}.json"
+            if target.is_file():
+                continue
+            try:
+                manifest = _read_manifest_source(manifest_path)
+                manifest["name"] = skill_name
+                manifest = _normalize_skill_manifest(manifest)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def _load_plugin_skills(self) -> dict[str, LoadedSkill]:
+        loaded: dict[str, LoadedSkill] = {}
+        for plugin in self.list_plugins():
+            for skill_name, manifest_path in plugin.manifest_paths.items():
+                try:
+                    definition = definition_from_manifest(_read_manifest_source(manifest_path), manifest_path)
+                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                    continue
+                runner_path = self._skill_runner_path(plugin, manifest_path)
+                spec_builder_path = self._skill_spec_builder_path(plugin, manifest_path)
+                candidate = LoadedSkill(
+                    definition=_with_plugin_metadata(
+                        definition,
+                        plugin,
+                        manifest_path,
+                        runner_path=runner_path,
+                        spec_builder_path=spec_builder_path,
+                    ),
+                    manifest_path=manifest_path,
+                    plugin=plugin,
+                    runner_path=runner_path,
+                    spec_builder_path=spec_builder_path,
+                )
+                existing = loaded.get(skill_name)
+                if existing is not None and existing.plugin is not None and existing.plugin.plugin_id == skill_name:
+                    continue
+                loaded[skill_name] = candidate
+        return loaded
 
     def run_skill(
         self,
@@ -403,12 +431,15 @@ class SkillPluginManager:
     def _plugin_roots(self) -> list[Path]:
         roots: list[Path] = []
         project_plugins = self.project_root / "plugins" / "skills"
-        for parent in (project_plugins, self.plugin_dir):
+        parents = (self.plugin_dir, project_plugins) if self.plugin_dir != project_plugins else (project_plugins,)
+        seen_names: set[str] = set()
+        for parent in parents:
             if not parent.is_dir():
                 continue
             for child in sorted(parent.iterdir()):
-                if child.is_dir() and (child / "plugin.json").is_file() and child not in roots:
+                if child.is_dir() and (child / "plugin.json").is_file() and child.name not in seen_names:
                     roots.append(child)
+                    seen_names.add(child.name)
         return roots
 
     def _load_plugin(self, plugin_root: Path) -> SkillPlugin:
@@ -575,7 +606,7 @@ class SkillPluginManager:
 
     @staticmethod
     def _execution_package_root(loaded: LoadedSkill) -> Path | None:
-        package_root = _skill_package_root(loaded)
+        package_root = SkillPluginManager._loaded_package_root(loaded)
         if package_root is not None:
             return package_root
         if loaded.plugin is not None:
@@ -584,12 +615,32 @@ class SkillPluginManager:
 
     @staticmethod
     def _loaded_package_root(loaded: LoadedSkill) -> Path | None:
+        if loaded.plugin is not None:
+            standard_package = loaded.plugin.root / "skills" / loaded.definition.name
+            if standard_package.is_dir():
+                return standard_package.resolve()
+            if loaded.manifest_path.name == "SKILL.md" and loaded.manifest_path.parent.resolve() == loaded.plugin.root.resolve():
+                return loaded.plugin.root.resolve()
+            package_root = _skill_package_root(loaded)
+            if package_root is not None:
+                return package_root
+            return loaded.plugin.root.resolve()
         package_root = _skill_package_root(loaded)
         if package_root is not None:
             return package_root
-        if loaded.plugin is not None:
-            return loaded.plugin.root.resolve()
         return None
+
+    @staticmethod
+    def _sandbox_write_root(loaded: LoadedSkill) -> Path | None:
+        if loaded.plugin is not None:
+            plugin_manifest_path = loaded.plugin.manifest_paths.get(loaded.definition.name)
+            if (
+                plugin_manifest_path is not None
+                and plugin_manifest_path.name == "SKILL.md"
+                and plugin_manifest_path.parent.resolve() == loaded.plugin.root.resolve()
+            ):
+                return loaded.plugin.root.resolve()
+        return SkillPluginManager._loaded_package_root(loaded)
 
     @staticmethod
     def _normalize_uploaded_package_files(plugin: SkillPlugin) -> None:

@@ -2854,12 +2854,7 @@
               </div>
             </div>
             <div class="app-template-board">
-              <div class="skill-filter-row" aria-label="应用模板筛选">
-                <button class="active" type="button" data-app-filter="all">全部</button>
-                <button type="button" data-app-filter="general">通用</button>
-                <button type="button" data-app-filter="generation">生成</button>
-                <button type="button" data-app-filter="vision">视觉</button>
-              </div>
+              <div id="appFilterRow" class="skill-filter-row" aria-label="应用模板筛选"></div>
               <div id="appTemplateList" class="app-template-list"></div>
             </div>
           </section>
@@ -2982,6 +2977,10 @@
                   <label class="small-action toggle-action" title="复杂任务使用 autonomous 模式，允许更多工具循环">
                     <input id="deepExecution" type="checkbox">
                     <span>深度执行</span>
+                  </label>
+                  <label class="small-action toggle-action" title="YOLO 模式会自动批准权限请求，除缺文件或缺参数外不再弹确认">
+                    <input id="yoloExecution" type="checkbox">
+                    <span>YOLO</span>
                   </label>
                   <span id="routeHint" class="route-hint"></span>
                 </div>
@@ -3129,6 +3128,8 @@
       selectedChatSkills: [],
       selectedChatMcpTools: [],
       selectedChatWorkflow: null,
+      deepExecution: false,
+      yoloExecution: false,
       capabilityPickerMode: null,
       view: 'chat',
       rpcId: 0,
@@ -3151,6 +3152,7 @@
       agent: document.getElementById('agent'),
       transport: document.getElementById('transport'),
       deepExecution: document.getElementById('deepExecution'),
+      yoloExecution: document.getElementById('yoloExecution'),
       agentList: document.getElementById('agentList'),
       activeAgentLabel: document.getElementById('activeAgentLabel'),
       sandboxStatus: document.getElementById('sandboxStatus'),
@@ -3189,6 +3191,7 @@
       appCenter: document.getElementById('appCenter'),
       appSummary: document.getElementById('appSummary'),
       refreshApps: document.getElementById('refreshApps'),
+      appFilterRow: document.getElementById('appFilterRow'),
       appTemplateList: document.getElementById('appTemplateList'),
       skillManager: document.getElementById('skillManager'),
       skillSummary: document.getElementById('skillSummary'),
@@ -3255,6 +3258,20 @@
       renderAdminTokenStatus({ text: 'Admin Token 已清除' });
     }
 
+    function setDeepExecution(enabled) {
+      state.deepExecution = Boolean(enabled);
+      if (state.deepExecution) state.yoloExecution = false;
+      if (els.deepExecution) els.deepExecution.checked = state.deepExecution;
+      if (els.yoloExecution) els.yoloExecution.checked = state.yoloExecution;
+    }
+
+    function setYoloExecution(enabled) {
+      state.yoloExecution = Boolean(enabled);
+      if (state.yoloExecution) state.deepExecution = false;
+      if (els.deepExecution) els.deepExecution.checked = state.deepExecution;
+      if (els.yoloExecution) els.yoloExecution.checked = state.yoloExecution;
+    }
+
     function renderAdminTokenStatus(status = {}) {
       if (!els.adminTokenStatus) return;
       els.adminTokenStatus.className = `admin-token-status ${status.type || ''}`;
@@ -3310,6 +3327,8 @@
         state.selectedChatMcpTools = [];
         state.selectedChatWorkflow = null;
         state.selectedAppTemplateName = null;
+        setDeepExecution(false);
+        setYoloExecution(false);
       }
       state.nextAgentOverride = null;
       state.nextWorkflowOverride = null;
@@ -3804,9 +3823,23 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
       state.appTemplates = data.templates || [];
+      if (state.appFilter !== 'all' && !state.appTemplates.some((item) => (item.category || 'general') === state.appFilter)) {
+        state.appFilter = 'all';
+      }
       state.appTemplatesLoaded = true;
+      renderAppFilterRow();
       renderAppTemplateSummary();
       renderAppTemplateList();
+    }
+
+    function renderAppFilterRow() {
+      if (!els.appFilterRow) return;
+      const categories = [...new Set(state.appTemplates.map((item) => item.category || 'general'))]
+        .sort((a, b) => appCategoryOrder(a) - appCategoryOrder(b) || categoryLabel(a).localeCompare(categoryLabel(b), 'zh-CN'));
+      const filters = ['all', ...categories];
+      els.appFilterRow.innerHTML = filters.map((category) => `
+        <button class="${category === state.appFilter ? 'active' : ''}" type="button" data-app-filter="${escapeAttr(category)}">${escapeHtml(category === 'all' ? '全部' : categoryLabel(category))}</button>
+      `).join('');
     }
 
     function renderAppTemplateSummary(status = '') {
@@ -3877,9 +3910,20 @@
       const labels = {
         general: '通用',
         generation: '生成',
-        vision: '视觉'
+        vision: '视觉',
+        'algorithm-training': '算法训练'
       };
       return labels[category] || category || '通用';
+    }
+
+    function appCategoryOrder(category) {
+      const order = {
+        general: 10,
+        'algorithm-training': 20,
+        vision: 30,
+        generation: 40
+      };
+      return order[category] || 100;
     }
 
     function getAppTemplate(name) {
@@ -4043,7 +4087,7 @@
       const sandboxCount = state.skills.filter((skill) => skill.sandbox?.enabled).length;
       const generationCount = state.skills.filter((skill) => skill.generation).length;
       const executableCount = state.skills.filter((skill) => skill.executable !== false).length;
-      els.skillSummary.textContent = `${state.skills.length} 个技能 · ${executableCount} 个插件可执行 · ${generationCount} 个生成技能 · ${sandboxCount} 个启用沙盒`;
+      els.skillSummary.textContent = `${state.skills.length} 个技能 · ${executableCount} 个可执行 · ${generationCount} 个生成型 · ${sandboxCount} 个沙盒执行`;
     }
 
     function renderSkillList() {
@@ -4064,9 +4108,9 @@
                 <span class="skill-badge">${escapeHtml(skill.output_kind || 'json')}</span>
               </div>
               <p>${escapeHtml(skill.description || '')}</p>
-              <div class="skill-file-line">${escapeHtml(skill.source?.plugin_id ? `插件 · ${skill.source.plugin_id}` : 'Manifest 草稿')} · ${escapeHtml(displaySourcePath(skill.source_path, `config/skills/${skill.name}.json`))} · ${skill.editable ? '可编辑' : '只读'}</div>
+              <div class="skill-file-line">实体 · ${escapeHtml(displaySourcePath(skill.source_path, `config/skills/${skill.name}.json`))} · ${skill.source?.plugin_id ? `实现 · ${escapeHtml(skill.source.plugin_id)}` : '无插件实现'} · ${skill.editable ? '可编辑' : '只读'}</div>
               <div class="skill-badges">
-                <span class="skill-badge ${skill.executable === false ? 'local' : 'sandbox'}">${skill.executable === false ? '未安装 runner' : '插件可执行'}</span>
+                <span class="skill-badge ${skill.executable === false ? 'local' : 'sandbox'}">${skill.executable === false ? '未安装执行器' : '可执行'}</span>
                 <span class="skill-badge ${skill.generation ? '' : 'local'}">${skill.generation ? '生成' : '判断'}</span>
                 ${skill.sandbox?.enabled
                   ? `<span class="skill-badge sandbox">Sandbox · ${escapeHtml(skill.sandbox.profile || '-')}</span>`
@@ -5542,7 +5586,7 @@
 
     function renderWorkflowSummary() {
       if (!els.workflowSummary) return;
-      els.workflowSummary.textContent = `${state.workflows.length} 个注册插件 · 默认不自动触发 · 仅显式选择时运行`;
+      els.workflowSummary.textContent = `${state.workflows.length} 个 Workflow · 实体来自 config/workflows · 仅显式选择时运行`;
     }
 
     function renderWorkflowList() {
@@ -5585,7 +5629,7 @@
         <div class="skill-editor-head">
           <div class="skill-editor-title">
             <strong>${escapeHtml(workflow.name)}</strong>
-            <span>WorkflowRegistry builtin plugin</span>
+            <span>实体配置 · config/workflows/${escapeHtml(workflow.name)}.json</span>
           </div>
           <div class="skill-status ${status.type || ''}">${escapeHtml(status.text || '')}</div>
         </div>
@@ -6465,6 +6509,18 @@
       return message.includes('code 1012') || message.includes('ACP WS 连接已关闭') || message.includes('ACP WS 连接异常');
     }
 
+    function permissionOptionId(options, preferAllow) {
+      if (!Array.isArray(options) || !options.length) return null;
+      const selected = preferAllow
+        ? options.find((item) => {
+            const label = String(item?.name || '').toLowerCase();
+            const kind = String(item?.optionId || item?.id || '').toLowerCase();
+            return label.includes('allow') || label.includes('approve') || kind.includes('allow');
+          }) || options[0]
+        : options[0];
+      return selected?.id || selected?.optionId || selected?.name || null;
+    }
+
     function buildRuntimeOptions(threadId, workflow) {
       const runtimeOptions = {
         ...selectedAppTemplateRuntimeOptions(),
@@ -6472,7 +6528,10 @@
         selected_skills: [...state.selectedChatSkills],
         selected_mcp_tools: [...state.selectedChatMcpTools]
       };
-      if (els.deepExecution?.checked) {
+      if (state.yoloExecution) {
+        runtimeOptions.mode = 'yolo';
+        runtimeOptions.config_options = { max_tool_rounds: 16 };
+      } else if (state.deepExecution) {
         runtimeOptions.mode = 'autonomous';
         runtimeOptions.config_options = { max_tool_rounds: 12 };
       }
@@ -6487,7 +6546,10 @@
         selectedSkills: [...state.selectedChatSkills],
         selectedMcpTools: [...state.selectedChatMcpTools]
       };
-      if (els.deepExecution?.checked) {
+      if (state.yoloExecution) {
+        runtimeOptions.mode = 'yolo';
+        runtimeOptions.configOptions = { max_tool_rounds: 16 };
+      } else if (state.deepExecution) {
         runtimeOptions.mode = 'autonomous';
         runtimeOptions.configOptions = { max_tool_rounds: 12 };
       }
@@ -6630,11 +6692,23 @@
     }
 
     async function handlePermissionRequest(sessionId, request, rpc) {
+      if (state.yoloExecution) {
+        const options = Array.isArray(request?.options) ? request.options : [];
+        const selected = permissionOptionId(options, true);
+        await rpc('session/request_permission', {
+          sessionId,
+          permissionRequestId: request?.id,
+          approved: true,
+          ...(selected ? { selectedOptionId: selected } : {})
+        });
+        addTimeline('权限确认', selected ? `已选择 ${selected}` : '已批准');
+        return;
+      }
       const title = request?.title || 'Permission request';
       const description = request?.description || '';
       const options = Array.isArray(request?.options) ? request.options : [];
       const approved = window.confirm(`${title}${description ? `\n\n${description}` : ''}`);
-      const selected = approved && options.length ? (options[0].id || options[0].optionId || options[0].name) : null;
+      const selected = approved ? permissionOptionId(options, false) : null;
       try {
         await rpc('session/request_permission', {
           sessionId,
@@ -7474,6 +7548,12 @@
       loadCronJobs().catch((err) => {
         renderCronEditor({ type: 'error', text: err.message });
       });
+    });
+    els.deepExecution?.addEventListener('change', (event) => {
+      setDeepExecution(event.target.checked);
+    });
+    els.yoloExecution?.addEventListener('change', (event) => {
+      setYoloExecution(event.target.checked);
     });
     els.skillEditor.addEventListener('click', (event) => {
       const packageFileButton = event.target.closest('[data-skill-file]');

@@ -1,0 +1,9 @@
+{
+  "id": "gpu-training-orchestrator",
+  "name": "gpu-training-orchestrator",
+  "version": "0.1.0",
+  "description": "训练 YOLO（detect/segment）的编排 skill。读取 input.json，自动下载模型权重、本地 COCO 数据划分与转换、conda 环境训练、日志流式输出与结果落盘。",
+  "skills": [
+    "SKILL.md"
+  ]
+}

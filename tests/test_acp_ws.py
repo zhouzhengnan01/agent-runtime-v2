@@ -950,6 +950,48 @@ def test_acp_websocket_permission_request_emits_update_then_returns_cancelled(
     assert final["result"]["outcome"]["outcome"] == "cancelled"
 
 
+def test_acp_websocket_yolo_mode_auto_approves_permission_request(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "agentName": "default",
+                    "threadId": "acp-yolo-permission",
+                    "cwd": str(tmp_path),
+                    "runtimeOptions": {"mode": "yolo"},
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        session_id = created["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": session_id,
+                    "title": "Run command",
+                    "description": "Allow shell command",
+                    "options": [{"id": "allow", "kind": "allow_once", "name": "Allow once"}],
+                },
+            }
+        )
+        final = websocket.receive_json()
+
+    assert created["modeId"] == "yolo"
+    assert final["result"]["outcome"] == {"outcome": "selected", "optionId": "allow"}
+
+
 def test_acp_websocket_updates_include_plan_and_diff_metadata(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

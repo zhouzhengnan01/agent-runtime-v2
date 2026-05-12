@@ -42,7 +42,6 @@ OPTIONAL_SKILL_ARTIFACT_PATTERNS = {
 }
 
 ALGORITHM_SKILLS = {
-    "algorithm-engineer-app",
     "algorithm-engineer",
     "algorithm-research-scout",
     "dataset-curator",
@@ -197,6 +196,8 @@ def needs_smoke_image(template: dict[str, Any]) -> bool:
 
 def template_expects_artifacts(template: dict[str, Any]) -> bool:
     selected_skills = {str(skill_name) for skill_name in template.get("selected_skills") or []}
+    if template.get("workflow") == "agent_loop":
+        return False
     if selected_skills and selected_skills <= {"behavior-detection"}:
         return False
     return bool(template.get("workflow") or selected_skills)

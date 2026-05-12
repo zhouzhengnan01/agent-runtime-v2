@@ -1,0 +1,9 @@
+{
+  "id": "image-dataset-generation",
+  "name": "image-dataset-generation",
+  "version": "0.1.0",
+  "description": "Generate synthetic training images from a reference image and prompt through a local image generation HTTP API.",
+  "skills": [
+    "SKILL.md"
+  ]
+}

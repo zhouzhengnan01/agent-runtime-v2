@@ -1,0 +1,12 @@
+{
+  "id": "deployment-candidate-reviewer",
+  "name": "deployment-candidate-reviewer",
+  "version": "0.1.0",
+  "description": "Review whether a trained detector is safe to deploy: package completeness, service load test, AGX performance, rollback, and full reprocess plan.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/deployment-candidate-reviewer/manifest.json"
+  ],
+  "source_suite": "algorithm-engineer"
+}

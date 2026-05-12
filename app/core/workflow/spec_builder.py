@@ -42,7 +42,12 @@ class SpecBuilder:
             attachments,
             allowed_skills,
         )
-        skill = self.skill_registry.get(skill_name) if skill_name else None
+        skill = None
+        if skill_name:
+            try:
+                skill = self.skill_registry.get(skill_name)
+            except KeyError:
+                skill = None
         quality = list(skill.quality_template) if skill is not None else []
         refinement_requested = self._is_artifact_refinement_followup(user_text)
         base: dict[str, Any] = {
@@ -66,7 +71,11 @@ class SpecBuilder:
         try:
             skill = self.skill_registry.get(skill_name)
         except KeyError:
-            return None
+            try:
+                plugin_skill = self.plugin_manager.get_loaded_skill(skill_name)
+            except KeyError:
+                return None
+            return plugin_skill.definition.name if plugin_skill.executable else None
         return skill.name if skill.executable else None
 
     @staticmethod

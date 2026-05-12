@@ -51,6 +51,8 @@ export const useWorkbenchStore = defineStore("workbench", {
     selectedSkills: [] as string[],
     selectedMcpTools: [] as string[],
     selectedWorkflow: null as string | null,
+    deepExecution: false,
+    yoloExecution: false,
     appTemplates: [] as AppTemplate[],
     appFilter: "all",
     selectedAppTemplateName: "",
@@ -92,25 +94,41 @@ export const useWorkbenchStore = defineStore("workbench", {
       const template = state.appTemplates.find((item) => item.name === state.selectedAppTemplateName);
       const templateOptions =
         template?.runtime_options && typeof template.runtime_options === "object" ? template.runtime_options : {};
-      return {
+      const options: Record<string, unknown> = {
         ...templateOptions,
         thread_id: state.threadId,
         selected_skills: [...state.selectedSkills],
         selected_mcp_tools: [...state.selectedMcpTools],
         ...(state.selectedWorkflow ? { workflow: state.selectedWorkflow } : {})
       };
+      if (state.yoloExecution) {
+        options.mode = "yolo";
+        options.config_options = { max_tool_rounds: 16 };
+      } else if (state.deepExecution) {
+        options.mode = "autonomous";
+        options.config_options = { max_tool_rounds: 12 };
+      }
+      return options;
     },
     acpRuntimeOptions(state): Record<string, unknown> {
       const template = state.appTemplates.find((item) => item.name === state.selectedAppTemplateName);
       const templateOptions =
         template?.runtime_options && typeof template.runtime_options === "object" ? template.runtime_options : {};
-      return {
+      const options: Record<string, unknown> = {
         ...templateOptions,
         threadId: state.threadId,
         selectedSkills: [...state.selectedSkills],
         selectedMcpTools: [...state.selectedMcpTools],
         ...(state.selectedWorkflow ? { workflow: state.selectedWorkflow } : {})
       };
+      if (state.yoloExecution) {
+        options.mode = "yolo";
+        options.configOptions = { max_tool_rounds: 16 };
+      } else if (state.deepExecution) {
+        options.mode = "autonomous";
+        options.configOptions = { max_tool_rounds: 12 };
+      }
+      return options;
     },
     uploadBatchSummary(state): UploadBatchSummary | null {
       if (!state.attachments.length) return null;
@@ -180,9 +198,20 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.loadingApps = true;
       try {
         this.appTemplates = await listAppTemplates();
+        if (!this.appTemplates.some((template) => template.name === this.selectedAppTemplateName)) {
+          this.selectedAppTemplateName = "";
+        }
       } finally {
         this.loadingApps = false;
       }
+    },
+    setDeepExecution(enabled: boolean) {
+      this.deepExecution = enabled;
+      if (enabled) this.yoloExecution = false;
+    },
+    setYoloExecution(enabled: boolean) {
+      this.yoloExecution = enabled;
+      if (enabled) this.deepExecution = false;
     },
     applyAppTemplate(name: string, options: { fillPrompt?: boolean; run?: boolean } = {}) {
       const template = this.appTemplates.find((item) => item.name === name);
@@ -192,6 +221,8 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.selectedSkills = [...(template.selected_skills || [])];
       this.selectedMcpTools = [...(template.selected_mcp_tools || [])];
       this.selectedWorkflow = template.workflow || null;
+      this.deepExecution = false;
+      this.yoloExecution = false;
       if (options.fillPrompt !== false && template.prompt_examples?.length) {
         this.input = template.prompt_examples[0] || "";
       }
@@ -227,13 +258,16 @@ export const useWorkbenchStore = defineStore("workbench", {
           token: this.adminToken,
           onEvent: (event) => this.handleRuntimeEvent(event as RuntimeEvent),
           onPermissionRequest: async ({ request }) => {
-            const title = request?.title || "Permission request";
-            const description = request?.description || "";
             const options = Array.isArray(request?.options) ? request.options : [];
-            const approved = window.confirm(`${title}${description ? `\n\n${description}` : ""}`);
-            const selectedOptionId =
-              approved && options.length ? options[0].id || options[0].optionId || options[0].name || null : null;
-            this.addTimeline("权限确认", approved ? (selectedOptionId ? `已选择 ${selectedOptionId}` : "已批准") : "已拒绝");
+            const autoApproved = this.yoloExecution;
+            const approved =
+              autoApproved ||
+              window.confirm(`${request?.title || "Permission request"}${request?.description ? `\n\n${request.description}` : ""}`);
+            const selectedOptionId = approved ? permissionOptionId(options, autoApproved) : null;
+            this.addTimeline(
+              "权限确认",
+              approved ? (selectedOptionId ? `已选择 ${selectedOptionId}` : "已批准") : "已拒绝"
+            );
             return { approved, selectedOptionId };
           }
         });
@@ -663,13 +697,18 @@ export const useWorkbenchStore = defineStore("workbench", {
                   token: this.adminToken,
                   onEvent: (event) => this.handleRuntimeEvent(event as RuntimeEvent),
                   onPermissionRequest: async ({ request }) => {
-                    const title = request?.title || "Permission request";
-                    const description = request?.description || "";
                     const options = Array.isArray(request?.options) ? request.options : [];
-                    const approved = window.confirm(`${title}${description ? `\n\n${description}` : ""}`);
-                    const selectedOptionId =
-                      approved && options.length ? options[0].id || options[0].optionId || options[0].name || null : null;
-                    this.addTimeline("权限确认", approved ? (selectedOptionId ? `已选择 ${selectedOptionId}` : "已批准") : "已拒绝");
+                    const autoApproved = this.yoloExecution;
+                    const approved =
+                      autoApproved ||
+                      window.confirm(
+                        `${request?.title || "Permission request"}${request?.description ? `\n\n${request.description}` : ""}`
+                      );
+                    const selectedOptionId = approved ? permissionOptionId(options, autoApproved) : null;
+                    this.addTimeline(
+                      "权限确认",
+                      approved ? (selectedOptionId ? `已选择 ${selectedOptionId}` : "已批准") : "已拒绝"
+                    );
                     return { approved, selectedOptionId };
                   }
                 });
@@ -727,6 +766,18 @@ function arrayLength(value: unknown): number {
 function shouldFallbackToSse(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("code 1012") || message.includes("ACP WS 连接已关闭") || message.includes("ACP WS 连接异常");
+}
+
+function permissionOptionId(options: Array<{ id?: string; optionId?: string; name?: string }>, preferAllow: boolean): string | null {
+  if (!options.length) return null;
+  const selected = preferAllow
+    ? options.find((item) => {
+        const label = `${item.name || ""}`.toLowerCase();
+        const kind = `${item.optionId || item.id || ""}`.toLowerCase();
+        return label.includes("allow") || label.includes("approve") || kind.includes("allow");
+      }) || options[0]
+    : options[0];
+  return selected.id || selected.optionId || selected.name || null;
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {

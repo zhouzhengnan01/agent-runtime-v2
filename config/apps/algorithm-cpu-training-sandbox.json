@@ -2,22 +2,14 @@
   "name": "algorithm-cpu-training-sandbox",
   "title": "CPU 训练沙盒",
   "description": "用本机 CPU 沙盒执行受限 YOLO smoke 训练，验证 data.yaml 到 best.pt 的闭环。",
-  "category": "algorithm",
+  "category": "algorithm-training",
   "icon": "package",
   "agent_name": "default",
-  "workflow": "artifact_workflow",
+  "workflow": "agent_loop",
   "selected_skills": [
     "cpu-training-runner"
   ],
-  "selected_mcp_tools": [
-    "present_files",
-    "artifact_list",
-    "artifact_read",
-    "artifact_write",
-    "local_read_file",
-    "local_search_text",
-    "local_shell_command"
-  ],
+  "selected_mcp_tools": [],
   "prompt_examples": [
     "用 CPU 沙盒跑一个 mock smoke 训练，mock=true，验证能生成 best.pt。",
     "用 CPU 沙盒训练棕榈果检测，data_yaml=/data/palm/dataset/data.yaml model=yolo11n.pt epochs=1 imgsz=320 batch=1。"

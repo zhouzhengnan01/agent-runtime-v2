@@ -105,6 +105,37 @@ def test_preconfigured_app_templates_reference_existing_capabilities() -> None:
     assert registry.validate_references() == []
 
 
+def test_preconfigured_app_template_skills_have_local_entities() -> None:
+    registry = AppTemplateRegistry()
+    config_skills = {path.stem for path in (registry.root_dir / "config" / "skills").glob("*.json")}
+
+    missing = sorted(
+        {
+            skill_name
+            for template in registry.list()
+            for skill_name in template.selected_skills
+            if skill_name not in config_skills
+        }
+    )
+
+    assert missing == []
+
+
+def test_preconfigured_app_template_workflows_have_local_entities() -> None:
+    registry = AppTemplateRegistry()
+    config_workflows = {"agent_loop"} | {path.stem for path in (registry.root_dir / "config" / "workflows").glob("*.json")}
+
+    missing = sorted(
+        {
+            template.workflow
+            for template in registry.list()
+            if template.workflow and template.workflow not in config_workflows
+        }
+    )
+
+    assert missing == []
+
+
 def test_preconfigured_app_templates_carry_runtime_model_defaults() -> None:
     registry = AppTemplateRegistry()
 
@@ -155,18 +186,28 @@ def test_data_auto_annotation_template_does_not_preselect_mcp_tools() -> None:
     assert template.selected_mcp_tools == []
 
 
+def test_preconfigured_app_templates_do_not_preselect_mcp_tools() -> None:
+    registry = AppTemplateRegistry()
+
+    assert {template.name: template.selected_mcp_tools for template in registry.list()} == {
+        template.name: [] for template in registry.list()
+    }
+
+
 def test_algorithm_engineer_workbench_selects_full_stage_skill_chain() -> None:
     template = AppTemplateRegistry().get("algorithm-engineer-workbench")
 
-    assert template.workflow == "artifact_workflow"
+    assert template.workflow == "agent_loop"
     assert template.selected_skills == [
-        "algorithm-engineer-app",
         "algorithm-engineer",
         "dataset-curator",
+        "data-auto-annotation",
+        "image-dataset-generation",
         "algorithm-research-scout",
         "model-candidate-selector",
         "remote-gpu-ops",
         "gpu-training-orchestrator",
+        "cpu-training-runner",
         "detector-evaluator",
         "deployment-candidate-reviewer",
         "experiment-ledger",
@@ -176,8 +217,28 @@ def test_algorithm_engineer_workbench_selects_full_stage_skill_chain() -> None:
 def test_algorithm_cpu_training_sandbox_template_selects_training_runner() -> None:
     template = AppTemplateRegistry().get("algorithm-cpu-training-sandbox")
 
-    assert template.workflow == "artifact_workflow"
+    assert template.workflow == "agent_loop"
+    assert template.category == "algorithm-training"
     assert template.selected_skills == ["cpu-training-runner"]
+
+
+def test_algorithm_training_related_templates_use_dedicated_category() -> None:
+    registry = AppTemplateRegistry()
+    training_templates = {
+        "algorithm-cpu-training-sandbox",
+        "algorithm-dataset-curation",
+        "algorithm-engineer-full-cycle",
+        "algorithm-engineer-workbench",
+        "algorithm-evaluation-deployment",
+        "algorithm-research-benchmark",
+        "algorithm-training-orchestration",
+    }
+
+    categories = {name: registry.get(name).category for name in training_templates}
+    workflows = {name: registry.get(name).workflow for name in training_templates}
+
+    assert categories == {name: "algorithm-training" for name in training_templates}
+    assert workflows == {name: "agent_loop" for name in training_templates}
 
 
 def test_app_template_reference_validation_uses_installed_workflow_plugins(tmp_path: Path) -> None:
@@ -207,13 +268,13 @@ def test_app_template_reference_validation_uses_installed_workflow_plugins(tmp_p
         encoding="utf-8",
     )
     (workflow_dir / "workflow.json").write_text(
-        json.dumps(
-            {
-                "name": "custom_workflow",
-                "display_name": "Custom Workflow",
-                "handler": "module.py:CustomWorkflow",
-            }
-        ),
+        json.dumps({"name": "custom_workflow", "display_name": "Custom Workflow", "handler": "module.py:CustomWorkflow"}),
+        encoding="utf-8",
+    )
+    config_workflows = tmp_path / "config" / "workflows"
+    config_workflows.mkdir(parents=True)
+    (config_workflows / "custom_workflow.json").write_text(
+        json.dumps({"name": "custom_workflow", "display_name": "Custom Workflow", "handler": "module.py:CustomWorkflow"}),
         encoding="utf-8",
     )
     (plugin_root / "module.py").write_text(

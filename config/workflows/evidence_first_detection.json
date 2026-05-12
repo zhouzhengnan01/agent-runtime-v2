@@ -1,0 +1,8 @@
+{
+  "name": "evidence_first_detection",
+  "display_name": "Evidence First Detection",
+  "description": "Evidence-first behavior detection workflow that avoids visual claims when image or structured evidence is missing.",
+  "enabled": true,
+  "handler": "artifact.py:ArtifactWorkflow",
+  "trigger": "explicit_runtime_options"
+}

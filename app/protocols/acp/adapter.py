@@ -88,7 +88,7 @@ _RUNTIME_OPTION_RESPONSE_ALIASES = {
     "sandbox_profile": "sandboxProfile",
 }
 
-_MODE_IDS = {"plan", "edit", "autonomous", "safe"}
+_MODE_IDS = {"plan", "edit", "autonomous", "safe", "yolo"}
 _CONFIG_OPTION_DEFINITIONS = [
     {
         "id": "modelName",
@@ -163,7 +163,9 @@ class AcpRuntimeAdapter:
             "_meta": {
                 "jetlinks": {
                     "modelManagement": "server",
-                    "runtimeOptions": sorted(set(_RUNTIME_OPTION_RESPONSE_ALIASES.values()) | {"workflow", "temperature"}),
+                    "runtimeOptions": sorted(
+                        set(_RUNTIME_OPTION_RESPONSE_ALIASES.values()) | {"workflow", "temperature", "mode"}
+                    ),
                     "artifactWorkspace": True,
                     "modes": [
                         {"id": "plan", "title": "Plan", "description": "Plan-only responses without tool execution."},
@@ -172,6 +174,11 @@ class AcpRuntimeAdapter:
                             "id": "autonomous",
                             "title": "Autonomous",
                             "description": "Allow broader tool use and more tool rounds.",
+                        },
+                        {
+                            "id": "yolo",
+                            "title": "YOLO",
+                            "description": "Auto-approve permission requests and run with autonomous tool access.",
                         },
                         {"id": "safe", "title": "Safe", "description": "Read-only and low-risk tool use."},
                     ],
@@ -358,6 +365,7 @@ class AcpRuntimeAdapter:
             prompt_blocks_from_params(params),
             send_update,
             workflow=workflow,
+            yolo_mode=session.mode_id == "yolo",
         )
         payload = prompt_response_payload(response)
         payload["threadId"] = session.thread_id
@@ -485,6 +493,9 @@ class AcpRuntimeAdapter:
         session_id = _required_session_id(params)
         if session_id not in sessions:
             raise ValueError(f"Unknown ACP session: {session_id}")
+        if sessions[session_id].mode_id == "yolo":
+            option_id = _auto_permission_option(params.get("options"))
+            return {"outcome": {"outcome": "selected", "optionId": option_id or "allow"}}
         option_id = _string(params.get("selectedOptionId") or params.get("selected_option_id"))
         if option_id is not None:
             return {"outcome": {"outcome": "selected", "optionId": option_id}}
@@ -848,6 +859,25 @@ def _config_option_runtime_update(config_id: str, value: object) -> dict[str, An
     if config_id in {"mode", "modeId"}:
         return {"mode": _normalize_mode(_string(value))}
     raise ValueError(f"Unknown ACP config option: {config_id}")
+
+
+def _auto_permission_option(raw_options: object) -> str | None:
+    if not isinstance(raw_options, list):
+        return "allow"
+    fallback: str | None = None
+    for item in raw_options:
+        if not isinstance(item, dict):
+            continue
+        option_id = _string(item.get("id") or item.get("optionId") or item.get("option_id") or item.get("name"))
+        if option_id is None:
+            continue
+        if fallback is None:
+            fallback = option_id
+        kind = _string(item.get("kind")) or ""
+        name = (_string(item.get("name")) or "").lower()
+        if kind in {"allow_once", "allow_always"} or "allow" in name or "approve" in name:
+            return option_id
+    return fallback or "allow"
 
 
 def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:

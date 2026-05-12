@@ -43,6 +43,16 @@ def required_inputs_for_result(result: AgentRunResult, request: ChatRequest) -> 
 
 def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
     selected_skills = {name.strip() for name in request.runtime_options.selected_skills if name.strip()}
+    if _requires_algorithm_training_inputs(request, selected_skills) and not _has_algorithm_training_input(request):
+        return [
+            _requirement(
+                "dataset",
+                reason=(
+                    "Algorithm training needs base data before execution: upload a YOLO dataset/data.yaml, "
+                    "a labeled image dataset archive, or provide an accessible data.yaml/dataset path."
+                ),
+            )
+        ]
     if _requires_data_auto_annotation(request, selected_skills) and not _has_attachment(request.attachments, "image"):
         return [_requirement("image", reason="Data auto annotation requires an uploaded image.")]
     return []
@@ -50,6 +60,11 @@ def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
 
 def _requires_data_auto_annotation(request: ChatRequest, selected_skills: set[str]) -> bool:
     if "data-auto-annotation" in selected_skills:
+        if _is_algorithm_training_flow(selected_skills):
+            text = _last_user_text(request).lower()
+            annotation_markers = ("自动标注", "预标注", "sam3", "coco", "label", "labels", "annotation")
+            image_markers = ("图片", "图像", "照片", "截图", "image", "photo", "picture")
+            return _mentions_any(text, annotation_markers) and _mentions_any(text, image_markers)
         return True
     text = _last_user_text(request).lower()
     if not text:
@@ -57,6 +72,79 @@ def _requires_data_auto_annotation(request: ChatRequest, selected_skills: set[st
     annotation_markers = ("自动标注", "预标注", "目标检测", "sam3", "coco", "label", "labels", "annotation")
     image_markers = ("图片", "图像", "照片", "截图", "image", "photo", "picture")
     return _mentions_any(text, annotation_markers) and _mentions_any(text, image_markers)
+
+
+def _requires_algorithm_training_inputs(request: ChatRequest, selected_skills: set[str]) -> bool:
+    if not _is_algorithm_training_flow(selected_skills):
+        return False
+    if _is_algorithm_research_only_flow(selected_skills):
+        return False
+    if _is_algorithm_execution_flow(selected_skills):
+        return True
+    text = _last_user_text(request).lower()
+    training_markers = (
+        "训练",
+        "全流程",
+        "benchmark",
+        "best.pt",
+        "baseline",
+        "data.yaml",
+        "数据治理",
+        "算法工程师",
+        "棕榈果",
+    )
+    return _mentions_any(text, training_markers)
+
+
+def _is_algorithm_execution_flow(selected_skills: set[str]) -> bool:
+    execution_skills = {
+        "algorithm-engineer",
+        "dataset-curator",
+        "gpu-training-orchestrator",
+        "cpu-training-runner",
+        "detector-evaluator",
+        "deployment-candidate-reviewer",
+        "experiment-ledger",
+    }
+    return bool(selected_skills & execution_skills)
+
+
+def _is_algorithm_research_only_flow(selected_skills: set[str]) -> bool:
+    research_skills = {"algorithm-research-scout", "model-candidate-selector"}
+    return bool(selected_skills) and selected_skills <= research_skills
+
+
+def _is_algorithm_training_flow(selected_skills: set[str]) -> bool:
+    training_skills = {
+        "algorithm-engineer",
+        "dataset-curator",
+        "algorithm-research-scout",
+        "model-candidate-selector",
+        "gpu-training-orchestrator",
+        "cpu-training-runner",
+        "detector-evaluator",
+        "experiment-ledger",
+    }
+    return bool(selected_skills & training_skills)
+
+
+def _has_algorithm_training_input(request: ChatRequest) -> bool:
+    if _has_attachment(request.attachments, "dataset") or _has_attachment(request.attachments, "image"):
+        return True
+    text = _last_user_text(request)
+    if _mentions_dataset_path(text):
+        return True
+    return False
+
+
+def _mentions_dataset_path(text: str) -> bool:
+    lowered = text.lower()
+    if "data.yaml" in lowered or "data.yml" in lowered:
+        return True
+    if "mock=true" in lowered:
+        return True
+    path_markers = ("/data/", "/mnt/", "/home/", "/users/", "/workspace/", "/datasets/")
+    return any(marker in lowered for marker in path_markers)
 
 
 def _last_user_text(request: ChatRequest) -> str:

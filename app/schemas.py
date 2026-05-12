@@ -39,7 +39,7 @@ class RuntimeOptions(BaseModel):
     max_tokens: int | None = None
     request_timeout_seconds: float | None = None
     response_format: Literal["text", "json"] = "text"
-    mode: Literal["plan", "edit", "autonomous", "safe"] | None = None
+    mode: Literal["plan", "edit", "autonomous", "safe", "yolo"] | None = None
     config_options: dict[str, Any] = Field(default_factory=dict)
     sandbox_profile: str | None = None
 

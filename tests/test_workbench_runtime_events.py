@@ -44,6 +44,10 @@ def test_workbench_deep_execution_toggle_is_in_visible_composer_toolbar() -> Non
 
     assert '<label class="small-action toggle-action" title="复杂任务使用 autonomous 模式，允许更多工具循环">' in html
     assert '<input id="deepExecution" type="checkbox">' in html
+    assert '<input id="yoloExecution" type="checkbox">' in html
+    assert "runtimeOptions.mode = 'yolo';" in html
+    assert "runtimeOptions.config_options = { max_tool_rounds: 16 };" in html
+    assert "runtimeOptions.configOptions = { max_tool_rounds: 16 };" in html
     assert '<label class="tool-pill" title="复杂任务使用 autonomous 模式，允许更多工具循环">' not in html
 
 
@@ -104,3 +108,5 @@ def test_vue_workbench_sends_selected_app_runtime_options() -> None:
 
     assert "state.appTemplates.find((item) => item.name === state.selectedAppTemplateName)" in store
     assert "...templateOptions" in store
+    assert 'options.mode = "yolo";' in store
+    assert "options.configOptions = { max_tool_rounds: 16 };" in store

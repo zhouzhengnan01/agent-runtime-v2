@@ -49,6 +49,9 @@ export type RuntimeOptions = {
   selected_mcp_tools?: string[];
   selectedMcpTools?: string[];
   workflow?: string;
+  mode?: "plan" | "edit" | "autonomous" | "safe" | "yolo";
+  config_options?: Record<string, unknown>;
+  configOptions?: Record<string, unknown>;
 };
 
 export type RunRequest = {

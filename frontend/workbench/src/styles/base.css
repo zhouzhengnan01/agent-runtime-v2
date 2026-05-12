@@ -384,6 +384,7 @@ a {
 
 .quick-actions button,
 .composer-tools button,
+.composer-toggle,
 .row-actions a,
 .inspector-head button {
   min-height: 32px;
@@ -397,6 +398,14 @@ a {
   color: var(--text);
   text-decoration: none;
   font-size: 13px;
+}
+
+.composer-toggle {
+  cursor: pointer;
+}
+
+.composer-toggle input {
+  margin: 0;
 }
 
 .messages {

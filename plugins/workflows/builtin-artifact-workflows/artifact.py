@@ -107,11 +107,15 @@ class ArtifactWorkflow:
         )
 
         selected_skill_names = self._selected_skill_names(agent_config, runtime_options)
-        skill = self.skill_registry.get(skill_name)
+        try:
+            skill = self.skill_registry.get(skill_name)
+            skill_payload = skill.to_event_payload()
+        except KeyError:
+            skill_payload = self.skill_runner.plugin_manager.get_loaded_skill(skill_name).definition.to_event_payload()
         recorder.emit(
             "skill.selected",
             {
-                "skill": skill.to_event_payload(),
+                "skill": skill_payload,
                 "selected_skills": selected_skill_names,
             },
         )

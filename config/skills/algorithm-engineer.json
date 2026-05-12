@@ -1,33 +1,35 @@
 {
-  "name": "algorithm-engineer-app",
-  "description": "Complete algorithm engineer application workspace integrating intake, dataset curation, research, GPU training orchestration, evaluation, deployment review, and experiment ledger.",
+  "name": "algorithm-engineer",
+  "description": "End-to-end CV algorithm iteration planner covering objective, dataset, candidate models, GPU training, evaluation, deployment review, and experiment ledger.",
   "output_kind": "markdown",
   "generation": true,
   "routing": {
-    "summary": "Use as the single application entry for end-to-end algorithm engineering work. It produces a full workspace package with stage board, routing, permission gates, commands, metrics, artifacts, and next actions.",
+    "summary": "Use for full-cycle algorithm engineering tasks such as training detection models, improving YOLO baselines, planning GPU experiments, and deciding deployment readiness.",
     "keywords": [
-      "完整算法工程师应用",
-      "算法工程师应用",
-      "完整应用",
-      "一站式",
-      "工作台",
-      "全流程搞定",
-      "整合"
+      "算法工程师",
+      "算法迭代",
+      "全流程",
+      "训练模型",
+      "检测模型",
+      "模型上线",
+      "benchmark",
+      "评估",
+      "数据治理"
     ],
     "examples": [
-      "帮我整合一个完整的算法工程师应用",
-      "把算法工程师从数据到训练评估上线做成一个工作台"
+      "把棕榈果检测算法工程师全流程跑起来",
+      "帮我从数据治理到训练评估上线做一轮算法迭代"
     ]
   },
   "quality_template": [
-    "dashboard",
-    "stage_board",
-    "subflow_routing",
-    "permission_gates",
-    "artifact_tree",
-    "execution_commands",
-    "acceptance_metrics",
-    "next_actions"
+    "objective",
+    "dataset_audit",
+    "candidate_models",
+    "benchmark",
+    "training",
+    "business_evaluation",
+    "deployment_review",
+    "experiment_ledger"
   ],
   "input_schema": {
     "type": "object",
@@ -37,7 +39,7 @@
     ],
     "properties": {
       "skill_name": {
-        "const": "algorithm-engineer-app"
+        "const": "algorithm-engineer"
       },
       "objective": {
         "type": "string"
@@ -84,7 +86,6 @@
   "model_tags": [
     "chat",
     "reasoning",
-    "tool_call",
-    "rerank"
+    "tool_call"
   ]
 }

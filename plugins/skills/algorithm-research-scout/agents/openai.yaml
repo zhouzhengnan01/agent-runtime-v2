@@ -1,0 +1,3 @@
+display_name: "Algorithm Research Scout"
+short_description: "Research and shortlist candidate object detection algorithms with paper/GitHub/license/metrics verification"
+default_prompt: "调研比 YOLO 更适合棕榈果密集检测的目标检测算法，输出候选算法短名单和证据表"

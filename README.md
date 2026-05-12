@@ -675,8 +675,8 @@ config/apps/technical-doc-writer.json
 | `category` | 应用中心筛选分类，目前前端按 `general`、`generation`、`vision` 等分类展示。 |
 | `icon` | 卡片图标语义名，前端会映射成简短图标。未知值会回退到通用图标。 |
 | `agent_name` | 点击“使用此应用”时切换到的 agent，例如 `default`。必须能在 `config/agents/*.json` 中找到。 |
-| `workflow` | 默认工作流，例如 `artifact_workflow`、`evidence_first_detection`；为 `null` 时走 agent 默认链路。 |
-| `selected_skills` | 本应用默认启用的 Skill 名称列表，名称来自 `config/skills/*.json` 或插件 Skill。 |
+| `workflow` | 默认工作流，例如 `artifact_workflow`、`evidence_first_detection`；为 `null` 时走 agent 默认链路。非空时必须对应 `config/workflows/*.json` 中的本地 Workflow 实体。 |
+| `selected_skills` | 本应用默认启用的 Skill 名称列表，必须对应 `config/skills/*.json` 中的本地技能实体。 |
 | `selected_mcp_tools` | 本应用默认启用的 MCP 工具名称列表，名称来自 `config/mcp/tools.json`。 |
 | `prompt_examples` | 示例提示词。Workbench 点击“使用此应用”或“填入示例”时会填入第一个示例。 |
 | `tags` | 卡片标签，只用于展示和快速识别能力。 |
@@ -894,6 +894,8 @@ Workbench 输入区的“深度执行”开关会把本轮请求切到 `autonomo
 - `edit`：默认编辑模式，使用 agent 默认轮数。
 - `autonomous`：允许更宽的工具集合；未覆盖轮数时最多提升到 16，显式 `max_tool_rounds` 可在 1 到 32
   之间覆盖基础轮数。
+- `yolo`：按 `autonomous` 暴露工具并自动批准 ACP 权限请求；只有缺少图片、数据集、模型文件、参数等
+  运行必需内容时才会返回 `input_required` 等待用户补充。
 
 复杂任务如果依赖上传文件或上一步产物，必须保持同一个 `thread_id`。线程目录里的文件会被注入到用户消息上下文，
 并可通过本地文件工具读取：
@@ -936,7 +938,23 @@ Skill manifests + config/mcp/tools.json + 内置 local tools
 
 ### Skill 工具
 
-`config/skills/*.json` 和插件 manifest 会通过 `SkillToolProvider` 暴露为工具。当前内置 Skill 包括：
+`config/skills/*.json` 是平台侧本地技能实体目录，也是应用模板、Java 配置和 Workbench 技能列表的主来源。
+每个应用模板的 `selected_skills` 都必须能在这里找到同名实体文件。
+
+`plugins/skills/<skill-id>` 是技能实现插件实体目录，负责提供真正可执行的技能包。正式技能在插件内也应有对应同名实现实体：
+
+```text
+plugins/skills/<skill-id>/plugin.json
+plugins/skills/<skill-id>/skills/<skill-id>/manifest.json
+```
+
+技能包可以同时包含 `SKILL.md`、`runner.py`、`spec_builder.py`、`requirements.txt`、`sandbox.yml`、
+`scripts/` 等执行资产。运行时会按同名 skill 把 `config/skills/<skill>.json` 的平台实体定义绑定到插件实现；
+插件中存在但没有本地实体文件的 skill 不会进入正式技能列表。上传新插件时，运行时会自动把插件 manifest
+materialize 到 `config/skills/<skill>.json`，再暴露给 Workbench 和 Java 侧。
+历史套件目录可以保留为共享实现或兼容包，但正式技能应有自己的 `plugins/skills/<skill-id>` 顶层目录。
+
+当前正式内置 Skill 包括：
 
 ```text
 drawio-generation
@@ -947,6 +965,34 @@ markdown-rendering
 deliverables-export
 behavior-detection
 behavior-review
+data-auto-annotation
+algorithm-engineer
+algorithm-research-scout
+cpu-training-runner
+dataset-curator
+model-candidate-selector
+remote-gpu-ops
+gpu-training-orchestrator
+detector-evaluator
+deployment-candidate-reviewer
+experiment-ledger
+```
+
+### Workflow
+
+`config/workflows/*.json` 是平台侧本地 Workflow 实体目录，也是应用模板、Java 配置和 Workbench
+Workflow 列表的主来源。每个应用模板的 `workflow` 字段如果非空，都必须能在这里找到同名实体文件。
+
+`plugins/workflows/**` 是 Workflow 实现插件目录，负责提供 `handler` 指向的 Python 实现。运行时会按同名
+workflow 把 `config/workflows/<workflow>.json` 的实体定义绑定到插件实现；插件中存在但没有本地实体文件的
+workflow 不会进入正式 Workflow 列表。上传新 Workflow 插件时，运行时会自动把插件 manifest materialize 到
+`config/workflows/<workflow>.json`，再暴露给 Workbench 和 Java 侧。
+
+当前正式内置 Workflow 包括：
+
+```text
+artifact_workflow
+evidence_first_detection
 ```
 
 ### MCP/manual 工具
@@ -1358,9 +1404,9 @@ diff/plan 富 UI 目前通过 `session/update._meta.jetlinksRuntimeEvent` 传递
 | `session/cancel` | 支持 | - | 支持转发 | best-effort 取消当前 prompt。 |
 | `session/list` / `session/close` / `session/fork` | 支持 | 支持 | - | JetLinks 会话管理扩展。 |
 | `session/set_model` | 支持 | JetLinks 扩展 | - | 服务端模型托管场景使用。 |
-| `session/set_mode` | 支持 | 支持 | - | `plan` 禁用工具只规划；`safe` 只保留低风险/只读工具；`edit` 为默认编辑模式但禁用本地 shell；`autonomous` 放宽工具并提高工具轮数上限。 |
+| `session/set_mode` | 支持 | 支持 | - | `plan` 禁用工具只规划；`safe` 只保留低风险/只读工具；`edit` 为默认编辑模式但禁用本地 shell；`autonomous` 放宽工具并提高工具轮数上限；`yolo` 在 autonomous 基础上自动批准权限请求。 |
 | `session/set_config_option` | 支持 | 支持 | - | 可更新 `modelName`、`temperature`、`selectedSkills`、`workflow`、`sandboxProfile` 等 session 运行配置。 |
-| `session/request_permission` | 支持 | - | 支持 | WebSocket 会先发 `session/update: permission_request` 给前端；无交互 fallback 默认拒绝。可传 `approved=true` 或 `selectedOptionId` 返回批准/选择。external backend 默认拒绝，避免静默授权。 |
+| `session/request_permission` | 支持 | - | 支持 | WebSocket 会先发 `session/update: permission_request` 给前端；无交互 fallback 默认拒绝。可传 `approved=true` 或 `selectedOptionId` 返回批准/选择。`mode=yolo` 时自动批准。external backend 默认拒绝，避免静默授权；yolo session 代理 external backend 时自动允许。 |
 | `fs/read_text_file` | 支持 | - | 支持 | WebSocket 只允许读取 session `cwd` 内文件或 `/mnt/user-data` 虚拟路径。 |
 | `fs/write_text_file` | 支持 | - | 支持 | WebSocket 只允许写 session `cwd` 内文件或 `/mnt/user-data/workspace|outputs`；`uploads` 只读。 |
 | `terminal/create` / `terminal/output` / `terminal/wait_for_exit` / `terminal/kill` / `terminal/release` | 支持 | - | 支持 | WebSocket 终端默认 cwd 为当前 thread workspace；输出有大小上限。 |
@@ -1377,6 +1423,9 @@ ACP mode 影响 agent loop：
 - `edit`：默认模式，允许编辑类工具，但过滤本地 shell。
 - `autonomous`：允许更宽的工具集合；未覆盖轮数时最多提升到原配置的 2 倍且不超过 16，显式
   `configOptions.max_tool_rounds` 可在 1 到 32 之间覆盖基础轮数。
+- `yolo`：工具暴露和轮数策略同 `autonomous`，并且 `session/request_permission` 在没有显式
+  `approved` / `selectedOptionId` 时由服务端自动批准。它不会跳过 `input_required`，缺文件、缺图片、
+  缺 `data.yaml`、缺模型配置这类内容缺口仍会终止本轮并要求用户补齐。
 
 ACP config options 当前支持：
 
@@ -1392,7 +1441,8 @@ ACP config options 当前支持：
    `session/update`，其中 `update.sessionUpdate = "permission_request"`。
 2. 前端展示确认弹窗或选择控件。
 3. 用户确认后，前端再次调用 `session/request_permission`，带 `approved=true` 或 `selectedOptionId`。
-4. 如果没有前端确认，服务端默认返回 `cancelled`，避免无感授权。
+4. 如果没有前端确认，服务端默认返回 `cancelled`，避免无感授权；当 session `mode=yolo` 时，服务端会
+   自动选择 allow 类选项或直接返回 approved。
 
 WebSocket 文件路径规则：
 
@@ -1432,7 +1482,7 @@ ACP agent 集成，不应当当成远程不可信代码的安全沙箱。
 Sandbox 执行是选择性的。普通对话、LLM spec planning、行为检测文本判断默认在本地 runtime 中完成。
 只有 Skill manifest 显式映射到 sandbox profile，且当前 provider/executor 开启时，才会进入隔离执行路径。
 
-Skill manifest 位置：
+Skill 实体 manifest 位置：
 
 ```text
 config/skills/*.json
@@ -1444,6 +1494,39 @@ config/skills/*.json
 - `output_schema`：预期输出、产物或 JSON 结果
 - `quality_template`：给 planner/verifier 的质量提示
 - `sandbox.enabled`、`sandbox.profile`、`sandbox.adapter_command`、fallback 策略
+
+Skill 实现插件位置：
+
+```text
+plugins/skills/<skill-id>/plugin.json
+plugins/skills/<skill-id>/skills/<skill-id>/manifest.json
+```
+
+插件负责提供真实执行资产，不作为正式技能清单的主来源。正式技能是否对 App/Java/Workbench 可见，以
+`config/skills/*.json` 是否存在为准；正式技能也应在 `plugins/skills/<skill-id>` 中具备同名技能包。
+
+Workflow 实体 manifest 位置：
+
+```text
+config/workflows/*.json
+```
+
+每个 manifest 描述平台侧 Workflow 契约：
+
+- `name`：Workflow 唯一名，供 `runtime_options.workflow` 和应用模板引用
+- `display_name` / `description`：Workbench 和 Java 侧展示信息
+- `enabled`：是否注册到运行时
+- `handler`：绑定到插件实现的 Python handler，例如 `artifact.py:ArtifactWorkflow`
+- `trigger`：当前固定为显式运行参数触发
+
+Workflow 实现插件位置：
+
+```text
+plugins/workflows/**
+```
+
+插件只负责执行实现，不作为正式 Workflow 清单的主来源。正式 Workflow 是否对 App/Java/Workbench 可见，以
+`config/workflows/*.json` 是否存在为准。
 
 Sandbox profile 位置：
 

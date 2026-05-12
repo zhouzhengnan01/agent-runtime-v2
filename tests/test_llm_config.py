@@ -211,6 +211,36 @@ def test_runtime_selected_mcp_tools_enable_tool_choice_auto(monkeypatch: MonkeyP
     assert payload["tools"][0]["function"]["name"] == "selected_status_tool"
 
 
+def test_runtime_selected_skills_enable_tool_choice_auto(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    agent = AgentConfig(
+        name="skill-model",
+        display_name="Skill Model",
+        model=ModelConfig(
+            model="skill-model-name",
+            base_url="http://llm.local/v1",
+            api_key="skill-key",
+            tool_choice="none",
+        ),
+    )
+    client = OpenAICompatibleClient(
+        agent,
+        runtime_options=RuntimeOptions(selected_skills=["cpu-training-runner"]),
+    )
+
+    payload = client._chat_payload(
+        "system",
+        [Message(role="user", content="train")],
+        tools=[{"type": "function", "function": {"name": "cpu-training-runner", "parameters": {"type": "object"}}}],
+    )
+
+    assert client.tool_choice == "auto"
+    assert payload["tool_choice"] == "auto"
+    assert payload["tools"][0]["function"]["name"] == "cpu-training-runner"
+
+
 def test_model_manager_normalizes_model_tags_for_public_payload() -> None:
     manager = ModelManager(
         [

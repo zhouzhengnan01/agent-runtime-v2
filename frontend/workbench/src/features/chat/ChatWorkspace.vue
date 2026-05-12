@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bot, Boxes, FolderOpen, Paperclip, Send, Workflow } from "lucide-vue-next";
+import { Bot, Boxes, FolderOpen, Paperclip, Send, Workflow, Zap } from "lucide-vue-next";
 import { nextTick, ref, watch } from "vue";
 
 import { useWorkbenchStore } from "@/composables/useWorkbenchStore";
@@ -10,6 +10,14 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const folderInput = ref<HTMLInputElement | null>(null);
 const pendingInputFile = ref<HTMLInputElement | null>(null);
 const requiredInputFile = ref<HTMLInputElement | null>(null);
+
+function setDeepExecution(event: Event) {
+  store.setDeepExecution((event.target as HTMLInputElement).checked);
+}
+
+function setYoloExecution(event: Event) {
+  store.setYoloExecution((event.target as HTMLInputElement).checked);
+}
 
 watch(
   () => store.messages.map((message) => message.content).join("|"),
@@ -175,6 +183,25 @@ function uploadRequiredFiles(event: Event) {
             <FolderOpen :size="16" />
             文件夹
           </button>
+          <label class="composer-toggle" title="复杂任务使用 autonomous 模式，允许更多工具循环">
+            <input
+              :checked="store.deepExecution"
+              type="checkbox"
+              :disabled="store.running || store.yoloExecution"
+              @change="setDeepExecution"
+            />
+            深度执行
+          </label>
+          <label class="composer-toggle" title="自动批准权限请求；除缺文件或缺参数外不再弹确认">
+            <input
+              :checked="store.yoloExecution"
+              type="checkbox"
+              :disabled="store.running"
+              @change="setYoloExecution"
+            />
+            <Zap :size="14" />
+            YOLO
+          </label>
           <span v-if="store.error" class="error-text">{{ store.error }}</span>
         </div>
         <button class="send" type="submit" :disabled="store.running || !store.input.trim()">

@@ -19,6 +19,13 @@ from app.main import create_app
 from app.api import skills as skills_api
 
 
+@pytest.fixture(autouse=True)
+def _isolate_runtime_local_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    sandbox_dir = tmp_path / "sandbox-config"
+    sandbox_dir.mkdir()
+    monkeypatch.setattr(sandbox_config_module, "DEFAULT_RUNTIME_CONFIG_PATH", str(sandbox_dir / "runtime.json"))
+
+
 def json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2) + "\n"
 
@@ -33,7 +40,8 @@ def test_sandbox_status_defaults_to_lightweight_local(monkeypatch: pytest.Monkey
     assert status.configured is True
     assert status.server_url is None
     assert status.routing_mode == "selective"
-    assert status.sandboxed_skills == ["data-auto-annotation", "drawio-generation", "excel-generation", "pptx-generation"]
+    assert status.sandboxed_skills == ["cpu-training-runner", "data-auto-annotation", "drawio-generation", "excel-generation", "pptx-generation"]
+    assert status.skill_profiles["cpu-training-runner"] == "python-skill"
     assert status.skill_profiles["data-auto-annotation"] == "python-skill"
     assert status.skill_profiles["drawio-generation"] == "drawio"
     assert status.profiles["python-skill"].image == "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2"
@@ -74,6 +82,7 @@ def test_sandbox_config_reads_runtime_json_and_local_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(sandbox_config_module, "DEFAULT_RUNTIME_CONFIG_PATH", "config/sandbox/runtime.json")
     sandbox_dir = tmp_path / "config" / "sandbox"
     sandbox_dir.mkdir(parents=True)
     (sandbox_dir / "runtime.json").write_text(
@@ -371,7 +380,8 @@ def test_sandbox_status_api_defaults_to_lightweight_local(monkeypatch: pytest.Mo
     data = response.json()
     assert data["provider"] == "local"
     assert data["routing_mode"] == "selective"
-    assert data["sandboxed_skills"] == ["data-auto-annotation", "drawio-generation", "excel-generation", "pptx-generation"]
+    assert data["sandboxed_skills"] == ["cpu-training-runner", "data-auto-annotation", "drawio-generation", "excel-generation", "pptx-generation"]
+    assert data["skill_profiles"]["cpu-training-runner"] == "python-skill"
     assert data["skill_profiles"]["data-auto-annotation"] == "python-skill"
     assert data["skill_profiles"]["pptx-generation"] == "office"
     assert data["profiles"]["office"]["image"] == "jetlinks/opensandbox-office:0.1.0"

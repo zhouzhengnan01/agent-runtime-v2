@@ -519,7 +519,7 @@ ws.send(JSON.stringify({
               <tr><td><code>session/resume</code></td><td>恢复会话；如果不存在则创建。</td><td><code>sessionId</code> 必填；可选 <code>agentName</code>、<code>threadId</code>、<code>cwd</code>、<code>appTemplateName</code>、<code>runtimeOptions</code>。</td></tr>
               <tr><td><code>session/cancel</code></td><td>取消当前会话正在执行的 prompt。</td><td><code>sessionId</code> 必填。</td></tr>
               <tr><td><code>session/close</code></td><td>关闭会话并清理外部 ACP backend。</td><td><code>sessionId</code> 必填。</td></tr>
-              <tr><td><code>session/request_permission</code></td><td>权限请求。没有显式结果时会先发送 <code>session/update: permission_request</code> 给前端，并默认返回 cancelled；前端确认后可再次调用并传 <code>approved=true</code> 或 <code>selectedOptionId</code>。</td><td><code>sessionId</code> 必填。</td></tr>
+              <tr><td><code>session/request_permission</code></td><td>权限请求。没有显式结果时会先发送 <code>session/update: permission_request</code> 给前端，并默认返回 cancelled；前端确认后可再次调用并传 <code>approved=true</code> 或 <code>selectedOptionId</code>。当前 session <code>mode=yolo</code> 时服务端自动批准。</td><td><code>sessionId</code> 必填。</td></tr>
               <tr><td><code>fs/read_text_file</code></td><td>读取文本文件。</td><td><code>sessionId</code>、<code>path</code> 必填；可选 <code>line</code>、<code>limit</code>。</td></tr>
               <tr><td><code>fs/write_text_file</code></td><td>写入文本文件。</td><td><code>sessionId</code>、<code>path</code>、<code>content</code> 必填。</td></tr>
               <tr><td><code>terminal/create</code></td><td>创建受控终端进程。</td><td><code>sessionId</code>、<code>command</code> 必填；可选 <code>args</code>、<code>cwd</code>、<code>env</code>、<code>outputByteLimit</code>。</td></tr>
@@ -557,7 +557,7 @@ ws.send(JSON.stringify({
   }
 }));</code></pre>
           <h3>Mode 与配置项</h3>
-          <p class="muted"><code>session/set_mode</code> 会真正影响 agent loop 的工具暴露和自动执行程度：<code>plan</code> 不暴露工具；<code>safe</code> 只保留低风险/只读工具并限制工具轮数；<code>edit</code> 是默认编辑模式但不暴露本地 shell；<code>autonomous</code> 放宽工具集合并提高工具轮数上限。</p>
+          <p class="muted"><code>session/set_mode</code> 会真正影响 agent loop 的工具暴露和自动执行程度：<code>plan</code> 不暴露工具；<code>safe</code> 只保留低风险/只读工具并限制工具轮数；<code>edit</code> 是默认编辑模式但不暴露本地 shell；<code>autonomous</code> 放宽工具集合并提高工具轮数上限；<code>yolo</code> 在 autonomous 基础上自动批准权限请求。</p>
           <table>
             <thead><tr><th>mode</th><th>行为</th></tr></thead>
             <tbody>
@@ -565,6 +565,7 @@ ws.send(JSON.stringify({
               <tr><td><code>safe</code></td><td>过滤 skill、本地写文件、本地 shell，最多 2 轮工具调用。</td></tr>
               <tr><td><code>edit</code></td><td>默认模式，允许编辑类工具，但过滤本地 shell。</td></tr>
               <tr><td><code>autonomous</code></td><td>允许更宽工具集合，工具轮数最多提升到原配置 2 倍，上限 16。</td></tr>
+              <tr><td><code>yolo</code></td><td>工具策略同 autonomous，并自动批准 <code>session/request_permission</code>；缺少运行必需输入时仍返回 <code>input_required</code>。</td></tr>
             </tbody>
           </table>
           <p class="muted"><code>session/set_config_option</code> 当前支持 <code>modelName</code>、<code>temperature</code>、<code>selectedSkills</code>、<code>workflow</code>、<code>sandboxProfile</code>。这些值会写入当前 session 的 <code>runtimeOptions</code>，后续 <code>session/prompt</code> 自动继承；本轮 prompt 里显式传入的 <code>runtimeOptions</code> 仍然优先。</p>
@@ -762,7 +763,7 @@ ws.send(JSON.stringify({
               <tr><td><code>max_tokens</code></td><td>integer|null</td><td>否</td><td>null</td><td>最大输出 token。</td></tr>
               <tr><td><code>request_timeout_seconds</code></td><td>number|null</td><td>否</td><td>null</td><td>请求超时。</td></tr>
               <tr><td><code>response_format</code></td><td><code>text|json</code></td><td>否</td><td><code>text</code></td><td>响应格式约束。</td></tr>
-              <tr><td><code>mode</code></td><td><code>plan|edit|autonomous|safe|null</code></td><td>否</td><td>null</td><td>ACP 工作模式，影响 agent loop 工具暴露和自动执行程度。</td></tr>
+              <tr><td><code>mode</code></td><td><code>plan|edit|autonomous|safe|yolo|null</code></td><td>否</td><td>null</td><td>ACP 工作模式，影响 agent loop 工具暴露、权限确认和自动执行程度。</td></tr>
               <tr><td><code>config_options</code></td><td>object</td><td>否</td><td>{}</td><td>session 配置项快照。</td></tr>
               <tr><td><code>sandbox_profile</code></td><td>string|null</td><td>否</td><td>null</td><td>沙箱 profile 偏好，供 skill/sandbox 策略消费。</td></tr>
             </tbody>

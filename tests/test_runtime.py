@@ -16,6 +16,13 @@ from app.core.workflow import WorkflowRegistry
 from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, RuntimeOptions
 
 
+@pytest.fixture(autouse=True)
+def _disable_runtime_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SANDBOX_PROVIDER", "local")
+    monkeypatch.setenv("SANDBOX_EXECUTOR_ENABLED", "false")
+    monkeypatch.delenv("SANDBOX_SKILLS", raising=False)
+
+
 async def _collect_events(source: AsyncIterator[ChatEvent]) -> list[ChatEvent]:
     return [event async for event in source]
 
@@ -533,6 +540,44 @@ def test_agent_runtime_preflights_data_auto_annotation_without_image(
     assert completed["metadata"]["required_inputs"][0]["accept"] == "image/*"
 
 
+def test_agent_runtime_yolo_mode_still_requires_missing_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        raise AssertionError("LLM should not be called when required image input is missing.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="data-auto-yolo-preflight-agent",
+        display_name="Data Auto YOLO Preflight Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="请把图片自动标注成 COCO JSON")],
+        runtime_options=RuntimeOptions(
+            thread_id="data-auto-yolo-preflight",
+            mode="yolo",
+            selected_skills=["data-auto-annotation"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.metadata["mode"] == "yolo"
+    assert result.metadata["requires_input"] is True
+    assert result.metadata["required_inputs"][0]["type"] == "image"
+    assert [event.type for event in events] == ["run.started", "agent.message", "run.completed"]
+
+
 def test_agent_runtime_preflights_data_auto_annotation_intent_without_selected_skill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -565,6 +610,187 @@ def test_agent_runtime_preflights_data_auto_annotation_intent_without_selected_s
     assert result.metadata["requires_input"] is True
     assert result.metadata["required_inputs"][0]["type"] == "image"
     assert [event.type for event in events] == ["run.started", "agent.message", "run.completed"]
+
+
+def test_agent_runtime_preflights_algorithm_training_without_base_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        raise AssertionError("LLM should not be called when algorithm training has no base data.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="algorithm-training-preflight-agent",
+        display_name="Algorithm Training Preflight Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "artifact_workflow"},
+    )
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content="帮我把棕榈果检测算法工程师全流程跑起来：先盘点数据和 baseline，再安排 CPU/GPU 训练。",
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            thread_id="algorithm-training-preflight",
+            workflow="artifact_workflow",
+            selected_skills=[
+                "algorithm-engineer",
+                "dataset-curator",
+                "data-auto-annotation",
+                "cpu-training-runner",
+                "experiment-ledger",
+            ],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.reply == "请先上传数据集后继续。"
+    assert result.metadata["requires_input"] is True
+    assert result.metadata["required_inputs"][0]["type"] == "dataset"
+    assert "data.yaml" in result.metadata["required_inputs"][0]["reason"]
+    assert [event.type for event in events] == ["run.started", "agent.message", "run.completed"]
+
+
+def test_agent_runtime_preflights_algorithm_training_followup_choice_without_base_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        raise AssertionError("LLM should not answer numbered follow-ups before algorithm data is provided.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="algorithm-training-followup-preflight-agent",
+        display_name="Algorithm Training Follow-up Preflight Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[
+            Message(role="user", content="帮我把棕榈果检测算法工程师全流程跑起来。"),
+            Message(role="assistant", content="请选择下一步动作。"),
+            Message(role="user", content="1"),
+        ],
+        runtime_options=RuntimeOptions(
+            thread_id="algorithm-training-followup-preflight",
+            workflow="agent_loop",
+            selected_skills=[
+                "algorithm-engineer",
+                "algorithm-research-scout",
+                "dataset-curator",
+                "data-auto-annotation",
+                "model-candidate-selector",
+                "cpu-training-runner",
+                "detector-evaluator",
+                "experiment-ledger",
+            ],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.reply == "请先上传数据集后继续。"
+    assert result.metadata["requires_input"] is True
+    assert result.metadata["required_inputs"][0]["type"] == "dataset"
+    assert [event.type for event in events] == ["run.started", "agent.message", "run.completed"]
+
+
+def test_agent_runtime_research_only_algorithm_flow_can_answer_without_dataset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        return LlmChatResponse(content=f"已进入调研工具链，tools={len(tools)}。")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="algorithm-research-only-agent",
+        display_name="Algorithm Research Only Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="只做棕榈果检测候选算法调研。")],
+        runtime_options=RuntimeOptions(
+            thread_id="algorithm-research-only",
+            workflow="agent_loop",
+            selected_skills=["algorithm-research-scout", "model-candidate-selector"],
+        ),
+    )
+
+    result, _events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert "requires_input" not in result.metadata
+    assert result.reply.startswith("已进入调研工具链")
+
+
+def test_agent_runtime_algorithm_training_flow_does_not_require_image_just_because_annotation_skill_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="已进入算法训练流程。")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="algorithm-training-data-yaml-agent",
+        display_name="Algorithm Training Data YAML Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content="用 /data/palm/dataset/data.yaml 跑棕榈果检测训练，默认 CPU 优先。",
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            thread_id="algorithm-training-data-yaml",
+            selected_skills=["algorithm-engineer", "data-auto-annotation", "cpu-training-runner"],
+        ),
+    )
+
+    result, _events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert "requires_input" not in result.metadata
+    assert result.reply == "已进入算法训练流程。"
+    assert "data-auto-annotation" in seen_tools
 
 
 def test_agent_runtime_uses_existing_thread_upload_for_selected_skill(
