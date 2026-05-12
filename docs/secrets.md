@@ -74,13 +74,14 @@ config/agents/default.local.json
 OpenAI-compatible 模型服务。详情接口和 `python -m app.cli show-agent` 会把 `model.api_key` 和
 `model.api_key_enc` 脱敏成 `********`。
 
-## 应用模板模型密钥
+## 应用模板密钥
 
-如果密钥属于应用模板模型配置，也就是 `config/apps/*.json` 的 `models[].api_key_enc`，需要使用 app 专用
+如果密钥属于应用模板配置，也就是 `config/apps/*.json` 的 `models[].api_key_enc`，需要使用 app 专用
 purpose 加密。不要使用 `secrets set-api-key --agent ...`，那个命令只适用于
-`config/agents/*.local.json` 的 `model.api_key_enc`。
+`config/agents/*.local.json` 的 `model.api_key_enc`。历史兼容路径仍支持 `runtime_options.api_key_enc`，
+但新模板应优先把模型连接参数放进 `models[]`。
 
-应用模板模型密钥使用：
+应用模板密钥使用：
 
 ```bash
 uv run python -m app.cli secrets encrypt-app-api-key \
@@ -89,7 +90,7 @@ uv run python -m app.cli secrets encrypt-app-api-key \
   --value "your-model-api-key"
 ```
 
-命令会把密文打印到 stdout，可放入：
+命令会把密文打印到 stdout，可直接放入模型列表的 `models[].api_key_enc`：
 
 ```json
 {
@@ -109,7 +110,7 @@ uv run python -m app.cli secrets encrypt-app-api-key \
 app:<app-name>:model:<model-name>:api_key
 ```
 
-其中 `<model-name>` 对应 app JSON 中选中模型的 `name`，如果没有 `name`，再使用 `model` 或
+其中 `<model-name>` 对应 app JSON 中选中模型的 `name`；如果没有 `name`，再使用 `model` 或
 `default_model`。例如：
 
 ```text

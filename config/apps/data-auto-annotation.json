@@ -20,21 +20,32 @@
     "SAM3",
     "数据集"
   ],
-  "runtime_options": {
-    "model_name": "Qwen3.6-35B-A3B",
-    "model_env": "LLM_MODEL",
-    "base_url": "http://124.132.152.75:62092/v1",
-    "base_url_env": "LLM_BASE_URL",
-    "api_key_env": "LLM_API_KEY",
-    "temperature": 0.4,
-    "max_tokens": 2048,
-    "selected_skills": [
-      "data-auto-annotation"
-    ]
-  },
   "model_tags": [
     "chat",
     "vision_segmentation",
     "tool_call"
+  ],
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "gpt-5.5",
+      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/",
+      "default_model": "gpt-5.5",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_enc": "enc.fernet.v1.gAAAAABqAxafC50OC87W22CRbMc-68lnFfCGf6DCFqN0IdnGmOAaAI8XoeM-yvbhlwUwUfmUc6SsmtFpE7lLt_yEEEMBX3xHloL2GjBc-Q-mLEOMZaNti3nwzaVt1ecZyWnSYbdE4ZQeTM--MrwCc5FG4spJN-CK08fNjpmV_FCY_cNrDUJJh92ay4PSPXNrSJHZ4NgFlJmHziY1Kd9MJEpfUMGZDwWqA_vRNaLMKDWy3ATJZ4UeBi-M2C1PYQwBITYeonpQYs4YK2SldEMIeepZv6v7psF7MJFZxIWlir_zYV2AeIle0Gg9bss-PvBkXF4Fs6Hasf1ydZ6Jy-IX84B1HhWYBzd2Vw=="
+    }
   ]
 }

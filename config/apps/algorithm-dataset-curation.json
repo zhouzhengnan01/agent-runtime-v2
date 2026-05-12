@@ -22,18 +22,32 @@
     "去重",
     "标签冲突"
   ],
-  "runtime_options": {
-    "model_name": "Qwen3.6-35B-A3B",
-    "model_env": "LLM_MODEL",
-    "base_url": "http://124.132.152.75:62092/v1",
-    "base_url_env": "LLM_BASE_URL",
-    "api_key_env": "LLM_API_KEY",
-    "temperature": 0.4,
-    "max_tokens": 2048
-  },
   "model_tags": [
     "chat",
     "reasoning",
     "tool_call"
+  ],
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "gpt-5.5",
+      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/",
+      "default_model": "gpt-5.5",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_enc": "enc.fernet.v1.gAAAAABqAxafnPWVvfYKa1MgH6LoexRz1WNJx5PprFyWmQRPyMeG1hWGo0gV4dj6bKXsB1l3juDWrt6Ot0BNQGZDdRJV48QIxAryX9aOEJ3z-fpJt07uSnhZotjxGR5HRmgVjpJHr47oOcj2A5TkiW1pcjcwNQWBXOrxG4zI1_F6F_UscbU1h3AQlG82Lxl_yzK0SWzGCt6VNO1J7rqd9miHMBxGWe8jPtd2iCDkPgjMseEZM-M3huXO4FXBu88RdAw1oGTFbYaEbm2RtppEeuwxqo8eZmPCk_W19xqOtEB2cT5355rUH9J4oyTvZYe0Ha1TOqxfrc6b-UpEJU7GXJwpMhaAyA9ptA=="
+    }
   ]
 }

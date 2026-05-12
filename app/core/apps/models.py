@@ -83,7 +83,9 @@ class AppTemplate(BaseModel):
         return normalize_model_tags(value)
 
     def to_payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="json")
+        payload = self.model_dump(mode="json")
+        _strip_secret_fields(payload)
+        return payload
 
     def select_model(self, model_type: str = "chat") -> AppModelOption | None:
         return select_app_model(self.models, model_type=model_type)
@@ -108,3 +110,21 @@ def select_app_model(models: list[AppModelOption], model_type: str = "chat") -> 
 
     selected = min(enumerate(models), key=rank)[1]
     return selected
+
+
+def _strip_secret_fields(payload: dict[str, Any]) -> None:
+    runtime_options = payload.get("runtime_options")
+    if isinstance(runtime_options, dict):
+        runtime_options.pop("api_key", None)
+        runtime_options.pop("api_key_enc", None)
+        if not runtime_options:
+            payload.pop("runtime_options", None)
+
+    raw_models = payload.get("models")
+    if not isinstance(raw_models, list):
+        return
+    for model in raw_models:
+        if not isinstance(model, dict):
+            continue
+        model.pop("api_key", None)
+        model.pop("api_key_enc", None)

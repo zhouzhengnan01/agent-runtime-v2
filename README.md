@@ -368,24 +368,32 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
 - `prompts.system`
 
 模型配置不要写在 `config/agents/default.json`。应用中心入口应把模型参数写在 `config/apps/*.json` 的
-`runtime_options` 中，例如：
+`models` 中，例如：
 
 ```json
 {
   "model_tags": ["chat", "reasoning", "tool_call"],
-  "runtime_options": {
-    "model_name": "Qwen3.6-35B-A3B",
-    "base_url": "http://124.132.152.75:62092/v1",
-    "api_key_env": "LLM_API_KEY",
-    "temperature": 0.4,
-    "max_tokens": 2048
-  }
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "features": ["vision", "reasoning", "chat"],
+      "priority_features": ["chat", "reasoning"],
+      "provider": "openai-compatible",
+      "model": "gpt-5.5",
+      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/<provider-id>/",
+      "api_key_enc": "enc.fernet.v1....",
+      "tool_choice": "auto",
+      "default_model": "gpt-5.5",
+      "temperature": 0.4,
+      "max_tokens": 2048
+    }
+  ]
 }
 ```
 
 `model_tags` 是给应用中心、Java 模型绑定和前端筛选使用的模型能力标签，不会作为运行时调用参数传给模型，
 也不会进入 Skill 的 `input_schema`。Skill manifest 也可以声明同名顶层字段，用来表达该 skill 需要哪类模型能力；
-真正生效的模型连接参数仍然由应用模板的 `runtime_options` 绑定。当前支持的标签：
+真正生效的模型连接参数由应用模板的 `models` 绑定。当前支持的标签：
 
 ```text
 chat
@@ -407,7 +415,7 @@ rerank
 运行时模型配置优先级如下：
 
 ```text
-请求显式 runtime_options -> 应用模板 runtime_options -> 环境变量 / Runtime bootstrap fallback
+请求显式 runtime_options -> 应用模板 models -> 环境变量 / Runtime bootstrap fallback
 ```
 
 如果应用模板只配置 `*_env` 而没有配置具体值，运行时会从环境变量读取：
@@ -522,8 +530,8 @@ config/agents/default.local.json
 
 运行时加载 agent 配置时会自动解密成 `model.api_key`，之后再调用 OpenAI-compatible API。
 
-如果密钥是写在应用模板模型配置里，也就是 `config/apps/*.json` 的 `models[].api_key_enc`，不要使用
-`set-api-key --agent ...` 生成。应用模板模型密钥绑定的是 app 名称和模型名称，使用：
+如果密钥是写在应用模板配置里，也就是 `config/apps/*.json` 的 `models[].api_key_enc`，不要使用
+`set-api-key --agent ...` 生成。应用模板密钥绑定的是 app 名称和模型名称，使用：
 
 ```bash
 uv run python -m app.cli secrets encrypt-app-api-key \
@@ -721,7 +729,8 @@ config/apps/technical-doc-writer.json
 | `selected_mcp_tools` | 本应用默认启用的 MCP 工具名称列表，名称来自 `config/mcp/tools.json`。 |
 | `prompt_examples` | 示例提示词。Workbench 点击“使用此应用”或“填入示例”时会填入第一个示例。 |
 | `tags` | 卡片标签，只用于展示和快速识别能力。 |
-| `runtime_options` | 更细的默认运行参数，例如 `skill_parameters`、模型参数、额外 workflow 参数等。请求显式传入的字段优先级更高。 |
+| `models` | 应用模板绑定的模型列表，例如 `gpt-5.5` 的 `base_url`、能力标签、采样参数和 `api_key_enc`。服务端运行时解密使用，对前端响应会脱敏。 |
+| `runtime_options` | 更细的默认运行参数，例如 `skill_parameters`、额外 workflow 参数等。模型连接参数优先放在 `models`。请求显式传入的字段优先级更高。 |
 
 接口：
 

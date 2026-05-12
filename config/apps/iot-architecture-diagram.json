@@ -19,17 +19,31 @@
     "架构图",
     "拓扑"
   ],
-  "runtime_options": {
-    "model_name": "Qwen3.6-35B-A3B",
-    "model_env": "LLM_MODEL",
-    "base_url": "http://124.132.152.75:62092/v1",
-    "base_url_env": "LLM_BASE_URL",
-    "api_key_env": "LLM_API_KEY",
-    "temperature": 0.4,
-    "max_tokens": 2048
-  },
   "model_tags": [
     "chat",
     "tool_call"
+  ],
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "gpt-5.5",
+      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/",
+      "default_model": "gpt-5.5",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_enc": "enc.fernet.v1.gAAAAABqAxaf8vl1N7gJoJxdDCo7-_mkbGcIjEuSkSgjfQ88Glf_-JUvNP4hWR26LZqgnNi90rb8IiMkPHz7BVaI0qXK9rpcY5dJqXTK3e7b5xA8v2yafC6hJKgPzE1iDQhnY8NdqD0js8SenDSv14yjB8cwU7cvl4nPVLJZOaNgY00fQAeTNaQ3XkYvWEE1m8PldxjDHqJSPKUXwh633-U31Kd8PU0Gx5xefUPp_UWJS7WWiJOEHKZUqNPNj8ld8oqrLZdrd8soZowBY1X3YgLfHyzC3lzGhbA1HGmSu12kQyOpuR3ie5qltJxYnk0X40Ed6XJvX8haLZrQk30F4Ct8D2xpWAbiYg=="
+    }
   ]
 }

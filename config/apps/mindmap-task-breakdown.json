@@ -19,18 +19,32 @@
     "脑图",
     "任务拆解"
   ],
-  "runtime_options": {
-    "model_name": "Qwen3.6-35B-A3B",
-    "model_env": "LLM_MODEL",
-    "base_url": "http://124.132.152.75:62092/v1",
-    "base_url_env": "LLM_BASE_URL",
-    "api_key_env": "LLM_API_KEY",
-    "temperature": 0.4,
-    "max_tokens": 2048
-  },
   "model_tags": [
     "chat",
     "reasoning",
     "tool_call"
+  ],
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "gpt-5.5",
+      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/",
+      "default_model": "gpt-5.5",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_enc": "enc.fernet.v1.gAAAAABqAxafmcZW6x82YBvk3VvzW0ZIocMgrreEDUdiM4XYeicjB64aVVJXsnQ6k0Sszy3nfjPB7qaxkWdadjpp6t897ELiY8b2lmr_RkHuP50NxPjn5axH-tjACS6fH2guEwo_HWd03VJCUotHZNPQ3MX4Un171tAIKLN348whmxWC-PMDiPkkEY1xvIWSm2MIjomlTuRBonb6IEVvjArJ2v0qGgesx2U79V3J3UOtHbuQWCSjWkdtvAUAPe4_OYepsnUo6bI5NvrM6CeOm8vsjuFU5bCuI8CitVNpmD690Zx3uE_C_R16sYuT-K-4H-VSNvbFA7z_Q1VhM4DxKTfsOJn697mgRg=="
+    }
   ]
 }

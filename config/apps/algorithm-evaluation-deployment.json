@@ -23,18 +23,32 @@
     "回滚",
     "计数误差"
   ],
-  "runtime_options": {
-    "model_name": "Qwen3.6-35B-A3B",
-    "model_env": "LLM_MODEL",
-    "base_url": "http://124.132.152.75:62092/v1",
-    "base_url_env": "LLM_BASE_URL",
-    "api_key_env": "LLM_API_KEY",
-    "temperature": 0.4,
-    "max_tokens": 2048
-  },
   "model_tags": [
     "chat",
     "reasoning",
     "tool_call"
+  ],
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "gpt-5.5",
+      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/",
+      "default_model": "gpt-5.5",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_enc": "enc.fernet.v1.gAAAAABqAxaf-daXSPEbNryIqnQYpUq7MePBssKLx5zpZSdQnWgb-yhnqp06vFQ09R9ytpZF7Q6UKdFomSP5rl_JFjAy6LvQZVbRxQODH0hMWOLwXqVykbGF2w4CcM_nQfQsHFJRb-iQC0gJjBNYPzkiin3NOobv04oFHzCYnWvDmIu0ODJJyCZinlO61TcUw39K93J19XiSeXFBNAkBK0Xf67hc-1qcq7I33dH9a3rK4rCpNdmpOnm8sauvYQ_0hp59aliNjVfdx3NPDKHgTn-wySFxsaiN-bHvOn0oxDzv3FoSsDsmgBVmbVj2PvJtmnW8viMIxCJ5VHx2rcwLSSRXuRurS-GHvQ=="
+    }
   ]
 }

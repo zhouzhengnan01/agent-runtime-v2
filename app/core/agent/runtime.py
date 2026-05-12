@@ -4,7 +4,6 @@ import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
-from pathlib import Path
 from uuid import uuid4
 
 from app.core.artifacts import ArtifactStore
@@ -572,17 +571,38 @@ class AgentRuntime:
     def _effective_runtime_options(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
         updates = self._app_model_runtime_option_updates(runtime_options)
         if updates:
-            data = runtime_options.model_dump(mode="python")
-            data.update(updates)
-            runtime_options = RuntimeOptions.model_validate(data)
+            runtime_options = runtime_options.model_copy(update=updates, deep=True)
+        updates = self._app_template_runtime_option_updates(runtime_options)
+        if updates:
+            runtime_options = runtime_options.model_copy(update=updates, deep=True)
         if self.model_config is None:
             return runtime_options
         updates = self._model_runtime_option_updates(runtime_options)
         if not updates:
             return runtime_options
-        data = runtime_options.model_dump(mode="python")
-        data.update(updates)
-        return RuntimeOptions.model_validate(data)
+        return runtime_options.model_copy(update=updates, deep=True)
+
+    def _app_template_runtime_option_updates(self, runtime_options: RuntimeOptions) -> dict[str, object]:
+        if "api_key" in runtime_options.model_fields_set or runtime_options.api_key:
+            return {}
+        app_template_name = (runtime_options.app_template_name or "").strip()
+        if not app_template_name:
+            return {}
+        try:
+            template = self.app_template_registry.get(app_template_name)
+        except (KeyError, ValueError):
+            return {}
+        template_options = template.runtime_options if isinstance(template.runtime_options, dict) else {}
+        encrypted = self._clean_string(template_options.get("api_key_enc"))
+        if not encrypted:
+            return {}
+        decrypted = self._decrypt_app_runtime_api_key(
+            encrypted,
+            app_template_name=app_template_name,
+            runtime_options=runtime_options,
+            template_options=template_options,
+        )
+        return {"api_key": decrypted} if decrypted else {}
 
     def _app_model_runtime_option_updates(self, runtime_options: RuntimeOptions) -> dict[str, object]:
         app_template_name = (runtime_options.app_template_name or "").strip()
@@ -631,8 +651,43 @@ class AgentRuntime:
         purposes = [
             f"app:{app_template_name}:model:{model.name or model.model or model.default_model}:api_key",
             f"app:{app_template_name}:model:api_key",
-            f"agent:default:model:api_key",
+            "agent:default:model:api_key",
         ]
+        for purpose in purposes:
+            try:
+                return self.secret_codec.decrypt(encrypted.strip(), purpose=purpose)
+            except ValueError:
+                continue
+        return None
+
+    def _decrypt_app_runtime_api_key(
+        self,
+        encrypted: str,
+        *,
+        app_template_name: str,
+        runtime_options: RuntimeOptions,
+        template_options: dict[str, object],
+    ) -> str | None:
+        purposes: list[str] = []
+        seen: set[str] = set()
+        for model_name in (
+            runtime_options.model_name,
+            self._clean_string(template_options.get("model_name")),
+            self._clean_string(template_options.get("model")),
+            self._clean_string(template_options.get("default_model")),
+        ):
+            clean_model = self._clean_string(model_name)
+            if not clean_model or clean_model in seen:
+                continue
+            seen.add(clean_model)
+            purposes.append(f"app:{app_template_name}:model:{clean_model}:api_key")
+        purposes.extend(
+            [
+                f"app:{app_template_name}:runtime_options:api_key",
+                f"app:{app_template_name}:model:api_key",
+                "agent:default:model:api_key",
+            ]
+        )
         for purpose in purposes:
             try:
                 return self.secret_codec.decrypt(encrypted.strip(), purpose=purpose)
@@ -679,6 +734,10 @@ class AgentRuntime:
             return model_config, set(model_config.model_fields_set)
         fields = set(model_config)
         return ModelConfig.model_validate(model_config), fields
+
+    @staticmethod
+    def _clean_string(value: object) -> str:
+        return value.strip() if isinstance(value, str) else ""
 
     @staticmethod
     def _normalize_skills(skills: list[str] | None) -> list[str] | None:

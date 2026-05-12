@@ -10,6 +10,7 @@ from app.core.agent import AgentRuntime
 from app.core.apps import AppTemplateRegistry
 from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfig, AgentConfigLoader
+from app.core.config.secrets import SecretCodec
 from app.core.llm import LlmChatResponse, OpenAICompatibleClient
 from app.core.routing import WorkflowRouter
 from app.core.skills import SkillRegistry
@@ -291,6 +292,72 @@ def test_app_template_models_supply_default_chat_model(
         "api_key": "chat-key",
         "temperature": 0.2,
         "max_tokens": 1024,
+    }
+
+
+def test_app_template_runtime_options_decrypt_api_key_enc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apps_dir = tmp_path / "config" / "apps"
+    apps_dir.mkdir(parents=True)
+    encrypted = SecretCodec(tmp_path).encrypt(
+        "runtime-template-key",
+        purpose="app:demo-app:model:chat-model:api_key",
+    )
+    (apps_dir / "demo-app.json").write_text(
+        f"""
+        {{
+          "name": "demo-app",
+          "title": "Demo App",
+          "agent_name": "default",
+          "runtime_options": {{
+            "model_name": "chat-model",
+            "base_url": "http://chat.local/v1",
+            "api_key_enc": "{encrypted}"
+          }}
+        }}
+        """,
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del system_prompt, messages
+        seen.update({"model": self.model, "base_url": self.base_url, "api_key": self.api_key})
+        return "ok"
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"), app_template_registry=AppTemplateRegistry(tmp_path))
+    agent = AgentConfig(
+        name="default",
+        display_name="Default",
+        model={"model": "agent-model", "base_url": "http://agent.local/v1", "api_key": "agent-key"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="hello")],
+        runtime_options=RuntimeOptions(
+            thread_id="app-runtime-key",
+            app_template_name="demo-app",
+            model_name="chat-model",
+            base_url="http://chat.local/v1",
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.reply == "ok"
+    assert seen == {
+        "model": "chat-model",
+        "base_url": "http://chat.local/v1",
+        "api_key": "runtime-template-key",
     }
 
 

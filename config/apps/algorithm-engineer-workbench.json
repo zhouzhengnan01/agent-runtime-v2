@@ -32,19 +32,33 @@
     "数据训练评估上线",
     "实验台账"
   ],
-  "runtime_options": {
-    "model_name": "Qwen3.6-35B-A3B",
-    "model_env": "LLM_MODEL",
-    "base_url": "http://124.132.152.75:62092/v1",
-    "base_url_env": "LLM_BASE_URL",
-    "api_key_env": "LLM_API_KEY",
-    "temperature": 0.4,
-    "max_tokens": 2048
-  },
   "model_tags": [
     "chat",
     "reasoning",
     "tool_call",
     "rerank"
+  ],
+  "models": [
+    {
+      "name": "gpt-5.5",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "gpt-5.5",
+      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/",
+      "default_model": "gpt-5.5",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_enc": "enc.fernet.v1.gAAAAABqAxaftWMknlpSzYeVVcC02eUq0ZJSeacqpv4I4l2-7738JYp7QpKGPrBDh-RXHltUGUHst0ucNLVwu6NdDAUADx6w68kWt9VvHdTCxZ3B5npKA1CaA91FF1Z7_82dGXcWItxZ44jMJTpi4MFkfzLJBwobfU_MEtK2HNE51B7cNamYnhBRxFHNht2g4fRwtgqHNoMCslU2oF3KBoUE4L4Tx1OK4I7B4-mP4sDag3W4kNuN5cm3AaXjdj_8llbDWTe6lsKywOEurcA0lvJreDNxKG9U4x8HTN2V4igg5l-7BjcvPOm3PIkcuxgN2LFLlgfDHAjdYFiWk5-dHnehLS6g5EmkZg=="
+    }
   ]
 }

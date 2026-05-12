@@ -73,6 +73,39 @@ def test_app_template_registry_lists_and_gets_templates(tmp_path: Path) -> None:
             "max_tokens": 2048,
         }
     ]
+    payload = registry.get("demo").to_payload()
+    assert "api_key" not in payload["models"][0]
+    assert "api_key_enc" not in payload["models"][0]
+
+
+def test_app_template_payload_strips_runtime_option_secrets(tmp_path: Path) -> None:
+    apps_dir = tmp_path / "config" / "apps"
+    apps_dir.mkdir(parents=True)
+    (apps_dir / "demo.json").write_text(
+        json.dumps(
+            {
+                "name": "demo",
+                "title": "Demo App",
+                "agent_name": "default",
+                "runtime_options": {
+                    "model_name": "demo-model",
+                    "base_url": "http://demo.local/v1",
+                    "api_key": "plain-key",
+                    "api_key_enc": "enc.fernet.v1.test",
+                    "api_key_env": "LLM_API_KEY",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = AppTemplateRegistry(root_dir=tmp_path).get("demo").to_payload()
+
+    assert payload["runtime_options"] == {
+        "model_name": "demo-model",
+        "base_url": "http://demo.local/v1",
+        "api_key_env": "LLM_API_KEY",
+    }
 
 
 def test_app_template_registry_deduplicates_collection_and_file_templates(tmp_path: Path) -> None:
@@ -224,18 +257,21 @@ def test_preconfigured_app_template_workflows_have_local_entities() -> None:
     assert missing == []
 
 
-def test_preconfigured_app_templates_carry_runtime_model_defaults() -> None:
+def test_preconfigured_app_templates_carry_model_defaults() -> None:
     registry = AppTemplateRegistry()
 
     for template in registry.list():
-        options = template.runtime_options
-        assert options["model_name"] == "Qwen3.6-35B-A3B", template.name
-        assert options["model_env"] == "LLM_MODEL", template.name
-        assert options["base_url"] == "http://124.132.152.75:62092/v1", template.name
-        assert options["base_url_env"] == "LLM_BASE_URL", template.name
-        assert options["api_key_env"] == "LLM_API_KEY", template.name
-        assert options["temperature"] == 0.4, template.name
-        assert options["max_tokens"] == 2048, template.name
+        assert template.runtime_options == {}, template.name
+        assert len(template.models) == 1, template.name
+        model = template.models[0]
+        assert model.name == "gpt-5.5", template.name
+        assert model.model == "gpt-5.5", template.name
+        assert model.default_model == "gpt-5.5", template.name
+        assert model.base_url == "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/", template.name
+        assert model.api_key is None, template.name
+        assert model.api_key_enc and model.api_key_enc.startswith("enc.fernet.v1."), template.name
+        assert model.temperature == 0.4, template.name
+        assert model.max_tokens == 2048, template.name
 
 
 def test_preconfigured_app_templates_carry_model_tags() -> None:

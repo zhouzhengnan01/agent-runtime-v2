@@ -207,9 +207,11 @@ test('app center upload, skill execution, and same-thread continuation', async (
   const firstRequest = runRequests[0];
   expect(firstRequest.attachments?.[0]?.path).toMatch(/^\/mnt\/user-data\/uploads\//);
   expect(firstRequest.runtime_options?.selected_skills).toContain('data-auto-annotation');
-  expect(firstRequest.runtime_options?.model_name).toBe('Qwen3.6-35B-A3B');
-  expect(firstRequest.runtime_options?.base_url).toBe('http://124.132.152.75:62092/v1');
-  expect(firstRequest.runtime_options?.api_key_env).toBe('LLM_API_KEY');
+  expect(firstRequest.runtime_options?.app_template_name).toBe('data-auto-annotation');
+  expect(firstRequest.runtime_options?.model_type).toBe('chat');
+  expect(firstRequest.runtime_options?.model_name).toBeUndefined();
+  expect(firstRequest.runtime_options?.base_url).toBeUndefined();
+  expect(firstRequest.runtime_options?.api_key_env).toBeUndefined();
   expect(firstRequest.runtime_options?.mode).toBe('autonomous');
   expect(firstRequest.runtime_options?.config_options?.max_tool_rounds).toBe(12);
 
