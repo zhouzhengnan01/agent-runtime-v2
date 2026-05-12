@@ -76,6 +76,16 @@ def test_workbench_sends_acp_runtime_options_on_session_new() -> None:
 
     assert "const runtimeOptions = buildAcpRuntimeOptions(threadId, workflow);" in html
     assert "runtimeOptions" in html[html.index("rpc('new_session'") : html.index("rpc('prompt'")]
+    assert "runtimeOptions.appTemplateName = state.selectedAppTemplateName;" in html
+    assert "runtimeOptions.modelType = 'chat';" in html
+
+
+def test_workbench_sends_app_template_name_for_config_app_models() -> None:
+    html = WORKBENCH.read_text()
+
+    assert "runtimeOptions.app_template_name = state.selectedAppTemplateName;" in html
+    assert "runtimeOptions.model_type = 'chat';" in html
+    assert "app_template_name: template.name" in html
 
 
 def test_workbench_does_not_restore_artifacts_from_recent_runs() -> None:

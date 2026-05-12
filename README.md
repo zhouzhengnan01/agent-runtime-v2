@@ -129,8 +129,10 @@ status=running pid=12345 health=ok url=http://127.0.0.1:8000 log=.runtime/server
 - `2`：进程存在但健康检查失败
 - `3`：未运行或 PID 文件过期
 
-脚本会读取根目录 `.env`（如果存在），可把 `LLM_API_KEY`、`RUNTIME_AUTH_MODE`、`RUNTIME_API_TOKEN`
-等运行环境放入 `.env`，但不要把真实密钥提交到仓库。
+脚本默认不读取根目录 `.env`，模型优先由 `config/apps/*.json` 里的应用模板 `models`
+提供；Workbench 选择应用模板后会把 `app_template_name` 传给运行时，由服务端读取模板模型配置。
+如需兼容旧部署方式，可显式设置 `LOAD_ENV_FILE=true` 让 `up.sh` 读取 `ENV_FILE`（默认 `.env`）。
+不要把真实密钥提交到仓库。
 
 如果 `up.sh` 发现当前 Python 环境缺少依赖，会返回退出码 `10` 并提示先执行：
 

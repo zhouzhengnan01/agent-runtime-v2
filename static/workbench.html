@@ -3957,6 +3957,8 @@
     function runtimeOptionsFromAppTemplate(template, threadId = null) {
       const runtimeOptions = {
         ...(template.runtime_options && typeof template.runtime_options === 'object' ? template.runtime_options : {}),
+        app_template_name: template.name,
+        model_type: 'chat',
         selected_skills: [...(template.selected_skills || [])],
         selected_mcp_tools: [...(template.selected_mcp_tools || [])]
       };
@@ -6528,6 +6530,10 @@
         selected_skills: [...state.selectedChatSkills],
         selected_mcp_tools: [...state.selectedChatMcpTools]
       };
+      if (state.selectedAppTemplateName) {
+        runtimeOptions.app_template_name = state.selectedAppTemplateName;
+        runtimeOptions.model_type = 'chat';
+      }
       if (state.yoloExecution) {
         runtimeOptions.mode = 'yolo';
         runtimeOptions.config_options = { max_tool_rounds: 16 };
@@ -6546,6 +6552,10 @@
         selectedSkills: [...state.selectedChatSkills],
         selectedMcpTools: [...state.selectedChatMcpTools]
       };
+      if (state.selectedAppTemplateName) {
+        runtimeOptions.appTemplateName = state.selectedAppTemplateName;
+        runtimeOptions.modelType = 'chat';
+      }
       if (state.yoloExecution) {
         runtimeOptions.mode = 'yolo';
         runtimeOptions.configOptions = { max_tool_rounds: 16 };

@@ -17,6 +17,7 @@ RUNTIME_DIR="${RUNTIME_DIR:-.runtime/server}"
 PID_FILE="${PID_FILE:-${RUNTIME_DIR}/server.pid}"
 LOG_FILE="${LOG_FILE:-${RUNTIME_DIR}/server.log}"
 ENV_FILE="${ENV_FILE:-.env}"
+LOAD_ENV_FILE="${LOAD_ENV_FILE:-false}"
 
 if [ -x ".venv/bin/python" ]; then
   PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
