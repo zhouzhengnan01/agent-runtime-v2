@@ -24,6 +24,19 @@ APP_PORT=18012 ./status.sh
 http://127.0.0.1:18012/workbench
 ```
 
+### 密钥与加解密
+
+应用模型密钥默认通过环境变量读取，不建议把真实 key 写入公开 JSON：
+
+```bash
+export LLM_API_KEY="..."
+```
+
+如果需要本地保存加密后的模型 key，可以使用 `api_key_enc` 和本地 secrets 主密钥。完整说明见
+[`docs/secrets.md`](docs/secrets.md)；Git 中可见的目录说明见
+[`config/secrets/README.md`](config/secrets/README.md)。真实主密钥会在运行时生成到
+`.runtime/secrets/master.key`，该目录已被 `.gitignore` 忽略，不会提交到 GitHub。
+
 也可以直接用 uvicorn 开发调试：
 
 ```bash
@@ -441,6 +454,9 @@ config/agents/default.local.json  # 本地私密覆盖，默认被 git 忽略
 `*.local.json` 可以只写需要覆盖的字段，加载时会深度合并到公开 agent JSON 上。历史版本允许在这里覆盖
 `model.api_key` / `model.api_key_enc`；应用中心模型配置迁移到 `config/apps/*.json` 后，推荐改用
 `LLM_API_KEY` 环境变量给应用模板的 `api_key_env` 供值：
+
+> 这部分只保留核心流程。完整密钥目录、加解密主密钥、迁移和部署说明见
+> [`docs/secrets.md`](docs/secrets.md)。
 
 ```json
 {
