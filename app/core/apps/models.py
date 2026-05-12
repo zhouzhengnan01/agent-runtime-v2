@@ -2,9 +2,53 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.model_tags import normalize_model_tags
+
+
+class AppModelOption(BaseModel):
+    """Model option declared by an app template.
+
+    Extra fields are intentionally preserved because app configs may come from
+    a platform-side model registry whose schema is wider than the local runtime.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str = ""
+    model_type: str | None = None
+    features: list[str] = Field(default_factory=list)
+    priority_features: list[str] = Field(default_factory=list)
+    priority: int = 0
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    api_key_enc: str | None = None
+    tool_choice: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    request_timeout_seconds: float | None = None
+    default_model: str | None = None
+
+    @field_validator("features", "priority_features", mode="before")
+    @classmethod
+    def validate_features(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    @property
+    def effective_model_type(self) -> str:
+        if self.model_type and self.model_type.strip():
+            return self.model_type.strip()
+        if self.priority_features:
+            return self.priority_features[0]
+        if self.features:
+            return self.features[0]
+        return "chat"
 
 
 class AppTemplate(BaseModel):
@@ -22,7 +66,7 @@ class AppTemplate(BaseModel):
     prompt_examples: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     model_tags: list[str] = Field(default_factory=list)
-    models: list[dict[str, Any]] = Field(default_factory=list)
+    models: list[AppModelOption] = Field(default_factory=list)
     runtime_options: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("name", "title", "agent_name")
@@ -40,3 +84,27 @@ class AppTemplate(BaseModel):
 
     def to_payload(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
+
+    def select_model(self, model_type: str = "chat") -> AppModelOption | None:
+        return select_app_model(self.models, model_type=model_type)
+
+
+def select_app_model(models: list[AppModelOption], model_type: str = "chat") -> AppModelOption | None:
+    requested = (model_type or "chat").strip() or "chat"
+    if not models:
+        return None
+
+    def rank(item: tuple[int, AppModelOption]) -> tuple[int, int, int]:
+        index, model = item
+        if requested in model.priority_features:
+            match_rank = 0
+        elif model.effective_model_type == requested:
+            match_rank = 1
+        elif requested in model.features:
+            match_rank = 2
+        else:
+            match_rank = 3
+        return (match_rank, model.priority, index)
+
+    selected = min(enumerate(models), key=rank)[1]
+    return selected

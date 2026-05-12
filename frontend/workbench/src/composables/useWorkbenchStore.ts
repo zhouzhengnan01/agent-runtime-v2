@@ -99,6 +99,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         thread_id: state.threadId,
         selected_skills: [...state.selectedSkills],
         selected_mcp_tools: [...state.selectedMcpTools],
+        ...(state.selectedAppTemplateName ? { app_template_name: state.selectedAppTemplateName, model_type: "chat" } : {}),
         ...(state.selectedWorkflow ? { workflow: state.selectedWorkflow } : {})
       };
       if (state.yoloExecution) {
@@ -119,6 +120,7 @@ export const useWorkbenchStore = defineStore("workbench", {
         threadId: state.threadId,
         selectedSkills: [...state.selectedSkills],
         selectedMcpTools: [...state.selectedMcpTools],
+        ...(state.selectedAppTemplateName ? { appTemplateName: state.selectedAppTemplateName, modelType: "chat" } : {}),
         ...(state.selectedWorkflow ? { workflow: state.selectedWorkflow } : {})
       };
       if (state.yoloExecution) {

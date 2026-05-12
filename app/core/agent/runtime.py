@@ -10,9 +10,12 @@ from uuid import uuid4
 from app.core.artifacts import ArtifactStore
 from app.core.artifacts.preview import guess_mime_type
 from app.core.agent.session import SessionConversationStore
+from app.core.apps import AppTemplateRegistry
+from app.core.apps.models import AppModelOption
 from app.core.agent.tool_loop import ToolCallingAgentLoop
 from app.core.config import AgentConfig
 from app.core.config.agent_config import ModelConfig
+from app.core.config.secrets import SecretCodec
 from app.core.events import EventRecorder, RunEventStore
 from app.core.llm import OpenAICompatibleClient
 from app.core.memory import MarkdownMemoryStore, MemoryStore
@@ -35,6 +38,7 @@ class AgentRuntime:
         run_event_store: RunEventStore | None = None,
         session_store: SessionConversationStore | None = None,
         model_config: ModelConfig | dict[str, object] | None = None,
+        app_template_registry: AppTemplateRegistry | None = None,
         skills: list[str] | None = None,
     ) -> None:
         self.artifact_store = artifact_store or ArtifactStore()
@@ -45,6 +49,8 @@ class AgentRuntime:
         self.workflow_registry = workflow_registry or WorkflowRegistry.builtin(self.artifact_store)
         self.workflow_router = workflow_router
         self.model_config, self._model_config_fields = self._normalize_model_config(model_config)
+        self.app_template_registry = app_template_registry or AppTemplateRegistry()
+        self.secret_codec = SecretCodec(self.app_template_registry.root_dir)
         self.skills = self._normalize_skills(skills)
         self.agent_loop = ToolCallingAgentLoop(
             ToolInvocationService(
@@ -67,7 +73,7 @@ class AgentRuntime:
 
         workflow_name = self._selected_workflow_name(agent_config, request)
         paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
-        input_required = required_inputs_for_request(request)
+        input_required = [] if request.runtime_options.mode == "yolo" else required_inputs_for_request(request)
         if input_required:
             recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
             events = [
@@ -151,7 +157,7 @@ class AgentRuntime:
             raise ValueError("messages must not be empty")
 
         workflow_name = self._selected_workflow_name(agent_config, request)
-        input_required = required_inputs_for_request(request)
+        input_required = [] if request.runtime_options.mode == "yolo" else required_inputs_for_request(request)
         if input_required:
             async for event in self._stream_input_required_events(agent_config, request, workflow_name, input_required):
                 yield event
@@ -564,6 +570,11 @@ class AgentRuntime:
         return messages
 
     def _effective_runtime_options(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
+        updates = self._app_model_runtime_option_updates(runtime_options)
+        if updates:
+            data = runtime_options.model_dump(mode="python")
+            data.update(updates)
+            runtime_options = RuntimeOptions.model_validate(data)
         if self.model_config is None:
             return runtime_options
         updates = self._model_runtime_option_updates(runtime_options)
@@ -572,6 +583,62 @@ class AgentRuntime:
         data = runtime_options.model_dump(mode="python")
         data.update(updates)
         return RuntimeOptions.model_validate(data)
+
+    def _app_model_runtime_option_updates(self, runtime_options: RuntimeOptions) -> dict[str, object]:
+        app_template_name = (runtime_options.app_template_name or "").strip()
+        if not app_template_name:
+            return {}
+        try:
+            template = self.app_template_registry.get(app_template_name)
+        except (KeyError, ValueError):
+            return {}
+        selected_model = template.select_model(runtime_options.model_type or "chat")
+        if selected_model is None:
+            return {}
+        return self._runtime_option_updates_from_app_model(runtime_options, selected_model, app_template_name)
+
+    def _runtime_option_updates_from_app_model(
+        self,
+        runtime_options: RuntimeOptions,
+        model: AppModelOption,
+        app_template_name: str,
+    ) -> dict[str, object]:
+        explicit = runtime_options.model_fields_set
+        updates: dict[str, object] = {}
+        model_name = model.model or model.default_model or model.name
+        if model_name and "model_name" not in explicit:
+            updates["model_name"] = model_name
+        for option_name in (
+            "base_url",
+            "api_key",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "request_timeout_seconds",
+        ):
+            if option_name in explicit:
+                continue
+            value = getattr(model, option_name)
+            if value is not None:
+                updates[option_name] = value
+        if "api_key" not in explicit and "api_key" not in updates and model.api_key_enc:
+            decrypted = self._decrypt_app_model_api_key(model.api_key_enc, app_template_name, model)
+            if decrypted:
+                updates["api_key"] = decrypted
+        return updates
+
+    def _decrypt_app_model_api_key(self, encrypted: str, app_template_name: str, model: AppModelOption) -> str | None:
+        purposes = [
+            f"app:{app_template_name}:model:{model.name or model.model or model.default_model}:api_key",
+            f"app:{app_template_name}:model:api_key",
+            f"agent:default:model:api_key",
+        ]
+        for purpose in purposes:
+            try:
+                return self.secret_codec.decrypt(encrypted.strip(), purpose=purpose)
+            except ValueError:
+                continue
+        return None
 
     def _model_runtime_option_updates(self, runtime_options: RuntimeOptions) -> dict[str, object]:
         if self.model_config is None:

@@ -104,6 +104,7 @@ class ToolCallingAgentLoop:
                 },
             )
             reply = await llm.complete(system_prompt, conversation)
+            reply, guard_metadata = self._guard_unverified_completion(reply, runtime_options)
             recorder.emit(
                 "llm.request.completed",
                 {
@@ -129,10 +130,12 @@ class ToolCallingAgentLoop:
                 emit_message_delta=emit_message_delta,
                 run_id=recorder.run_id,
                 mode=self._runtime_mode(runtime_options),
+                extra_metadata=guard_metadata,
             )
 
         rounds = 0
         tool_call_count = 0
+        required_inputs: list[dict[str, Any]] = []
         final_response = LlmChatResponse()
         max_rounds = self._max_tool_rounds(agent_config, runtime_options)
         for round_index in range(max_rounds):
@@ -175,7 +178,11 @@ class ToolCallingAgentLoop:
             assistant_message = self._assistant_message(final_response)
             conversation.append(assistant_message)
             if not final_response.tool_calls:
-                reply = final_response.content
+                reply, guard_metadata = self._guard_unverified_completion(
+                    final_response.content,
+                    runtime_options,
+                    tool_count=len(tools),
+                )
                 return self._result(
                     agent_config,
                     thread_id,
@@ -190,6 +197,8 @@ class ToolCallingAgentLoop:
                     emit_message_delta=emit_message_delta,
                     run_id=recorder.run_id,
                     mode=self._runtime_mode(runtime_options),
+                    extra_metadata=guard_metadata,
+                    required_inputs=required_inputs,
                 )
 
             recorder.emit(
@@ -211,6 +220,7 @@ class ToolCallingAgentLoop:
                     recorder,
                     runtime_options=runtime_options,
                 )
+                required_inputs.extend(self._required_inputs_from_tool_result(tool_result))
                 conversation.append(
                     {
                         "role": "tool",
@@ -239,6 +249,7 @@ class ToolCallingAgentLoop:
             emit_message_delta=emit_message_delta,
             run_id=recorder.run_id,
             mode=self._runtime_mode(runtime_options),
+            required_inputs=required_inputs,
         )
 
     @staticmethod
@@ -463,6 +474,49 @@ class ToolCallingAgentLoop:
         return result
 
     @staticmethod
+    def _required_inputs_from_tool_result(result: ToolInvocationResult) -> list[dict[str, Any]]:
+        if result.structured_content.get("requires_input") is not True:
+            return []
+        raw_items = result.structured_content.get("required_inputs")
+        if not isinstance(raw_items, list):
+            return []
+        return [dict(item) for item in raw_items if isinstance(item, dict)]
+
+    @classmethod
+    def _guard_unverified_completion(
+        cls,
+        reply: str,
+        runtime_options: RuntimeOptions | None,
+        *,
+        tool_count: int = 0,
+    ) -> tuple[str, dict[str, Any]]:
+        mode = cls._runtime_mode(runtime_options)
+        if mode != "yolo":
+            return reply, {}
+        selected_skills = cls._selected_skill_names(runtime_options)
+        if not selected_skills or tool_count <= 0:
+            return reply, {}
+        reply_lower = reply.lower()
+        completion_markers = (
+            "已生成",
+            "已完成",
+            "通过内容校验",
+            "benchmark 完成",
+            "训练完成",
+            "评估完成",
+            "上线评审通过",
+            "completed",
+            "generated",
+        )
+        if not any(marker in reply_lower for marker in completion_markers):
+            return reply, {}
+        guarded = (
+            "本次没有执行任何工具调用，不能声明大流程已完成。\n"
+            "请确认已选择对应 app/skills，并提供数据集、GPU 连接、训练产物或评估结果等必要输入。"
+        )
+        return guarded, {"unverified_completion_blocked": True, "original_reply": reply[:2000]}
+
+    @staticmethod
     def _tool_arguments(raw_arguments: str) -> dict[str, Any]:
         if not raw_arguments.strip():
             return {}
@@ -589,6 +643,8 @@ class ToolCallingAgentLoop:
         emit_message_delta: bool = False,
         run_id: str = "",
         mode: str = "edit",
+        extra_metadata: dict[str, Any] | None = None,
+        required_inputs: list[dict[str, Any]] | None = None,
     ) -> ToolLoopResult:
         final_messages = list(messages)
         if reply and (
@@ -614,6 +670,8 @@ class ToolCallingAgentLoop:
                 "mode": mode,
                 "context_compaction_count": context_compactions,
                 "last_context_compaction": last_context_event or {},
+                **({"requires_input": True, "required_inputs": required_inputs} if required_inputs else {}),
+                **(extra_metadata or {}),
             },
         )
         recorder.emit("run.completed" if completed_event else "run.failed", {"result": result.model_dump()})

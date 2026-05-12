@@ -733,6 +733,63 @@ def test_agent_loop_allows_request_scoped_tool_round_override() -> None:
     ) == 32
 
 
+def test_agent_loop_surfaces_skill_required_inputs(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        nonlocal calls
+        calls += 1
+        del self, system_prompt, messages
+        if calls == 1:
+            assert "algorithm-engineer" in [tool["function"]["name"] for tool in tools]
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_algorithm",
+                        name="algorithm-engineer",
+                        arguments='{"objective":"棕榈果检测算法全流程"}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="已按 skill 返回继续所需输入。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    store = ArtifactStore(root_dir=tmp_path)
+    agent = AgentConfig(
+        name="algorithm-agent",
+        display_name="Algorithm Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        skills=["algorithm-engineer"],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=store)
+    request = ChatRequest(
+        messages=[Message(role="user", content="帮我把棕榈果检测算法工程师全流程跑起来")],
+        runtime_options=RuntimeOptions(
+            thread_id="algorithm-required-inputs",
+            mode="yolo",
+            selected_skills=["algorithm-engineer"],
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.status == "completed"
+    assert result.metadata["tool_call_count"] == 1
+    assert result.metadata["requires_input"] is True
+    stages = {item["stage"] for item in result.metadata["required_inputs"]}
+    assert {"dataset-curator", "remote-gpu-ops", "detector-evaluator", "deployment-candidate-reviewer"} <= stages
+
+
 def test_agent_loop_truncates_large_tool_results_before_returning_to_model(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

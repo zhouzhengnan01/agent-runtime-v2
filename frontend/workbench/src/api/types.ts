@@ -49,6 +49,10 @@ export type RuntimeOptions = {
   selectedSkills?: string[];
   selected_mcp_tools?: string[];
   selectedMcpTools?: string[];
+  app_template_name?: string;
+  appTemplateName?: string;
+  model_type?: string;
+  modelType?: string;
   workflow?: string;
   mode?: "plan" | "edit" | "autonomous" | "safe" | "yolo";
   config_options?: Record<string, unknown>;

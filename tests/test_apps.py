@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.apps import AppTemplateRegistry
+from app.core.apps.models import AppModelOption, select_app_model
 from app.main import create_app
 from tools.app_smoke_matrix import expected_artifact_patterns, template_expects_artifacts
 
@@ -54,7 +55,7 @@ def test_app_template_registry_lists_and_gets_templates(tmp_path: Path) -> None:
     assert [template.name for template in templates] == ["demo"]
     assert registry.get("demo").selected_skills == ["markdown-rendering"]
     assert registry.get("demo").model_tags == ["chat", "tool_call"]
-    assert registry.get("demo").models == [
+    assert [model.model_dump(mode="json", exclude_none=True) for model in registry.get("demo").models] == [
         {
             "name": "gpt-5.5",
             "features": ["vision", "reasoning", "chat"],
@@ -209,6 +210,19 @@ def test_preconfigured_app_templates_carry_model_tags() -> None:
         "vision_segmentation",
         "tool_call",
     ]
+
+
+def test_app_model_selection_uses_priority_features_and_priority() -> None:
+    models = [
+        AppModelOption(name="vision-low", model="vision-low", features=["vision", "chat"], priority=1),
+        AppModelOption(name="chat-high", model="chat-high", features=["chat"], priority_features=["chat"], priority=10),
+        AppModelOption(name="chat-low", model="chat-low", features=["chat"], priority_features=["chat"], priority=0),
+    ]
+
+    selected = select_app_model(models, model_type="chat")
+
+    assert selected is not None
+    assert selected.model == "chat-low"
 
 
 def test_data_auto_annotation_template_does_not_preselect_mcp_tools() -> None:

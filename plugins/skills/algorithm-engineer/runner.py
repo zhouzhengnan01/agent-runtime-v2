@@ -24,6 +24,11 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
         return _cpu_training_local_notice(skill_name, spec, paths, artifact_store)
     title = str(spec.get("title") or SKILL_TITLES.get(skill_name, skill_name))
     payload = _payload(skill_name, spec)
+    required_inputs = _required_inputs(skill_name, spec)
+    if required_inputs:
+        payload["requires_input"] = True
+        payload["required_inputs"] = required_inputs
+        payload["blocked_stages"] = [item["stage"] for item in required_inputs]
     markdown = _markdown(skill_name, title, spec, payload)
     base = _safe_name(skill_name)
     md_artifact = artifact_store.write_text_artifact(paths, f"{base}.md", markdown)
@@ -39,6 +44,9 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
             "summary": payload["summary"],
             "phase_count": len(payload["phases"]),
             "artifact_names": [md_artifact.name, json_artifact.name],
+            "requires_input": bool(required_inputs),
+            "required_inputs": required_inputs,
+            "blocked_stages": [item["stage"] for item in required_inputs],
         },
     }
 
@@ -73,9 +81,22 @@ def format_reply(skill_name: str, verification: object, run_result: Any) -> str:
         [
             f"{SKILL_TITLES.get(skill_name, skill_name)}已生成。",
             data.get("summary", ""),
+            _required_inputs_reply(data),
             f"产物：{', '.join(names)}" if names else "",
         ]
     ).strip()
+
+
+def _required_inputs_reply(data: dict[str, Any]) -> str:
+    raw_items = data.get("required_inputs")
+    if not isinstance(raw_items, list) or not raw_items:
+        return ""
+    lines = ["继续真实执行前需要补齐："]
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        lines.append(f"- {item.get('stage')}: {item.get('reason')}")
+    return "\n".join(lines)
 
 
 def _payload(skill_name: str, spec: dict[str, Any]) -> dict[str, Any]:
@@ -103,6 +124,78 @@ def _payload(skill_name: str, spec: dict[str, Any]) -> dict[str, Any]:
         "risks": _risks(skill_name),
         "next_actions": _next_actions(skill_name),
     }
+
+
+def _required_inputs(skill_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
+    requirements: list[dict[str, Any]] = []
+    dataset = str(spec.get("data_yaml") or spec.get("dataset_path") or "").strip()
+    if skill_name in {"algorithm-engineer", "dataset-curator", "gpu-training-orchestrator", "cpu-training-runner"}:
+        if not dataset or dataset == "/data/palm_fruit_datasets/organized/latest_integrated_dedup":
+            requirements.append(
+                _requirement(
+                    "dataset-curator",
+                    "dataset",
+                    ".zip,.tar,.tar.gz,.csv,.json,.jsonl,.parquet,.yaml,.yml",
+                    "没有数据集，不能完成数据盘点或 baseline。请提供 YOLO data.yaml、已标注数据集压缩包，或可访问的数据集路径。",
+                )
+            )
+    if skill_name in {"algorithm-engineer", "remote-gpu-ops", "gpu-training-orchestrator"}:
+        if not _has_gpu_connection(spec):
+            requirements.append(
+                _requirement(
+                    "remote-gpu-ops",
+                    "json",
+                    "application/json",
+                    "没有 GPU 连接信息，不能完成 AGX/5090 benchmark 或正式训练。请提供 AGX/5090 host、SSH/密钥、训练镜像/环境和数据挂载路径。",
+                )
+            )
+    if skill_name in {"algorithm-engineer", "detector-evaluator", "deployment-candidate-reviewer"}:
+        if not _has_training_artifact(spec):
+            requirements.append(
+                _requirement(
+                    "detector-evaluator",
+                    "model",
+                    ".onnx,.pt,.pth,.bin,.safetensors,.gguf,.pkl,.joblib,.csv",
+                    "没有训练产物，不能完成评估。请提供 baseline.pt/best.pt、results.csv 或训练输出目录。",
+                )
+            )
+    if skill_name in {"algorithm-engineer", "deployment-candidate-reviewer"}:
+        if not _has_evaluation_result(spec):
+            requirements.append(
+                _requirement(
+                    "deployment-candidate-reviewer",
+                    "file",
+                    "*/*",
+                    "没有评估结果，不能完成上线评审。请提供评估报告、候选模型指标、上线阈值和回滚要求。",
+                )
+            )
+    return requirements
+
+
+def _requirement(stage: str, input_type: str, accept: str, reason: str) -> dict[str, Any]:
+    return {"stage": stage, "type": input_type, "accept": accept, "required": True, "reason": reason}
+
+
+def _has_gpu_connection(spec: dict[str, Any]) -> bool:
+    text = _spec_text(spec).lower()
+    markers = ("ssh://", "agx_host", "5090_host", "gpu_host", "nvidia-smi", "cuda", "docker image", "训练机")
+    return any(marker in text for marker in markers)
+
+
+def _has_training_artifact(spec: dict[str, Any]) -> bool:
+    text = _spec_text(spec).lower()
+    markers = ("best.pt", "baseline.pt", "last.pt", "results.csv", "runs/detect", "训练输出")
+    return any(marker in text for marker in markers)
+
+
+def _has_evaluation_result(spec: dict[str, Any]) -> bool:
+    text = _spec_text(spec).lower()
+    markers = ("evaluation_report", "评估报告", "map50", "map50-95", "precision", "recall", "上线阈值")
+    return any(marker in text for marker in markers)
+
+
+def _spec_text(spec: dict[str, Any]) -> str:
+    return json.dumps(spec, ensure_ascii=False, default=str)
 
 
 def _summary(skill_name: str, base: dict[str, Any]) -> str:
