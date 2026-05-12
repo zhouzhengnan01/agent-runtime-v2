@@ -54,7 +54,8 @@ class SandboxConfig(BaseModel):
 def load_sandbox_config(env: Mapping[str, str] | None = None) -> SandboxConfig:
     values = env if env is not None else os.environ
     file_config = _load_runtime_config() if env is None else {}
-    cache_config = file_config.get("skill_env_cache") if isinstance(file_config.get("skill_env_cache"), dict) else {}
+    raw_cache_config = file_config.get("skill_env_cache")
+    cache_config: Mapping[str, object] = raw_cache_config if isinstance(raw_cache_config, dict) else {}
     raw_provider = _env_or_config(values, "SANDBOX_PROVIDER", file_config, "provider", "local").strip().lower() or "local"
     provider: SandboxProvider
     if raw_provider == "opensandbox":

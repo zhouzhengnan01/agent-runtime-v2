@@ -243,7 +243,9 @@ class SandboxSkillRunner:
 
     def _profile_with_dependency_image(self, context: SandboxRunContext) -> SandboxProfile:
         profile = context.decision.profile
-        if profile is None or not context.config.skill_env_cache_enabled:
+        if profile is None:
+            raise SandboxExecutionError("Sandbox decision has no profile.", data=context.decision.model_dump())
+        if not context.config.skill_env_cache_enabled:
             return profile
         try:
             loaded = self.skill_plugin_manager.get_loaded_skill(context.skill_name)

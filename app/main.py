@@ -5,6 +5,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +29,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await cron.scheduler.stop()
 
 
-def create_app(bootstrap: RuntimeBootstrapConfig | dict | None = None) -> FastAPI:
+def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None) -> FastAPI:
     bootstrap_config = bootstrap if bootstrap is not None else _runtime_bootstrap_from_env()
     if bootstrap_config is not None:
         default_container.configure(bootstrap_config)

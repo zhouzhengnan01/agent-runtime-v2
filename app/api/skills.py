@@ -286,9 +286,13 @@ def _nullable_string(value: object) -> str | None:
 
 def _skill_package_root(loaded: Any) -> Path:
     plugin = getattr(loaded, "plugin", None)
-    if plugin is not None:
-        return plugin.root
-    return loaded.manifest_path.parent
+    plugin_root = getattr(plugin, "root", None)
+    if isinstance(plugin_root, Path):
+        return plugin_root
+    manifest_path = getattr(loaded, "manifest_path", None)
+    if isinstance(manifest_path, Path):
+        return manifest_path.parent
+    raise ValueError("Loaded skill has no package root.")
 
 
 def _warm_skill_environment_if_configured(skill_name: str) -> dict[str, object]:

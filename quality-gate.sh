@@ -105,10 +105,13 @@ echo "== pytest quality gate =="
 "${PYTHON_BIN}" -m pytest \
   tests/test_agent_tool_loop.py \
   tests/test_tools.py \
+  tests/test_mcp.py \
   tests/test_skill_plugins.py \
+  tests/test_sandbox.py \
   tests/test_local_subprocess.py \
   tests/test_cli.py \
   tests/test_runtime.py \
+  tests/test_workflow_config.py \
   tests/test_acp_stdio.py \
   tests/test_acp_external_backend.py \
   tests/test_apps.py \

@@ -40,7 +40,14 @@ def test_sandbox_status_defaults_to_lightweight_local(monkeypatch: pytest.Monkey
     assert status.configured is True
     assert status.server_url is None
     assert status.routing_mode == "selective"
-    assert status.sandboxed_skills == ["cpu-training-runner", "data-auto-annotation", "drawio-generation", "excel-generation", "pptx-generation"]
+    assert status.sandboxed_skills == [
+        "cpu-training-runner",
+        "data-auto-annotation",
+        "drawio-generation",
+        "excel-generation",
+        "image-dataset-generation",
+        "pptx-generation",
+    ]
     assert status.skill_profiles["cpu-training-runner"] == "python-skill"
     assert status.skill_profiles["data-auto-annotation"] == "python-skill"
     assert status.skill_profiles["drawio-generation"] == "drawio"
@@ -380,7 +387,14 @@ def test_sandbox_status_api_defaults_to_lightweight_local(monkeypatch: pytest.Mo
     data = response.json()
     assert data["provider"] == "local"
     assert data["routing_mode"] == "selective"
-    assert data["sandboxed_skills"] == ["cpu-training-runner", "data-auto-annotation", "drawio-generation", "excel-generation", "pptx-generation"]
+    assert data["sandboxed_skills"] == [
+        "cpu-training-runner",
+        "data-auto-annotation",
+        "drawio-generation",
+        "excel-generation",
+        "image-dataset-generation",
+        "pptx-generation",
+    ]
     assert data["skill_profiles"]["cpu-training-runner"] == "python-skill"
     assert data["skill_profiles"]["data-auto-annotation"] == "python-skill"
     assert data["skill_profiles"]["pptx-generation"] == "office"

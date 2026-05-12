@@ -67,7 +67,7 @@ class WorkflowPluginManager:
     def load_workflows(self, artifact_store: ArtifactStore) -> dict[str, LoadedWorkflowPlugin]:
         plugin_workflows = self._load_plugin_workflows(artifact_store)
         loaded: dict[str, LoadedWorkflowPlugin] = {}
-        for entity_path in sorted(self.config_dir.glob("*.json")) if self.config_dir.is_dir() else []:
+        for entity_path in self._config_entity_paths():
             try:
                 config = WorkflowConfig.model_validate(read_json(entity_path))
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -83,6 +83,10 @@ class WorkflowPluginManager:
                 entrypoint_path=implementation.entrypoint_path,
                 entrypoint_class=implementation.entrypoint_class,
             )
+        for workflow_name, implementation in plugin_workflows.items():
+            if workflow_name in loaded or not self._is_overlay_plugin_root(implementation.package.root):
+                continue
+            loaded[workflow_name] = implementation
         return loaded
 
     def install_zip(self, content: bytes) -> WorkflowPluginPackage:
@@ -140,13 +144,46 @@ class WorkflowPluginManager:
     def _plugin_roots(self) -> list[Path]:
         roots: list[Path] = []
         project_plugins = self.project_root / "plugins" / "workflows"
-        for parent in (project_plugins, self.plugin_dir):
+        seen_names: set[str] = set()
+        for parent in self._unique_dirs(self.plugin_dir, project_plugins):
             if not parent.is_dir():
                 continue
             for child in sorted(parent.iterdir()):
-                if child.is_dir() and (child / "plugin.json").is_file() and child not in roots:
+                if child.is_dir() and (child / "plugin.json").is_file() and child.name not in seen_names:
                     roots.append(child)
+                    seen_names.add(child.name)
         return roots
+
+    def _config_entity_paths(self) -> list[Path]:
+        paths_by_name: dict[str, Path] = {}
+        project_config_dir = self.project_root / "config" / "workflows"
+        for config_dir in self._unique_dirs(project_config_dir, self.config_dir):
+            if not config_dir.is_dir():
+                continue
+            for entity_path in sorted(config_dir.glob("*.json")):
+                paths_by_name[entity_path.stem] = entity_path
+        return [paths_by_name[name] for name in sorted(paths_by_name)]
+
+    def _is_overlay_plugin_root(self, plugin_root: Path) -> bool:
+        if self.root_dir == self.project_root:
+            return False
+        try:
+            plugin_root.resolve().relative_to(self.plugin_dir.resolve())
+        except ValueError:
+            return False
+        return True
+
+    @staticmethod
+    def _unique_dirs(*paths: Path) -> tuple[Path, ...]:
+        unique: list[Path] = []
+        seen: set[Path] = set()
+        for path in paths:
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            unique.append(path)
+            seen.add(resolved)
+        return tuple(unique)
 
     def _load_package(self, plugin_root: Path) -> WorkflowPluginPackage:
         metadata = read_json(plugin_root / "plugin.json")

@@ -123,7 +123,7 @@ class SkillPluginManager:
         plugin_skills = self._load_plugin_skills()
 
         loaded: dict[str, LoadedSkill] = {}
-        for entity_path in sorted(self.config_dir.glob("*.json")) if self.config_dir.is_dir() else []:
+        for entity_path in self._config_entity_paths():
             try:
                 definition = definition_from_manifest(_read_json(entity_path), entity_path)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -160,7 +160,13 @@ class SkillPluginManager:
     def manifest_path_for(self, skill_name: str) -> Path:
         loaded = self.load_skills().get(skill_name)
         if loaded is not None and loaded.manifest_path.suffix.lower() == ".json":
-            return loaded.manifest_path
+            if self.root_dir == self.project_root:
+                return loaded.manifest_path
+            try:
+                loaded.manifest_path.resolve().relative_to(self.config_dir.resolve())
+                return loaded.manifest_path
+            except ValueError:
+                pass
         return self.config_dir / f"{skill_name}.json"
 
     def read_manifest(self, skill_name: str) -> dict[str, Any]:
@@ -336,6 +342,16 @@ class SkillPluginManager:
                 loaded[skill_name] = candidate
         return loaded
 
+    def _config_entity_paths(self) -> list[Path]:
+        paths_by_name: dict[str, Path] = {}
+        project_config_dir = self.project_root / "config" / "skills"
+        for config_dir in self._unique_dirs(project_config_dir, self.config_dir):
+            if not config_dir.is_dir():
+                continue
+            for entity_path in sorted(config_dir.glob("*.json")):
+                paths_by_name[entity_path.stem] = entity_path
+        return [paths_by_name[name] for name in sorted(paths_by_name)]
+
     def run_skill(
         self,
         skill_name: str,
@@ -431,7 +447,7 @@ class SkillPluginManager:
     def _plugin_roots(self) -> list[Path]:
         roots: list[Path] = []
         project_plugins = self.project_root / "plugins" / "skills"
-        parents = (self.plugin_dir, project_plugins) if self.plugin_dir != project_plugins else (project_plugins,)
+        parents = self._unique_dirs(self.plugin_dir, project_plugins)
         seen_names: set[str] = set()
         for parent in parents:
             if not parent.is_dir():
@@ -441,6 +457,18 @@ class SkillPluginManager:
                     roots.append(child)
                     seen_names.add(child.name)
         return roots
+
+    @staticmethod
+    def _unique_dirs(*paths: Path) -> tuple[Path, ...]:
+        unique: list[Path] = []
+        seen: set[Path] = set()
+        for path in paths:
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            unique.append(path)
+            seen.add(resolved)
+        return tuple(unique)
 
     def _load_plugin(self, plugin_root: Path) -> SkillPlugin:
         metadata = _read_json(plugin_root / "plugin.json")

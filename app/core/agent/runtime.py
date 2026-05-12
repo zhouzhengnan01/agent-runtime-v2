@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
+from typing import Any, cast
 from uuid import uuid4
 
 from app.core.artifacts import ArtifactStore
@@ -21,7 +22,7 @@ from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.agent.input_required import required_inputs_for_request, required_inputs_for_result
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
-from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, RuntimeOptions
+from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, Role, RuntimeOptions
 
 
 class AgentRuntime:
@@ -72,7 +73,7 @@ class AgentRuntime:
 
         workflow_name = self._selected_workflow_name(agent_config, request)
         paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
-        input_required = [] if request.runtime_options.mode == "yolo" else required_inputs_for_request(request)
+        input_required = self._request_required_inputs(request)
         if input_required:
             recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
             events = [
@@ -156,7 +157,7 @@ class AgentRuntime:
             raise ValueError("messages must not be empty")
 
         workflow_name = self._selected_workflow_name(agent_config, request)
-        input_required = [] if request.runtime_options.mode == "yolo" else required_inputs_for_request(request)
+        input_required = self._request_required_inputs(request)
         if input_required:
             async for event in self._stream_input_required_events(agent_config, request, workflow_name, input_required):
                 yield event
@@ -343,6 +344,13 @@ class AgentRuntime:
         self._persist_events(agent_config, request, paths.thread_id, recorder.events, result)
 
     @staticmethod
+    def _request_required_inputs(request: ChatRequest) -> list[dict[str, Any]]:
+        required_inputs = required_inputs_for_request(request)
+        if request.runtime_options.mode != "yolo":
+            return required_inputs
+        return [item for item in required_inputs if item.get("type") != "dataset"]
+
+    @staticmethod
     def _enrich_required_inputs(result: AgentRunResult, request: ChatRequest) -> None:
         required_inputs = required_inputs_for_result(result, request)
         if not required_inputs:
@@ -416,7 +424,7 @@ class AgentRuntime:
             role = item.get("role")
             content = item.get("content")
             if role in {"system", "user", "assistant", "tool"} and isinstance(content, str):
-                messages.append(Message(role=role, content=content))
+                messages.append(Message(role=cast(Role, role), content=content))
         return messages
 
     @staticmethod
@@ -471,7 +479,8 @@ class AgentRuntime:
             updates["skills"] = list(self.skills)
         selected_skills = self._normalize_skills(request.runtime_options.selected_skills)
         if selected_skills:
-            base_skills = list(updates.get("skills") or agent_config.skills)
+            raw_skills = updates.get("skills")
+            base_skills = list(raw_skills) if isinstance(raw_skills, list) else list(agent_config.skills)
             seen = set(base_skills)
             for skill_name in selected_skills:
                 if skill_name not in seen:

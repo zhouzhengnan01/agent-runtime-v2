@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import os
 from collections.abc import Iterable
 from typing import Any
@@ -119,7 +120,7 @@ class ModelManager:
     def list(self) -> list[ManagedModel]:
         return [self._models[key] for key in sorted(self._models)]
 
-    def list_public_payloads(self) -> list[dict[str, Any]]:
+    def list_public_payloads(self) -> builtins.list[dict[str, Any]]:
         return [model.public_payload() for model in self.list()]
 
     def default(self) -> ManagedModel | None:

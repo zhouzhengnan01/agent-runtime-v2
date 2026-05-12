@@ -375,6 +375,8 @@ class ToolCallingAgentLoop:
         if runtime_options is None:
             return configured
         raw_value = runtime_options.config_options.get("max_tool_rounds")
+        if not isinstance(raw_value, str | int | float):
+            return configured
         try:
             requested = int(raw_value)
         except (TypeError, ValueError):

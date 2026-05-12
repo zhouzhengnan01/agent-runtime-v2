@@ -35,7 +35,8 @@ class SkillToolProvider:
         artifacts = [artifact.model_dump() for artifact in result.outputs]
         artifact_text = "\n".join(f"- {artifact['name']} ({artifact['path']})" for artifact in artifacts) or "- no artifacts"
         requires_input = result.data.get("requires_input") is True
-        required_inputs = result.data.get("required_inputs") if isinstance(result.data.get("required_inputs"), list) else []
+        raw_required_inputs = result.data.get("required_inputs")
+        required_inputs: list[object] = raw_required_inputs if isinstance(raw_required_inputs, list) else []
         return ToolInvocationResult(
             content=[
                 {

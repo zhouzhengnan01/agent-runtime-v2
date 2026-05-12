@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -59,7 +60,7 @@ class RunEventStore:
         run_id: str,
         agent: str,
         thread_id: str,
-        events: list[ChatEvent],
+        events: builtins.list[ChatEvent],
         result: dict[str, Any] | None = None,
         agent_snapshot: dict[str, Any] | None = None,
         request_snapshot: dict[str, Any] | None = None,
@@ -153,7 +154,7 @@ class RunEventStore:
         run_id: str,
         agent: str,
         thread_id: str,
-        events: list[ChatEvent],
+        events: builtins.list[ChatEvent],
         result: dict[str, Any] | None,
         agent_snapshot: dict[str, Any] | None,
         request_snapshot: dict[str, Any] | None,
@@ -219,20 +220,24 @@ def _tool_call_count(events: list[ChatEvent], metadata: dict[str, Any]) -> int:
 
 def _diagnostics(events: object) -> dict[str, Any]:
     serialized = events if isinstance(events, list) else []
-    failures = [
-        {
-            "type": event.get("type"),
-            "sequence": data.get("sequence"),
-            "error_code": data.get("error_code") or _structured_error_code(data),
-            "message": data.get("error") or data.get("message") or _structured_error(data),
-            "tool_name": data.get("tool_name"),
-            "duration_ms": data.get("duration_ms"),
-        }
-        for event in serialized
-        if isinstance(event, dict)
-        for data in [event.get("data") if isinstance(event.get("data"), dict) else {}]
-        if event.get("type") in {"run.failed", "tool.failed", "skill.failed", "verifier.failed"}
-    ]
+    failures: list[dict[str, Any]] = []
+    for event in serialized:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") not in {"run.failed", "tool.failed", "skill.failed", "verifier.failed"}:
+            continue
+        raw_data = event.get("data")
+        data = raw_data if isinstance(raw_data, dict) else {}
+        failures.append(
+            {
+                "type": event.get("type"),
+                "sequence": data.get("sequence"),
+                "error_code": data.get("error_code") or _structured_error_code(data),
+                "message": data.get("error") or data.get("message") or _structured_error(data),
+                "tool_name": data.get("tool_name"),
+                "duration_ms": data.get("duration_ms"),
+            }
+        )
     return {
         "failure_count": len(failures),
         "failures": failures,
@@ -243,13 +248,15 @@ def _diagnostics(events: object) -> dict[str, Any]:
 
 def _structured_error_code(data: dict[str, Any]) -> str:
     structured = data.get("structured_content")
-    if isinstance(structured, dict) and isinstance(structured.get("error_code"), str):
-        return structured["error_code"]
+    value = structured.get("error_code") if isinstance(structured, dict) else None
+    if isinstance(value, str):
+        return value
     return ""
 
 
 def _structured_error(data: dict[str, Any]) -> str:
     structured = data.get("structured_content")
-    if isinstance(structured, dict) and isinstance(structured.get("error"), str):
-        return structured["error"]
+    value = structured.get("error") if isinstance(structured, dict) else None
+    if isinstance(value, str):
+        return value
     return ""

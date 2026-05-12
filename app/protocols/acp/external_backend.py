@@ -111,7 +111,7 @@ class ExternalAcpClient:
     ) -> RequestPermissionResponse:
         if self.yolo_mode:
             option_id = self._permission_option_id(options)
-            return RequestPermissionResponse(outcome=AllowedOutcome(outcome="selected", optionId=option_id))
+            return RequestPermissionResponse(outcome=AllowedOutcome(outcome="selected", option_id=option_id))
         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
     async def read_text_file(

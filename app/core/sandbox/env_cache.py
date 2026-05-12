@@ -75,8 +75,10 @@ class SkillEnvironmentCache:
             self._build_image(image=image, base_image=base_image, requirements_text=requirements_text, config=config)
         except Exception as exc:
             index = self._read_index()
+            previous = index.get(requirements_hash)
+            previous_entry = previous if isinstance(previous, dict) else {}
             index[requirements_hash] = {
-                **(index.get(requirements_hash) if isinstance(index.get(requirements_hash), dict) else {}),
+                **previous_entry,
                 "status": "failed",
                 "image": image,
                 "base_image": base_image,
@@ -87,8 +89,10 @@ class SkillEnvironmentCache:
             return SkillEnvironment(requirements_hash=requirements_hash, image=profile.image, status="failed", message=str(exc))
 
         index = self._read_index()
+        previous = index.get(requirements_hash)
+        previous_entry = previous if isinstance(previous, dict) else {}
         index[requirements_hash] = {
-            **(index.get(requirements_hash) if isinstance(index.get(requirements_hash), dict) else {}),
+            **previous_entry,
             "status": "ready",
             "image": image,
             "base_image": base_image,

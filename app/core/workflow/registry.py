@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfig
@@ -49,7 +49,7 @@ class WorkflowRegistry:
         registry = cls()
         for loaded in WorkflowPluginManager(root_dir).load_workflows(artifact_store).values():
             if loaded.config.enabled:
-                registry.register(loaded.config.name, loaded.plugin, config=loaded.config)
+                registry.register(loaded.config.name, cast(WorkflowPlugin, loaded.plugin), config=loaded.config)
         return registry
 
     def names(self) -> set[str]:

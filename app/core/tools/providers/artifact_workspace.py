@@ -161,7 +161,8 @@ class ArtifactWorkspaceToolProvider:
 
     @staticmethod
     def _manifest_text(manifest: dict[str, Any]) -> str:
-        artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), list) else []
+        raw_artifacts = manifest.get("artifacts")
+        artifacts = raw_artifacts if isinstance(raw_artifacts, list) else []
         lines = [
             f"thread_id: {manifest.get('thread_id')}",
             f"primary_artifact: {manifest.get('primary_artifact') or ''}",
@@ -174,7 +175,8 @@ class ArtifactWorkspaceToolProvider:
 
     @staticmethod
     def _artifacts_memory_text(manifest: dict[str, Any]) -> str:
-        artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), list) else []
+        raw_artifacts = manifest.get("artifacts")
+        artifacts = raw_artifacts if isinstance(raw_artifacts, list) else []
         lines = [
             "# Artifacts",
             "",

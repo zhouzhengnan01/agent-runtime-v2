@@ -80,8 +80,10 @@ class LocalSubprocessEnvironmentCache:
             )
         except Exception as exc:
             index = self._read_index()
+            previous = index.get(requirements_hash)
+            previous_entry = previous if isinstance(previous, dict) else {}
             index[requirements_hash] = {
-                **(index.get(requirements_hash) if isinstance(index.get(requirements_hash), dict) else {}),
+                **previous_entry,
                 "status": "failed",
                 "message": str(exc),
                 "last_used_at": time.time(),
@@ -95,8 +97,10 @@ class LocalSubprocessEnvironmentCache:
             )
 
         index = self._read_index()
+        previous = index.get(requirements_hash)
+        previous_entry = previous if isinstance(previous, dict) else {}
         index[requirements_hash] = {
-            **(index.get(requirements_hash) if isinstance(index.get(requirements_hash), dict) else {}),
+            **previous_entry,
             "status": "ready",
             "python": str(env_python),
             "last_used_at": time.time(),

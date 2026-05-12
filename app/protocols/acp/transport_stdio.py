@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from acp import Agent, Client, PROTOCOL_VERSION, run_agent
@@ -48,6 +48,7 @@ from app.schemas import ChatEvent, ChatRequest, Message, RuntimeOptions
 
 
 PromptBlock = TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
+ToolCallStatus = Literal["pending", "in_progress", "completed", "failed"]
 
 
 @dataclass
@@ -457,24 +458,24 @@ def _event_to_sdk_updates(event: ChatEvent, message_id: str | None, *, suppress_
         return [update]
     if event.type == "skill.started":
         skill_name = _skill_name(data) or "skill"
-        update = acp_helpers.start_tool_call(
+        tool_update = acp_helpers.start_tool_call(
             _skill_tool_call_id(data, skill_name),
             skill_name,
             kind="other",
             status="in_progress",
         )
-        update.field_meta = _event_meta(event)
-        return [update]
+        tool_update.field_meta = _event_meta(event)
+        return [tool_update]
     if event.type == "tool.started":
         tool_name = _string(data.get("tool_name")) or "tool"
-        update = acp_helpers.start_tool_call(
+        tool_update = acp_helpers.start_tool_call(
             _tool_call_id(_string(data.get("tool_call_id")) or tool_name),
             tool_name,
             kind="other",
             status="in_progress",
         )
-        update.field_meta = _event_meta(event)
-        return [update]
+        tool_update.field_meta = _event_meta(event)
+        return [tool_update]
     if event.type == "tool.completed":
         return [
             _tool_call_update(
@@ -507,14 +508,14 @@ def _event_to_sdk_updates(event: ChatEvent, message_id: str | None, *, suppress_
             )
         ]
     if event.type == "verifier.started":
-        update = acp_helpers.start_tool_call(
+        tool_update = acp_helpers.start_tool_call(
             "runtime-verifier",
             "verifier",
             kind="other",
             status="in_progress",
         )
-        update.field_meta = _event_meta(event)
-        return [update]
+        tool_update.field_meta = _event_meta(event)
+        return [tool_update]
     if event.type == "verifier.completed":
         return [
             _tool_call_update(
@@ -541,7 +542,7 @@ def _tool_call_update(
     tool_call_id: str,
     *,
     title: str | None = None,
-    status: str | None = None,
+    status: ToolCallStatus | None = None,
     raw_output: Any | None = None,
 ) -> Any:
     update = acp_helpers.update_tool_call(
