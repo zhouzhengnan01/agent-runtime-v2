@@ -3956,6 +3956,9 @@
       state.nextAgentOverride = null;
       state.nextWorkflowOverride = null;
       state.selectedAppTemplateName = template.name;
+      const templateMode = template.runtime_options?.mode;
+      setYoloExecution(templateMode === 'yolo');
+      if (templateMode !== 'yolo') setDeepExecution(templateMode === 'autonomous');
       if (options.fillPrompt !== false && template.prompt_examples?.length) {
         els.input.value = template.prompt_examples[0];
       }

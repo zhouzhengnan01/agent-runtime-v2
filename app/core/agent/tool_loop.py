@@ -12,7 +12,7 @@ from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
 from app.core.tools import ToolDefinition, ToolInvocationResult, ToolInvocationService
-from app.schemas import AgentRunResult, Message, RuntimeOptions
+from app.schemas import AgentRunResult, ArtifactRef, Message, RuntimeOptions
 
 
 @dataclass
@@ -104,7 +104,12 @@ class ToolCallingAgentLoop:
                 },
             )
             reply = await llm.complete(system_prompt, conversation)
-            reply, guard_metadata = self._guard_unverified_completion(reply, runtime_options)
+            reply, guard_metadata = self._guard_unverified_completion(
+                reply,
+                runtime_options,
+                available_tool_count=0,
+                executed_tool_count=0,
+            )
             recorder.emit(
                 "llm.request.completed",
                 {
@@ -136,6 +141,7 @@ class ToolCallingAgentLoop:
         rounds = 0
         tool_call_count = 0
         required_inputs: list[dict[str, Any]] = []
+        artifacts: list[dict[str, Any]] = []
         final_response = LlmChatResponse()
         max_rounds = self._max_tool_rounds(agent_config, runtime_options)
         for round_index in range(max_rounds):
@@ -178,10 +184,17 @@ class ToolCallingAgentLoop:
             assistant_message = self._assistant_message(final_response)
             conversation.append(assistant_message)
             if not final_response.tool_calls:
-                reply, guard_metadata = self._guard_unverified_completion(
+                reply = self._reply_with_required_inputs(
                     final_response.content,
+                    required_inputs,
+                    tool_call_count=tool_call_count,
+                    artifacts=artifacts,
+                )
+                reply, guard_metadata = self._guard_unverified_completion(
+                    reply,
                     runtime_options,
-                    tool_count=len(tools),
+                    available_tool_count=len(tools),
+                    executed_tool_count=tool_call_count,
                 )
                 return self._result(
                     agent_config,
@@ -199,6 +212,7 @@ class ToolCallingAgentLoop:
                     mode=self._runtime_mode(runtime_options),
                     extra_metadata=guard_metadata,
                     required_inputs=required_inputs,
+                    artifacts=artifacts,
                 )
 
             recorder.emit(
@@ -220,7 +234,8 @@ class ToolCallingAgentLoop:
                     recorder,
                     runtime_options=runtime_options,
                 )
-                required_inputs.extend(self._required_inputs_from_tool_result(tool_result))
+                self._extend_required_inputs(required_inputs, self._required_inputs_from_tool_result(tool_result))
+                artifacts.extend(self._artifacts_from_tool_result(tool_result, seen=artifacts))
                 conversation.append(
                     {
                         "role": "tool",
@@ -250,6 +265,7 @@ class ToolCallingAgentLoop:
             run_id=recorder.run_id,
             mode=self._runtime_mode(runtime_options),
             required_inputs=required_inputs,
+            artifacts=artifacts,
         )
 
     @staticmethod
@@ -484,13 +500,35 @@ class ToolCallingAgentLoop:
             return []
         return [dict(item) for item in raw_items if isinstance(item, dict)]
 
+    @staticmethod
+    def _extend_required_inputs(target: list[dict[str, Any]], items: list[dict[str, Any]]) -> None:
+        seen = {
+            (
+                str(item.get("stage") or ""),
+                str(item.get("type") or ""),
+                str(item.get("reason") or ""),
+            )
+            for item in target
+        }
+        for item in items:
+            key = (
+                str(item.get("stage") or ""),
+                str(item.get("type") or ""),
+                str(item.get("reason") or ""),
+            )
+            if key in seen:
+                continue
+            target.append(item)
+            seen.add(key)
+
     @classmethod
     def _guard_unverified_completion(
         cls,
         reply: str,
         runtime_options: RuntimeOptions | None,
         *,
-        tool_count: int = 0,
+        available_tool_count: int = 0,
+        executed_tool_count: int = 0,
     ) -> tuple[str, dict[str, Any]]:
         mode = cls._runtime_mode(runtime_options)
         if mode != "yolo":
@@ -498,12 +536,14 @@ class ToolCallingAgentLoop:
         selected_skills = cls._selected_skill_names(runtime_options)
         if not selected_skills:
             return reply, {}
-        if tool_count <= 0:
+        if available_tool_count <= 0:
             guarded = (
                 "已选择 skills，但本轮没有可用工具可执行，不能进入大流程执行。\n"
                 "请检查 app 配置中的 selected_skills 是否是本地已安装 skill 名称，而不是平台侧 ID。"
             )
             return guarded, {"unavailable_selected_skills_blocked": True, "selected_skills": sorted(selected_skills)}
+        if executed_tool_count > 0:
+            return reply, {}
         reply_lower = reply.lower()
         completion_markers = (
             "已生成",
@@ -524,6 +564,58 @@ class ToolCallingAgentLoop:
             "请确认已选择对应 app/skills，并提供数据集、GPU 连接、训练产物或评估结果等必要输入。"
         )
         return guarded, {"unverified_completion_blocked": True, "original_reply": reply[:2000]}
+
+    @staticmethod
+    def _reply_with_required_inputs(
+        reply: str,
+        required_inputs: list[dict[str, Any]],
+        *,
+        tool_call_count: int,
+        artifacts: list[dict[str, Any]],
+    ) -> str:
+        if not required_inputs:
+            return reply
+        lines = [
+            f"已执行 {tool_call_count} 次工具调用，当前流程需要补充输入后继续。"
+            if tool_call_count
+            else "当前流程需要补充输入后继续。"
+        ]
+        if artifacts:
+            names = ", ".join(str(item.get("name") or item.get("path") or "artifact") for item in artifacts[:6])
+            if len(artifacts) > 6:
+                names += f" 等 {len(artifacts)} 个文件"
+            lines.append(f"已生成阶段性产物：{names}")
+        lines.append("还需要：")
+        for item in required_inputs[:8]:
+            stage = str(item.get("stage") or item.get("type") or "input")
+            reason = str(item.get("reason") or "缺少必要输入。")
+            lines.append(f"- {stage}: {reason}")
+        if len(required_inputs) > 8:
+            lines.append(f"- 还有 {len(required_inputs) - 8} 项输入要求，详见运行元数据。")
+        lines.append("补齐后在同一 thread 继续发送，我会基于已有产物接着跑后续步骤。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _artifacts_from_tool_result(
+        result: ToolInvocationResult,
+        *,
+        seen: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        raw_artifacts = result.structured_content.get("artifacts")
+        if not isinstance(raw_artifacts, list):
+            return []
+        seen_paths = {str(item.get("path") or "") for item in seen if isinstance(item, dict)}
+        artifacts: list[dict[str, Any]] = []
+        for item in raw_artifacts:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "")
+            if path and path in seen_paths:
+                continue
+            artifacts.append(item)
+            if path:
+                seen_paths.add(path)
+        return artifacts
 
     @staticmethod
     def _tool_arguments(raw_arguments: str) -> dict[str, Any]:
@@ -654,6 +746,7 @@ class ToolCallingAgentLoop:
         mode: str = "edit",
         extra_metadata: dict[str, Any] | None = None,
         required_inputs: list[dict[str, Any]] | None = None,
+        artifacts: list[dict[str, Any]] | None = None,
     ) -> ToolLoopResult:
         final_messages = list(messages)
         if reply and (
@@ -665,11 +758,13 @@ class ToolCallingAgentLoop:
         if emit_message_delta and reply:
             recorder.emit("agent.message.delta", {"text": reply})
         recorder.emit("agent.message", {"text": reply})
+        artifact_refs = [ArtifactRef.model_validate(item) for item in artifacts or [] if isinstance(item, dict)]
         result = AgentRunResult(
             agent=agent_config.name,
             thread_id=thread_id,
             status="completed" if status == "completed" else "failed",
             reply=reply,
+            artifacts=artifact_refs,
             metadata={
                 "workflow": "agent_loop",
                 "run_id": run_id,

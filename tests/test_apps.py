@@ -261,7 +261,10 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
     registry = AppTemplateRegistry()
 
     for template in registry.list():
-        assert template.runtime_options == {}, template.name
+        if template.name in {"algorithm-engineer-full-cycle", "algorithm-engineer-workbench"}:
+            assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
+        else:
+            assert template.runtime_options == {}, template.name
         assert len(template.models) == 1, template.name
         model = template.models[0]
         assert model.name == "Qwen3.6-35B-A3B", template.name
@@ -345,6 +348,7 @@ def test_algorithm_engineer_workbench_selects_full_stage_skill_chain() -> None:
     template = AppTemplateRegistry().get("algorithm-engineer-workbench")
 
     assert template.workflow == "agent_loop"
+    assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
     assert template.selected_skills == [
         "algorithm-engineer",
         "dataset-curator",

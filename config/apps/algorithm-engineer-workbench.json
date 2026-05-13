@@ -25,6 +25,12 @@
     "帮我整合一个完整的算法工程师应用：围绕棕榈果检测，从任务澄清、数据治理、算法调研、AGX/5090 训练编排、检测和计数评估、上线评审到实验台账全部打通。",
     "把 /data/palm_fruit_datasets/organized/latest_integrated_dedup 做成算法工程师工作台任务，baseline 是生产 YOLO，候选考虑 RT-DETR、DEIM/D-FINE、RF-DETR 和 DAMO-YOLO，目标是降低棕榈果计数误差并支持上线评审。"
   ],
+  "runtime_options": {
+    "mode": "yolo",
+    "config_options": {
+      "max_tool_rounds": 16
+    }
+  },
   "tags": [
     "完整应用",
     "算法工程师",

@@ -790,6 +790,79 @@ def test_agent_loop_surfaces_skill_required_inputs(
     assert {"dataset-curator", "remote-gpu-ops", "detector-evaluator", "deployment-candidate-reviewer"} <= stages
 
 
+def test_yolo_does_not_report_no_tool_calls_after_skill_execution(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        nonlocal calls
+        calls += 1
+        del self, system_prompt, messages, tools
+        if calls == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_algorithm",
+                        name="algorithm-engineer",
+                        arguments='{"objective":"棕榈果检测算法全流程"}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="算法工程师全流程已完成。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="algorithm-agent",
+        display_name="Algorithm Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        skills=["algorithm-engineer"],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="帮我把棕榈果检测算法工程师全流程跑起来")],
+        runtime_options=RuntimeOptions(
+            thread_id="algorithm-yolo-guard",
+            mode="yolo",
+            selected_skills=["algorithm-engineer"],
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.metadata["tool_call_count"] == 1
+    assert "没有执行任何工具调用" not in result.reply
+    assert "已执行 1 次工具调用" in result.reply
+    assert result.metadata["requires_input"] is True
+
+
+def test_agent_loop_deduplicates_required_inputs() -> None:
+    target = [
+        {"stage": "dataset-curator", "type": "dataset", "reason": "missing dataset"},
+    ]
+
+    ToolCallingAgentLoop._extend_required_inputs(
+        target,
+        [
+            {"stage": "dataset-curator", "type": "dataset", "reason": "missing dataset"},
+            {"stage": "remote-gpu-ops", "type": "json", "reason": "missing gpu"},
+        ],
+    )
+
+    assert target == [
+        {"stage": "dataset-curator", "type": "dataset", "reason": "missing dataset"},
+        {"stage": "remote-gpu-ops", "type": "json", "reason": "missing gpu"},
+    ]
+
+
 def test_yolo_blocks_selected_skill_when_no_tool_is_available(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
