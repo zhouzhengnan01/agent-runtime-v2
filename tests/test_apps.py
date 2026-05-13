@@ -264,10 +264,10 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         assert template.runtime_options == {}, template.name
         assert len(template.models) == 1, template.name
         model = template.models[0]
-        assert model.name == "gpt-5.5", template.name
-        assert model.model == "gpt-5.5", template.name
-        assert model.default_model == "gpt-5.5", template.name
-        assert model.base_url == "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/", template.name
+        assert model.name == "Qwen3.6-35B-A3B", template.name
+        assert model.model == "Qwen3.6-35B-A3B", template.name
+        assert model.default_model == "Qwen3.6-35B-A3B", template.name
+        assert model.base_url == "http://124.132.152.75:62092/v1", template.name
         assert model.api_key is None, template.name
         assert model.api_key_enc and model.api_key_enc.startswith("enc.fernet.v1."), template.name
         assert model.temperature == 0.4, template.name
@@ -329,6 +329,16 @@ def test_preconfigured_app_templates_do_not_preselect_mcp_tools() -> None:
     assert {template.name: template.selected_mcp_tools for template in registry.list()} == {
         template.name: [] for template in registry.list()
     }
+
+
+def test_preconfigured_app_templates_do_not_preselect_artifact_workflow() -> None:
+    registry = AppTemplateRegistry()
+
+    assert {
+        template.name: template.workflow
+        for template in registry.list()
+        if template.workflow == "artifact_workflow"
+    } == {}
 
 
 def test_algorithm_engineer_workbench_selects_full_stage_skill_chain() -> None:

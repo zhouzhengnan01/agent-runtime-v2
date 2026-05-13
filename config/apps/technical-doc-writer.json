@@ -5,7 +5,7 @@
   "category": "generation",
   "icon": "doc",
   "agent_name": "default",
-  "workflow": "artifact_workflow",
+  "workflow": null,
   "selected_skills": [
     "markdown-rendering"
   ],
@@ -26,7 +26,7 @@
   ],
   "models": [
     {
-      "name": "gpt-5.5",
+      "name": "Qwen3.6-35B-A3B",
       "features": [
         "vision",
         "reasoning",
@@ -38,13 +38,13 @@
       ],
       "priority": 0,
       "provider": "openai-compatible",
-      "model": "gpt-5.5",
-      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/",
-      "default_model": "gpt-5.5",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key_enc": "enc.fernet.v1.gAAAAABqAxafPyxJ_IjNCCfVm4axcfsx6aFDk6wsvLUCsC4ard0K0DVdBWbu3sWQQ9n6XyiIK7vdTrTqGowATYOLxu4dtOBtZ_X86i5KOov5JqZlXqvSGVvoBsuhlVqHAlyXZlvSe1a53VTWNOQCZzKjOiexlvV-j6ccnwdeGZnHsFiwxlKnxcErA8kt5BNryakcUZUU3UAIKxfj3oFeyPFX4ZptahqVT2kygq-cxQQhq1Qy6vvx7-e5BRjBYuCFNiK05dx4ufKlT7v5NisqYgq8pw_P2oNYV62s55mQT_wlFDNe5w42AkP44o3swpMEl42uKTt0sQWFb871lKWndlaJ_oXVNJsstg=="
+      "api_key_enc": "enc.fernet.v1.gAAAAABqAaSnFI_GtSpY7gXBbBg7C0cFq7XduiWOS7vmCYcP8TRbeh9F_ppDzXqEVmaMn0jy2aPv4XxRPvmF70yv6rVkOAfebF-HzlpQEB_I_awin3cf5T-Ig5rZkJum-Ub99yI6uQ5x"
     }
   ]
 }

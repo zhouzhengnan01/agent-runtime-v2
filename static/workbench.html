@@ -3078,6 +3078,7 @@
     };
 
     const THREAD_STORAGE_KEY = 'jetlinks.runtime.threadId';
+    const DEFAULT_APP_TEMPLATE_NAME = 'algorithm-cpu-training-sandbox';
     const MAX_TIMELINE_ITEMS = 120;
     const MAX_CHAT_UPLOAD_BYTES = 128 * 1024 * 1024;
     const CHAT_UPLOAD_CONCURRENCY = 3;
@@ -3112,7 +3113,7 @@
       appTemplates: [],
       appTemplatesLoaded: false,
       appFilter: 'all',
-      selectedAppTemplateName: null,
+      selectedAppTemplateName: DEFAULT_APP_TEMPLATE_NAME,
       selectedAppTemplateJsonName: null,
       cronJobs: [],
       selectedCronJobName: null,
@@ -3654,7 +3655,6 @@
 
     function toggleCapability(kind, name) {
       if (!name) return;
-      clearSelectedAppTemplate();
       if (kind === 'workflow') {
         state.selectedChatWorkflow = state.selectedChatWorkflow === name ? null : name;
         renderComposerCapabilities();
@@ -3671,7 +3671,6 @@
 
     function removeCapability(kind, name) {
       if (!name) return;
-      clearSelectedAppTemplate();
       if (kind === 'workflow') {
         if (state.selectedChatWorkflow === name) state.selectedChatWorkflow = null;
         renderComposerCapabilities();
@@ -3823,6 +3822,18 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || res.statusText || `HTTP ${res.status}`);
       state.appTemplates = data.templates || [];
+      const selectedTemplate = state.selectedAppTemplateName ? getAppTemplate(state.selectedAppTemplateName) : null;
+      const fallbackTemplate = selectedTemplate || getAppTemplate(DEFAULT_APP_TEMPLATE_NAME) || state.appTemplates[0] || null;
+      if (fallbackTemplate) {
+        state.selectedAppTemplateName = fallbackTemplate.name;
+        if (!state.selectedChatSkills.length && !state.selectedChatWorkflow) {
+          state.selectedChatSkills = [...(fallbackTemplate.selected_skills || [])];
+          state.selectedChatMcpTools = [...(fallbackTemplate.selected_mcp_tools || [])];
+          state.selectedChatWorkflow = fallbackTemplate.workflow || null;
+        }
+      } else {
+        state.selectedAppTemplateName = null;
+      }
       if (state.appFilter !== 'all' && !state.appTemplates.some((item) => (item.category || 'general') === state.appFilter)) {
         state.appFilter = 'all';
       }
@@ -3830,6 +3841,7 @@
       renderAppFilterRow();
       renderAppTemplateSummary();
       renderAppTemplateList();
+      renderComposerCapabilities();
     }
 
     function renderAppFilterRow() {
@@ -8024,6 +8036,7 @@
 
     loadAdminToken();
     loadAgents();
+    loadAppTemplates().catch((err) => console.debug('app template load skipped', err));
     loadSandboxStatus();
     ensureThread();
     renderMessages();

@@ -5,7 +5,7 @@
   "category": "generation",
   "icon": "package",
   "agent_name": "default",
-  "workflow": "artifact_workflow",
+  "workflow": null,
   "selected_skills": [
     "drawio-generation",
     "pptx-generation",
@@ -29,7 +29,7 @@
   ],
   "models": [
     {
-      "name": "gpt-5.5",
+      "name": "Qwen3.6-35B-A3B",
       "features": [
         "vision",
         "reasoning",
@@ -41,13 +41,13 @@
       ],
       "priority": 0,
       "provider": "openai-compatible",
-      "model": "gpt-5.5",
-      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/",
-      "default_model": "gpt-5.5",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key_enc": "enc.fernet.v1.gAAAAABqAxafGJDvao1rpcgpmBDWRlPOPaCwGQ43x9GepglJ3YDUzt9xKHQ9wAFFtMsZ_f8GrBdYEzFWu6fFXBK4GiHCmolZfNumKtCEMUU8bdCsvrQOHVoNbCsHkiALSz2Ocj_oSK2klwFyM1XoFG7iD6klabHnjHuK57Q3vQ4D3JCfa0nCiuFXPDOUwUD9o0zPDXYh1ERAFP_RPCA3p4QIcHfWtbdnT9oVVNhSYZEPWroxSPiyMjQF1yybUHCJyh8iq90l-X6KGvyGNUJnY_9TW8ZCljy86oNyWJK8OYrazGuF3uicuDSf2iIPeKjnzJWHRE4A2peS"
+      "api_key_enc": "enc.fernet.v1.gAAAAABqAaSnFI_GtSpY7gXBbBg7C0cFq7XduiWOS7vmCYcP8TRbeh9F_ppDzXqEVmaMn0jy2aPv4XxRPvmF70yv6rVkOAfebF-HzlpQEB_I_awin3cf5T-Ig5rZkJum-Ub99yI6uQ5x"
     }
   ]
 }

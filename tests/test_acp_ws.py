@@ -661,7 +661,7 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
         assert created["agentName"] == "default"
         assert created["appTemplateName"] == "iot-architecture-diagram"
         assert created["models"]["currentModelId"] == "session-model"
-        assert created["runtimeOptions"]["workflow"] == "artifact_workflow"
+        assert "workflow" not in created["runtimeOptions"]
         assert created["runtimeOptions"]["selectedSkills"] == ["drawio-generation"]
         assert created["runtimeOptions"]["modelName"] == "session-model"
         assert created["runtimeOptions"]["temperature"] == 0.2
@@ -702,7 +702,7 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
     assert len(runtime.requests) == 2
     first = runtime.requests[0].runtime_options
     assert first.thread_id == "acp-ws-app-template"
-    assert first.workflow == "artifact_workflow"
+    assert first.workflow is None
     assert first.selected_skills == ["drawio-generation"]
     assert first.model_name == "session-model"
     assert first.temperature == 0.2
@@ -712,7 +712,7 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
 
     second = runtime.requests[1].runtime_options
     assert second.thread_id == "acp-ws-app-template"
-    assert second.workflow == "artifact_workflow"
+    assert second.workflow is None
     assert second.selected_skills == ["markdown-rendering"]
     assert second.model_name == "prompt-model"
     assert second.temperature == 0.7

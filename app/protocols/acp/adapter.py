@@ -752,7 +752,20 @@ class AcpRuntimeAdapter:
         options = self.model_manager.runtime_options_for(model_id)
         if options is None:
             return {}
-        return options.model_dump(mode="python", exclude_none=True)
+        payload = options.model_dump(mode="python", exclude_none=True)
+        model_fields = {
+            "model_name",
+            "model_env",
+            "base_url",
+            "base_url_env",
+            "api_key",
+            "api_key_env",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "request_timeout_seconds",
+        }
+        return {key: value for key, value in payload.items() if key in model_fields}
 
     def _current_model_id(self) -> str | None:
         model = self.model_manager.default()
@@ -915,10 +928,12 @@ def _runtime_options_response(runtime_options: dict[str, Any]) -> dict[str, Any]
 def _app_template_name(params: dict[str, Any]) -> str | None:
     meta = _params(params.get("_meta"))
     jetlinks_meta = _params(meta.get("jetlinks"))
+    runtime_options = _runtime_options_payload(params)
     return _string(
         params.get("appTemplateName")
         or params.get("app_template_name")
         or params.get("app")
+        or runtime_options.get("app_template_name")
         or jetlinks_meta.get("appTemplateName")
         or jetlinks_meta.get("app_template_name")
         or jetlinks_meta.get("app")

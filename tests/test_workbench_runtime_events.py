@@ -83,6 +83,9 @@ def test_workbench_sends_acp_runtime_options_on_session_new() -> None:
 def test_workbench_sends_app_template_name_for_config_app_models() -> None:
     html = WORKBENCH.read_text()
 
+    assert "const DEFAULT_APP_TEMPLATE_NAME = 'algorithm-cpu-training-sandbox';" in html
+    assert "selectedAppTemplateName: DEFAULT_APP_TEMPLATE_NAME" in html
+    assert "loadAppTemplates().catch" in html
     assert "runtimeOptions.app_template_name = state.selectedAppTemplateName;" in html
     assert "runtimeOptions.model_type = 'chat';" in html
     assert "app_template_name: template.name" in html
@@ -116,6 +119,9 @@ def test_vue_workbench_keeps_event_artifacts_until_backend_refresh() -> None:
 def test_vue_workbench_sends_selected_app_runtime_options() -> None:
     store = VUE_STORE.read_text()
 
+    assert 'const DEFAULT_APP_TEMPLATE_NAME = "algorithm-cpu-training-sandbox";' in store
+    assert "selectedAppTemplateName: DEFAULT_APP_TEMPLATE_NAME" in store
+    assert "applyAppTemplateCapabilities(fallbackTemplate)" in store
     assert "state.appTemplates.find((item) => item.name === state.selectedAppTemplateName)" in store
     assert "...templateOptions" in store
     assert 'options.mode = "yolo";' in store

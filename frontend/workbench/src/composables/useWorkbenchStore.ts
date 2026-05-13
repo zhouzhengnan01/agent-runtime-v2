@@ -26,6 +26,7 @@ import type {
 } from "@/api/types";
 
 const THREAD_STORAGE_KEY = "jetlinks.runtime.threadId";
+const DEFAULT_APP_TEMPLATE_NAME = "algorithm-cpu-training-sandbox";
 const MAX_TIMELINE_ITEMS = 120;
 const MAX_UPLOAD_FILES = 200;
 const UPLOAD_CONCURRENCY = 3;
@@ -55,7 +56,7 @@ export const useWorkbenchStore = defineStore("workbench", {
     yoloExecution: false,
     appTemplates: [] as AppTemplate[],
     appFilter: "all",
-    selectedAppTemplateName: "",
+    selectedAppTemplateName: DEFAULT_APP_TEMPLATE_NAME,
     pendingAttachmentRequirement: null as PendingAttachmentRequirement | null,
     loadingApps: false,
     attachments: [] as UploadItem[],
@@ -200,8 +201,14 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.loadingApps = true;
       try {
         this.appTemplates = await listAppTemplates();
-        if (!this.appTemplates.some((template) => template.name === this.selectedAppTemplateName)) {
-          this.selectedAppTemplateName = "";
+        const selectedTemplate = this.appTemplates.find((template) => template.name === this.selectedAppTemplateName);
+        const fallbackTemplate =
+          selectedTemplate ||
+          this.appTemplates.find((template) => template.name === DEFAULT_APP_TEMPLATE_NAME) ||
+          this.appTemplates[0];
+        this.selectedAppTemplateName = fallbackTemplate?.name || "";
+        if (fallbackTemplate && !this.selectedSkills.length && !this.selectedWorkflow) {
+          this.applyAppTemplateCapabilities(fallbackTemplate);
         }
       } finally {
         this.loadingApps = false;
@@ -218,13 +225,7 @@ export const useWorkbenchStore = defineStore("workbench", {
     applyAppTemplate(name: string, options: { fillPrompt?: boolean; run?: boolean } = {}) {
       const template = this.appTemplates.find((item) => item.name === name);
       if (!template) return;
-      this.selectedAppTemplateName = template.name;
-      this.selectedAgent = template.agent_name || "default";
-      this.selectedSkills = [...(template.selected_skills || [])];
-      this.selectedMcpTools = [...(template.selected_mcp_tools || [])];
-      this.selectedWorkflow = template.workflow || null;
-      this.deepExecution = false;
-      this.yoloExecution = false;
+      this.applyAppTemplateCapabilities(template);
       if (options.fillPrompt !== false && template.prompt_examples?.length) {
         this.input = template.prompt_examples[0] || "";
       }
@@ -241,6 +242,15 @@ export const useWorkbenchStore = defineStore("workbench", {
       }
       this.view = "chat";
       if (options.run && this.input.trim()) void this.sendCurrentMessage();
+    },
+    applyAppTemplateCapabilities(template: AppTemplate) {
+      this.selectedAppTemplateName = template.name;
+      this.selectedAgent = template.agent_name || "default";
+      this.selectedSkills = [...(template.selected_skills || [])];
+      this.selectedMcpTools = [...(template.selected_mcp_tools || [])];
+      this.selectedWorkflow = template.workflow || null;
+      this.deepExecution = false;
+      this.yoloExecution = false;
     },
     async refreshArtifacts() {
       this.loadingArtifacts = true;

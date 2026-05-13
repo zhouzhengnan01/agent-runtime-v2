@@ -29,7 +29,7 @@
   ],
   "models": [
     {
-      "name": "gpt-5.5",
+      "name": "Qwen3.6-35B-A3B",
       "features": [
         "vision",
         "reasoning",
@@ -41,13 +41,13 @@
       ],
       "priority": 0,
       "provider": "openai-compatible",
-      "model": "gpt-5.5",
-      "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/2bc9195c-2bff-48a9-ab16-1617e474284f/",
-      "default_model": "gpt-5.5",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key_enc": "enc.fernet.v1.gAAAAABqAxafiIOTE9APaRdbZnRUA7-Omf3CCPKE_gYpjKUiSy85h96_SPjx44n8fhouO3E-ovEhbqR3Fib_rfDfbSo5V2MhUluv6gwNqkiIXZhCgN_-CI60WY8TZeDM4a-CVZox1nuWOdRHvKb2E6EmnVeEbWYckX-oub0fffF1hMDr5VOTHQKRe7ZVFuzntqCiS14Wss2G3VvAdDc_JAxcAM1bmgzr8RCRhMiGJGkMootJ9HEiKOgqCn1PjY1eLzQBEP6K3_EOc6uLFruqWhwoz_uOmqYdWV9GoeL2XgXynysamVcDEvGAcbmMCgAq59gWst0WF5ryKZi4YJxqlBRTVht5CTBJWg=="
+      "api_key_enc": "enc.fernet.v1.gAAAAABqAaSnFI_GtSpY7gXBbBg7C0cFq7XduiWOS7vmCYcP8TRbeh9F_ppDzXqEVmaMn0jy2aPv4XxRPvmF70yv6rVkOAfebF-HzlpQEB_I_awin3cf5T-Ig5rZkJum-Ub99yI6uQ5x"
     }
   ]
 }
