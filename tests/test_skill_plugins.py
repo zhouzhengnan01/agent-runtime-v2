@@ -279,6 +279,33 @@ def test_cpu_training_runner_mock_generates_best_pt(tmp_path: Path) -> None:
     assert summary["mock"] is True
 
 
+def test_cpu_training_runner_skill_mock_generates_best_pt(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("cpu-train-skill-test")
+
+    result = SkillRunner(store).run(
+        "cpu-training-runner",
+        {
+            "data_yaml": "",
+            "model": "yolo11n.pt",
+            "epochs": 1,
+            "imgsz": 320,
+            "batch": 1,
+            "mock": True,
+        },
+        paths,
+    )
+
+    names = [artifact.name for artifact in result.outputs]
+    assert "best.pt" in names
+    assert "last.pt" in names
+    assert "results.csv" in names
+    assert "training-summary.json" in names
+    assert result.data["status"] == "completed"
+    assert result.data["best_pt"] == "best.pt"
+    assert result.data["mock"] is True
+
+
 def test_algorithm_engineer_sequence_reply_is_professional_status_card() -> None:
     runner = _load_algorithm_engineer_runner()
     run_result = type(

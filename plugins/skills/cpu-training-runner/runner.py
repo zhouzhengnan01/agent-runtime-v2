@@ -343,6 +343,9 @@ def _stage_status(label: str, done: bool) -> str:
 
 
 def _cpu_training_local_notice(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) -> dict[str, Any]:
+    if bool(spec.get("mock")):
+        return _cpu_training_mock_result(skill_name, spec, paths, artifact_store)
+
     content = "\n".join(
         [
             "# CPU 训练沙盒需要沙盒执行",
@@ -369,6 +372,130 @@ def _cpu_training_local_notice(skill_name: str, spec: dict[str, Any], paths: Any
             "spec": spec,
         },
     }
+
+
+def _cpu_training_mock_result(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) -> dict[str, Any]:
+    model = str(spec.get("model") or "yolo11n.pt")
+    data_yaml = str(spec.get("data_yaml") or spec.get("data") or spec.get("dataset_path") or "")
+    epochs = _bounded_int(spec.get("epochs"), default=1, minimum=1, maximum=5)
+    imgsz = _bounded_int(spec.get("imgsz"), default=320, minimum=128, maximum=960)
+    batch = _bounded_int(spec.get("batch"), default=1, minimum=1, maximum=8)
+    payload = {
+        "mock": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "data_yaml": data_yaml,
+        "epochs": epochs,
+        "imgsz": imgsz,
+        "batch": batch,
+    }
+    outputs = [
+        artifact_store.write_bytes_artifact(
+            paths,
+            "best.pt",
+            b"mock best.pt for cpu-training-runner\n" + json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        ),
+        artifact_store.write_bytes_artifact(
+            paths,
+            "last.pt",
+            b"mock last.pt for cpu-training-runner\n" + json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        ),
+        artifact_store.write_text_artifact(
+            paths,
+            "results.csv",
+            "epoch,metrics/mAP50(B),metrics/mAP50-95(B),metrics/precision(B),metrics/recall(B)\n"
+            "1,0.01,0.001,0.02,0.03\n",
+        ),
+        artifact_store.write_text_artifact(
+            paths,
+            "args.yaml",
+            "\n".join(
+                [
+                    f"model: {model}",
+                    f"data: {data_yaml}",
+                    f"epochs: {epochs}",
+                    f"imgsz: {imgsz}",
+                    f"batch: {batch}",
+                    "device: cpu",
+                    "mock: true",
+                ]
+            )
+            + "\n",
+        ),
+        artifact_store.write_text_artifact(paths, "train.log", "Mock CPU training completed. This is not a real model.\n"),
+    ]
+    summary = {
+        "ok": True,
+        "status": "completed",
+        "execution_mode": "cpu_mock",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "data_yaml": data_yaml,
+        "epochs": epochs,
+        "imgsz": imgsz,
+        "batch": batch,
+        "device": "cpu",
+        "mock": True,
+        "artifacts": {
+            "best_pt": "best.pt",
+            "last_pt": "last.pt",
+            "results_csv": "results.csv",
+            "args_yaml": "args.yaml",
+            "train_log": "train.log",
+        },
+        "best_pt": "best.pt",
+    }
+    outputs.extend(
+        [
+            artifact_store.write_text_artifact(
+                paths,
+                "training-summary.json",
+                json.dumps(summary, ensure_ascii=False, indent=2),
+            ),
+            artifact_store.write_text_artifact(paths, "training-summary.md", _cpu_training_summary_markdown(summary)),
+        ]
+    )
+    return {
+        "skill_name": skill_name,
+        "outputs": outputs,
+        "data": summary,
+    }
+
+
+def _cpu_training_summary_markdown(summary: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            "# CPU Training Summary",
+            "",
+            f"- Status: {summary['status']}",
+            f"- Execution: {summary['execution_mode']}",
+            f"- Model: `{summary['model']}`",
+            f"- Data: `{summary['data_yaml'] or 'not provided'}`",
+            f"- Device: `{summary['device']}`",
+            f"- Epochs: {summary['epochs']}",
+            f"- Image size: {summary['imgsz']}",
+            f"- Batch: {summary['batch']}",
+            "",
+            "## Artifacts",
+            "",
+            "- best_pt: `best.pt`",
+            "- last_pt: `last.pt`",
+            "- results_csv: `results.csv`",
+            "- args_yaml: `args.yaml`",
+            "- train_log: `train.log`",
+            "",
+            "> This was a mock smoke run. The generated best.pt is not a real trained model.",
+            "",
+        ]
+    )
+
+
+def _bounded_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, minimum), maximum)
 
 
 def _algorithm_engineer_workspace_payload(base: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:

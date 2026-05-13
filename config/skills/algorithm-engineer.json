@@ -31,6 +31,105 @@
     "deployment_review",
     "experiment_ledger"
   ],
+  "stages": [
+    {
+      "id": "intake",
+      "name": "任务澄清",
+      "owner_skills": [
+        "algorithm-engineer"
+      ],
+      "outputs": [
+        "objective.md",
+        "acceptance_metrics.yaml"
+      ],
+      "ready_gate": "明确业务目标和至少一个可比较 baseline。",
+      "done_gate": "指标、数据、机器和交付物都已确认。"
+    },
+    {
+      "id": "dataset",
+      "name": "数据治理",
+      "owner_skills": [
+        "dataset-curator"
+      ],
+      "outputs": [
+        "dataset_audit.md",
+        "conflict_report.json",
+        "data.yaml"
+      ],
+      "ready_gate": "源数据可访问，标签优先级已确认。",
+      "done_gate": "train/val/test、空标签、冲突和类别分布统计完成。"
+    },
+    {
+      "id": "research",
+      "name": "算法调研与候选筛选",
+      "owner_skills": [
+        "algorithm-research-scout",
+        "model-candidate-selector"
+      ],
+      "outputs": [
+        "candidate_algorithm_table.md",
+        "benchmark_shortlist.yaml"
+      ],
+      "ready_gate": "业务约束和部署目标已明确。",
+      "done_gate": "每个候选都有权重来源、许可证、训练成本和部署风险。"
+    },
+    {
+      "id": "gpu",
+      "name": "GPU 环境与训练编排",
+      "owner_skills": [
+        "remote-gpu-ops",
+        "gpu-training-orchestrator"
+      ],
+      "outputs": [
+        "remote_gpu_snapshot.md",
+        "training_plan.md",
+        "results.csv"
+      ],
+      "ready_gate": "GPU、磁盘、CUDA/PyTorch、容器和数据同步检查通过。",
+      "done_gate": "benchmark 通过，正式训练有 best.pt/last.pt/results.csv。"
+    },
+    {
+      "id": "evaluate",
+      "name": "检测指标与业务评估",
+      "owner_skills": [
+        "detector-evaluator"
+      ],
+      "outputs": [
+        "evaluation_report.md",
+        "business_ab_table.csv",
+        "error_examples/"
+      ],
+      "ready_gate": "baseline 和候选模型在同一审核集上可评估。",
+      "done_gate": "给出上线/继续训练/补数据的明确建议。"
+    },
+    {
+      "id": "release",
+      "name": "上线评审与回刷计划",
+      "owner_skills": [
+        "deployment-candidate-reviewer"
+      ],
+      "outputs": [
+        "deployment_review.md",
+        "rollback_plan.md",
+        "reprocess_plan.md"
+      ],
+      "ready_gate": "模型包完整，服务加载 smoke test 通过。",
+      "done_gate": "上线风险、回滚步骤和全量回刷计划评审完成。"
+    },
+    {
+      "id": "ledger",
+      "name": "实验台账与复盘",
+      "owner_skills": [
+        "experiment-ledger"
+      ],
+      "outputs": [
+        "experiment_ledger.yaml",
+        "iteration_summary.md"
+      ],
+      "ready_gate": "每次训练都有唯一 experiment_id。",
+      "done_gate": "结果、失败原因和下一轮动作已沉淀。"
+    }
+  ],
   "input_schema": {
     "type": "object",
     "required": [

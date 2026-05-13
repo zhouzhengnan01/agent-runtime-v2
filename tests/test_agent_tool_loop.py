@@ -282,6 +282,57 @@ def test_agent_loop_treats_selected_skill_as_tool_when_no_workflow_mapping(
     assert tools_event.data["tools"] == ["drawio-generation"]
 
 
+def test_agent_loop_explore_phase_prefers_read_only_tools(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="已进入探索阶段。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="explore-tools-agent",
+        display_name="Explore Tools Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["artifact_list", "artifact_read", "present_files", "local_read_file", "local_write_file"],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=artifact_store))
+    recorder = EventRecorder(agent=agent.name, thread_id="explore-tools")
+
+    loop_result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="看下这个线程里都有什么产物和文件")],
+            thread_id="explore-tools",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(thread_id="explore-tools"),
+        )
+    )
+
+    assert loop_result.result.reply == "已进入探索阶段。"
+    assert "local_write_file" not in seen_tools
+    assert "artifact_list" in seen_tools
+    assert "artifact_read" in seen_tools
+    assert "present_files" in seen_tools
+    tools_event = next(event for event in recorder.events if event.type == "tools.available")
+    assert tools_event.data["turn_phase"] == "explore"
+    assert tools_event.data["tool_exposure_policy"] == "read_preferred"
+    assert "artifact_list" in tools_event.data["priority_tools"]
+    assert "local_write_file" in tools_event.data["hidden_tools"]
+
+
 def test_agent_loop_exposes_runtime_selected_skill_not_declared_on_agent(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -328,6 +379,117 @@ def test_agent_loop_exposes_runtime_selected_skill_not_declared_on_agent(
     assert seen_tools == ["data-auto-annotation"]
     tools_event = next(event for event in recorder.events if event.type == "tools.available")
     assert tools_event.data["tools"] == ["data-auto-annotation"]
+
+
+def test_agent_loop_injects_primary_skill_guidance_from_first_selected_skill(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_prompts: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, messages, tools
+        seen_prompts.append(system_prompt)
+        return LlmChatResponse(content="已按主 Skill 理解请求。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="primary-skill-agent",
+        display_name="Primary Skill Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=artifact_store))
+    recorder = EventRecorder(agent=agent.name, thread_id="primary-skill")
+
+    loop_result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="把上传图片自动标注成 COCO")],
+            thread_id="primary-skill",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="primary-skill",
+                selected_skills=["data-auto-annotation", "markdown-rendering"],
+            ),
+        )
+    )
+
+    assert loop_result.result.reply == "已按主 Skill 理解请求。"
+    assert len(seen_prompts) == 1
+    assert "Primary skill guidance is active." in seen_prompts[0]
+    assert "Primary skill: data-auto-annotation" in seen_prompts[0]
+    assert "When to use: Use for automatic image annotation" in seen_prompts[0]
+    assert "Required inputs: image_path" in seen_prompts[0]
+    assert "Quality focus: coco_schema, image_dimensions, bbox_xywh, category_mapping" in seen_prompts[0]
+    assert "Primary skill: markdown-rendering" not in seen_prompts[0]
+
+
+def test_agent_loop_keeps_primary_skill_guidance_alongside_composite_guidance(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_prompts: list[str] = []
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+    ) -> str:
+        del self, messages
+        seen_prompts.append(system_prompt)
+        return "已注入主 Skill 和 composite 提示。"
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    agent = AgentConfig(
+        name="composite-primary-agent",
+        display_name="Composite Primary Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=artifact_store))
+    recorder = EventRecorder(agent=agent.name, thread_id="composite-primary")
+
+    loop_result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="根据参考图生成数据并训练 YOLO")],
+            thread_id="composite-primary",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="composite-primary",
+                selected_skills=["reference-image-yolo-trainer"],
+                config_options={
+                    "composite_skills": [
+                        {
+                            "name": "reference-image-yolo-trainer",
+                            "description": "Composite skill for reference-image-driven YOLO training.",
+                            "child_skills": ["image-dataset-generation", "cpu-training-runner"],
+                            "stages": [{"id": "train_detector", "skill": "cpu-training-runner", "produces": ["best.pt"]}],
+                            "done_when": ["best.pt exists"],
+                        }
+                    ]
+                },
+            ),
+        )
+    )
+
+    assert loop_result.result.reply == "已注入主 Skill 和 composite 提示。"
+    assert len(seen_prompts) == 1
+    assert "Primary skill: reference-image-yolo-trainer" in seen_prompts[0]
+    assert "Composite skill guidance is active." in seen_prompts[0]
+    assert "Composite skill: reference-image-yolo-trainer" in seen_prompts[0]
 
 
 def test_agent_loop_runtime_selected_skill_hides_other_agent_skills(
@@ -788,6 +950,70 @@ def test_agent_loop_surfaces_skill_required_inputs(
     assert result.metadata["requires_input"] is True
     stages = {item["stage"] for item in result.metadata["required_inputs"]}
     assert {"dataset-curator", "remote-gpu-ops", "detector-evaluator", "deployment-candidate-reviewer"} <= stages
+    assert result.metadata["turn_phase"] == "finalize"
+    assert result.metadata["verification_verdict"] == "blocked"
+    assert result.metadata["active_stage_name"] == "数据治理"
+    assert result.metadata["active_stage_owner_skills"] == ["dataset-curator"]
+    assert "dataset-curator" in result.metadata["blocked_stages"]
+
+
+def test_algorithm_engineer_primary_stage_prioritizes_owner_skills(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(content="已进入算法工程阶段化调度。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="algorithm-stage-agent",
+        display_name="Algorithm Stage Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["artifact_list"],
+        skills=[
+            "algorithm-engineer",
+            "dataset-curator",
+            "algorithm-research-scout",
+            "remote-gpu-ops",
+            "detector-evaluator",
+        ],
+        workflows={"default": "agent_loop"},
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=artifact_store))
+    recorder = EventRecorder(agent=agent.name, thread_id="algorithm-stage")
+
+    loop_result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="把棕榈果检测算法工程师全流程跑起来")],
+            thread_id="algorithm-stage",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="algorithm-stage",
+                mode="yolo",
+                selected_skills=[
+                    "algorithm-engineer",
+                    "dataset-curator",
+                    "algorithm-research-scout",
+                    "remote-gpu-ops",
+                    "detector-evaluator",
+                ],
+            ),
+        )
+    )
+
+    assert loop_result.result.reply == "已进入算法工程阶段化调度。"
+    tools_event = next(event for event in recorder.events if event.type == "tools.available")
+    assert tools_event.data["tool_exposure_policy"] == "primary_stage_owner_priority"
+    assert tools_event.data["active_stage_name"] == "任务澄清"
+    assert tools_event.data["priority_tools"][0] == "algorithm-engineer"
 
 
 def test_yolo_does_not_report_no_tool_calls_after_skill_execution(
@@ -897,6 +1123,158 @@ def test_yolo_blocks_selected_skill_when_no_tool_is_available(
     assert "平台侧 ID" in result.reply
     assert result.metadata["unavailable_selected_skills_blocked"] is True
     assert result.metadata["selected_skills"] == ["1778483741456a5glxkmk"]
+
+
+def test_yolo_blocks_composite_completion_without_artifact_evidence(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(content="参考图 YOLO 训练已经全部完成。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="composite-empty-agent",
+        display_name="Composite Empty Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="chat-model"),
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="根据参考图生成数据并训练 YOLO")],
+        runtime_options=RuntimeOptions(
+            thread_id="composite-missing-evidence",
+            mode="yolo",
+            selected_skills=["reference-image-yolo-trainer"],
+            config_options={
+                "composite_skills": [
+                    {
+                        "name": "reference-image-yolo-trainer",
+                        "done_when": [
+                            "best.pt exists in the current thread artifacts",
+                            "results.csv exists in the current thread artifacts",
+                        ],
+                    }
+                ]
+            },
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert "当前 composite skill 缺少完成证据" in result.reply
+    assert "缺少的完成条件证据" in result.reply
+    assert "best.pt exists in the current thread artifacts" in result.reply
+    assert result.metadata["unverified_completion_blocked"] is True
+    assert result.metadata["missing_completion_evidence"] == "best.pt exists in the current thread artifacts"
+
+
+def test_yolo_non_composite_reply_is_not_blocked_by_keywords() -> None:
+    reply, metadata = ToolCallingAgentLoop._guard_unverified_completion(
+        "算法工程师全流程已完成。",
+        RuntimeOptions(
+            mode="yolo",
+            selected_skills=["algorithm-engineer"],
+        ),
+        available_tool_count=3,
+        executed_tool_count=0,
+        required_inputs=[],
+        artifacts=[],
+    )
+
+    assert reply == "算法工程师全流程已完成。"
+    assert metadata == {}
+
+
+def test_yolo_allows_composite_completion_when_artifact_evidence_exists() -> None:
+    composite = [
+        {
+            "name": "reference-image-yolo-trainer",
+            "done_when": [
+                "best.pt exists in the current thread artifacts",
+                "results.csv exists in the current thread artifacts",
+                "training-summary.md exists in the current thread artifacts",
+            ],
+        }
+    ]
+    artifacts = [
+        {"name": "best.pt", "path": "outputs/best.pt"},
+        {"name": "results.csv", "path": "outputs/results.csv"},
+        {"name": "training-summary.md", "path": "outputs/training-summary.md"},
+    ]
+
+    reply, metadata = ToolCallingAgentLoop._guard_unverified_completion(
+        "训练完成。",
+        RuntimeOptions(
+            mode="yolo",
+            selected_skills=["reference-image-yolo-trainer"],
+            config_options={"composite_skills": composite},
+        ),
+        available_tool_count=3,
+        executed_tool_count=0,
+        required_inputs=[],
+        artifacts=artifacts,
+    )
+
+    assert reply == "训练完成。"
+    assert metadata == {}
+
+
+def test_yolo_allows_composite_completion_from_thread_manifest_artifacts(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(content="训练已经完成。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    paths = artifact_store.prepare_thread("thread-artifact-evidence")
+    artifact_store.write_text_artifact(paths, "training-summary.md", "# summary")
+    artifact_store.write_text_artifact(paths, "results.csv", "epoch,map50\n1,0.91\n")
+    artifact_store.write_bytes_artifact(paths, "best.pt", b"weights")
+    runtime = AgentRuntime(artifact_store=artifact_store)
+    agent = AgentConfig(
+        name="thread-artifact-evidence-agent",
+        display_name="Thread Artifact Evidence Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="chat-model"),
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="根据参考图生成数据并训练 YOLO")],
+        runtime_options=RuntimeOptions(
+            thread_id="thread-artifact-evidence",
+            mode="yolo",
+            selected_skills=["reference-image-yolo-trainer"],
+            config_options={
+                "composite_skills": [
+                    {
+                        "name": "reference-image-yolo-trainer",
+                        "done_when": [
+                            "best.pt exists in the current thread artifacts",
+                            "results.csv exists in the current thread artifacts",
+                            "training-summary.md exists in the current thread artifacts",
+                        ],
+                    }
+                ]
+            },
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.reply == "训练已经完成。"
+    assert result.metadata.get("unverified_completion_blocked") is not True
 
 
 def test_agent_loop_truncates_large_tool_results_before_returning_to_model(

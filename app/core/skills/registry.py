@@ -37,6 +37,10 @@ class SkillDefinition:
     generation: bool = True
     model_tags: tuple[str, ...] = ()
     quality_template: tuple[str, ...] = ()
+    skill_type: str = "atomic"
+    child_skills: tuple[str, ...] = ()
+    stages: tuple[dict[str, Any], ...] = ()
+    done_when: tuple[str, ...] = ()
     routing: dict[str, Any] | None = None
     execution: dict[str, Any] | None = None
     input_schema: dict[str, Any] | None = None
@@ -55,6 +59,10 @@ class SkillDefinition:
     def executable(self) -> bool:
         return self.runner_path is not None or _has_generic_execution(self.execution)
 
+    @property
+    def composite(self) -> bool:
+        return self.skill_type == "composite" and bool(self.child_skills)
+
     def to_event_payload(self) -> dict[str, object]:
         return {
             "name": self.name,
@@ -63,6 +71,10 @@ class SkillDefinition:
             "generation": self.generation,
             "model_tags": list(self.model_tags),
             "quality_template": list(self.quality_template),
+            "skill_type": self.skill_type,
+            "child_skills": list(self.child_skills),
+            "stages": list(self.stages),
+            "done_when": list(self.done_when),
             "routing": self.routing or {},
             "execution": self.execution or {},
             "input_schema": self.input_schema or {},
@@ -100,6 +112,10 @@ class SkillDefinition:
             generation=self.generation,
             model_tags=self.model_tags,
             quality_template=self.quality_template,
+            skill_type=self.skill_type,
+            child_skills=self.child_skills,
+            stages=self.stages,
+            done_when=self.done_when,
             routing=self.routing,
             execution=self.execution,
             input_schema=self.input_schema,
@@ -198,6 +214,10 @@ def definition_from_manifest(data: object, path: Path) -> SkillDefinition:
         generation=bool(data.get("generation", True)),
         model_tags=tuple(normalize_model_tags(data.get("model_tags"))),
         quality_template=_string_tuple(data.get("quality_template")),
+        skill_type=_skill_type(data),
+        child_skills=_child_skills(data),
+        stages=_dict_tuple(data.get("stages")),
+        done_when=_string_tuple(data.get("done_when")),
         routing=_dict_value(data.get("routing")),
         execution=_dict_value(data.get("execution")),
         input_schema=_dict_value(data.get("input_schema")),
@@ -247,10 +267,42 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     return tuple(item for item in value if isinstance(item, str))
 
 
+def _dict_tuple(value: object) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(dict(item) for item in value if isinstance(item, dict))
+
+
 def _dict_value(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     return dict(value)
+
+
+def _skill_type(data: dict[str, object]) -> str:
+    raw_value = data.get("skill_type", data.get("kind"))
+    if isinstance(raw_value, str) and raw_value.strip() == "composite":
+        return "composite"
+    return "atomic"
+
+
+def _child_skills(data: dict[str, object]) -> tuple[str, ...]:
+    raw_children = data.get("child_skills", data.get("children"))
+    if not isinstance(raw_children, list):
+        return ()
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in raw_children:
+        name = ""
+        if isinstance(item, str):
+            name = item.strip()
+        elif isinstance(item, dict) and isinstance(item.get("skill"), str):
+            name = item["skill"].strip()
+        if not name or name in seen:
+            continue
+        names.append(name)
+        seen.add(name)
+    return tuple(names)
 
 
 def _has_generic_execution(execution: dict[str, Any] | None) -> bool:

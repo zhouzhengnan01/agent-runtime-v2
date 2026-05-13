@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from app.core.artifacts import ArtifactStore
 from app.core.artifacts.preview import guess_mime_type
+from app.core.agent.execution_context import ExecutionContext
+from app.core.agent.execution_context import build_execution_context
 from app.core.agent.session import SessionConversationStore
 from app.core.apps import AppTemplateRegistry
 from app.core.apps.models import AppModelOption
@@ -20,13 +22,21 @@ from app.core.events import EventRecorder, RunEventStore
 from app.core.llm import OpenAICompatibleClient
 from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.agent.input_required import required_inputs_for_request, required_inputs_for_result
+from app.core.skills import SkillDefinition, SkillRegistry
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
 from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, Role, RuntimeOptions
 
 
 class AgentRuntime:
-    """Stateless runtime shared by HTTP and CLI entrypoints."""
+    """Stateless runtime shared by HTTP and CLI entrypoints.
+
+    High-level flow:
+    1. Normalize the request and derive effective runtime options.
+    2. Short-circuit if required inputs are missing.
+    3. Dispatch either to an explicit workflow or to the default agent loop.
+    4. Persist conversation state and run events back into the thread workspace.
+    """
 
     def __init__(
         self,
@@ -67,81 +77,92 @@ class AgentRuntime:
     async def run_with_events(
         self, agent_config: AgentConfig, request: ChatRequest
     ) -> tuple[AgentRunResult, list[ChatEvent]]:
-        agent_config, request = self._prepare_execution(agent_config, request)
-        if not request.messages:
-            raise ValueError("messages must not be empty")
-
-        workflow_name = self._selected_workflow_name(agent_config, request)
-        paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
-        input_required = self._request_required_inputs(request)
-        if input_required:
-            recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
+        execution = self._execution_context(agent_config, request)
+        if execution.input_required:
+            # Preflight exit: do not enter workflows or tool calling when the
+            # runtime already knows the request cannot proceed yet.
+            recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
             events = [
                 recorder.emit(
                     "run.started",
                     {
                         "run_id": recorder.run_id,
-                        "workflow": workflow_name or "agent_loop",
-                        "execution_mode": workflow_name or "agent_loop",
-                        "stateless": agent_config.runtime.stateless,
+                        "workflow": execution.workflow_name or "agent_loop",
+                        "execution_mode": execution.workflow_name or "agent_loop",
+                        "stateless": execution.agent_config.runtime.stateless,
                     },
                 )
             ]
             result = self._input_required_result(
-                agent_config,
-                paths.thread_id,
-                input_required,
+                execution.agent_config,
+                execution.paths.thread_id,
+                execution.input_required,
                 recorder.run_id,
-                workflow_name,
-                request.runtime_options,
+                execution.workflow_name,
+                execution.request.runtime_options,
             )
             events.append(recorder.emit("agent.message", {"text": result.reply}))
             events.append(recorder.emit("run.completed", {"result": result.model_dump()}))
-            conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
-            self.session_store.save(paths, self._conversation_with_result(conversation, result), run_id=recorder.run_id)
-            self._persist_events(agent_config, request, paths.thread_id, events, result)
-            return result, events
-        if workflow_name is not None:
-            workflow = self.workflow_registry.get(workflow_name)
-            if workflow is None:
-                raise ValueError(f"Workflow is not registered: {workflow_name}")
-            conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
-            result, events = workflow.run_with_events(
-                agent_config=agent_config,
-                messages=self._workflow_messages(conversation),
-                attachments=request.attachments,
-                thread_id=paths.thread_id,
-                workflow_name=workflow_name,
-                runtime_options=request.runtime_options,
+            self.session_store.save(
+                execution.paths,
+                self._conversation_with_result(execution.conversation, result),
+                run_id=recorder.run_id,
             )
-            self.session_store.save(paths, self._conversation_with_result(conversation, result), run_id=self._run_id(events))
-            self._enrich_required_inputs(result, request)
+            self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, events, result)
+            return result, events
+        if execution.workflow_name is not None:
+            # Workflow path: a named workflow owns the full execution instead of
+            # the generic tool-calling loop.
+            workflow = self.workflow_registry.get(execution.workflow_name)
+            if workflow is None:
+                raise ValueError(f"Workflow is not registered: {execution.workflow_name}")
+            result, events = workflow.run_with_events(
+                agent_config=execution.agent_config,
+                messages=self._workflow_messages(execution.conversation),
+                attachments=execution.request.attachments,
+                thread_id=execution.paths.thread_id,
+                workflow_name=execution.workflow_name,
+                runtime_options=execution.request.runtime_options,
+            )
+            self.session_store.save(
+                execution.paths,
+                self._conversation_with_result(execution.conversation, result),
+                run_id=self._run_id(events),
+            )
+            self._enrich_required_inputs(result, execution.request)
             self._replace_final_result_event(events, result)
-            self._persist_events(agent_config, request, result.thread_id, events, result)
+            self._persist_events(execution.agent_config, execution.request, result.thread_id, events, result)
             return result, events
 
-        conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
-        recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
+        # Default path: merge thread history and let the agent loop decide when
+        # to answer directly versus when to call tools.
+        recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
         recorder.emit(
             "run.started",
             {
                 "run_id": recorder.run_id,
                 "workflow": "agent_loop",
                 "execution_mode": "agent_loop",
-                "stateless": agent_config.runtime.stateless,
+                "stateless": execution.agent_config.runtime.stateless,
             },
         )
         loop_result = await self.agent_loop.run(
-            agent_config=agent_config,
-            messages=conversation,
-            thread_id=paths.thread_id,
+            agent_config=execution.agent_config,
+            messages=execution.conversation,
+            thread_id=execution.paths.thread_id,
             recorder=recorder,
-            runtime_options=request.runtime_options,
+            runtime_options=execution.request.runtime_options,
         )
-        self._enrich_required_inputs(loop_result.result, request)
+        self._enrich_required_inputs(loop_result.result, execution.request)
         self._replace_final_result_event(recorder.events, loop_result.result)
-        self.session_store.save(paths, loop_result.messages, run_id=recorder.run_id)
-        self._persist_events(agent_config, request, paths.thread_id, recorder.events, loop_result.result)
+        self.session_store.save(execution.paths, loop_result.messages, run_id=recorder.run_id)
+        self._persist_events(
+            execution.agent_config,
+            execution.request,
+            execution.paths.thread_id,
+            recorder.events,
+            loop_result.result,
+        )
         return loop_result.result, recorder.events
 
     async def stream(self, agent_config: AgentConfig, request: ChatRequest) -> AsyncIterator[str]:
@@ -152,31 +173,22 @@ class AgentRuntime:
             yield self._event(ChatEvent(type="run.failed", data={"agent": agent_config.name, "error": str(exc)}))
 
     async def iter_events(self, agent_config: AgentConfig, request: ChatRequest) -> AsyncIterator[ChatEvent]:
-        agent_config, request = self._prepare_execution(agent_config, request)
-        if not request.messages:
-            raise ValueError("messages must not be empty")
-
-        workflow_name = self._selected_workflow_name(agent_config, request)
-        input_required = self._request_required_inputs(request)
-        if input_required:
-            async for event in self._stream_input_required_events(agent_config, request, workflow_name, input_required):
+        execution = self._execution_context(agent_config, request)
+        if execution.input_required:
+            async for event in self._stream_input_required_events(execution):
                 yield event
             return
-        if workflow_name is not None:
-            if self.workflow_registry.get(workflow_name) is None:
-                raise ValueError(f"Workflow is not registered: {workflow_name}")
-            async for event in self._stream_workflow_events(agent_config, request, workflow_name):
+        if execution.workflow_name is not None:
+            if self.workflow_registry.get(execution.workflow_name) is None:
+                raise ValueError(f"Workflow is not registered: {execution.workflow_name}")
+            async for event in self._stream_workflow_events(execution):
                 yield event
             return
 
-        async for event in self._stream_agent_loop_events(agent_config, request):
+        async for event in self._stream_agent_loop_events(execution):
             yield event
 
-    async def _stream_workflow_events(
-        self, agent_config: AgentConfig, request: ChatRequest, workflow_name: str
-    ) -> AsyncIterator[ChatEvent]:
-        paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
-        conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
+    async def _stream_workflow_events(self, execution: ExecutionContext) -> AsyncIterator[ChatEvent]:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[ChatEvent | BaseException | None] = asyncio.Queue()
         captured_events: list[ChatEvent] = []
@@ -188,18 +200,18 @@ class AgentRuntime:
 
         def run_workflow() -> None:
             nonlocal final_result, captured_events
-            workflow = self.workflow_registry.get(workflow_name)
+            workflow = self.workflow_registry.get(execution.workflow_name or "")
             if workflow is None:
-                raise ValueError(f"Workflow is not registered: {workflow_name}")
+                raise ValueError(f"Workflow is not registered: {execution.workflow_name}")
             try:
                 final_result, returned_events = workflow.run_with_events(
-                    agent_config=agent_config,
-                    messages=self._workflow_messages(conversation),
-                    attachments=request.attachments,
-                    thread_id=paths.thread_id,
+                    agent_config=execution.agent_config,
+                    messages=self._workflow_messages(execution.conversation),
+                    attachments=execution.request.attachments,
+                    thread_id=execution.paths.thread_id,
                     on_event=on_event,
-                    workflow_name=workflow_name,
-                    runtime_options=request.runtime_options,
+                    workflow_name=execution.workflow_name or "agent_loop",
+                    runtime_options=execution.request.runtime_options,
                 )
                 if not captured_events:
                     captured_events = list(returned_events)
@@ -224,33 +236,31 @@ class AgentRuntime:
                 thread_id = (
                     final_result.thread_id
                     if final_result is not None
-                    else str(captured_events[0].data.get("thread_id") or request.runtime_options.thread_id or "")
+                    else str(captured_events[0].data.get("thread_id") or execution.request.runtime_options.thread_id or "")
                 )
                 if final_result is not None:
-                    self._enrich_required_inputs(final_result, request)
+                    self._enrich_required_inputs(final_result, execution.request)
                     self._replace_final_result_event(captured_events, final_result)
                     self.session_store.save(
-                        paths,
-                        self._conversation_with_result(conversation, final_result),
+                        execution.paths,
+                        self._conversation_with_result(execution.conversation, final_result),
                         run_id=self._run_id(captured_events),
                     )
-                self._persist_events(agent_config, request, thread_id, captured_events, final_result)
+                self._persist_events(execution.agent_config, execution.request, thread_id, captured_events, final_result)
 
-    async def _stream_agent_loop_events(self, agent_config: AgentConfig, request: ChatRequest) -> AsyncIterator[ChatEvent]:
-        paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
-        conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
-        recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
+    async def _stream_agent_loop_events(self, execution: ExecutionContext) -> AsyncIterator[ChatEvent]:
+        recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
         yield recorder.emit(
             "run.started",
             {
                 "run_id": recorder.run_id,
                 "workflow": "agent_loop",
                 "execution_mode": "agent_loop",
-                "stateless": agent_config.runtime.stateless,
+                "stateless": execution.agent_config.runtime.stateless,
             },
         )
 
-        llm = OpenAICompatibleClient(agent_config, runtime_options=request.runtime_options)
+        llm = OpenAICompatibleClient(execution.agent_config, runtime_options=execution.request.runtime_options)
         if not llm.configured:
             yield recorder.emit(
                 "llm.started",
@@ -264,16 +274,16 @@ class AgentRuntime:
                 },
             )
             chunks: list[str] = []
-            async for chunk in llm.stream_complete(agent_config.prompts.system, conversation):
+            async for chunk in llm.stream_complete(execution.agent_config.prompts.system, execution.conversation):
                 chunks.append(chunk)
                 yield recorder.emit("agent.message.delta", {"text": chunk})
 
             reply = "".join(chunks)
-            final_messages = [*conversation, {"role": "assistant", "content": reply}]
+            final_messages = [*execution.conversation, {"role": "assistant", "content": reply}]
             yield recorder.emit("agent.message", {"text": reply})
             result = AgentRunResult(
-                agent=agent_config.name,
-                thread_id=paths.thread_id,
+                agent=execution.agent_config.name,
+                thread_id=execution.paths.thread_id,
                 reply=reply,
                 metadata={
                     "workflow": "agent_loop",
@@ -288,60 +298,62 @@ class AgentRuntime:
                     "tool_call_count": 0,
                 },
             )
-            self._enrich_required_inputs(result, request)
+            self._enrich_required_inputs(result, execution.request)
             yield recorder.emit("run.completed", {"result": result.model_dump()})
-            self.session_store.save(paths, final_messages, run_id=recorder.run_id)
-            self._persist_events(agent_config, request, paths.thread_id, recorder.events, result)
+            self.session_store.save(execution.paths, final_messages, run_id=recorder.run_id)
+            self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, recorder.events, result)
             return
 
         emitted = 1
         loop_result = await self.agent_loop.run(
-            agent_config=agent_config,
-            messages=conversation,
-            thread_id=paths.thread_id,
+            agent_config=execution.agent_config,
+            messages=execution.conversation,
+            thread_id=execution.paths.thread_id,
             recorder=recorder,
-            runtime_options=request.runtime_options,
+            runtime_options=execution.request.runtime_options,
             emit_message_delta=True,
         )
-        self._enrich_required_inputs(loop_result.result, request)
+        self._enrich_required_inputs(loop_result.result, execution.request)
         self._replace_final_result_event(recorder.events, loop_result.result)
         for event in recorder.events[emitted:]:
             yield event
-        self.session_store.save(paths, loop_result.messages, run_id=recorder.run_id)
-        self._persist_events(agent_config, request, paths.thread_id, recorder.events, loop_result.result)
+        self.session_store.save(execution.paths, loop_result.messages, run_id=recorder.run_id)
+        self._persist_events(
+            execution.agent_config,
+            execution.request,
+            execution.paths.thread_id,
+            recorder.events,
+            loop_result.result,
+        )
 
-    async def _stream_input_required_events(
-        self,
-        agent_config: AgentConfig,
-        request: ChatRequest,
-        workflow_name: str | None,
-        required_inputs: list[dict[str, object]],
-    ) -> AsyncIterator[ChatEvent]:
-        paths = self.artifact_store.prepare_thread(request.runtime_options.thread_id)
-        conversation = self.session_store.merge(self.session_store.load(paths), request.messages)
-        recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id)
+    async def _stream_input_required_events(self, execution: ExecutionContext) -> AsyncIterator[ChatEvent]:
+        recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
         yield recorder.emit(
             "run.started",
             {
                 "run_id": recorder.run_id,
-                "workflow": workflow_name or "agent_loop",
-                "execution_mode": workflow_name or "agent_loop",
-                "stateless": agent_config.runtime.stateless,
+                "workflow": execution.workflow_name or "agent_loop",
+                "execution_mode": execution.workflow_name or "agent_loop",
+                "stateless": execution.agent_config.runtime.stateless,
             },
         )
         result = self._input_required_result(
-            agent_config,
-            paths.thread_id,
-            required_inputs,
+            execution.agent_config,
+            execution.paths.thread_id,
+            execution.input_required,
             recorder.run_id,
-            workflow_name,
-            request.runtime_options,
+            execution.workflow_name,
+            execution.request.runtime_options,
         )
         yield recorder.emit("agent.message.delta", {"text": result.reply})
         yield recorder.emit("agent.message", {"text": result.reply})
         yield recorder.emit("run.completed", {"result": result.model_dump()})
-        self.session_store.save(paths, self._conversation_with_result(conversation, result), run_id=recorder.run_id)
-        self._persist_events(agent_config, request, paths.thread_id, recorder.events, result)
+        self.session_store.save(
+            execution.paths,
+            self._conversation_with_result(execution.conversation, result),
+            run_id=recorder.run_id,
+        )
+        self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, recorder.events, result)
 
     @staticmethod
     def _request_required_inputs(request: ChatRequest) -> list[dict[str, Any]]:
@@ -473,6 +485,17 @@ class AgentRuntime:
         request = self._effective_request(request)
         return self._effective_agent_config(agent_config, request), request
 
+    def _execution_context(self, agent_config: AgentConfig, request: ChatRequest) -> ExecutionContext:
+        return build_execution_context(
+            agent_config=agent_config,
+            request=request,
+            artifact_store=self.artifact_store,
+            session_store=self.session_store,
+            prepare_execution=self._prepare_execution,
+            selected_workflow_name=self._selected_workflow_name,
+            request_required_inputs=self._request_required_inputs,
+        )
+
     def _effective_agent_config(self, agent_config: AgentConfig, request: ChatRequest) -> AgentConfig:
         updates: dict[str, object] = {}
         if self.skills is not None:
@@ -492,8 +515,12 @@ class AgentRuntime:
         return agent_config.model_copy(update=updates, deep=True)
 
     def _effective_request(self, request: ChatRequest) -> ChatRequest:
+        # Request normalization happens once here so all downstream execution
+        # paths observe the same derived runtime options, attachments, and
+        # message context.
         runtime_options = self._runtime_options_with_message_capabilities(request.runtime_options, request.messages)
         runtime_options = self._effective_runtime_options(runtime_options)
+        runtime_options = self._runtime_options_with_composite_skills(runtime_options)
         attachments = request.attachments
         if not attachments and runtime_options.thread_id:
             attachments = self._thread_file_attachments(runtime_options.thread_id)
@@ -515,9 +542,60 @@ class AgentRuntime:
         selected_skills = self._selected_skills_from_messages(messages)
         if not selected_skills:
             return runtime_options
-        data = runtime_options.model_dump(mode="python")
-        data["selected_skills"] = selected_skills
-        return RuntimeOptions.model_validate(data)
+        # Preserve the original explicit-field set so downstream model
+        # resolution can still tell which runtime options were truly provided
+        # by the caller versus which ones are still eligible for app-template
+        # or bootstrap defaults.
+        return runtime_options.model_copy(update={"selected_skills": selected_skills}, deep=True)
+
+    def _runtime_options_with_composite_skills(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
+        selected_skills = self._normalize_skills(runtime_options.selected_skills) or []
+        if not selected_skills:
+            return runtime_options
+        skill_registry = SkillRegistry(self.app_template_registry.root_dir)
+        expanded_skills: list[str] = []
+        composite_contexts: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for skill_name in selected_skills:
+            self._append_unique(expanded_skills, seen, skill_name)
+            try:
+                skill = skill_registry.get(skill_name)
+            except KeyError:
+                continue
+            if not skill.composite:
+                continue
+            # Composite skills stay in the selected list, but their child skills
+            # are expanded so the loop can expose concrete tools to the model.
+            composite_contexts.append(self._composite_skill_context(skill))
+            for child_skill in skill.child_skills:
+                self._append_unique(expanded_skills, seen, child_skill)
+        if expanded_skills == selected_skills and not composite_contexts:
+            return runtime_options
+        config_options = dict(runtime_options.config_options)
+        if composite_contexts:
+            config_options["composite_skills"] = composite_contexts
+        return runtime_options.model_copy(
+            update={"selected_skills": expanded_skills, "config_options": config_options},
+            deep=True,
+        )
+
+    @staticmethod
+    def _append_unique(target: list[str], seen: set[str], value: str) -> None:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            return
+        target.append(normalized)
+        seen.add(normalized)
+
+    @staticmethod
+    def _composite_skill_context(skill: SkillDefinition) -> dict[str, object]:
+        return {
+            "name": skill.name,
+            "description": skill.description,
+            "child_skills": list(skill.child_skills),
+            "stages": list(skill.stages),
+            "done_when": list(skill.done_when),
+        }
 
     @classmethod
     def _selected_skills_from_messages(cls, messages: list[Message]) -> list[str]:

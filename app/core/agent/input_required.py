@@ -5,6 +5,9 @@ from typing import Any
 from app.schemas import AgentRunResult, Attachment, ChatRequest
 
 
+# This module centralizes "stop and ask for more input" decisions. The runtime
+# uses it both before execution starts and after a run completes so the same
+# input contract applies across workflows, tools, and direct LLM replies.
 _DEFAULT_ACCEPT_BY_TYPE = {
     "file": "*/*",
     "image": "image/*",
@@ -30,6 +33,8 @@ _MODEL_CONFIG_EXTENSIONS = {".json", ".yaml", ".yml", ".toml"}
 
 
 def required_inputs_for_result(result: AgentRunResult, request: ChatRequest) -> list[dict[str, Any]]:
+    # Prefer explicit tool/workflow metadata, then fall back to heuristics over
+    # the reply text when older skills still return plain-language prompts.
     explicit = _explicit_required_inputs(result.metadata)
     if explicit:
         return explicit
@@ -42,6 +47,8 @@ def required_inputs_for_result(result: AgentRunResult, request: ChatRequest) -> 
 
 
 def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
+    # Preflight guards catch common long-running flows before the agent spends
+    # tool rounds only to discover that basic files were never provided.
     selected_skills = {name.strip() for name in request.runtime_options.selected_skills if name.strip()}
     if _requires_algorithm_training_inputs(request, selected_skills) and not _has_algorithm_training_input(request):
         return [

@@ -12,11 +12,18 @@ from app.schemas import Message
 
 
 ChatHistoryMessage = Message | dict[str, Any]
+_LOCAL_PLACEHOLDER_PREFIX = "v2 无状态 Agent 已收到请求。当前"
+_LOCAL_PLACEHOLDER_SUFFIX = "因此返回本地占位响应。"
 
 
 @dataclass(frozen=True)
 class SessionConversationStore:
-    """Persist recoverable conversation history inside a thread workspace."""
+    """Persist recoverable conversation history inside a thread workspace.
+
+    The runtime treats the thread workspace as the durable source of truth for
+    multi-turn execution. Incoming messages are merged with stored history so a
+    resumed run can continue without replaying duplicated turns.
+    """
 
     max_history_messages: int = 200
 
@@ -44,25 +51,30 @@ class SessionConversationStore:
             message = item.get("message")
             if isinstance(message, dict) and self._valid_message(message):
                 messages.append(self._normalize_message(message))
-        return messages[-self.max_history_messages :]
+        sanitized = self._sanitize_history(messages)
+        return sanitized[-self.max_history_messages :]
 
     def merge(
         self,
         stored_messages: list[dict[str, Any]],
         incoming_messages: Sequence[ChatHistoryMessage],
     ) -> list[dict[str, Any]]:
-        incoming = [self._normalize_message(message) for message in incoming_messages]
-        if not stored_messages:
+        stored = self._sanitize_history(stored_messages)
+        incoming = self._sanitize_history([self._normalize_message(message) for message in incoming_messages])
+        if not stored:
             return incoming
         if not incoming:
-            return stored_messages[-self.max_history_messages :]
+            return stored[-self.max_history_messages :]
 
-        overlap = self._suffix_prefix_overlap(stored_messages, incoming)
-        merged = [*stored_messages, *incoming[overlap:]]
+        # Request payloads often resend a suffix of the thread history. Detect
+        # that overlap so we extend the conversation without duplicating turns.
+        overlap = self._suffix_prefix_overlap(stored, incoming)
+        merged = [*stored, *incoming[overlap:]]
         return merged[-self.max_history_messages :]
 
     def save(self, paths: ThreadPaths, messages: list[dict[str, Any]], *, run_id: str = "") -> None:
         normalized = [self._normalize_message(message) for message in messages if self._valid_message(message)]
+        normalized = self._sanitize_history(normalized)
         normalized = normalized[-self.max_history_messages :]
         paths.memory.mkdir(parents=True, exist_ok=True)
 
@@ -111,6 +123,26 @@ class SessionConversationStore:
             if stored_messages[-size:] == incoming_messages[:size]:
                 return size
         return 0
+
+    @classmethod
+    def _sanitize_history(cls, messages: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+        sanitized: list[dict[str, Any]] = []
+        for message in messages:
+            if cls._is_local_placeholder_message(message):
+                while sanitized and sanitized[-1].get("role") == "user":
+                    sanitized.pop()
+                continue
+            sanitized.append(message)
+        return sanitized
+
+    @staticmethod
+    def _is_local_placeholder_message(message: dict[str, Any]) -> bool:
+        if message.get("role") != "assistant":
+            return False
+        content = message.get("content")
+        if not isinstance(content, str):
+            return False
+        return content.startswith(_LOCAL_PLACEHOLDER_PREFIX) and _LOCAL_PLACEHOLDER_SUFFIX in content
 
     @staticmethod
     def _transcript(messages: list[dict[str, Any]]) -> str:

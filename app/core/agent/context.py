@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
+# Context compaction is intentionally deterministic. It keeps the earliest
+# anchor messages plus the newest working set, and replaces the middle with a
+# machine-readable handoff summary so the tool loop can continue in-thread.
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION - REFERENCE ONLY]\n"
     "Earlier middle conversation turns were compacted into the handoff summary below. "
@@ -64,6 +67,8 @@ class ConversationContextManager:
         if tail_start <= head_end:
             return self._unchanged(normalized, before_chars)
 
+        # Keep the stable head and recent tail intact, then summarize only the
+        # middle range so later runs can resume with enough context.
         head = normalized[:head_end]
         middle = normalized[head_end:tail_start]
         tail = normalized[tail_start:]

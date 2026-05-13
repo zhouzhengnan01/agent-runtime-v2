@@ -1,0 +1,163 @@
+{
+  "name": "reference-image-yolo-trainer",
+  "description": "Composite skill for reference-image-driven YOLO training: generate images from a reference image, annotate them, build a YOLO dataset, train, evaluate, and report best.pt.",
+  "output_kind": "model",
+  "generation": true,
+  "skill_type": "composite",
+  "child_skills": [
+    "image-dataset-generation",
+    "data-auto-annotation",
+    "synthetic-yolo-dataset-builder",
+    "cpu-training-runner",
+    "detector-evaluator",
+    "experiment-ledger"
+  ],
+  "stages": [
+    {
+      "id": "generate_images",
+      "skill": "image-dataset-generation",
+      "requires": [
+        "reference_image",
+        "prompt"
+      ],
+      "produces": [
+        "generated_images"
+      ]
+    },
+    {
+      "id": "auto_annotate",
+      "skill": "data-auto-annotation",
+      "requires": [
+        "generated_images",
+        "labels"
+      ],
+      "produces": [
+        "annotations.coco.json"
+      ]
+    },
+    {
+      "id": "build_yolo_dataset",
+      "skill": "synthetic-yolo-dataset-builder",
+      "requires": [
+        "generated_images",
+        "annotations.coco.json"
+      ],
+      "produces": [
+        "data.yaml",
+        "images/train",
+        "labels/train"
+      ]
+    },
+    {
+      "id": "train_detector",
+      "skill": "cpu-training-runner",
+      "requires": [
+        "data.yaml"
+      ],
+      "produces": [
+        "best.pt",
+        "last.pt",
+        "results.csv",
+        "args.yaml",
+        "training-summary.md"
+      ]
+    },
+    {
+      "id": "evaluate_detector",
+      "skill": "detector-evaluator",
+      "requires": [
+        "best.pt",
+        "data.yaml",
+        "results.csv"
+      ],
+      "produces": [
+        "evaluation_report.md"
+      ]
+    },
+    {
+      "id": "record_experiment",
+      "skill": "experiment-ledger",
+      "requires": [
+        "best.pt",
+        "results.csv",
+        "evaluation_report.md"
+      ],
+      "produces": [
+        "experiment-ledger.md",
+        "experiment-ledger.json"
+      ]
+    }
+  ],
+  "done_when": [
+    "best.pt exists in the current thread artifacts",
+    "results.csv exists in the current thread artifacts",
+    "training-summary.md exists in the current thread artifacts"
+  ],
+  "routing": {
+    "summary": "Use when the user gives one or more reference images and wants an autonomous agent-loop path to generated training data and a YOLO best.pt.",
+    "keywords": [
+      "参考图训练",
+      "一张图训练",
+      "生图训练",
+      "生成数据集",
+      "best.pt",
+      "YOLO 训练",
+      "synthetic dataset"
+    ],
+    "examples": [
+      "根据这张参考图生成训练数据并训练 YOLO，最后输出 best.pt"
+    ]
+  },
+  "quality_template": [
+    "reference_image",
+    "generated_images",
+    "annotations",
+    "data_yaml",
+    "best_pt"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "reference-image-yolo-trainer"
+      },
+      "reference_image": {
+        "type": "string"
+      },
+      "prompt": {
+        "type": "string"
+      },
+      "labels": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "mock": {
+        "type": "boolean",
+        "default": false
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "vision_segmentation",
+    "image_generation",
+    "reasoning",
+    "tool_call"
+  ]
+}

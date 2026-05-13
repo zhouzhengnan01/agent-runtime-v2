@@ -11,6 +11,7 @@ from app.core.apps import AppTemplateRegistry
 from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfig, AgentConfigLoader
 from app.core.config.secrets import SecretCodec
+from app.core.agent.turn_verifier import verify_turn_completion
 from app.core.llm import LlmChatResponse, OpenAICompatibleClient
 from app.core.routing import WorkflowRouter
 from app.core.skills import SkillRegistry
@@ -478,6 +479,182 @@ def test_agent_loop_does_not_duplicate_client_supplied_history(
         {"role": "assistant", "content": "第一轮回复"},
         {"role": "user", "content": "第二轮问题"},
     ]
+
+
+def test_session_history_filters_local_placeholder_replies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+    replies = iter(["第一轮回复", "第二轮回复"])
+    placeholder = "v2 无状态 Agent 已收到请求。当前 agent JSON、运行时参数或环境变量未配置 LLM base_url/model，因此返回本地占位响应。"
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del self, system_prompt
+        seen_messages.append([dict(message) for message in messages])
+        return next(replies)
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="session-agent",
+        display_name="Session Agent",
+        model={"model": "session-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    thread_id = "session-placeholder"
+    history_path = tmp_path / "threads" / thread_id / "memory" / "conversation.jsonl"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path.write_text(
+        "\n".join(
+            [
+                '{"timestamp":"2026-05-13T00:00:00Z","run_id":"old-1","message":{"role":"user","content":"旧问题"}}',
+                '{"timestamp":"2026-05-13T00:00:01Z","run_id":"old-1","message":{"role":"assistant","content":"%s"}}'
+                % placeholder,
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="新问题")],
+                runtime_options=RuntimeOptions(thread_id=thread_id),
+            ),
+        )
+    )
+
+    assert result.reply == "第一轮回复"
+    assert seen_messages[0] == [{"role": "user", "content": "新问题"}]
+    persisted = history_path.read_text(encoding="utf-8")
+    assert placeholder not in persisted
+    assert "旧问题" not in persisted
+    assert "新问题" in persisted
+    assert "第一轮回复" in persisted
+
+
+def test_message_selected_skills_do_not_block_app_template_model_injection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del system_prompt, messages
+        seen.update(
+            {
+                "configured": self.configured,
+                "model": self.model,
+                "base_url": self.base_url,
+                "api_key": self.api_key,
+                "tool_count": len(tools),
+            }
+        )
+        return LlmChatResponse(content="ok")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfigLoader().load("default")
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content=(
+                    "围绕 JetLinks IoT 平台生成一组交付物\n\n"
+                    "[Workbench selected capabilities]\n"
+                    "Selected Skills: drawio-generation, pptx-generation, excel-generation"
+                ),
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            thread_id="message-selected-skills-app-template",
+            app_template_name="artifact-suite",
+            model_type="chat",
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.reply == "ok"
+    assert seen["configured"] is True
+    assert seen["model"] == "Qwen3.6-35B-A3B"
+    assert seen["base_url"] == "http://124.132.152.75:62092/v1"
+    assert seen["api_key"] == "abc@123"
+    assert seen["tool_count"] >= 1
+
+
+def test_artifact_suite_verifier_passes_when_required_deliverables_exist() -> None:
+    verification = verify_turn_completion(
+        runtime_options=RuntimeOptions(
+            app_template_name="artifact-suite",
+            selected_skills=[
+                "drawio-generation",
+                "pptx-generation",
+                "excel-generation",
+                "xmind-generation",
+                "markdown-rendering",
+                "deliverables-export",
+            ],
+        ),
+        artifacts=[
+            {"name": "architecture.drawio"},
+            {"name": "architecture.png"},
+            {"name": "deck.pptx"},
+            {"name": "device-template.xlsx"},
+            {"name": "mindmap.xmind"},
+            {"name": "result.md"},
+            {"name": "commands.txt"},
+            {"name": "steps.docx"},
+        ],
+        required_inputs=[],
+        latest_tool_results=[],
+        tool_call_count=6,
+        primary_skill_context=None,
+    )
+
+    assert verification.verdict == "passed"
+
+
+def test_artifact_suite_verifier_stays_pending_when_deliverables_missing() -> None:
+    verification = verify_turn_completion(
+        runtime_options=RuntimeOptions(
+            app_template_name="artifact-suite",
+            selected_skills=[
+                "drawio-generation",
+                "pptx-generation",
+                "excel-generation",
+                "xmind-generation",
+                "markdown-rendering",
+                "deliverables-export",
+            ],
+        ),
+        artifacts=[
+            {"name": "architecture.drawio"},
+            {"name": "architecture.png"},
+            {"name": "deck.pptx"},
+        ],
+        required_inputs=[],
+        latest_tool_results=[],
+        tool_call_count=3,
+        primary_skill_context=None,
+    )
+
+    assert verification.verdict == "pending"
+    assert "device-template.xlsx" in verification.missing_evidence
 
 
 def test_workflow_persists_and_restores_thread_conversation(tmp_path: Path) -> None:
