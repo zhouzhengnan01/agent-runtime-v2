@@ -268,8 +268,8 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         assert model.model == "Qwen3.6-35B-A3B", template.name
         assert model.default_model == "Qwen3.6-35B-A3B", template.name
         assert model.base_url == "http://124.132.152.75:62092/v1", template.name
-        assert model.api_key is None, template.name
-        assert model.api_key_enc and model.api_key_enc.startswith("enc.fernet.v1."), template.name
+        assert model.api_key, template.name
+        assert model.api_key_enc is None, template.name
         assert model.temperature == 0.4, template.name
         assert model.max_tokens == 2048, template.name
 

@@ -47,7 +47,7 @@
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key_enc": "enc.fernet.v1.gAAAAABqAaSnFI_GtSpY7gXBbBg7C0cFq7XduiWOS7vmCYcP8TRbeh9F_ppDzXqEVmaMn0jy2aPv4XxRPvmF70yv6rVkOAfebF-HzlpQEB_I_awin3cf5T-Ig5rZkJum-Ub99yI6uQ5x"
+      "api_key": "abc@123"
     }
   ]
 }
