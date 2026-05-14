@@ -1,0 +1,37 @@
+{
+  "name": "_debug-1c8335c1daea7000",
+  "title": "jap智能体-111",
+  "description": "",
+  "category": "general",
+  "agent_name": "default",
+  "workflow": "",
+  "selected_skills": [
+    "1778483741456a5glxkmk"
+  ],
+  "prompt_examples": [
+    "这是提示词，每个回复都要带上emoji"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "api_key": "abc@123",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048
+    }
+  ]
+}
