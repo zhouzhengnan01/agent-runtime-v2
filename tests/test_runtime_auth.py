@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -11,7 +10,7 @@ from app.core.runtime import default_container
 from app.main import create_app
 
 
-def test_create_app_loads_runtime_bootstrap_from_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_create_app_accepts_explicit_runtime_bootstrap(tmp_path: Path) -> None:
     original_models = [model.model_copy(deep=True) for model in default_container.model_manager.list()]
     original_default_model_id = default_container.model_manager.default_model_id
     original_model_config = (
@@ -21,30 +20,23 @@ def test_create_app_loads_runtime_bootstrap_from_env(tmp_path: Path, monkeypatch
     )
     original_model_config_fields = set(default_container.runtime._model_config_fields)
     original_skills = list(default_container.runtime.skills) if default_container.runtime.skills is not None else None
-    bootstrap_path = tmp_path / "runtime.local.json"
-    bootstrap_path.write_text(
-        json.dumps(
+    bootstrap = {
+        "default_model_id": "managed-qwen",
+        "models": [
             {
-                "default_model_id": "managed-qwen",
-                "models": [
-                    {
-                        "id": "managed-qwen",
-                        "display_name": "Managed Qwen",
-                        "config": {
-                            "model": "runtime-model",
-                            "base_url": "http://runtime.local/v1",
-                            "api_key": "runtime-key",
-                        },
-                    }
-                ],
+                "id": "managed-qwen",
+                "display_name": "Managed Qwen",
+                "config": {
+                    "model": "runtime-model",
+                    "base_url": "http://runtime.local/v1",
+                    "api_key": "runtime-key",
+                },
             }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("JETLINKS_RUNTIME_BOOTSTRAP", str(bootstrap_path))
+        ],
+    }
 
     try:
-        client = TestClient(create_app())
+        client = TestClient(create_app(bootstrap))
         with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
             websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "new_session", "params": {}})
             created = websocket.receive_json()["result"]

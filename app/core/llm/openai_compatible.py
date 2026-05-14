@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -55,20 +54,17 @@ class OpenAICompatibleClient:
     ) -> None:
         model_config = agent_config.model
         runtime_options = runtime_options or RuntimeOptions()
-        self.disabled = os.getenv("LLM_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
-        model_env = runtime_options.model_env or model_config.model_env
-        base_url_env = runtime_options.base_url_env or model_config.base_url_env
-        api_key_env = runtime_options.api_key_env or model_config.api_key_env
-        self.base_url = (runtime_options.base_url or os.getenv(base_url_env) or model_config.base_url or "").rstrip("/")
-        self.api_key = _first_defined(runtime_options.api_key, _env_value(api_key_env), model_config.api_key, "")
-        self.model = model_override or runtime_options.model_name or os.getenv(model_env) or model_config.model or model_config.default_model
+        self.disabled = False
+        self.base_url = (runtime_options.base_url or model_config.base_url or "").rstrip("/")
+        self.api_key = _first_defined(runtime_options.api_key, model_config.api_key, "")
+        self.model = model_override or runtime_options.model_name or model_config.model or model_config.default_model
         self.temperature = runtime_options.temperature if runtime_options.temperature is not None else model_config.temperature
         self.top_p = runtime_options.top_p if runtime_options.top_p is not None else model_config.top_p
         self.max_tokens = runtime_options.max_tokens if runtime_options.max_tokens is not None else model_config.max_tokens
         raw_timeout = (
             runtime_options.request_timeout_seconds
             if runtime_options.request_timeout_seconds is not None
-            else os.getenv(model_config.request_timeout_env) or model_config.request_timeout_seconds
+            else model_config.request_timeout_seconds
         )
         self.request_timeout_seconds = _bounded_timeout(raw_timeout)
         selected_tools = any(name.strip() for name in runtime_options.selected_mcp_tools) or any(
@@ -332,12 +328,6 @@ def _bounded_timeout(value: str | int | float | None) -> float:
     except (TypeError, ValueError):
         return 120.0
     return max(1.0, min(3600.0, timeout))
-
-
-def _env_value(name: str | None) -> str | None:
-    if not name:
-        return None
-    return os.environ.get(name) if name in os.environ else None
 
 
 def _first_defined(*values: str | None) -> str:

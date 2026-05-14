@@ -1149,19 +1149,22 @@ def test_acp_websocket_exposes_default_agent_model_when_model_manager_is_empty(
     assert created["models"]["availableModels"][0]["model"] == expected_model
 
 
-def test_default_agent_model_registration_uses_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_agent_model_registration_ignores_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_MODEL", "env-qwen")
     monkeypatch.setenv("LLM_BASE_URL", "http://env-ollama.local/v1")
     monkeypatch.setenv("LLM_API_KEY", "")
     model_manager = ModelManager()
 
-    model_manager.configure_from_agent_default(acp_api.loader.load("default"))
-    options = model_manager.runtime_options_for("env-qwen")
+    agent = acp_api.loader.load("default")
+    registered = model_manager.configure_from_agent_default(agent)
+    expected_model = agent.model.model or agent.model.default_model
+    options = model_manager.runtime_options_for(expected_model)
 
     assert options is not None
-    assert options.model_name == "env-qwen"
-    assert options.base_url == "http://env-ollama.local/v1"
-    assert options.api_key == ""
+    assert registered.id == expected_model
+    assert options.model_name == expected_model
+    assert options.base_url == agent.model.base_url
+    assert options.api_key == agent.model.api_key
 
 
 def test_acp_websocket_cancel_interrupts_active_prompt(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:

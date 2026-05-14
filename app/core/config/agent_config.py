@@ -20,15 +20,11 @@ class ModelConfig(BaseModel):
     api_key: str | None = None
     api_key_enc: str | None = None
     tool_choice: Literal["auto", "none"] = "auto"
-    model_env: str = "LLM_MODEL"
     default_model: str = "Qwen3.6-35B-A3B"
-    base_url_env: str = "LLM_BASE_URL"
-    api_key_env: str = "LLM_API_KEY"
     temperature: float = 0.3
     top_p: float | None = None
     max_tokens: int = 4096
     request_timeout_seconds: float = Field(default=120.0, ge=1.0, le=3600.0)
-    request_timeout_env: str = "LLM_REQUEST_TIMEOUT_SECONDS"
 
 
 class BillingConfig(BaseModel):

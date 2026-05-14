@@ -164,6 +164,8 @@ def runtime_options(template: dict[str, Any], thread_id: str, max_tool_rounds: i
             "thread_id": thread_id,
             "selected_skills": list(template.get("selected_skills") or []),
             "selected_mcp_tools": list(template.get("selected_mcp_tools") or []),
+            "app_template_name": template.get("name"),
+            "model_type": "chat",
             "mode": "autonomous",
             "config_options": {"max_tool_rounds": max_tool_rounds},
         }

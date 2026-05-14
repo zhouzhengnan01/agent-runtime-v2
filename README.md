@@ -24,15 +24,14 @@ APP_PORT=18012 ./status.sh
 http://127.0.0.1:18012/workbench
 ```
 
-### 密钥与加解密
+### 模型配置与密钥
 
-应用模型密钥默认通过环境变量读取，不建议把真实 key 写入公开 JSON：
+当前项目约定：Workbench 应用从 `config/apps/*.json` 的应用模板 `models` 读取模型连接配置，
+包括 `model`、`base_url`、`api_key`、`tool_choice`、`temperature` 和 `max_tokens`。
+也就是说，点击“使用此应用”后，前端会传 `app_template_name`，服务端再按该应用模板里的
+`models[].api_key` 发起模型调用。
 
-```bash
-export LLM_API_KEY="..."
-```
-
-如果需要本地保存加密后的模型 key，可以使用 `api_key_enc` 和本地 secrets 主密钥。完整说明见
+如果需要本地保存加密后的模型 key，可以把明文 `api_key` 改为 `api_key_enc` 并配合本地 secrets 主密钥。完整说明见
 [`docs/secrets.md`](docs/secrets.md)；Git 中可见的目录说明见
 [`config/secrets/README.md`](config/secrets/README.md)。真实主密钥会在运行时生成到
 `.runtime/secrets/master.key`，该目录已被 `.gitignore` 忽略，不会提交到 GitHub。
@@ -40,11 +39,6 @@ export LLM_API_KEY="..."
 也可以直接用 uvicorn 开发调试：
 
 ```bash
-export LLM_BASE_URL="http://192.168.32.11:11434/v1"
-# 应用模板默认通过 api_key_env=LLM_API_KEY 读取密钥
-export LLM_API_KEY="..."
-export LLM_MODEL="qwen3.6:27b"
-
 uvicorn app.main:app --reload --port 8010
 ```
 
@@ -129,10 +123,8 @@ status=running pid=12345 health=ok url=http://127.0.0.1:8000 log=.runtime/server
 - `2`：进程存在但健康检查失败
 - `3`：未运行或 PID 文件过期
 
-脚本默认不读取根目录 `.env`，模型优先由 `config/apps/*.json` 里的应用模板 `models`
-提供；Workbench 选择应用模板后会把 `app_template_name` 传给运行时，由服务端读取模板模型配置。
-如需兼容旧部署方式，可显式设置 `LOAD_ENV_FILE=true` 让 `up.sh` 读取 `ENV_FILE`（默认 `.env`）。
-不要把真实密钥提交到仓库。
+模型由 `config/apps/*.json` 里的应用模板 `models` 提供；
+Workbench 选择应用模板后会把 `app_template_name` 传给运行时，由服务端读取模板模型配置。
 
 如果 `up.sh` 发现当前 Python 环境缺少依赖，会返回退出码 `10` 并提示先执行：
 
@@ -383,7 +375,7 @@ LLM -> tool_calls -> ToolInvocationService -> role=tool result -> LLM
       "provider": "openai-compatible",
       "model": "gpt-5.5",
       "base_url": "http://192.168.35.29:9100/api/llm/openai/v1/providers/<provider-id>/",
-      "api_key_enc": "enc.fernet.v1....",
+      "api_key": "your-model-key",
       "tool_choice": "auto",
       "default_model": "gpt-5.5",
       "temperature": 0.4,
@@ -417,20 +409,13 @@ rerank
 运行时模型配置优先级如下：
 
 ```text
-请求显式 runtime_options -> 应用模板 models -> 环境变量 / Runtime bootstrap fallback
+请求显式 runtime_options -> 应用模板 models
 ```
 
-如果应用模板只配置 `*_env` 而没有配置具体值，运行时会从环境变量读取：
+当前内置应用模板采用 `models[].api_key` 明文配置；Workbench 使用应用模板时，运行时会优先使用该
+app model 中的 `model`、`base_url`、`api_key` 和采样参数。模型连接参数不从环境变量读取。
 
-- `LLM_MODEL` 可作为 `model_env` 的模型名来源
-- `LLM_BASE_URL` 可作为 `base_url_env` 的模型服务地址来源
-- `LLM_API_KEY` 可作为 `api_key_env` 的密钥来源
-- `LLM_REQUEST_TIMEOUT_SECONDS` 覆盖模型请求超时时间，默认 120 秒，取值会限制在 1 到 3600 秒之间
-
-如果请求或应用模板已经显式给出 `model_name` / `base_url`，这些显式值优先于环境变量。
-
-`tool_choice` 属于模型调用兼容性开关。需要按应用或请求控制时，放在 Runtime bootstrap 的模型配置或后续模型管理配置中；
-不建议再写入默认 agent JSON。
+`tool_choice` 属于模型调用兼容性开关。需要按应用控制时，放在应用模板 `models` 中；不建议再写入默认 agent JSON。
 
 ```json
 {
@@ -450,7 +435,8 @@ rerank
 ```
 
 说明 provider 还没有开启自动工具调用解析，需要在模型服务侧开启 tool parser，或者把对应模型入口切到不使用工具调用的模式。
-私有部署不要把真实 key 放进公开 JSON；当前内置应用模板使用 `api_key_env=LLM_API_KEY`，推荐通过环境变量注入。
+如果要把同一套配置发布到公开仓库或交付给外部环境，再把 `api_key` 改成 `api_key_enc`；
+当前本地应用模板以 `api_key` 为准。
 
 ## 本地私密配置
 
@@ -462,8 +448,8 @@ config/agents/default.local.json  # 本地私密覆盖，默认被 git 忽略
 ```
 
 `*.local.json` 可以只写需要覆盖的字段，加载时会深度合并到公开 agent JSON 上。历史版本允许在这里覆盖
-`model.api_key` / `model.api_key_enc`；应用中心模型配置迁移到 `config/apps/*.json` 后，推荐改用
-`LLM_API_KEY` 环境变量给应用模板的 `api_key_env` 供值：
+`model.api_key` / `model.api_key_enc`；应用中心模型配置迁移到 `config/apps/*.json` 后，优先在应用模板
+`models` 中配置模型参数。
 
 > 这部分只保留核心流程。完整密钥目录、加解密主密钥、迁移和部署说明见
 > [`docs/secrets.md`](docs/secrets.md)。
@@ -731,7 +717,7 @@ config/apps/technical-doc-writer.json
 | `selected_mcp_tools` | 本应用默认启用的 MCP 工具名称列表，名称来自 `config/mcp/tools.json`。 |
 | `prompt_examples` | 示例提示词。Workbench 点击“使用此应用”或“填入示例”时会填入第一个示例。 |
 | `tags` | 卡片标签，只用于展示和快速识别能力。 |
-| `models` | 应用模板绑定的模型列表，例如 `gpt-5.5` 的 `base_url`、能力标签、采样参数和 `api_key_enc`。服务端运行时解密使用，对前端响应会脱敏。 |
+| `models` | 应用模板绑定的模型列表，例如 `gpt-5.5` 的 `base_url`、能力标签、采样参数和 `api_key`。服务端运行时使用，对前端响应会脱敏；需要加密时可改用 `api_key_enc`。 |
 | `runtime_options` | 更细的默认运行参数，例如 `skill_parameters`、额外 workflow 参数等。模型连接参数优先放在 `models`。请求显式传入的字段优先级更高。 |
 
 接口：

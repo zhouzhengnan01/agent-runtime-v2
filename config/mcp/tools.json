@@ -57,7 +57,7 @@
         "operation": "list_tools",
         "auth": "bearer",
         "api_key_agent": "default",
-        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY", "LLM_API_KEY"],
+        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY"],
         "headers": {
           "Authorization": "Bearer {api_key}"
         },
@@ -92,7 +92,7 @@
         "server_tool": "web_search",
         "auth": "bearer",
         "api_key_agent": "default",
-        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY", "LLM_API_KEY"],
+        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY"],
         "headers": {
           "Authorization": "Bearer {api_key}"
         },
@@ -119,7 +119,7 @@
         "operation": "list_tools",
         "auth": "bearer",
         "api_key_agent": "default",
-        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY", "LLM_API_KEY"],
+        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY"],
         "headers": {
           "Authorization": "Bearer {api_key}"
         },
@@ -154,7 +154,7 @@
         "server_tool": "maps_weather",
         "auth": "bearer",
         "api_key_agent": "default",
-        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY", "LLM_API_KEY"],
+        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY"],
         "headers": {
           "Authorization": "Bearer {api_key}"
         },

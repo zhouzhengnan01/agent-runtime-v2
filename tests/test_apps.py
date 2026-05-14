@@ -92,7 +92,6 @@ def test_app_template_payload_strips_runtime_option_secrets(tmp_path: Path) -> N
                     "base_url": "http://demo.local/v1",
                     "api_key": "plain-key",
                     "api_key_enc": "enc.fernet.v1.test",
-                    "api_key_env": "LLM_API_KEY",
                 },
             }
         ),
@@ -104,7 +103,6 @@ def test_app_template_payload_strips_runtime_option_secrets(tmp_path: Path) -> N
     assert payload["runtime_options"] == {
         "model_name": "demo-model",
         "base_url": "http://demo.local/v1",
-        "api_key_env": "LLM_API_KEY",
     }
 
 
@@ -261,7 +259,7 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
     registry = AppTemplateRegistry()
 
     for template in registry.list():
-        if template.name in {"algorithm-engineer-full-cycle", "algorithm-engineer-workbench"}:
+        if template.name in {"algorithm-engineer-full-cycle", "algorithm-engineer-workbench", "reference-image-yolo-training"}:
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
         else:
             assert template.runtime_options == {}, template.name

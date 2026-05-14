@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import builtins
-import os
 from collections.abc import Iterable
 from typing import Any
 
@@ -25,11 +24,8 @@ class ManagedModel(BaseModel):
     def runtime_options(self) -> RuntimeOptions:
         return RuntimeOptions(
             model_name=self.config.model or self.config.default_model,
-            model_env=self.config.model_env,
             base_url=self.config.base_url,
-            base_url_env=self.config.base_url_env,
             api_key=self.config.api_key,
-            api_key_env=self.config.api_key_env,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
             max_tokens=self.config.max_tokens,
@@ -44,8 +40,8 @@ class ManagedModel(BaseModel):
             "displayName": self.display_name or self.id,
             "description": self.description,
             "model": self.config.model or self.config.default_model,
-            "baseUrlConfigured": bool(self.config.base_url or self.config.base_url_env),
-            "apiKeyConfigured": bool(self.config.api_key or self.config.api_key_env),
+            "baseUrlConfigured": bool(self.config.base_url),
+            "apiKeyConfigured": bool(self.config.api_key),
             "capabilities": model_tags,
             "model_tags": model_tags,
             "metadata": dict(self.metadata),
@@ -62,26 +58,6 @@ class RuntimeBootstrapConfig(BaseModel):
 def _model_id(value: str) -> str:
     normalized = value.strip()
     return normalized or "default"
-
-
-def _effective_env_model_config(config: ModelConfig) -> ModelConfig:
-    updates: dict[str, Any] = {}
-    model = _env_value(config.model_env)
-    if model:
-        updates["model"] = model
-    base_url = _env_value(config.base_url_env)
-    if base_url:
-        updates["base_url"] = base_url
-    api_key = _env_value(config.api_key_env)
-    if api_key is not None:
-        updates["api_key"] = api_key
-    return config.model_copy(update=updates) if updates else config
-
-
-def _env_value(name: str | None) -> str | None:
-    if not name:
-        return None
-    return os.environ.get(name) if name in os.environ else None
 
 
 class ModelManager:
@@ -135,7 +111,7 @@ class ModelManager:
         return model.runtime_options()
 
     def configure_from_agent_default(self, agent_config: AgentConfig, *, model_id: str | None = None) -> ManagedModel:
-        config = _effective_env_model_config(agent_config.model)
+        config = agent_config.model
         candidate_id = model_id or config.model or config.default_model or agent_config.name
         normalized_id = _model_id(candidate_id)
         return self.register(

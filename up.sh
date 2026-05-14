@@ -6,23 +6,6 @@ source ./runtime-env.sh
 
 mkdir -p "${RUNTIME_DIR}"
 
-case "${LOAD_ENV_FILE}" in
-  1|true|True|yes|Yes)
-    if [ -f "${ENV_FILE}" ]; then
-      set -a
-      # shellcheck disable=SC1090
-      source "${ENV_FILE}"
-      set +a
-    fi
-    ;;
-  0|false|False|no|No)
-    ;;
-  *)
-    echo "Invalid LOAD_ENV_FILE=${LOAD_ENV_FILE}; expected true/false" >&2
-    exit 2
-    ;;
-esac
-
 is_running() {
   local pid="$1"
   [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null

@@ -31,11 +31,8 @@ class RuntimeOptions(BaseModel):
     app_template_name: str | None = None
     model_type: str | None = None
     model_name: str | None = None
-    model_env: str | None = None
     base_url: str | None = None
-    base_url_env: str | None = None
     api_key: str | None = None
-    api_key_env: str | None = None
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None

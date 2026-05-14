@@ -59,7 +59,7 @@ def test_model_config_is_configured_without_api_key(monkeypatch: MonkeyPatch) ->
     assert client._headers() == {"Content-Type": "application/json"}
 
 
-def test_env_overrides_json_model_config(monkeypatch: MonkeyPatch) -> None:
+def test_llm_environment_variables_do_not_override_json_model_config(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_BASE_URL", "http://env.local/v1")
     monkeypatch.setenv("LLM_API_KEY", "env-key")
     monkeypatch.setenv("LLM_MODEL", "env-model")
@@ -76,12 +76,12 @@ def test_env_overrides_json_model_config(monkeypatch: MonkeyPatch) -> None:
     client = OpenAICompatibleClient(agent)
 
     assert client.configured is True
-    assert client.model == "env-model"
-    assert client.base_url == "http://env.local/v1"
-    assert client.api_key == "env-key"
+    assert client.model == "json-model-name"
+    assert client.base_url == "http://llm.local/v1"
+    assert client.api_key == "json-key"
 
 
-def test_empty_api_key_env_overrides_json_key(monkeypatch: MonkeyPatch) -> None:
+def test_empty_api_key_environment_variable_does_not_override_json_key(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.setenv("LLM_API_KEY", "")
@@ -98,11 +98,11 @@ def test_empty_api_key_env_overrides_json_key(monkeypatch: MonkeyPatch) -> None:
     client = OpenAICompatibleClient(agent)
 
     assert client.configured is True
-    assert client.api_key == ""
-    assert client._headers() == {"Content-Type": "application/json"}
+    assert client.api_key == "json-key"
+    assert client._headers() == {"Content-Type": "application/json", "Authorization": "Bearer json-key"}
 
 
-def test_request_timeout_can_be_configured_from_json_env_and_runtime_options(monkeypatch: MonkeyPatch) -> None:
+def test_request_timeout_can_be_configured_from_json_and_runtime_options(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -120,13 +120,13 @@ def test_request_timeout_can_be_configured_from_json_env_and_runtime_options(mon
     assert OpenAICompatibleClient(agent).request_timeout_seconds == 9
 
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "7.5")
-    assert OpenAICompatibleClient(agent).request_timeout_seconds == 7.5
+    assert OpenAICompatibleClient(agent).request_timeout_seconds == 9
 
     client = OpenAICompatibleClient(agent, runtime_options=RuntimeOptions(request_timeout_seconds=2))
     assert client.request_timeout_seconds == 2
 
 
-def test_request_timeout_uses_configurable_env_name(monkeypatch: MonkeyPatch) -> None:
+def test_request_timeout_ignores_configurable_env_name(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_REQUEST_TIMEOUT_SECONDS", raising=False)
     monkeypatch.setenv("CUSTOM_TIMEOUT_SECONDS", "3.5")
     agent = AgentConfig(
@@ -136,20 +136,27 @@ def test_request_timeout_uses_configurable_env_name(monkeypatch: MonkeyPatch) ->
             model="json-model-name",
             base_url="http://llm.local/v1",
             request_timeout_seconds=9,
-            request_timeout_env="CUSTOM_TIMEOUT_SECONDS",
         ),
     )
 
-    assert OpenAICompatibleClient(agent).request_timeout_seconds == 3.5
+    assert OpenAICompatibleClient(agent).request_timeout_seconds == 9
 
 
-def test_request_timeout_is_bounded(monkeypatch: MonkeyPatch) -> None:
+def test_runtime_option_request_timeout_is_bounded(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "0")
     agent = AgentConfig(name="json-model", display_name="JSON Model")
-    assert OpenAICompatibleClient(agent).request_timeout_seconds == 1.0
+    assert OpenAICompatibleClient(agent).request_timeout_seconds == 120.0
+    assert OpenAICompatibleClient(
+        agent,
+        runtime_options=RuntimeOptions(request_timeout_seconds=0),
+    ).request_timeout_seconds == 1.0
 
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "99999")
-    assert OpenAICompatibleClient(agent).request_timeout_seconds == 3600.0
+    assert OpenAICompatibleClient(agent).request_timeout_seconds == 120.0
+    assert OpenAICompatibleClient(
+        agent,
+        runtime_options=RuntimeOptions(request_timeout_seconds=99999),
+    ).request_timeout_seconds == 3600.0
 
     monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "not-a-number")
     assert OpenAICompatibleClient(agent).request_timeout_seconds == 120.0

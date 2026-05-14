@@ -796,9 +796,6 @@ class AgentRuntime:
         for option_name, config_name in (
             ("base_url", "base_url"),
             ("api_key", "api_key"),
-            ("model_env", "model_env"),
-            ("base_url_env", "base_url_env"),
-            ("api_key_env", "api_key_env"),
             ("temperature", "temperature"),
             ("top_p", "top_p"),
             ("max_tokens", "max_tokens"),

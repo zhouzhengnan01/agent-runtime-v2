@@ -246,7 +246,7 @@ def _api_key(tool: ToolDefinition, arguments: dict[str, Any]) -> str:
     env_name = _string(tool.source.get("api_key_env"))
     if env_name:
         env_names.insert(0, env_name)
-    for name in [*env_names, "DASHSCOPE_API_KEY", "BAILIAN_API_KEY", "LLM_API_KEY"]:
+    for name in [*env_names, "DASHSCOPE_API_KEY", "BAILIAN_API_KEY"]:
         value = os.getenv(name)
         if value and value.strip():
             return value.strip()
