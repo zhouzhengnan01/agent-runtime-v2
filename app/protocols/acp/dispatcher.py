@@ -37,6 +37,8 @@ class AcpDispatcher:
             return self.adapter.fork_session(sessions, params)
         if normalized in {"session/resume", "resume_session"}:
             return self.adapter.resume_session(sessions, params)
+        if normalized in {"session/update", "session/updata", "update_session"}:
+            return self.adapter.update_session(sessions, params)
         if normalized in {"session/set_mode", "set_session_mode"}:
             session_id = _required_session_id(params)
             mode_id = _required_mode_id(params)

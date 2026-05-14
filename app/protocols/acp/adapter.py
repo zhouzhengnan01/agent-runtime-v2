@@ -448,6 +448,44 @@ class AcpRuntimeAdapter:
         session.config_options = _config_options_from_runtime_options(session.runtime_options)
         return {"sessionId": session_id, "modelId": model_name, "modelName": session.model_name}
 
+    def update_session(self, sessions: dict[str, AcpWebSocketSession], params: dict[str, Any]) -> dict[str, Any]:
+        session_id = _required_session_id(params)
+        session = sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Unknown ACP session: {session_id}")
+
+        raw_options = _session_update_runtime_options(params)
+        app_template = self._app_template_from_name(_string(raw_options.get("app_template_name")))
+        base_options = dict(session.runtime_options)
+        if app_template is not None:
+            template_options = _template_runtime_options(app_template)
+            app_model_options = _app_model_runtime_options(app_template, template_options, raw_options)
+            base_options = _merge_runtime_options(base_options, {**template_options, **app_model_options})
+            session.app_template_name = app_template.name
+
+        session.runtime_options = self._merge_and_resolve_runtime_options(base_options, raw_options)
+        session.mode_id = _mode_from_options(session.runtime_options, fallback=session.mode_id)
+        session.config_options = _config_options_from_runtime_options(session.runtime_options)
+        model_name = _string(session.runtime_options.get("model_name"))
+        if model_name is not None:
+            session.model_id = model_name
+            session.model_name = model_name
+
+        return {
+            "sessionId": session_id,
+            "threadId": session.thread_id,
+            "agentName": session.agent_name,
+            "appTemplateName": session.app_template_name,
+            "runtimeOptions": _runtime_options_response(session.runtime_options),
+            "modeId": session.mode_id,
+            "configOptions": session.config_options,
+            "models": {
+                "currentModelId": session.model_id,
+                "currentModelName": session.model_name,
+                "availableModels": self.model_manager.list_public_payloads(),
+            },
+        }
+
     def set_session_mode(
         self,
         sessions: dict[str, AcpWebSocketSession],
@@ -785,6 +823,9 @@ class AcpRuntimeAdapter:
 
     def _app_template_from_params(self, params: dict[str, Any]) -> AppTemplate | None:
         template_name = _app_template_name(params)
+        return self._app_template_from_name(template_name)
+
+    def _app_template_from_name(self, template_name: str | None) -> AppTemplate | None:
         if template_name is None:
             return None
         try:
@@ -801,7 +842,8 @@ def _resolve_thread_id(params: dict[str, Any], session: AcpWebSocketSession) -> 
 def _new_session_runtime_options(params: dict[str, Any], app_template: AppTemplate | None) -> dict[str, Any]:
     template_options = _template_runtime_options(app_template)
     request_options = _runtime_options_payload(params)
-    return _merge_runtime_options(template_options, request_options)
+    app_model_options = _app_model_runtime_options(app_template, template_options, request_options)
+    return _merge_runtime_options({**template_options, **app_model_options}, request_options)
 
 
 def _template_runtime_options(app_template: AppTemplate | None) -> dict[str, Any]:
@@ -815,6 +857,36 @@ def _template_runtime_options(app_template: AppTemplate | None) -> dict[str, Any
     if app_template.selected_mcp_tools and "selected_mcp_tools" not in payload:
         payload["selected_mcp_tools"] = app_template.selected_mcp_tools
     return payload
+
+
+def _app_model_runtime_options(
+    app_template: AppTemplate | None,
+    template_options: dict[str, Any],
+    request_options: dict[str, Any],
+) -> dict[str, Any]:
+    if app_template is None or _string(request_options.get("model_name")) is not None:
+        return {}
+    model_type = _string(request_options.get("model_type")) or _string(template_options.get("model_type")) or "chat"
+    model = app_template.select_model(model_type)
+    if model is None:
+        return {}
+
+    options: dict[str, Any] = {}
+    model_name = model.model or model.default_model or model.name
+    if model_name:
+        options["model_name"] = model_name
+    for field_name in (
+        "base_url",
+        "api_key",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "request_timeout_seconds",
+    ):
+        value = getattr(model, field_name)
+        if value is not None:
+            options[field_name] = value
+    return options
 
 
 def _merge_runtime_options(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -900,6 +972,24 @@ def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
         for raw_name, field_name in _RUNTIME_OPTION_ALIASES.items():
             if raw_name in source:
                 payload[field_name] = source[raw_name]
+    return payload
+
+
+def _session_update_runtime_options(params: dict[str, Any]) -> dict[str, Any]:
+    payload = _runtime_options_payload(params)
+    if isinstance(params.get("configOptions"), dict) or isinstance(params.get("config_options"), dict):
+        payload.pop("config_options", None)
+    for raw_container in (
+        params.get("update"),
+        params.get("sessionUpdate"),
+        params.get("session_update"),
+        params.get("configOptions"),
+        params.get("config_options"),
+        params.get("values"),
+    ):
+        container = _params(raw_container)
+        if container:
+            payload = _merge_runtime_options(payload, _runtime_options_payload(container))
     return payload
 
 

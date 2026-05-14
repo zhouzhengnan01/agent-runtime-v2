@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.api import acp as acp_api
 from app.core.agent import AgentRuntime
 from app.core.artifacts import ArtifactStore
+from app.core.config import AgentConfigLoader
 from app.core.llm.openai_compatible import LlmChatResponse, OpenAICompatibleClient
 from app.core.runtime import ModelManager
 from app.schemas import AgentRunResult, ChatEvent, ChatRequest
@@ -719,6 +721,184 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
     assert second.max_tokens == 2000
 
 
+def test_acp_websocket_session_new_uses_app_model_from_config(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents_dir = tmp_path / "config" / "agents"
+    apps_dir = tmp_path / "config" / "apps"
+    agents_dir.mkdir(parents=True)
+    apps_dir.mkdir(parents=True)
+    (agents_dir / "default.json").write_text(
+        json.dumps({"name": "default", "display_name": "Default"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (apps_dir / "demo-gpt.json").write_text(
+        json.dumps(
+            {
+                "name": "demo-gpt",
+                "title": "Demo GPT",
+                "agent_name": "default",
+                "models": [
+                    {
+                        "name": "gpt-5.5",
+                        "model": "gpt-5.5",
+                        "default_model": "gpt-5.5",
+                        "base_url": "http://model.local/v1",
+                        "api_key": "app-key",
+                        "temperature": 0.4,
+                        "max_tokens": 128,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "loader", AgentConfigLoader(tmp_path))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    monkeypatch.setattr(acp_api, "model_manager", ModelManager())
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "appTemplateName": "demo-gpt",
+                    "threadId": "acp-app-model",
+                    "cwd": str(tmp_path),
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        session_id = created["sessionId"]
+
+        assert created["models"]["currentModelId"] == "gpt-5.5"
+        assert created["models"]["currentModelName"] == "gpt-5.5"
+        assert created["runtimeOptions"]["modelName"] == "gpt-5.5"
+        assert created["runtimeOptions"]["baseUrl"] == "http://model.local/v1"
+        assert created["runtimeOptions"]["temperature"] == 0.4
+        assert created["runtimeOptions"]["maxTokens"] == 128
+        assert "apiKey" not in created["runtimeOptions"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "hello"}],
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.model_name == "gpt-5.5"
+    assert options.base_url == "http://model.local/v1"
+    assert options.api_key == "app-key"
+    assert options.temperature == 0.4
+    assert options.max_tokens == 128
+
+
+def test_acp_websocket_session_update_applies_app_model_from_config(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents_dir = tmp_path / "config" / "agents"
+    apps_dir = tmp_path / "config" / "apps"
+    agents_dir.mkdir(parents=True)
+    apps_dir.mkdir(parents=True)
+    (agents_dir / "default.json").write_text(
+        json.dumps({"name": "default", "display_name": "Default"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (apps_dir / "demo-gpt.json").write_text(
+        json.dumps(
+            {
+                "name": "demo-gpt",
+                "title": "Demo GPT",
+                "agent_name": "default",
+                "selected_skills": ["algorithm-engineer"],
+                "models": [
+                    {
+                        "name": "gpt-5.5",
+                        "model": "gpt-5.5",
+                        "default_model": "gpt-5.5",
+                        "base_url": "http://model.local/v1",
+                        "api_key": "app-key",
+                        "temperature": 0.4,
+                        "max_tokens": 128,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "loader", AgentConfigLoader(tmp_path))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    monkeypatch.setattr(acp_api, "model_manager", ModelManager())
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {"agentName": "default", "threadId": "acp-update-app-model", "cwd": str(tmp_path)},
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/update",
+                "params": {
+                    "sessionId": session_id,
+                    "update": {"appTemplateName": "demo-gpt", "selectedSkills": []},
+                    "configOptions": {"maxTokens": 256, "requestTimeoutSeconds": 11},
+                },
+            }
+        )
+        updated = websocket.receive_json()["result"]
+        assert updated["appTemplateName"] == "demo-gpt"
+        assert updated["models"]["currentModelId"] == "gpt-5.5"
+        assert updated["runtimeOptions"]["modelName"] == "gpt-5.5"
+        assert updated["runtimeOptions"]["baseUrl"] == "http://model.local/v1"
+        assert updated["runtimeOptions"]["selectedSkills"] == []
+        assert updated["runtimeOptions"]["maxTokens"] == 256
+        assert updated["runtimeOptions"]["requestTimeoutSeconds"] == 11.0
+        assert "apiKey" not in updated["runtimeOptions"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "hello"}]},
+            }
+        )
+        _receive_final_packet(websocket, 3)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.model_name == "gpt-5.5"
+    assert options.base_url == "http://model.local/v1"
+    assert options.api_key == "app-key"
+    assert options.selected_skills == []
+    assert options.max_tokens == 256
+    assert options.request_timeout_seconds == 11
+
+
 def test_acp_websocket_supports_session_scoped_fs_methods(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
     monkeypatch.setattr(acp_api, "runtime", runtime)
@@ -1110,7 +1290,7 @@ def test_acp_websocket_resolves_server_managed_model_id(
     assert request_options.max_tokens == 321
 
 
-def test_acp_websocket_exposes_default_agent_model_when_model_manager_is_empty(
+def test_acp_websocket_does_not_expose_default_agent_model_when_no_model_configured(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -1136,17 +1316,13 @@ def test_acp_websocket_exposes_default_agent_model_when_model_manager_is_empty(
         )
         created = websocket.receive_json()["result"]
 
-    expected_model = agent_default.model.model or agent_default.model.default_model
-    expected_base_url = agent_default.model.base_url
-    assert created["models"]["currentModelId"] == expected_model
-    assert created["models"]["currentModelName"] == expected_model
-    assert created["runtimeOptions"]["modelName"] == expected_model
-    if expected_base_url is None:
-        assert "baseUrl" not in created["runtimeOptions"]
-    else:
-        assert created["runtimeOptions"]["baseUrl"] == expected_base_url
-    assert created["models"]["availableModels"][0]["id"] == expected_model
-    assert created["models"]["availableModels"][0]["model"] == expected_model
+    assert agent_default.model.model is None
+    assert agent_default.model.default_model is None
+    assert created["models"]["currentModelId"] is None
+    assert created["models"]["currentModelName"] is None
+    assert "modelName" not in created["runtimeOptions"]
+    assert "baseUrl" not in created["runtimeOptions"]
+    assert created["models"]["availableModels"] == []
 
 
 def test_default_agent_model_registration_ignores_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1157,14 +1333,11 @@ def test_default_agent_model_registration_ignores_llm_env(monkeypatch: pytest.Mo
 
     agent = acp_api.loader.load("default")
     registered = model_manager.configure_from_agent_default(agent)
-    expected_model = agent.model.model or agent.model.default_model
-    options = model_manager.runtime_options_for(expected_model)
 
-    assert options is not None
-    assert registered.id == expected_model
-    assert options.model_name == expected_model
-    assert options.base_url == agent.model.base_url
-    assert options.api_key == agent.model.api_key
+    assert agent.model.model is None
+    assert agent.model.default_model is None
+    assert registered is None
+    assert model_manager.list() == []
 
 
 def test_acp_websocket_cancel_interrupts_active_prompt(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:

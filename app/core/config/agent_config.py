@@ -20,7 +20,7 @@ class ModelConfig(BaseModel):
     api_key: str | None = None
     api_key_enc: str | None = None
     tool_choice: Literal["auto", "none"] = "auto"
-    default_model: str = "Qwen3.6-35B-A3B"
+    default_model: str | None = None
     temperature: float = 0.3
     top_p: float | None = None
     max_tokens: int = 4096

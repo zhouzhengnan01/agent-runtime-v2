@@ -110,9 +110,11 @@ class ModelManager:
             return None
         return model.runtime_options()
 
-    def configure_from_agent_default(self, agent_config: AgentConfig, *, model_id: str | None = None) -> ManagedModel:
+    def configure_from_agent_default(self, agent_config: AgentConfig, *, model_id: str | None = None) -> ManagedModel | None:
         config = agent_config.model
-        candidate_id = model_id or config.model or config.default_model or agent_config.name
+        candidate_id = model_id or config.model or config.default_model
+        if candidate_id is None:
+            return None
         normalized_id = _model_id(candidate_id)
         return self.register(
             ManagedModel(
