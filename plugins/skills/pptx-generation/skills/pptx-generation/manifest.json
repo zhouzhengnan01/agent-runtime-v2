@@ -1,0 +1,108 @@
+{
+  "name": "pptx-generation",
+  "description": "Generate PowerPoint slide decks.",
+  "output_kind": "presentation",
+  "generation": true,
+  "routing": {
+    "summary": "Use for PowerPoint slide decks, presentations,方案汇报, and structured PPT materials.",
+    "keywords": [
+      "ppt",
+      "pptx",
+      "powerpoint",
+      "幻灯片",
+      "演示文稿",
+      "方案",
+      "汇报"
+    ],
+    "examples": [
+      "生成一份 ppt 方案",
+      "做一个项目汇报 PPT",
+      "输出演示文稿"
+    ]
+  },
+  "quality_template": [
+    "cover",
+    "agenda",
+    "architecture",
+    "process",
+    "plan",
+    "risks",
+    "summary"
+  ],
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string"
+      },
+      "subtitle": {
+        "type": "string"
+      },
+      "slides": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "closing_title": {
+        "type": "string"
+      },
+      "closing_message": {
+        "type": "string"
+      },
+      "closing_bullets": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "message": {
+        "type": "string"
+      },
+      "output_path": {
+        "type": "string"
+      },
+      "outputPath": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "success": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": "string"
+      },
+      "outputs": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "result": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "success",
+      "message",
+      "outputs",
+      "result"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "profile": "office",
+    "request_schema_version": "skill-run.v1",
+    "adapter_command": "python /opt/jetlinks/skills/run_skill.py --request {request_path} --outputs {outputs_dir}",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat"
+  ]
+}

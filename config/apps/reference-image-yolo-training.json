@@ -1,0 +1,60 @@
+{
+  "name": "reference-image-yolo-training",
+  "title": "参考图 YOLO 训练应用",
+  "description": "上传一张参考图后，由 Agent 自主选择生图、自动标注、数据集构建、训练、评估等子技能，目标产出 best.pt。",
+  "category": "algorithm-training",
+  "icon": "research",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [
+    "reference-image-yolo-trainer"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "根据我上传的一张棕榈果参考图生成训练数据，自动标注，构建 YOLO 数据集，并训练输出 best.pt。labels=palm fruit，先用 mock=true 验证闭环。",
+    "用这张参考图扩充目标检测训练集，生成 COCO/YOLO 数据集后跑 CPU smoke 训练，最后给我 best.pt、results.csv 和训练摘要。"
+  ],
+  "runtime_options": {
+    "mode": "yolo",
+    "config_options": {
+      "max_tool_rounds": 16
+    }
+  },
+  "tags": [
+    "参考图",
+    "生图训练",
+    "YOLO",
+    "best.pt",
+    "主Skill"
+  ],
+  "model_tags": [
+    "chat",
+    "vision_segmentation",
+    "image_generation",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

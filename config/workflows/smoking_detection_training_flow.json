@@ -1,0 +1,12 @@
+{
+  "name": "smoking_detection_training_flow",
+  "display_name": "Smoking Detection Training Flow",
+  "description": "Deterministic flow for smoking detection: dataset upload, reference-image generation, auto-annotation, config collection, and YOLO training.",
+  "enabled": true,
+  "handler": "smoking_flow.py:SmokingDetectionTrainingWorkflow",
+  "trigger": "explicit_runtime_options",
+  "metadata": {
+    "domain": "algorithm-training",
+    "scenario": "smoking-detection"
+  }
+}

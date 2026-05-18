@@ -1,0 +1,12 @@
+{
+  "id": "experiment-ledger",
+  "name": "experiment-ledger",
+  "version": "0.1.0",
+  "description": "Create and summarize experiment records so training runs remain reproducible and comparable.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/experiment-ledger/manifest.json"
+  ],
+  "source_suite": "algorithm-engineer"
+}

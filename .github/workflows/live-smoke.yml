@@ -1,0 +1,200 @@
+name: live-smoke
+
+on:
+  schedule:
+    - cron: "15 19 * * *"
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Runtime base URL, for example http://127.0.0.1:18012 or https://example.com"
+        required: true
+        type: string
+      retries:
+        description: "Retries for transient per-template failures"
+        required: false
+        default: "1"
+        type: string
+      timeout:
+        description: "Per-request timeout in seconds"
+        required: false
+        default: "120"
+        type: string
+      min_templates:
+        description: "Minimum number of app templates expected from /api/apps/templates"
+        required: false
+        default: "16"
+        type: string
+      expect_config_apps:
+        description: "Require remote app names to include every local config/apps template"
+        required: false
+        default: true
+        type: boolean
+      skip_continuation_check:
+        description: "Skip same-thread continuation smoke"
+        required: false
+        default: false
+        type: boolean
+      fail_on_retry:
+        description: "Fail if a template only passes after retrying a transient failure"
+        required: false
+        default: true
+        type: boolean
+      run_ui_smoke:
+        description: "Also run Workbench Playwright UI smoke against base_url"
+        required: false
+        default: false
+        type: boolean
+      sam3_predict_url:
+        description: "Optional SAM3 prediction endpoint for data-auto-annotation smoke"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: live-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Resolve smoke inputs
+        id: smoke-inputs
+        env:
+          DISPATCH_BASE_URL: ${{ inputs.base_url }}
+          SECRET_BASE_URL: ${{ secrets.LIVE_SMOKE_BASE_URL }}
+          DISPATCH_RETRIES: ${{ inputs.retries }}
+          DISPATCH_TIMEOUT: ${{ inputs.timeout }}
+          DISPATCH_MIN_TEMPLATES: ${{ inputs.min_templates }}
+          DISPATCH_EXPECT_CONFIG_APPS: ${{ inputs.expect_config_apps }}
+          DISPATCH_SKIP_CONTINUATION: ${{ inputs.skip_continuation_check }}
+          DISPATCH_FAIL_ON_RETRY: ${{ inputs.fail_on_retry }}
+          DISPATCH_RUN_UI_SMOKE: ${{ inputs.run_ui_smoke }}
+          DISPATCH_SAM3_PREDICT_URL: ${{ inputs.sam3_predict_url }}
+          LIVE_SMOKE_TOKEN: ${{ secrets.LIVE_SMOKE_TOKEN }}
+          SECRET_SAM3_PREDICT_URL: ${{ secrets.SAM3_PREDICT_URL }}
+        run: |
+          base_url="${DISPATCH_BASE_URL:-${SECRET_BASE_URL:-}}"
+          sam3_predict_url="${DISPATCH_SAM3_PREDICT_URL:-${SECRET_SAM3_PREDICT_URL:-}}"
+          if [ -z "${base_url}" ]; then
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            echo "Live smoke skipped: set LIVE_SMOKE_BASE_URL secret or provide workflow_dispatch base_url."
+            exit 0
+          fi
+          echo "skip=false" >> "${GITHUB_OUTPUT}"
+          echo "base_url=${base_url}" >> "${GITHUB_OUTPUT}"
+          echo "retries=${DISPATCH_RETRIES:-1}" >> "${GITHUB_OUTPUT}"
+          echo "timeout=${DISPATCH_TIMEOUT:-120}" >> "${GITHUB_OUTPUT}"
+          echo "min_templates=${DISPATCH_MIN_TEMPLATES:-16}" >> "${GITHUB_OUTPUT}"
+          echo "expect_config_apps=${DISPATCH_EXPECT_CONFIG_APPS:-true}" >> "${GITHUB_OUTPUT}"
+          echo "skip_continuation_check=${DISPATCH_SKIP_CONTINUATION:-false}" >> "${GITHUB_OUTPUT}"
+          echo "fail_on_retry=${DISPATCH_FAIL_ON_RETRY:-true}" >> "${GITHUB_OUTPUT}"
+          echo "run_ui_smoke=${DISPATCH_RUN_UI_SMOKE:-false}" >> "${GITHUB_OUTPUT}"
+          if [ -n "${sam3_predict_url}" ]; then
+            echo "sam3_predict_configured=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "sam3_predict_configured=false" >> "${GITHUB_OUTPUT}"
+          fi
+          if [ -n "${LIVE_SMOKE_TOKEN}" ]; then
+            echo "has_token=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_token=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Run live smoke matrix
+        if: steps.smoke-inputs.outputs.skip != 'true'
+        env:
+          LIVE_SMOKE_TOKEN: ${{ secrets.LIVE_SMOKE_TOKEN }}
+          DISPATCH_SAM3_PREDICT_URL: ${{ inputs.sam3_predict_url }}
+          SECRET_SAM3_PREDICT_URL: ${{ secrets.SAM3_PREDICT_URL }}
+        run: |
+          export SAM3_PREDICT_URL="${DISPATCH_SAM3_PREDICT_URL:-${SECRET_SAM3_PREDICT_URL:-}}"
+          args=(
+            --base-url "${{ steps.smoke-inputs.outputs.base_url }}"
+            --timeout "${{ steps.smoke-inputs.outputs.timeout }}"
+            --retries "${{ steps.smoke-inputs.outputs.retries }}"
+            --min-templates "${{ steps.smoke-inputs.outputs.min_templates }}"
+            --output live-smoke-result.json
+            --report-markdown live-smoke-report.md
+          )
+          if [ "${{ steps.smoke-inputs.outputs.expect_config_apps }}" = "true" ]; then
+            args+=(--expect-config-apps)
+          fi
+          if [ "${{ steps.smoke-inputs.outputs.skip_continuation_check }}" = "true" ]; then
+            args+=(--skip-continuation-check)
+          fi
+          if [ "${{ steps.smoke-inputs.outputs.fail_on_retry }}" = "true" ]; then
+            args+=(--fail-on-retry)
+          fi
+          if [ "${{ steps.smoke-inputs.outputs.has_token }}" = "true" ]; then
+            RUNTIME_API_TOKEN="${LIVE_SMOKE_TOKEN}" python tools/app_smoke_matrix.py "${args[@]}"
+          else
+            python tools/app_smoke_matrix.py "${args[@]}"
+          fi
+
+      - name: Set up Node.js for UI smoke
+        if: steps.smoke-inputs.outputs.skip != 'true' && steps.smoke-inputs.outputs.run_ui_smoke == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/workbench/package-lock.json
+
+      - name: Install Workbench UI dependencies
+        if: steps.smoke-inputs.outputs.skip != 'true' && steps.smoke-inputs.outputs.run_ui_smoke == 'true'
+        working-directory: frontend/workbench
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run Workbench UI smoke
+        if: steps.smoke-inputs.outputs.skip != 'true' && steps.smoke-inputs.outputs.run_ui_smoke == 'true'
+        working-directory: frontend/workbench
+        env:
+          APP_URL: ${{ steps.smoke-inputs.outputs.base_url }}/static/workbench.html
+          RUNTIME_API_TOKEN: ${{ secrets.LIVE_SMOKE_TOKEN }}
+        run: npm run test:ui
+
+      - name: Publish smoke summary
+        if: always()
+        run: |
+          if [ -f live-smoke-report.md ]; then
+            cat live-smoke-report.md >> "${GITHUB_STEP_SUMMARY}"
+          elif [ "${{ steps.smoke-inputs.outputs.skip }}" = "true" ]; then
+            {
+              echo "# JetLinks Live Smoke"
+              echo
+              echo "Skipped: set \`LIVE_SMOKE_BASE_URL\` secret or provide workflow_dispatch \`base_url\`."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            {
+              echo "# JetLinks Live Smoke"
+              echo
+              echo "No smoke report was generated. Check previous workflow logs."
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-smoke-report
+          path: |
+            live-smoke-result.json
+            live-smoke-report.md
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,49 @@
+{
+  "name": "iot-architecture-diagram",
+  "title": "IoT 架构图专家",
+  "description": "一键配置架构图生成 Agent，适合 Draw.io 分层架构、拓扑图、流程图。",
+  "category": "generation",
+  "icon": "diagram",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [
+    "drawio-generation"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "生成一份 JetLinks IoT 平台架构 Draw.io 图，包含接入层、规则引擎、数据存储、告警和运维监控",
+    "画一个设备接入到规则引擎再到告警通知的流程图"
+  ],
+  "tags": [
+    "Draw.io",
+    "架构图",
+    "拓扑"
+  ],
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

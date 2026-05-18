@@ -1,0 +1,107 @@
+{
+  "name": "xmind-generation",
+  "description": "Generate XMind mind maps.",
+  "output_kind": "mindmap",
+  "generation": true,
+  "routing": {
+    "summary": "Use for XMind mind maps, topic trees, brainstorm structures, and multi-level task breakdowns.",
+    "keywords": [
+      "xmind",
+      "思维导图",
+      "脑图",
+      "mindmap",
+      "主题树",
+      "任务拆解"
+    ],
+    "examples": [
+      "生成一份 xmind 思维导图",
+      "输出脑图",
+      "做一个任务拆解 mind map"
+    ]
+  },
+  "quality_template": [
+    "multi_level_topics",
+    "priorities",
+    "notes",
+    "task_structure"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "root_topic"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "xmind-generation"
+      },
+      "root_topic": {
+        "type": "string"
+      },
+      "topics": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "title"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "name",
+            "mime_type",
+            "kind"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "binary"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat"
+  ]
+}

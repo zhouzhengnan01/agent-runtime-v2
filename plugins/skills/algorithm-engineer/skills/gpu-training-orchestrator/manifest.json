@@ -1,0 +1,77 @@
+{
+  "name": "gpu-training-orchestrator",
+  "description": "Orchestrate benchmark, formal training, resume, monitoring, ETA estimation, and safe training parameter records.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "Use for planning YOLO/RT-DETR training runs, small benchmarks, formal epochs, monitoring results.csv, and selecting safe batch sizes.",
+    "keywords": [
+      "训练",
+      "benchmark",
+      "epochs",
+      "batch",
+      "断点恢复",
+      "results.csv",
+      "best.pt",
+      "last.pt"
+    ],
+    "examples": [
+      "先跑 1 epoch benchmark 再正式训练",
+      "生成 RT-DETR 训练命令和监控方案"
+    ]
+  },
+  "quality_template": [
+    "benchmark_first",
+    "training_command",
+    "monitoring",
+    "eta",
+    "resume",
+    "parameters_record"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "gpu-training-orchestrator"
+      },
+      "model": {
+        "type": "string"
+      },
+      "data": {
+        "type": "string"
+      },
+      "epochs": {
+        "type": "integer"
+      },
+      "batch": {
+        "type": "integer"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning"
+  ]
+}

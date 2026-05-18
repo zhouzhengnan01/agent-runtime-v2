@@ -1,0 +1,8 @@
+{
+  "name": "artifact_workflow",
+  "display_name": "Artifact Workflow",
+  "description": "Legacy deterministic artifact generation workflow for structured specs, skill execution, previews, and verification.",
+  "enabled": true,
+  "handler": "artifact.py:ArtifactWorkflow",
+  "trigger": "explicit_runtime_options"
+}

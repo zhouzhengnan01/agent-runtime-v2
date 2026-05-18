@@ -1,0 +1,12 @@
+{
+  "id": "detector-evaluator",
+  "name": "detector-evaluator",
+  "version": "0.1.0",
+  "description": "Evaluate detector candidates using detection metrics and business counting metrics; produce deployment-oriented ranking.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/detector-evaluator/manifest.json"
+  ],
+  "source_suite": "algorithm-engineer"
+}

@@ -1,0 +1,79 @@
+{
+  "name": "algorithm-research-scout",
+  "description": "Research and shortlist candidate object detection algorithms, implementations, weights, license risks, and deployment fit.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "Use for comparing YOLO, RT-DETR, DEIM/D-FINE, RF-DETR, DAMO-YOLO and deciding which algorithms deserve benchmark.",
+    "keywords": [
+      "论文",
+      "调研",
+      "算法对比",
+      "RT-DETR",
+      "DEIM",
+      "D-FINE",
+      "RF-DETR",
+      "DAMO-YOLO",
+      "比 YOLO 更好"
+    ],
+    "examples": [
+      "调研比 YOLO 更适合棕榈果密集检测的算法",
+      "列一张候选检测算法表"
+    ]
+  },
+  "quality_template": [
+    "algorithm_table",
+    "weights",
+    "license",
+    "training_support",
+    "deployment_support",
+    "risk"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "algorithm-research-scout"
+      },
+      "task_type": {
+        "type": "string"
+      },
+      "constraints": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "baseline": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "rerank"
+  ]
+}

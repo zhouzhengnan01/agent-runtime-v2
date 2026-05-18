@@ -1,0 +1,72 @@
+{
+  "name": "remote-gpu-ops",
+  "description": "Plan safe remote GPU operations: machine snapshot, dataset sync, disk checks, CUDA/PyTorch checks, and service preservation rules.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "Use for AGX/5090 remote GPU checks, rsync planning, disk checks, container checks, and training environment snapshots.",
+    "keywords": [
+      "GPU 机器",
+      "远端",
+      "同步数据",
+      "nvidia-smi",
+      "rsync",
+      "AGX",
+      "5090",
+      "docker ps"
+    ],
+    "examples": [
+      "检查 5090 机器能不能训练",
+      "把数据同步到 AGX 并确认磁盘空间"
+    ]
+  },
+  "quality_template": [
+    "host_snapshot",
+    "disk_check",
+    "gpu_check",
+    "sync_plan",
+    "safety"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "remote-gpu-ops"
+      },
+      "source_path": {
+        "type": "string"
+      },
+      "target_host": {
+        "type": "string"
+      },
+      "target_path": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat"
+  ]
+}

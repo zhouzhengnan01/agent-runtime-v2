@@ -1,0 +1,53 @@
+{
+  "name": "artifact-suite",
+  "title": "产物生成全家桶",
+  "description": "一次性启用常用产物技能，适合复杂交付物：图、PPT、Excel、脑图和 Markdown。",
+  "category": "generation",
+  "icon": "package",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [
+    "drawio-generation",
+    "pptx-generation",
+    "excel-generation",
+    "xmind-generation",
+    "markdown-rendering",
+    "deliverables-export"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "围绕 JetLinks IoT 平台生成一组交付物：架构图、项目汇报 PPT、设备台账 Excel、任务拆解脑图和技术说明文档"
+  ],
+  "tags": [
+    "全量",
+    "交付物",
+    "组合能力"
+  ],
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

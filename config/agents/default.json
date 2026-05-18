@@ -1,0 +1,42 @@
+{
+  "name": "default",
+  "display_name": "JetLinks 智能体",
+  "description": "Bare agent shell. All tools and skills are injected by app templates via runtime_options.",
+  "runtime": {
+    "stateless": true,
+    "max_tool_rounds": 6,
+    "context_compression_enabled": true,
+    "context_max_chars": 120000,
+    "context_keep_first_messages": 2,
+    "context_keep_last_messages": 8,
+    "max_retries": 0,
+    "workspace_mode": "ephemeral_thread",
+    "require_verification": false
+  },
+  "tools": [],
+  "skills": [],
+  "routing": {
+    "llm_workflow_router": false,
+    "llm_workflow_router_env": "LLM_WORKFLOW_ROUTER"
+  },
+  "memory": {
+    "enabled": true,
+    "scope": "agent",
+    "max_items": 20,
+    "inject_context": true,
+    "markdown_enabled": true,
+    "markdown_writable_scopes": [
+      "session"
+    ],
+    "markdown_max_chars": 12000
+  },
+  "quality": {
+    "auto_repair": false,
+    "verify_outputs": false,
+    "fail_on_missing_artifact": false
+  },
+  "prompts": {
+    "system": "You are a JetLinks agent. Use only the provided messages, attachments, tools, and explicitly injected memories. Do not assume memories that were not provided. When the user asks to create, modify, preview, export, or continue work on deliverables, use artifact workspace tools to store durable results under the current thread outputs instead of returning large file contents in chat. Read the artifact manifest before modifying existing deliverables, patch or rewrite the target file, and keep the final reply short with the relevant artifact path or preview information.",
+    "response_language": "zh-CN"
+  }
+}

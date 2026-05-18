@@ -1,0 +1,12 @@
+{
+  "id": "model-candidate-selector",
+  "name": "model-candidate-selector",
+  "version": "0.1.0",
+  "description": "Select a small set of model candidates based on data scale, target shape, training cost, inference cost, deployment difficulty, and business metrics.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/model-candidate-selector/manifest.json"
+  ],
+  "source_suite": "algorithm-engineer"
+}

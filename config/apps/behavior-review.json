@@ -1,0 +1,51 @@
+{
+  "name": "behavior-review",
+  "title": "行为识别复判",
+  "description": "对翻越、摔倒、禁区逗留等告警做证据优先二次复判，输出复判结论、证据缺口、处置建议和人工复核要求。",
+  "category": "vision",
+  "icon": "shield",
+  "agent_name": "default",
+  "workflow": "evidence_first_detection",
+  "selected_skills": [
+    "behavior-review"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "对这个人员翻越围栏进入禁区的告警做 AI 复判，说明证据是否足够、是否需要升级处理。",
+    "复核老人摔倒事件：区分文本规则命中、视觉证据确认、证据缺口和处置建议。"
+  ],
+  "tags": [
+    "行为识别",
+    "复判",
+    "证据优先",
+    "人工复核"
+  ],
+  "model_tags": [
+    "chat",
+    "vision",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

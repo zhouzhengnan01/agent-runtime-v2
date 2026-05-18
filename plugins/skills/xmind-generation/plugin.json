@@ -1,0 +1,12 @@
+{
+  "id": "xmind-generation",
+  "name": "xmind-generation",
+  "version": "0.1.0",
+  "description": "Generate XMind mind maps.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/xmind-generation/manifest.json"
+  ],
+  "source_suite": "builtin-artifact-skills"
+}

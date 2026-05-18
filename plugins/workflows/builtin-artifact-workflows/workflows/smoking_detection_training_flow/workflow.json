@@ -1,0 +1,8 @@
+{
+  "name": "smoking_detection_training_flow",
+  "display_name": "Smoking Detection Training Flow",
+  "description": "Deterministic flow: dataset upload -> reference image generation -> auto annotation -> training config -> YOLO training with best.pt and metrics.",
+  "enabled": true,
+  "handler": "smoking_flow.py:SmokingDetectionTrainingWorkflow",
+  "trigger": "explicit_runtime_options"
+}

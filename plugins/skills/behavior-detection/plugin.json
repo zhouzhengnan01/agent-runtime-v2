@@ -1,0 +1,12 @@
+{
+  "id": "behavior-detection",
+  "name": "behavior-detection",
+  "version": "0.1.0",
+  "description": "Evidence-first behavior detection.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/behavior-detection/manifest.json"
+  ],
+  "source_suite": "builtin-artifact-skills"
+}
