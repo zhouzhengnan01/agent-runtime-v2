@@ -188,7 +188,7 @@ ws.onmessage = (event) =&gt; {
           <ol class="flow">
             <li>连接 <code>/api/acp/ws</code>，生产模式下通过 query token 或 header 传鉴权。</li>
             <li>发送 <code>initialize</code>，读取能力信息和 <code>_meta.jetlinks.modelManagement</code>。</li>
-	            <li>发送 <code>session/new</code> 创建会话。产品入口推荐在 <code>_meta.appTemplateName</code> 传应用模板名，由服务端从 <code>config/apps/*.json</code> 带出默认 agent、workflow、skill 和示例配置；需要接入外部 MCP 时，把标准 <code>mcpServers</code> 放在 <code>params</code> 顶层。</li>
+            <li>发送 <code>session/new</code> 创建会话。产品入口推荐在 <code>_meta.appTemplateName</code> 传应用模板名，并让它与 <code>_meta.runtimeOptions</code> 同级；服务端会从 <code>config/apps/*.json</code> 带出默认 agent、workflow、skill 和示例配置。需要接入外部 MCP 时，把标准 <code>mcpServers</code> 放在 <code>params</code> 顶层。</li>
             <li>需要切换模型时发送 <code>session/set_model</code>，只传后端模型管理里的 <code>modelId</code>。</li>
             <li>发送 <code>session/prompt</code>，持续接收 <code>session/update</code>，最后收到同 id 的 JSON-RPC result。</li>
             <li>如果最终 <code>_meta.jetlinks.stopReason</code> 为 <code>input_required</code>，表示本轮已经结束但需要用户补充输入；前端应展示上传或参数输入控件，补齐后再发送下一次 <code>session/prompt</code>。顶层 <code>stopReason</code> 保持官方兼容值 <code>end_turn</code>。</li>
@@ -370,7 +370,7 @@ ws.send(JSON.stringify({
           </div>
           <div class="method">
             <div class="method-head"><div class="method-name"><span class="tag ws">RPC</span><h3>session/new</h3></div></div>
-	            <p class="muted">创建会话。ACP 标准字段如 <code>cwd</code>、<code>mcpServers</code> 保持在 <code>params</code> 顶层；JetLinks 扩展如 <code>agentName</code>、<code>appTemplateName</code>、<code>runtimeOptions</code> 统一放在 <code>params._meta</code>。如果传了托管模型 ID，会解析成完整模型配置。</p>
+            <p class="muted">创建会话。ACP 标准字段如 <code>cwd</code>、<code>mcpServers</code> 保持在 <code>params</code> 顶层；JetLinks 扩展如 <code>agentName</code>、<code>appTemplateName</code>、<code>runtimeOptions</code> 统一放在 <code>params._meta</code>，其中 <code>appTemplateName</code> 与 <code>runtimeOptions</code> 同级。旧客户端把 <code>appTemplateName</code> 放在 <code>runtimeOptions</code> 里仍可兼容读取，但响应会提升为顶层 <code>appTemplateName</code>。如果传了托管模型 ID，会解析成完整模型配置。</p>
             <table>
               <thead><tr><th>请求参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
               <tbody>

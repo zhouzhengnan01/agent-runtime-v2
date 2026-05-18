@@ -642,6 +642,7 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
 
         assert created["agentName"] == "default"
         assert created["appTemplateName"] == "iot-architecture-diagram"
+        assert "appTemplateName" not in created["runtimeOptions"]
         assert created["models"]["currentModelId"] == "session-model"
         assert "workflow" not in created["runtimeOptions"]
         assert created["runtimeOptions"]["selectedSkills"] == ["drawio-generation"]
@@ -734,6 +735,7 @@ def test_acp_websocket_session_new_accepts_standard_meta_extensions(
 
         assert created["threadId"] == "acp-meta-app-template"
         assert created["appTemplateName"] == "iot-architecture-diagram"
+        assert "appTemplateName" not in created["runtimeOptions"]
         assert created["runtimeOptions"]["selectedSkills"] == ["markdown-rendering"]
         assert created["runtimeOptions"]["modelName"] == "meta-model"
         assert created["runtimeOptions"]["temperature"] == 0.31
@@ -1049,6 +1051,7 @@ def test_acp_websocket_session_update_applies_app_model_from_config(
         )
         updated = websocket.receive_json()["result"]
         assert updated["appTemplateName"] == "demo-gpt"
+        assert "appTemplateName" not in updated["runtimeOptions"]
         assert updated["models"]["currentModelId"] == "gpt-5.5"
         assert updated["runtimeOptions"]["modelName"] == "gpt-5.5"
         assert updated["runtimeOptions"]["baseUrl"] == "http://model.local/v1"

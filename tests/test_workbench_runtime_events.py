@@ -78,7 +78,8 @@ def test_workbench_sends_acp_runtime_options_on_session_new() -> None:
         html.index("rpc('new_session'") : html.index("rpc('prompt'")
     ]
     assert "_meta: buildAcpMeta(agentName, runtimeOptions)" in html[html.index("rpc('prompt'") :]
-    assert "runtimeOptions.appTemplateName = state.selectedAppTemplateName;" in html
+    assert "meta.appTemplateName = state.selectedAppTemplateName;" in html
+    assert "runtimeOptions.appTemplateName = state.selectedAppTemplateName;" not in html
     assert "runtimeOptions.modelType = 'chat';" in html
 
 

@@ -36,8 +36,6 @@ _RUNTIME_OPTION_ALIASES = {
     "selected_skills": "selected_skills",
     "selectedMcpTools": "selected_mcp_tools",
     "selected_mcp_tools": "selected_mcp_tools",
-    "appTemplateName": "app_template_name",
-    "app_template_name": "app_template_name",
     "modelType": "model_type",
     "model_type": "model_type",
     "modelId": "model_name",
@@ -72,7 +70,6 @@ _RUNTIME_OPTION_RESPONSE_ALIASES = {
     "project_id": "projectId",
     "selected_skills": "selectedSkills",
     "selected_mcp_tools": "selectedMcpTools",
-    "app_template_name": "appTemplateName",
     "model_type": "modelType",
     "model_name": "modelName",
     "base_url": "baseUrl",
@@ -461,7 +458,7 @@ class AcpRuntimeAdapter:
             raise ValueError(f"Unknown ACP session: {session_id}")
 
         raw_options = _session_update_runtime_options(params)
-        app_template = self._app_template_from_name(_string(raw_options.get("app_template_name")))
+        app_template = self._app_template_from_params(params)
         base_options = dict(session.runtime_options)
         if app_template is not None:
             template_options = _template_runtime_options(app_template)
@@ -976,7 +973,6 @@ def _auto_permission_option(raw_options: object) -> str | None:
 def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
     meta = _params(params.get("_meta"))
     sources = [
-        meta,
         _params(meta.get("runtimeOptions") or meta.get("runtime_options")),
     ]
     payload: dict[str, Any] = {}
@@ -1099,12 +1095,13 @@ def _runtime_options_response(runtime_options: dict[str, Any]) -> dict[str, Any]
 
 def _app_template_name(params: dict[str, Any]) -> str | None:
     meta = _params(params.get("_meta"))
-    runtime_options = _runtime_options_payload(params)
+    runtime_options = _params(meta.get("runtimeOptions") or meta.get("runtime_options"))
     return _string(
-        runtime_options.get("app_template_name")
-        or meta.get("appTemplateName")
+        meta.get("appTemplateName")
         or meta.get("app_template_name")
         or meta.get("app")
+        or runtime_options.get("appTemplateName")
+        or runtime_options.get("app_template_name")
     )
 
 

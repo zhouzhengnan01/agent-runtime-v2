@@ -6579,7 +6579,6 @@
         selectedMcpTools: [...state.selectedChatMcpTools]
 	      };
 	      if (state.selectedAppTemplateName) {
-	        runtimeOptions.appTemplateName = state.selectedAppTemplateName;
 	        runtimeOptions.modelType = 'chat';
       }
       if (state.yoloExecution) {
@@ -6594,10 +6593,9 @@
 	    }
 
 	    function buildAcpMeta(agentName, runtimeOptions) {
-	      return {
-	        agentName,
-	        runtimeOptions
-	      };
+	      const meta = { agentName, runtimeOptions };
+	      if (state.selectedAppTemplateName) meta.appTemplateName = state.selectedAppTemplateName;
+	      return meta;
 	    }
 
     async function sendViaSse(agentName, threadId, attachments, messages, workflow) {
