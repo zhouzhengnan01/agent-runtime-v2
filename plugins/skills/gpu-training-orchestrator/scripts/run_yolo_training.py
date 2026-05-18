@@ -66,6 +66,53 @@ def _load_json(path: Path) -> Dict:
         return json.load(f)
 
 
+def _normalize_flat_payload(payload: dict) -> dict:
+    spec = payload.get("spec") if isinstance(payload.get("spec"), dict) else payload
+    conda_env = str(spec.get("conda_env_name") or "yolo").strip()
+    root_dir = str(spec.get("root_dir") or "").strip()
+    coco_json = str(spec.get("coco_json") or "").strip()
+    task = str(spec.get("task") or "detect").strip()
+    model_name = str(spec.get("model") or "yolo11n.pt").strip()
+    epochs = int(spec.get("epochs") or 50)
+    imgsz = int(spec.get("imgsz") or 640)
+    batch = int(spec.get("batch") or 16)
+    device = str(spec.get("device") or "0").strip()
+    patience = int(spec.get("patience") or 8)
+    workers = int(spec.get("workers") or 4)
+    split_train = float(spec.get("split_train") or 0.7)
+    split_val = float(spec.get("split_val") or 0.2)
+    split_test = float(spec.get("split_test") or 0.1)
+    class_names = spec.get("class_names") or []
+    project_dir = str(spec.get("project_dir") or "").strip()
+    run_name = str(spec.get("run_name") or "smoking_detect").strip()
+    outputs_dir = str(payload.get("outputs_dir") or "").strip()
+
+    if not project_dir and outputs_dir:
+        project_dir = outputs_dir
+
+    return {
+        "runtime": {"conda_env_name": conda_env, "enforce_conda_env": True},
+        "dataset": {
+            "root_dir": root_dir,
+            "coco_json": coco_json,
+            "split": {"train": split_train, "val": split_val, "test": split_test},
+            "class_names": class_names,
+            "copy_images": True,
+        },
+        "training": {
+            "task": task,
+            "model": model_name,
+            "epochs": epochs,
+            "imgsz": imgsz,
+            "batch": batch,
+            "device": device,
+            "patience": patience,
+            "workers": workers,
+        },
+        "output": {"project_dir": project_dir, "run_name": run_name},
+    }
+
+
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -176,8 +223,27 @@ def _split_image_ids(image_ids: List[int], split: Dict[str, float], seed: int) -
     return {"train": train_ids, "val": val_ids, "test": test_ids}
 
 
-def _to_yolo_detect_line(bbox: List[float], width: int, height: int, cls_idx: int) -> str:
+def _clip_bbox_to_image(bbox: List[float], width: int, height: int) -> List[float] | None:
     x, y, w, h = [float(v) for v in bbox]
+    if width <= 0 or height <= 0 or w <= 0 or h <= 0:
+        return None
+
+    x1 = max(0.0, min(float(width), x))
+    y1 = max(0.0, min(float(height), y))
+    x2 = max(0.0, min(float(width), x + w))
+    y2 = max(0.0, min(float(height), y + h))
+    clipped_w = x2 - x1
+    clipped_h = y2 - y1
+    if clipped_w <= 1.0 or clipped_h <= 1.0:
+        return None
+    return [x1, y1, clipped_w, clipped_h]
+
+
+def _to_yolo_detect_line(bbox: List[float], width: int, height: int, cls_idx: int) -> str | None:
+    clipped = _clip_bbox_to_image(bbox, width, height)
+    if clipped is None:
+        return None
+    x, y, w, h = clipped
     xc = (x + w / 2.0) / float(width)
     yc = (y + h / 2.0) / float(height)
     wn = w / float(width)
@@ -185,7 +251,7 @@ def _to_yolo_detect_line(bbox: List[float], width: int, height: int, cls_idx: in
     return f"{cls_idx} {xc:.6f} {yc:.6f} {wn:.6f} {hn:.6f}"
 
 
-def _to_yolo_segment_line(segmentation, bbox: List[float], width: int, height: int, cls_idx: int) -> str:
+def _to_yolo_segment_line(segmentation, bbox: List[float], width: int, height: int, cls_idx: int) -> str | None:
     points: List[float] = []
 
     if isinstance(segmentation, list) and segmentation:
@@ -193,8 +259,12 @@ def _to_yolo_segment_line(segmentation, bbox: List[float], width: int, height: i
         if isinstance(polygon, list) and len(polygon) >= 6 and len(polygon) % 2 == 0:
             points = [float(v) for v in polygon]
 
+    clipped_bbox = _clip_bbox_to_image(bbox, width, height)
+    if clipped_bbox is None:
+        return None
+
     if not points:
-        x, y, w, h = [float(v) for v in bbox]
+        x, y, w, h = clipped_bbox
         points = [
             x,
             y,
@@ -209,8 +279,10 @@ def _to_yolo_segment_line(segmentation, bbox: List[float], width: int, height: i
     normalized = []
     for i, value in enumerate(points):
         if i % 2 == 0:
+            value = max(0.0, min(float(width), value))
             normalized.append(value / float(width))
         else:
+            value = max(0.0, min(float(height), value))
             normalized.append(value / float(height))
 
     coords = " ".join(f"{v:.6f}" for v in normalized)
@@ -273,13 +345,13 @@ def _prepare_yolo_dataset(
                     continue
 
                 if task == "segment":
-                    lines.append(
-                        _to_yolo_segment_line(
-                            ann.get("segmentation"), bbox, width, height, cls_idx
-                        )
+                    line = _to_yolo_segment_line(
+                        ann.get("segmentation"), bbox, width, height, cls_idx
                     )
                 else:
-                    lines.append(_to_yolo_detect_line(bbox, width, height, cls_idx))
+                    line = _to_yolo_detect_line(bbox, width, height, cls_idx)
+                if line:
+                    lines.append(line)
 
             dst_lbl.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
             split_counts[split_name] += 1
@@ -412,15 +484,21 @@ def run(config_path: Path) -> None:
     )
 
     log_info("开始在 test split 上评估...")
-    eval_results = model.val(
-        data=str(dataset_yaml),
-        split="test",
-        task=task,
-        device=device,
-        project=str(train_project),
-        name="test_eval",
-        exist_ok=True,
-    )
+    eval_results = None
+    eval_error = ""
+    try:
+        eval_results = model.val(
+            data=str(dataset_yaml),
+            split="test",
+            task=task,
+            device=device,
+            project=str(train_project),
+            name="test_eval",
+            exist_ok=True,
+        )
+    except Exception as exc:
+        eval_error = str(exc)
+        log_warn(f"test split 评估失败，但训练已完成并保留权重: {eval_error}")
 
     summary = {
         "config_path": str(config_path),
@@ -436,7 +514,8 @@ def run(config_path: Path) -> None:
         "run_root": str(run_root),
         "runs_dir": str(train_project),
         "train_save_dir": str(getattr(train_results, "save_dir", "")),
-        "eval_results": str(eval_results),
+        "eval_results": str(eval_results) if eval_results is not None else "",
+        "eval_error": eval_error,
     }
 
     summary_path = run_root / "run_summary.json"

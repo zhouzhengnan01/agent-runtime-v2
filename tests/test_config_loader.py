@@ -9,6 +9,21 @@ from app.core.config.secrets import SecretCodec
 from app.core.tools import ToolInvocationService
 
 
+DEFAULT_THREAD_TOOLS = [
+    "artifact_manifest_read",
+    "artifact_list",
+    "artifact_read",
+    "artifact_write",
+    "artifact_patch",
+    "artifact_manifest_update",
+    "present_files",
+    "local_read_file",
+    "local_search_text",
+    "local_write_file",
+    "local_patch_file",
+]
+
+
 def test_load_builtin_agent(tmp_path: Path) -> None:
     config_dir = tmp_path / "config" / "agents"
     config_dir.mkdir(parents=True)
@@ -17,7 +32,7 @@ def test_load_builtin_agent(tmp_path: Path) -> None:
     agent = AgentConfigLoader(tmp_path).load("default")
     assert agent.name == "default"
     assert agent.runtime.stateless is True
-    assert agent.tools == []
+    assert agent.tools == DEFAULT_THREAD_TOOLS
     assert agent.skills == []
     assert agent.model.model is None
     assert agent.model.base_url is None
@@ -41,14 +56,13 @@ def test_builtin_agent_tool_names_resolve_to_registered_tools() -> None:
     registered_tools = {tool.name for tool in service.list_tools(include_disabled=True)}
     for agent in AgentConfigLoader().list_agents():
         missing = set(agent.tools) - registered_tools
-        # Bare shell: agent declares no tools; all tools come from app templates.
-        assert agent.tools == [], f"{agent.name} should be a bare shell with no tools"
+        assert not missing, f"{agent.name} references unknown tools: {sorted(missing)}"
+        assert agent.tools == DEFAULT_THREAD_TOOLS
 
 
-def test_default_agent_declares_markdown_memory_tools() -> None:
+def test_default_agent_declares_thread_file_and_artifact_tools() -> None:
     agent = AgentConfigLoader().load("default")
-    # Bare shell agent: tools come from app templates, not from agent config.
-    assert agent.tools == []
+    assert agent.tools == DEFAULT_THREAD_TOOLS
 
 
 def test_agent_config_accepts_billing_metadata() -> None:

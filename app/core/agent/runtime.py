@@ -12,6 +12,7 @@ from app.core.artifacts.preview import guess_mime_type
 from app.core.agent.execution_context import ExecutionContext
 from app.core.agent.execution_context import build_execution_context
 from app.core.agent.session import SessionConversationStore
+from app.core.agent.session_kernel import AgentSessionManager
 from app.core.apps import AppTemplateRegistry
 from app.core.apps.models import AppModelOption
 from app.core.agent.tool_loop import ToolCallingAgentLoop
@@ -47,6 +48,7 @@ class AgentRuntime:
         markdown_memory_store: MarkdownMemoryStore | None = None,
         run_event_store: RunEventStore | None = None,
         session_store: SessionConversationStore | None = None,
+        session_manager: AgentSessionManager | None = None,
         model_config: ModelConfig | dict[str, object] | None = None,
         app_template_registry: AppTemplateRegistry | None = None,
         skills: list[str] | None = None,
@@ -56,6 +58,7 @@ class AgentRuntime:
         self.markdown_memory_store = markdown_memory_store or MarkdownMemoryStore()
         self.run_event_store = run_event_store or RunEventStore()
         self.session_store = session_store or SessionConversationStore()
+        self.session_manager = session_manager or AgentSessionManager()
         self.workflow_registry = workflow_registry or WorkflowRegistry.builtin(self.artifact_store)
         self.workflow_router = workflow_router
         self.model_config, self._model_config_fields = self._normalize_model_config(model_config)
@@ -93,6 +96,12 @@ class AgentRuntime:
                     },
                 )
             ]
+            self.session_manager.begin_turn(
+                thread_id=execution.paths.thread_id,
+                run_id=recorder.run_id,
+                agent=execution.agent_config.name,
+                workflow=execution.workflow_name or "agent_loop",
+            )
             result = self._input_required_result(
                 execution.agent_config,
                 execution.paths.thread_id,
@@ -109,6 +118,11 @@ class AgentRuntime:
                 run_id=recorder.run_id,
             )
             self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, events, result)
+            self.session_manager.finish_turn(
+                thread_id=execution.paths.thread_id,
+                run_id=recorder.run_id,
+                status="completed",
+            )
             return result, events
         if execution.workflow_name is not None:
             # Workflow path: a named workflow owns the full execution instead of
@@ -146,13 +160,27 @@ class AgentRuntime:
                 "stateless": execution.agent_config.runtime.stateless,
             },
         )
-        loop_result = await self.agent_loop.run(
-            agent_config=execution.agent_config,
-            messages=execution.conversation,
+        self.session_manager.begin_turn(
             thread_id=execution.paths.thread_id,
-            recorder=recorder,
-            runtime_options=execution.request.runtime_options,
+            run_id=recorder.run_id,
+            agent=execution.agent_config.name,
+            workflow="agent_loop",
         )
+        try:
+            loop_result = await self.agent_loop.run(
+                agent_config=execution.agent_config,
+                messages=execution.conversation,
+                thread_id=execution.paths.thread_id,
+                recorder=recorder,
+                runtime_options=execution.request.runtime_options,
+            )
+        except Exception:
+            self.session_manager.finish_turn(
+                thread_id=execution.paths.thread_id,
+                run_id=recorder.run_id,
+                status="failed",
+            )
+            raise
         self._enrich_required_inputs(loop_result.result, execution.request)
         self._replace_final_result_event(recorder.events, loop_result.result)
         self.session_store.save(execution.paths, loop_result.messages, run_id=recorder.run_id)
@@ -162,6 +190,11 @@ class AgentRuntime:
             execution.paths.thread_id,
             recorder.events,
             loop_result.result,
+        )
+        self.session_manager.finish_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            status="completed" if loop_result.result.status == "completed" else "failed",
         )
         return loop_result.result, recorder.events
 
@@ -227,7 +260,7 @@ class AgentRuntime:
                 if item is None:
                     break
                 if isinstance(item, BaseException):
-                    yield ChatEvent(type="run.failed", data={"agent": agent_config.name, "error": str(item)})
+                    yield ChatEvent(type="run.failed", data={"agent": execution.agent_config.name, "error": str(item)})
                     break
                 yield item
         finally:
@@ -258,6 +291,12 @@ class AgentRuntime:
                 "execution_mode": "agent_loop",
                 "stateless": execution.agent_config.runtime.stateless,
             },
+        )
+        self.session_manager.begin_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            agent=execution.agent_config.name,
+            workflow="agent_loop",
         )
 
         llm = OpenAICompatibleClient(execution.agent_config, runtime_options=execution.request.runtime_options)
@@ -302,17 +341,30 @@ class AgentRuntime:
             yield recorder.emit("run.completed", {"result": result.model_dump()})
             self.session_store.save(execution.paths, final_messages, run_id=recorder.run_id)
             self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, recorder.events, result)
+            self.session_manager.finish_turn(
+                thread_id=execution.paths.thread_id,
+                run_id=recorder.run_id,
+                status="completed",
+            )
             return
 
         emitted = 1
-        loop_result = await self.agent_loop.run(
-            agent_config=execution.agent_config,
-            messages=execution.conversation,
-            thread_id=execution.paths.thread_id,
-            recorder=recorder,
-            runtime_options=execution.request.runtime_options,
-            emit_message_delta=True,
-        )
+        try:
+            loop_result = await self.agent_loop.run(
+                agent_config=execution.agent_config,
+                messages=execution.conversation,
+                thread_id=execution.paths.thread_id,
+                recorder=recorder,
+                runtime_options=execution.request.runtime_options,
+                emit_message_delta=True,
+            )
+        except Exception:
+            self.session_manager.finish_turn(
+                thread_id=execution.paths.thread_id,
+                run_id=recorder.run_id,
+                status="failed",
+            )
+            raise
         self._enrich_required_inputs(loop_result.result, execution.request)
         self._replace_final_result_event(recorder.events, loop_result.result)
         for event in recorder.events[emitted:]:
@@ -325,6 +377,11 @@ class AgentRuntime:
             recorder.events,
             loop_result.result,
         )
+        self.session_manager.finish_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            status="completed" if loop_result.result.status == "completed" else "failed",
+        )
 
     async def _stream_input_required_events(self, execution: ExecutionContext) -> AsyncIterator[ChatEvent]:
         recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
@@ -336,6 +393,12 @@ class AgentRuntime:
                 "execution_mode": execution.workflow_name or "agent_loop",
                 "stateless": execution.agent_config.runtime.stateless,
             },
+        )
+        self.session_manager.begin_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            agent=execution.agent_config.name,
+            workflow=execution.workflow_name or "agent_loop",
         )
         result = self._input_required_result(
             execution.agent_config,
@@ -354,6 +417,11 @@ class AgentRuntime:
             run_id=recorder.run_id,
         )
         self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, recorder.events, result)
+        self.session_manager.finish_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            status="completed",
+        )
 
     @staticmethod
     def _request_required_inputs(request: ChatRequest) -> list[dict[str, Any]]:

@@ -32,6 +32,48 @@ class McpStdioToolProvider:
             )
         return self._result(tool, response)
 
+    def list_remote_tools(self, server: dict[str, Any]) -> list[ToolDefinition]:
+        tools, _error = self.list_remote_tools_with_error(server)
+        return tools
+
+    def list_remote_tools_with_error(self, server: dict[str, Any]) -> tuple[list[ToolDefinition], str | None]:
+        probe = ToolDefinition(
+            name=f"{_safe_tool_prefix(server)}__list_tools",
+            title=f"{_string(server.get('name')) or 'stdio'} tools",
+            description="List remote MCP stdio tools.",
+            source=_source_from_server(server),
+            editable=False,
+        )
+        try:
+            raw_tools = self._list_tools(probe, {})
+        except Exception as exc:
+            return [], str(exc)
+        prefix = _safe_tool_prefix(server)
+        definitions: list[ToolDefinition] = []
+        for raw_tool in raw_tools:
+            if not isinstance(raw_tool, dict):
+                continue
+            remote_name = _string(raw_tool.get("name"))
+            if not remote_name:
+                continue
+            input_schema = raw_tool.get("inputSchema") or raw_tool.get("input_schema") or {
+                "type": "object",
+                "additionalProperties": True,
+            }
+            definitions.append(
+                ToolDefinition(
+                    name=_safe_tool_name(f"{prefix}__{remote_name}"),
+                    title=_string(raw_tool.get("title")) or remote_name,
+                    description=_string(raw_tool.get("description")) or remote_name,
+                    input_schema=input_schema if isinstance(input_schema, dict) else {},
+                    output_schema={},
+                    enabled=True,
+                    source=_source_from_server(server, server_tool=remote_name),
+                    editable=False,
+                )
+            )
+        return definitions, None
+
     def _call(self, tool: ToolDefinition, arguments: dict[str, Any]) -> dict[str, Any]:
         command = _string(tool.source.get("command"))
         if not command:
@@ -67,6 +109,37 @@ class McpStdioToolProvider:
                 },
             )
             return self._read_response(proc, next_id, timeout)
+        finally:
+            _close_process(proc)
+
+    def _list_tools(self, tool: ToolDefinition, arguments: dict[str, Any]) -> list[dict[str, Any]]:
+        command = _string(tool.source.get("command"))
+        if not command:
+            raise ValueError("mcp_stdio source.command is required")
+        timeout = _bounded_int(tool.source.get("timeout_seconds"), default=15, minimum=1, maximum=120)
+        proc = self._start_process(tool, arguments, command)
+        next_id = 1
+        try:
+            self._send(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": next_id,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "jetlinks-agent-runtime-v2", "version": "0.1.0"},
+                    },
+                },
+            )
+            self._read_response(proc, next_id, timeout)
+            self._send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+            next_id += 1
+            self._send(proc, {"jsonrpc": "2.0", "id": next_id, "method": "tools/list", "params": {}})
+            response = self._read_response(proc, next_id, timeout)
+            tools = response.get("tools")
+            return tools if isinstance(tools, list) else []
         finally:
             _close_process(proc)
 
@@ -226,3 +299,57 @@ def _argument_defaults(input_schema: dict[str, Any]) -> dict[str, Any]:
         if isinstance(key, str) and isinstance(schema, dict) and "default" in schema:
             defaults[key] = schema["default"]
     return defaults
+
+
+def _source_from_server(server: dict[str, Any], *, server_tool: str | None = None) -> dict[str, Any]:
+    source: dict[str, Any] = {
+        "type": McpStdioToolProvider.source_type,
+        "command": _string(server.get("command")),
+    }
+    if server_tool:
+        source["server_tool"] = server_tool
+    args = _string_list(server.get("args"))
+    if args:
+        source["args"] = args
+    env = _env_from_server(server)
+    if env:
+        source["env"] = env
+    cwd = _string(server.get("cwd"))
+    if cwd:
+        source["cwd"] = cwd
+    meta = server.get("_meta")
+    if isinstance(meta, dict):
+        timeout = meta.get("timeoutSeconds") or meta.get("timeout_seconds")
+        if isinstance(timeout, int | float):
+            source["timeout_seconds"] = timeout
+        cwd = _string(meta.get("cwd"))
+        if cwd:
+            source["cwd"] = cwd
+    return source
+
+
+def _env_from_server(server: dict[str, Any]) -> dict[str, str]:
+    raw_env = server.get("env")
+    if isinstance(raw_env, dict):
+        return {str(key): str(value) for key, value in raw_env.items()}
+    if not isinstance(raw_env, list):
+        return {}
+    env: dict[str, str] = {}
+    for item in raw_env:
+        if not isinstance(item, dict):
+            continue
+        name = _string(item.get("name"))
+        value = _string(item.get("value"))
+        if name:
+            env[name] = value
+    return env
+
+
+def _safe_tool_prefix(server: dict[str, Any]) -> str:
+    return _safe_tool_name(_string(server.get("name")) or "stdio_mcp")
+
+
+def _safe_tool_name(value: str) -> str:
+    safe = "".join(char if char.isalnum() or char in {"_", "-", "."} else "_" for char in value)
+    safe = safe.strip("._-") or "stdio_mcp_tool"
+    return safe[:128]

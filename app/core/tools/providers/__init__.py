@@ -8,6 +8,7 @@ from app.core.tools.providers.manual import ManualToolProvider
 from app.core.tools.providers.markdown_memory import MarkdownMemoryToolProvider, markdown_memory_tool_definitions
 from app.core.tools.providers.memory import MemoryToolProvider, memory_tool_definitions
 from app.core.tools.providers.mcp_streamable_http import McpStreamableHttpToolProvider
+from app.core.tools.providers.mcp_stdio import McpStdioToolProvider
 from app.core.tools.providers.skill import SkillToolProvider
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "MarkdownMemoryToolProvider",
     "MemoryToolProvider",
     "McpStreamableHttpToolProvider",
+    "McpStdioToolProvider",
     "SkillToolProvider",
     "delegate_tool_definitions",
     "artifact_workspace_tool_definitions",

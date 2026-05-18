@@ -138,11 +138,7 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "new_session",
-                    "params": {
-                        "agentName": "default",
-                        "threadId": thread_id,
-                        "cwd": "/tmp",
-                    },
+                    "params": _acp_params(thread_id=thread_id, cwd="/tmp"),
             }
         )
         created = websocket.receive_json()
@@ -153,13 +149,12 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "prompt",
-                    "params": {
-                        "sessionId": session_id,
-                        "agentName": "default",
-                        "threadId": thread_id,
-                        "prompt": [{"type": "text", "text": "人员翻越围栏进入禁区"}],
-                        "runtimeOptions": {"workflow": "evidence_first_detection"},
-                    },
+                    "params": _acp_params(
+                        sessionId=session_id,
+                        thread_id=thread_id,
+                        prompt=[{"type": "text", "text": "人员翻越围栏进入禁区"}],
+                        runtime_options={"workflow": "evidence_first_detection"},
+                    ),
             }
         )
 
@@ -235,7 +230,7 @@ def test_acp_websocket_prompt_returns_input_required_from_result_metadata(
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "new_session",
-                "params": {"agentName": "default", "threadId": "acp-explicit-input-required"},
+                "params": _acp_params(thread_id="acp-explicit-input-required"),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -287,11 +282,10 @@ def test_acp_websocket_prompt_infers_input_required_image(
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "new_session",
-                "params": {
-                    "agentName": "default",
-                    "threadId": "acp-inferred-input-required",
-                    "runtimeOptions": {"selectedSkills": ["data-auto-annotation"]},
-                },
+                "params": _acp_params(
+                    thread_id="acp-inferred-input-required",
+                    runtime_options={"selectedSkills": ["data-auto-annotation"]},
+                ),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -357,11 +351,7 @@ def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypa
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "new_session",
-                "params": {
-                    "agentName": "default",
-                    "threadId": "acp-ws-default-stream",
-                    "cwd": "/tmp",
-                },
+                "params": _acp_params(thread_id="acp-ws-default-stream", cwd="/tmp"),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -371,12 +361,11 @@ def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypa
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "prompt",
-                "params": {
-                    "sessionId": session_id,
-                    "agentName": "default",
-                    "threadId": "acp-ws-default-stream",
-                    "prompt": [{"type": "text", "text": "你能干啥呢"}],
-                },
+                "params": _acp_params(
+                    sessionId=session_id,
+                    thread_id="acp-ws-default-stream",
+                    prompt=[{"type": "text", "text": "你能干啥呢"}],
+                ),
             }
         )
 
@@ -427,7 +416,7 @@ def test_acp_websocket_maps_tool_events_to_acp_tool_call_updates(
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-tool-events", "cwd": str(tmp_path)},
+                "params": _acp_params(thread_id="acp-tool-events", cwd=str(tmp_path)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -485,11 +474,7 @@ def test_acp_websocket_routes_explicit_workflow_and_selected_skills() -> None:
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "new_session",
-                "params": {
-                    "agentName": "default",
-                    "threadId": "acp-direct-drawio",
-                    "cwd": "/tmp",
-                },
+                "params": _acp_params(thread_id="acp-direct-drawio", cwd="/tmp"),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -499,16 +484,15 @@ def test_acp_websocket_routes_explicit_workflow_and_selected_skills() -> None:
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "prompt",
-                "params": {
-                    "sessionId": session_id,
-                    "agentName": "default",
-                    "threadId": "acp-direct-drawio",
-                    "prompt": [{"type": "text", "text": "画一个工作台原型图"}],
-                    "runtimeOptions": {
+                "params": _acp_params(
+                    sessionId=session_id,
+                    thread_id="acp-direct-drawio",
+                    prompt=[{"type": "text", "text": "画一个工作台原型图"}],
+                    runtime_options={
                         "workflow": "artifact_workflow",
                         "selectedSkills": ["drawio-generation"],
                     },
-                },
+                ),
             }
         )
 
@@ -553,11 +537,7 @@ def test_acp_websocket_routes_multimodal_prompt_and_session_model(
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "session/new",
-                "params": {
-                    "agentName": "default",
-                    "threadId": "acp-ws-multimodal",
-                    "cwd": str(tmp_path),
-                },
+                "params": _acp_params(thread_id="acp-ws-multimodal", cwd=str(tmp_path)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -643,18 +623,18 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {
-                    "appTemplateName": "iot-architecture-diagram",
-                    "threadId": "acp-ws-app-template",
-                    "cwd": str(tmp_path),
-                    "runtimeOptions": {
+                "params": _acp_params(
+                    cwd=str(tmp_path),
+                    app_template_name="iot-architecture-diagram",
+                    thread_id="acp-ws-app-template",
+                    runtime_options={
                         "modelName": "session-model",
                         "temperature": 0.2,
                         "topP": 0.9,
                         "maxTokens": 1234,
                         "requestTimeoutSeconds": 9,
                     },
-                },
+                ),
             }
         )
         created = websocket.receive_json()["result"]
@@ -687,16 +667,17 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
                 "jsonrpc": "2.0",
                 "id": 3,
                 "method": "session/prompt",
-                "params": {
-                    "sessionId": session_id,
-                    "prompt": [{"type": "text", "text": "这轮改成 Markdown"}],
-                    "runtimeOptions": {
+                "params": _acp_params(
+                    agent_name=None,
+                    sessionId=session_id,
+                    prompt=[{"type": "text", "text": "这轮改成 Markdown"}],
+                    runtime_options={
                         "selectedSkills": ["markdown-rendering"],
                         "modelName": "prompt-model",
                         "temperature": 0.7,
                         "maxTokens": 2000,
                     },
-                },
+                ),
             }
         )
         _receive_final_packet(websocket, 3)
@@ -719,6 +700,197 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
     assert second.model_name == "prompt-model"
     assert second.temperature == 0.7
     assert second.max_tokens == 2000
+
+
+def test_acp_websocket_session_new_accepts_standard_meta_extensions(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "cwd": str(tmp_path),
+                    "_meta": {
+                        "appTemplateName": "iot-architecture-diagram",
+                        "runtimeOptions": {
+                            "threadId": "acp-meta-app-template",
+                            "selectedSkills": ["markdown-rendering"],
+                            "modelName": "meta-model",
+                            "temperature": 0.31,
+                        },
+                    },
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        session_id = created["sessionId"]
+
+        assert created["threadId"] == "acp-meta-app-template"
+        assert created["appTemplateName"] == "iot-architecture-diagram"
+        assert created["runtimeOptions"]["selectedSkills"] == ["markdown-rendering"]
+        assert created["runtimeOptions"]["modelName"] == "meta-model"
+        assert created["runtimeOptions"]["temperature"] == 0.31
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "按 meta 创建模板会话"}],
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.thread_id == "acp-meta-app-template"
+    assert options.selected_skills == ["markdown-rendering"]
+    assert options.model_name == "meta-model"
+    assert options.temperature == 0.31
+
+
+def test_acp_websocket_session_new_accepts_standard_mcp_servers(
+    tmp_path: Any,
+) -> None:
+    client = TestClient(create_app())
+    mcp_servers = [
+        {
+            "name": "jetlinks-session",
+            "url": "http://127.0.0.1:9100/api/ai/agent/mcp/session-token",
+            "headers": [
+                {"name": "Authorization", "value": "Bearer session-token"},
+                {"name": "X-Trace-Id", "value": "trace-1"},
+            ],
+            "type": "http",
+        }
+    ]
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "cwd": str(tmp_path),
+                    "mcpServers": mcp_servers,
+                    "_meta": {"appTemplateName": "general-jetlinks-assistant"},
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+
+        assert created["appTemplateName"] == "general-jetlinks-assistant"
+        assert created["mcpServers"][0]["name"] == "jetlinks-session"
+        assert created["mcpServers"][0]["type"] == "http"
+        assert created["mcpServers"][0]["url"] == "http://127.0.0.1:9100/api/ai/agent/mcp/session-token"
+        assert created["mcpServers"][0]["headers"] == [
+            {"name": "Authorization", "value": "********"},
+            {"name": "X-Trace-Id", "value": "trace-1"},
+        ]
+        assert "mcpServers" not in created["runtimeOptions"]
+
+        websocket.send_json({"jsonrpc": "2.0", "id": 2, "method": "session/list", "params": {}})
+        listed = websocket.receive_json()["result"]["sessions"]
+
+    assert any(session["mcpServers"] == created["mcpServers"] for session in listed)
+
+
+def test_acp_websocket_prompt_deduplicates_current_prompt_from_messages(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(thread_id="acp-dedup-current-prompt", cwd=str(tmp_path)),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "messages": [
+                        {"role": "user", "content": "你好呀"},
+                        {"role": "assistant", "content": "你好！有什么我可以帮你的吗？"},
+                        {"role": "user", "content": "你有哪些工具呢"},
+                    ],
+                    "prompt": [{"type": "text", "text": "你有哪些工具呢"}],
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    assert [(message.role, message.content) for message in runtime.requests[0].messages] == [
+        ("user", "你好呀"),
+        ("assistant", "你好！有什么我可以帮你的吗？"),
+        ("user", "你有哪些工具呢"),
+    ]
+
+
+def test_acp_websocket_prompt_appends_distinct_prompt_after_history(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(thread_id="acp-append-current-prompt", cwd=str(tmp_path)),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "messages": [
+                        {"role": "user", "content": "你好呀"},
+                        {"role": "assistant", "content": "你好！有什么我可以帮你的吗？"},
+                    ],
+                    "prompt": [{"type": "text", "text": "你有哪些工具呢"}],
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    assert [(message.role, message.content) for message in runtime.requests[0].messages] == [
+        ("user", "你好呀"),
+        ("assistant", "你好！有什么我可以帮你的吗？"),
+        ("user", "你有哪些工具呢"),
+    ]
 
 
 def test_acp_websocket_session_new_uses_app_model_from_config(
@@ -766,11 +938,11 @@ def test_acp_websocket_session_new_uses_app_model_from_config(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {
-                    "appTemplateName": "demo-gpt",
-                    "threadId": "acp-app-model",
-                    "cwd": str(tmp_path),
-                },
+                "params": _acp_params(
+                    app_template_name="demo-gpt",
+                    thread_id="acp-app-model",
+                    cwd=str(tmp_path),
+                ),
             }
         )
         created = websocket.receive_json()["result"]
@@ -852,7 +1024,7 @@ def test_acp_websocket_session_update_applies_app_model_from_config(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-update-app-model", "cwd": str(tmp_path)},
+                "params": _acp_params(thread_id="acp-update-app-model", cwd=str(tmp_path)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -864,8 +1036,14 @@ def test_acp_websocket_session_update_applies_app_model_from_config(
                 "method": "session/update",
                 "params": {
                     "sessionId": session_id,
-                    "update": {"appTemplateName": "demo-gpt", "selectedSkills": []},
-                    "configOptions": {"maxTokens": 256, "requestTimeoutSeconds": 11},
+                    "_meta": {
+                        "appTemplateName": "demo-gpt",
+                        "runtimeOptions": {
+                            "selectedSkills": [],
+                            "maxTokens": 256,
+                            "requestTimeoutSeconds": 11,
+                        },
+                    },
                 },
             }
         )
@@ -915,7 +1093,7 @@ def test_acp_websocket_supports_session_scoped_fs_methods(tmp_path: Any, monkeyp
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-fs", "cwd": str(cwd)},
+                "params": _acp_params(thread_id="acp-fs", cwd=str(cwd)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -981,7 +1159,7 @@ def test_acp_websocket_supports_terminal_methods(tmp_path: Any, monkeypatch: pyt
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-terminal", "cwd": str(tmp_path)},
+                "params": _acp_params(thread_id="acp-terminal", cwd=str(tmp_path)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -1050,7 +1228,7 @@ def test_acp_websocket_session_mode_and_config_options_affect_runtime_options(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-mode-config", "cwd": str(tmp_path)},
+                "params": _acp_params(thread_id="acp-mode-config", cwd=str(tmp_path)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -1104,7 +1282,7 @@ def test_acp_websocket_permission_request_emits_update_then_returns_cancelled(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-permission", "cwd": str(tmp_path)},
+                "params": _acp_params(thread_id="acp-permission", cwd=str(tmp_path)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -1143,12 +1321,11 @@ def test_acp_websocket_yolo_mode_auto_approves_permission_request(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {
-                    "agentName": "default",
-                    "threadId": "acp-yolo-permission",
-                    "cwd": str(tmp_path),
-                    "runtimeOptions": {"mode": "yolo"},
-                },
+                "params": _acp_params(
+                    thread_id="acp-yolo-permission",
+                    cwd=str(tmp_path),
+                    runtime_options={"mode": "yolo"},
+                ),
             }
         )
         created = websocket.receive_json()["result"]
@@ -1185,7 +1362,7 @@ def test_acp_websocket_updates_include_plan_and_diff_metadata(
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-plan-diff", "cwd": str(tmp_path)},
+                "params": _acp_params(thread_id="acp-plan-diff", cwd=str(tmp_path)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -1245,11 +1422,7 @@ def test_acp_websocket_resolves_server_managed_model_id(
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "session/new",
-                "params": {
-                    "agentName": "default",
-                    "threadId": "acp-managed-model",
-                    "cwd": str(tmp_path),
-                },
+                "params": _acp_params(thread_id="acp-managed-model", cwd=str(tmp_path)),
             }
         )
         created = websocket.receive_json()["result"]
@@ -1311,7 +1484,7 @@ def test_acp_websocket_does_not_expose_default_agent_model_when_no_model_configu
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-default-model", "cwd": str(tmp_path)},
+                "params": _acp_params(thread_id="acp-default-model", cwd=str(tmp_path)),
             }
         )
         created = websocket.receive_json()["result"]
@@ -1351,7 +1524,7 @@ def test_acp_websocket_cancel_interrupts_active_prompt(tmp_path: Any, monkeypatc
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-ws-cancel", "cwd": str(tmp_path)},
+                "params": _acp_params(thread_id="acp-ws-cancel", cwd=str(tmp_path)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -1400,7 +1573,7 @@ def test_acp_websocket_delete_session_files_extension(tmp_path: Any, monkeypatch
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "session/new",
-                "params": {"agentName": "default", "threadId": "acp-ws-delete", "cwd": str(tmp_path)},
+                "params": _acp_params(thread_id="acp-ws-delete", cwd=str(tmp_path)),
             }
         )
         session_id = websocket.receive_json()["result"]["sessionId"]
@@ -1468,6 +1641,32 @@ def _receive_final_packet(websocket: Any, request_id: int) -> dict[str, Any]:
         if packet.get("id") == request_id:
             return packet
     raise AssertionError(f"ACP WebSocket response not received: {request_id}")
+
+
+def _acp_params(
+    *,
+    cwd: str | None = None,
+    agent_name: str | None = "default",
+    thread_id: str | None = None,
+    app_template_name: str | None = None,
+    runtime_options: dict[str, Any] | None = None,
+    **params: Any,
+) -> dict[str, Any]:
+    if cwd is not None:
+        params["cwd"] = cwd
+    meta: dict[str, Any] = {}
+    if agent_name is not None:
+        meta["agentName"] = agent_name
+    if app_template_name is not None:
+        meta["appTemplateName"] = app_template_name
+    options = dict(runtime_options or {})
+    if thread_id is not None:
+        options["threadId"] = thread_id
+    if options:
+        meta["runtimeOptions"] = options
+    if meta:
+        params["_meta"] = meta
+    return params
 
 
 def _assert_valid_acp_updates(updates: list[dict[str, Any]]) -> None:

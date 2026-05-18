@@ -81,7 +81,13 @@ class ToolRegistry:
     def _custom_tools(self) -> List[ToolDefinition]:
         if not self.config_path.is_file():
             return []
-        data = json.loads(self.config_path.read_text(encoding="utf-8"))
+        try:
+            raw_content = self.config_path.read_text(encoding="utf-8")
+            if not raw_content.strip():
+                return []
+            data = json.loads(raw_content)
+        except (OSError, json.JSONDecodeError):
+            return []
         raw_tools = data.get("tools") if isinstance(data, dict) else []
         if not isinstance(raw_tools, list):
             return []

@@ -18,7 +18,7 @@ APP_PORT=18012 ./start.sh
 APP_PORT=18012 ./status.sh
 ```
 
-打开 Vue Workbench：
+打开 Workbench：
 
 ```text
 http://127.0.0.1:18012/workbench
@@ -71,13 +71,13 @@ http://127.0.0.1:8010/workbench
 BASE_PYTHON=/usr/bin/python3.12 VENV_DIR=.venv ./install-deps.sh
 ```
 
-默认启动地址是 `http://127.0.0.1:8000`，Vue Workbench 为：
+默认启动地址是 `http://127.0.0.1:8000`，Workbench 为：
 
 ```text
 http://127.0.0.1:8000/workbench
 ```
 
-旧版静态 Workbench 仍保留在 `/static/workbench.html`，主要用于兼容和排障；日常测试优先使用 `/workbench`。
+`/workbench` 直接返回静态 Workbench；同一页面也保留在 `/static/workbench.html`，便于排障和直接访问。
 
 运行状态文件默认写入 `.runtime/server/`：
 
@@ -870,8 +870,8 @@ AUTO_START_RUNTIME=false BASE_URL=http://127.0.0.1:18012 RUN_SMOKE=true ./qualit
 如果要把浏览器页面也纳入发版前验证，可以设置 `RUN_UI_SMOKE=true`。该检查会用 Playwright 打开
 Workbench，完整走一遍“应用中心选择 `data-auto-annotation` -> 查看 JSON -> 上传图片 -> 深度执行 ->
 生成 `annotations.coco.json` -> 同一会话继续生成 `coco-summary.md`”，并断言请求体确实带有上传路径、
-`selected_skills`、`autonomous` 和 `max_tool_rounds=12`。运行前需要 `frontend/workbench/node_modules`
-已安装；Runtime 可以由门禁自动临时启动，也可以通过 `BASE_URL` 指向已有环境。
+`selected_skills`、`autonomous` 和 `max_tool_rounds=12`。Runtime 可以由门禁自动临时启动，也可以通过
+`BASE_URL` 指向已有环境。
 
 仓库也提供了 GitHub Actions 工作流 `.github/workflows/quality-gate.yml`。PR 和主分支 push 会自动执行
 `RUN_SMOKE=false ./quality-gate.sh`，覆盖关键 pytest、应用模板静态检查和 smoke matrix 单元测试。
@@ -1172,7 +1172,14 @@ delegate_task(goal, context?, agent_name?, model_name?, temperature?, max_tokens
 执行入口，只影响本轮发给模型的 OpenAI-compatible `tools` 列表：
 
 - 只会暴露已经注册且 `enabled=true` 的工具；未知工具会被忽略。
-- 当前允许临时选择 `manual`、`local`、`delegate`、`memory`、`skill` 来源的工具。
+- 当前允许临时选择 `manual`、`local`、`delegate`、`memory`、`skill`、`mcp_streamable_http` 来源的工具。
+- ACP `session/new.params.mcpServers` 传入的 `http`/`sse` server 会在本地 agent loop 中动态执行
+  `initialize`、`tools/list`，并以 `{server}__{tool}` 名称暴露；调用时转发到远端 `tools/call`。
+- ACP `stdio` server 也可动态挂载，但必须显式设置 `RUNTIME_MCP_STDIO_ENABLED=true`；可用
+  `RUNTIME_MCP_STDIO_ALLOWED_COMMANDS` 限制允许拉起的命令。
+- 运行时 MCP `tools/list` 结果默认缓存 60 秒，可通过 `RUNTIME_MCP_TOOLS_CACHE_SECONDS` 调整。
+- 可通过 `RUNTIME_MCP_ALLOWED_HOSTS` 配置允许的 MCP host 白名单，通过 `RUNTIME_MCP_BLOCKED_HOSTS`
+  补充阻断列表；默认阻断云 metadata 端点。发现失败会产生 `mcp.discovery.failed` 运行事件。
 - 如果 agent 关闭了 `memory.enabled`，memory 工具仍不会暴露。
 - `local_shell_command` 默认 disabled；只有 `LOCAL_SHELL_TOOL_ENABLED=true` 后才会进入可选列表。
 - 当 agent JSON 的 `model.tool_choice` 为 `none`，但本轮选择了 MCP 工具时，运行时会把本轮
@@ -1298,8 +1305,8 @@ memory_md_compress -> 把较大的 .md 记忆抽取压缩成 summary.md
 
 运行时核心只产生一套 typed events，不同协议负责适配这些事件：
 
-- Vue Workbench：`/workbench`
-- 旧版静态 Workbench：`/static/workbench.html`
+- Workbench：`/workbench`
+- 静态 Workbench 文件：`/static/workbench.html`
 - 接口文档：`/static/api-docs.html`
 - HTTP：`POST /api/agents/{agent}/runs`
 - SSE：`POST /api/agents/{agent}/runs/stream`
@@ -1435,7 +1442,7 @@ diff/plan 富 UI 目前通过 `session/update._meta.jetlinksRuntimeEvent` 传递
 | JSON-RPC 2.0 request/result/error | 支持 | 由 ACP SDK 支持 | 由 ACP SDK 支持 | WebSocket 错误码遵循 JSON-RPC。 |
 | `initialize` | 支持 | 支持 | 支持 | WebSocket 在 `_meta.jetlinks.methods` 暴露 JetLinks 当前方法列表。 |
 | `authenticate` | 支持 | 支持 | - | 当前为无交互成功返回；生产鉴权仍由 HTTP/WebSocket token 控制。 |
-| `session/new` | 支持 | 支持 | 支持 | WebSocket 支持 `appTemplateName` 和 `runtimeOptions`。 |
+| `session/new` | 支持 | 支持 | 支持 | WebSocket 支持 ACP 标准 `mcpServers`；JetLinks 扩展参数放在 `params._meta`，例如 `_meta.appTemplateName` 和 `_meta.runtimeOptions`。 |
 | `session/load` / `session/resume` | 支持 | 支持 `resume` | 由后端能力决定 | 用于恢复或更新当前运行 session；历史记忆由 `.runtime/threads/<thread_id>/memory` 负责。 |
 | `session/prompt` | 支持 | 支持 | 支持 | 进入本地 agent loop 或 external ACP backend。 |
 | `session/update` | 支持 | 支持 | 支持 | 原始事件在 `_meta.jetlinksRuntimeEvent`。 |

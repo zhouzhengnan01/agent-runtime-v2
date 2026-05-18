@@ -7,7 +7,7 @@
   "child_skills": [
     "image-dataset-generation",
     "data-auto-annotation",
-    "synthetic-yolo-dataset-builder",
+    "dataset-curator",
     "cpu-training-runner",
     "detector-evaluator",
     "experiment-ledger"
@@ -37,7 +37,7 @@
     },
     {
       "id": "build_yolo_dataset",
-      "skill": "synthetic-yolo-dataset-builder",
+      "skill": "dataset-curator",
       "requires": [
         "generated_images",
         "annotations.coco.json"

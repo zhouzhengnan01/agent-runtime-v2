@@ -23,6 +23,7 @@ class AcpWebSocketSession:
     thread_id: str
     agent_name: str
     cwd: str
+    mcp_servers: list[dict[str, Any]] = field(default_factory=list)
     backend_type: str = "local"
     backend_session_id: str | None = None
     backend: Any | None = None

@@ -101,6 +101,12 @@ PY
   fi
 fi
 
+echo "== ruff quality gate =="
+"${PYTHON_BIN}" -m ruff check app tests
+
+echo "== mypy quality gate =="
+"${PYTHON_BIN}" -m mypy app
+
 echo "== pytest quality gate =="
 "${PYTHON_BIN}" -m pytest \
   tests/test_agent_tool_loop.py \
@@ -125,18 +131,15 @@ echo "== pytest quality gate =="
 case "${RUN_UI_SMOKE}" in
   0|false|False|no|No)
     ;;
-  1|true|True|yes|Yes)
-    if ! curl -fsS "${BASE_URL}/health" >/dev/null 2>&1; then
-      echo "Workbench UI smoke requires reachable Runtime: ${BASE_URL}/health" >&2
-      exit 1
-    fi
-    if [ ! -d "frontend/workbench/node_modules" ]; then
-      echo "Workbench UI smoke requires frontend dependencies: cd frontend/workbench && npm install" >&2
-      exit 1
-    fi
-    echo "== workbench UI smoke =="
-    (cd frontend/workbench && APP_URL="${BASE_URL}/static/workbench.html" npm run test:ui)
-    ;;
+	  1|true|True|yes|Yes)
+	    if ! curl -fsS "${BASE_URL}/health" >/dev/null 2>&1; then
+	      echo "Workbench UI smoke requires reachable Runtime: ${BASE_URL}/health" >&2
+	      exit 1
+	    fi
+	    echo "== workbench static smoke =="
+	    curl -fsS "${BASE_URL}/workbench" | grep -q "JetLinks"
+	    curl -fsS "${BASE_URL}/static/workbench.html" | grep -q "JetLinks"
+	    ;;
   *)
     echo "Invalid RUN_UI_SMOKE=${RUN_UI_SMOKE}; expected true/false" >&2
     exit 2

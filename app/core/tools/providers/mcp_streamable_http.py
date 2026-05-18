@@ -26,6 +26,50 @@ class McpStreamableHttpToolProvider:
             )
         return result
 
+    def list_remote_tools(self, server: dict[str, Any]) -> list[ToolDefinition]:
+        tools, _error = self.list_remote_tools_with_error(server)
+        return tools
+
+    def list_remote_tools_with_error(self, server: dict[str, Any]) -> tuple[list[ToolDefinition], str | None]:
+        probe = ToolDefinition(
+            name=f"{_safe_tool_prefix(server)}__list_tools",
+            title=f"{_string(server.get('name')) or 'remote'} tools",
+            description="List remote MCP tools.",
+            source=_source_from_server(server, operation="list_tools"),
+            editable=False,
+        )
+        result = self.call(probe, {})
+        if result.is_error:
+            error = _string(result.structured_content.get("error")) or result.content[0].get("text", "")
+            return [], error
+        raw_tools = result.structured_content.get("tools")
+        tools = raw_tools if isinstance(raw_tools, list) else []
+        prefix = _safe_tool_prefix(server)
+        definitions: list[ToolDefinition] = []
+        for raw_tool in tools:
+            if not isinstance(raw_tool, dict):
+                continue
+            remote_name = _string(raw_tool.get("name"))
+            if not remote_name:
+                continue
+            input_schema = raw_tool.get("inputSchema") or raw_tool.get("input_schema") or {
+                "type": "object",
+                "additionalProperties": True,
+            }
+            definitions.append(
+                ToolDefinition(
+                    name=_safe_tool_name(f"{prefix}__{remote_name}"),
+                    title=_string(raw_tool.get("title")) or remote_name,
+                    description=_string(raw_tool.get("description")) or remote_name,
+                    input_schema=input_schema if isinstance(input_schema, dict) else {},
+                    output_schema={},
+                    enabled=True,
+                    source=_source_from_server(server, operation="call", server_tool=remote_name),
+                    editable=False,
+                )
+            )
+        return definitions, None
+
     def _call(self, tool: ToolDefinition, arguments: dict[str, Any]) -> ToolInvocationResult:
         url = _string(tool.source.get("url"))
         if not url:
@@ -199,6 +243,49 @@ def _server_arguments(tool: ToolDefinition, arguments: dict[str, Any]) -> dict[s
     }
 
 
+def _source_from_server(
+    server: dict[str, Any],
+    *,
+    operation: str,
+    server_tool: str | None = None,
+) -> dict[str, Any]:
+    source: dict[str, Any] = {
+        "type": McpStreamableHttpToolProvider.source_type,
+        "operation": operation,
+        "url": _string(server.get("url")),
+        "auth": "none",
+    }
+    if server_tool:
+        source["server_tool"] = server_tool
+    headers = _headers_from_server(server)
+    if headers:
+        source["headers"] = headers
+    meta = server.get("_meta")
+    if isinstance(meta, dict):
+        protocol_version = _string(meta.get("protocolVersion") or meta.get("protocol_version"))
+        if protocol_version:
+            source["protocol_version"] = protocol_version
+        timeout = meta.get("timeoutSeconds") or meta.get("timeout_seconds")
+        if isinstance(timeout, int | float):
+            source["timeout_seconds"] = timeout
+    return source
+
+
+def _headers_from_server(server: dict[str, Any]) -> dict[str, str]:
+    raw_headers = server.get("headers")
+    if not isinstance(raw_headers, list):
+        return {}
+    headers: dict[str, str] = {}
+    for item in raw_headers:
+        if not isinstance(item, dict):
+            continue
+        name = _string(item.get("name"))
+        value = _string(item.get("value"))
+        if name and value:
+            headers[name] = value
+    return headers
+
+
 def _headers(tool: ToolDefinition, arguments: dict[str, Any], protocol_version: str) -> dict[str, str]:
     headers = {
         "Content-Type": "application/json",
@@ -279,6 +366,16 @@ def _argument_defaults(input_schema: dict[str, Any]) -> dict[str, Any]:
 
 def _string(value: object) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _safe_tool_prefix(server: dict[str, Any]) -> str:
+    return _safe_tool_name(_string(server.get("name")) or "remote_mcp")
+
+
+def _safe_tool_name(value: str) -> str:
+    safe = "".join(char if char.isalnum() or char in {"_", "-", "."} else "_" for char in value)
+    safe = safe.strip("._-") or "remote_mcp_tool"
+    return safe[:128]
 
 
 def _string_list(value: object) -> list[str]:

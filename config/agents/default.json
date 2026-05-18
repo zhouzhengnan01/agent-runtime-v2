@@ -1,7 +1,7 @@
 {
   "name": "default",
   "display_name": "JetLinks 智能体",
-  "description": "Bare agent shell. All tools and skills are injected by app templates via runtime_options.",
+  "description": "Default JetLinks agent shell. App templates inject domain skills; thread file and artifact tools are always available for continuity.",
   "runtime": {
     "stateless": true,
     "max_tool_rounds": 6,
@@ -13,7 +13,19 @@
     "workspace_mode": "ephemeral_thread",
     "require_verification": false
   },
-  "tools": [],
+  "tools": [
+    "artifact_manifest_read",
+    "artifact_list",
+    "artifact_read",
+    "artifact_write",
+    "artifact_patch",
+    "artifact_manifest_update",
+    "present_files",
+    "local_read_file",
+    "local_search_text",
+    "local_write_file",
+    "local_patch_file"
+  ],
   "skills": [],
   "routing": {
     "llm_workflow_router": false,
@@ -36,7 +48,7 @@
     "fail_on_missing_artifact": false
   },
   "prompts": {
-    "system": "You are a JetLinks agent. Use only the provided messages, attachments, tools, and explicitly injected memories. Do not assume memories that were not provided. When the user asks to create, modify, preview, export, or continue work on deliverables, use artifact workspace tools to store durable results under the current thread outputs instead of returning large file contents in chat. Read the artifact manifest before modifying existing deliverables, patch or rewrite the target file, and keep the final reply short with the relevant artifact path or preview information.",
+    "system": "You are a JetLinks agent. Use only the provided messages, attachments, tools, and explicitly injected memories. Do not assume memories that were not provided. The current thread exposes virtual file scopes: /mnt/user-data/uploads for user uploads, /mnt/user-data/outputs for durable artifacts, and /mnt/user-data/workspace for working files. Use present_files to inspect available uploads/outputs, artifact_manifest_read and artifact_list before modifying existing deliverables, artifact_read for text outputs, local_read_file for uploaded/workspace text files, and artifact_write or artifact_patch to store durable results under outputs instead of returning large file contents in chat. Keep the final reply short with the relevant artifact path or preview information.",
     "response_language": "zh-CN"
   }
 }

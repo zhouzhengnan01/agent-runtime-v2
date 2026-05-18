@@ -73,6 +73,37 @@ def build_system_prompt(
     return f"{prompt}\n\n{memory_prompt}", len(memories)
 
 
+def prompt_with_runtime_mcp_discovery_failures(prompt: str, runtime_options: RuntimeOptions | None) -> str:
+    if runtime_options is None:
+        return prompt
+    raw_failures = runtime_options.config_options.get("runtime_mcp_discovery_failures")
+    if not isinstance(raw_failures, list):
+        return prompt
+    lines: list[str] = []
+    for item in raw_failures:
+        if not isinstance(item, dict):
+            continue
+        server_name = str(item.get("server_name") or "").strip() or "unnamed"
+        server_type = str(item.get("server_type") or "").strip() or "unknown"
+        endpoint = str(item.get("endpoint") or "").strip() or "local"
+        reason = str(item.get("reason") or "").strip() or "unknown"
+        error = str(item.get("error") or "").strip()
+        rendered = f"- {server_name} ({server_type}, {endpoint}) failed: {reason}"
+        if error:
+            rendered = f"{rendered}: {error[:300]}"
+        lines.append(rendered)
+    if not lines:
+        return prompt
+    guidance = "\n".join(
+        [
+            "Runtime MCP discovery notes:",
+            "Some requested MCP servers were not exposed as tools. If the user asks about MCP availability or safety, use these facts instead of guessing.",
+            *lines,
+        ]
+    )
+    return f"{prompt}\n\n{guidance}"
+
+
 def prompt_with_primary_skill_stage_context(prompt: str, context: PrimarySkillContext | None) -> str:
     rendered = primary_skill_stage_prompt(context)
     if not rendered:

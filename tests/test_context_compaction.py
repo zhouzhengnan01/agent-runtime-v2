@@ -48,6 +48,31 @@ def test_context_compaction_preserves_tail_tool_pair() -> None:
     assert result.messages[-1]["content"] == "latest task"
 
 
+def test_context_normalizer_drops_orphan_tool_outputs_and_fills_missing_outputs() -> None:
+    messages: list[dict[str, Any]] = [
+        {"role": "user", "content": "start"},
+        {"role": "tool", "tool_call_id": "orphan", "content": "legacy orphan"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_missing",
+                    "type": "function",
+                    "function": {"name": "local_read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    normalized = ConversationContextManager.normalize_for_model_prompt(messages)
+
+    assert [message["role"] for message in normalized] == ["user", "assistant", "tool", "user"]
+    assert normalized[2]["tool_call_id"] == "call_missing"
+    assert "missing_tool_output" in normalized[2]["content"]
+
+
 def test_agent_loop_compacts_large_context_before_model_call(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     captured_messages: list[dict[str, Any]] = []
 
@@ -94,3 +119,25 @@ def test_agent_loop_compacts_large_context_before_model_call(tmp_path: Path, mon
     assert captured_messages[0]["content"] == "first requirement"
     assert "CONTEXT COMPACTION" in captured_messages[1]["content"]
     assert captured_messages[-1]["content"] == "current task"
+
+
+def test_context_compaction_handles_few_oversized_messages() -> None:
+    manager = ConversationContextManager(
+        max_chars=1000,
+        keep_first_messages=2,
+        keep_last_messages=8,
+    )
+    messages = [
+        {"role": "user", "content": "first requirement"},
+        {"role": "assistant", "content": "old answer " * 500},
+        {"role": "user", "content": "current task"},
+    ]
+
+    result = manager.compact(messages)
+
+    assert result.compacted is True
+    assert result.summarized_message_count == 2
+    assert result.messages[0]["role"] == "assistant"
+    assert "CONTEXT COMPACTION" in result.messages[0]["content"]
+    assert result.messages[-1] == {"role": "user", "content": "current task"}
+    assert result.after_chars < result.before_chars

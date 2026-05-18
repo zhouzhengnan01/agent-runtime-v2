@@ -14,17 +14,17 @@ from app.core.agent.tool_loop_guard import (
     runtime_mode,
     selected_skill_names,
 )
-from app.core.agent.tool_loop_prompt import build_system_prompt
+from app.core.agent.tool_loop_prompt import build_system_prompt, prompt_with_runtime_mcp_discovery_failures
 from app.core.agent.tool_exposure import select_tools_for_phase
 from app.core.agent.session import ChatHistoryMessage
 from app.core.agent.tool_loop_state import ToolLoopState
 from app.core.agent.turn_policy import TurnPolicyInput, decide_turn_policy
 from app.core.agent.turn_verifier import verify_turn_completion
-from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
 from app.core.tools import ToolDefinition, ToolInvocationResult, ToolInvocationService
+from app.core.tools.orchestrator import ToolOrchestrator
 from app.schemas import AgentRunResult, ArtifactRef, Message, RuntimeOptions
 
 
@@ -48,6 +48,7 @@ class ToolCallingAgentLoop:
 
     def __init__(self, tool_service: ToolInvocationService | None = None) -> None:
         self.tool_service = tool_service or ToolInvocationService()
+        self.tool_orchestrator = ToolOrchestrator(self.tool_service)
         self.artifact_store = self.tool_service.artifact_store
 
     async def run(
@@ -106,7 +107,9 @@ class ToolCallingAgentLoop:
                 "configured": llm_metadata["llm_configured"],
             },
         )
-        conversation = [self._normalize_message(message) for message in messages]
+        conversation = ConversationContextManager.normalize_for_model_prompt(
+            [self._normalize_message(message) for message in messages]
+        )
         available_artifacts = self._thread_artifacts(thread_id)
         primary_skill_context = load_primary_skill_context(
             root_dir=self.tool_service.root_dir,
@@ -155,7 +158,8 @@ class ToolCallingAgentLoop:
                     "count": memory_context_count,
                 },
             )
-        tool_definitions = self._tool_definitions_for_run(agent_config, runtime_options)
+        tool_definitions = self._tool_definitions_for_run(agent_config, runtime_options, recorder)
+        system_prompt = prompt_with_runtime_mcp_discovery_failures(system_prompt, runtime_options)
         exposure = select_tools_for_phase(
             tool_definitions,
             phase=turn_policy.phase,
@@ -485,6 +489,7 @@ class ToolCallingAgentLoop:
         state.system_prompt = self._prompt_with_turn_policy(base_prompt, state.turn_phase, state.turn_policy_reason)
         state.memory_context_count = memory_context_count
         tool_definitions = self._tool_definitions_for_run(agent_config, runtime_options)
+        state.system_prompt = prompt_with_runtime_mcp_discovery_failures(state.system_prompt, runtime_options)
         exposure = select_tools_for_phase(
             tool_definitions,
             phase=state.turn_phase,
@@ -511,7 +516,7 @@ class ToolCallingAgentLoop:
         emit_message_delta: bool,
     ) -> ToolLoopResult:
         final_reply = reply_with_required_inputs(
-            reply,
+            reply or "",
             state.required_inputs,
             tool_call_count=state.tool_call_count,
             artifacts=state.artifacts,
@@ -614,6 +619,7 @@ class ToolCallingAgentLoop:
         self,
         agent_config: AgentConfig,
         runtime_options: RuntimeOptions | None = None,
+        recorder: EventRecorder | None = None,
     ) -> list[ToolDefinition]:
         mode = runtime_mode(runtime_options)
         if mode == "plan":
@@ -621,10 +627,27 @@ class ToolCallingAgentLoop:
         allowed_names = self._allowed_tool_names(agent_config)
         selected_skill_names_for_run = selected_skill_names(runtime_options)
         selected_mcp_tool_names = self._selected_mcp_tool_names(runtime_options)
+        if self._workspace_tools_enabled(runtime_options, mode):
+            allowed_names = allowed_names | self._workspace_tool_names(mode)
+        runtime_mcp_discovery = self.tool_service.discover_runtime_mcp_tools(self._runtime_mcp_servers(runtime_options))
+        if runtime_options is not None:
+            runtime_options.config_options["runtime_mcp_discovery_failures"] = [
+                failure.to_event_data() for failure in runtime_mcp_discovery.failures
+            ]
+        for failure in runtime_mcp_discovery.failures:
+            if recorder is not None:
+                recorder.emit("mcp.discovery.failed", failure.to_event_data())
+        runtime_mcp_tools = runtime_mcp_discovery.tools
+        if runtime_mcp_tools:
+            if runtime_options is not None:
+                runtime_options.config_options["runtime_mcp_tools"] = [tool.to_payload() for tool in runtime_mcp_tools]
+            selected_mcp_tool_names = selected_mcp_tool_names | {tool.name for tool in runtime_mcp_tools}
         if not allowed_names and not selected_skill_names_for_run and not selected_mcp_tool_names:
             return []
 
         definitions = self.tool_service.list_tools()
+        if runtime_mcp_tools:
+            definitions = [*definitions, *runtime_mcp_tools]
         if not agent_config.memory.enabled:
             definitions = [
                 tool for tool in definitions if tool.source.get("type") not in {"memory", "markdown_memory"}
@@ -665,10 +688,46 @@ class ToolCallingAgentLoop:
         return {name for name in [*agent_config.tools, *agent_config.skills] if name}
 
     @staticmethod
+    def _workspace_tools_enabled(runtime_options: RuntimeOptions | None, mode: str) -> bool:
+        if runtime_options is None:
+            return False
+        raw_enabled = runtime_options.config_options.get("enableWorkspaceTools")
+        if isinstance(raw_enabled, bool):
+            return raw_enabled
+        if isinstance(raw_enabled, str) and raw_enabled.strip().lower() in {"1", "true", "yes", "on"}:
+            return True
+        return mode in {"autonomous", "yolo"} and bool(
+            str(runtime_options.config_options.get("session_cwd") or "").strip()
+        )
+
+    @staticmethod
+    def _workspace_tool_names(mode: str) -> set[str]:
+        names = {
+            "present_files",
+            "local_read_file",
+            "local_search_text",
+            "local_patch_file",
+            "local_write_file",
+            "local_todo",
+        }
+        if mode in {"autonomous", "yolo"}:
+            names.add("local_shell_command")
+        return names
+
+    @staticmethod
     def _selected_mcp_tool_names(runtime_options: RuntimeOptions | None) -> set[str]:
         if runtime_options is None:
             return set()
         return {name.strip() for name in runtime_options.selected_mcp_tools if name.strip()}
+
+    @staticmethod
+    def _runtime_mcp_servers(runtime_options: RuntimeOptions | None) -> list[dict[str, Any]]:
+        if runtime_options is None:
+            return []
+        raw_servers = runtime_options.config_options.get("mcpServers") or runtime_options.config_options.get("mcp_servers")
+        if not isinstance(raw_servers, list):
+            return []
+        return [dict(server) for server in raw_servers if isinstance(server, dict)]
 
     @staticmethod
     def _thread_id(runtime_options: RuntimeOptions | None) -> str:
@@ -709,6 +768,8 @@ class ToolCallingAgentLoop:
             "artifact_workspace",
             "delegate",
             "skill",
+            "mcp_streamable_http",
+            "mcp_stdio",
         }
 
     @staticmethod
@@ -758,7 +819,7 @@ class ToolCallingAgentLoop:
         if mode == "safe":
             if source_type == "skill":
                 return False
-            if source_type == "local" and operation in {"write_file", "shell_command"}:
+            if source_type == "local" and operation in {"write_file", "patch_file", "shell_command"}:
                 return False
             return True
         if mode == "edit":
@@ -800,46 +861,14 @@ class ToolCallingAgentLoop:
         recorder: EventRecorder,
         runtime_options: RuntimeOptions | None = None,
     ) -> ToolInvocationResult:
-        started_at = time.perf_counter()
-        recorder.emit("tool.started", {"tool_name": tool_call.name, "tool_call_id": tool_call.id})
-        arguments: dict[str, Any] = {}
-        try:
-            arguments = self._tool_arguments(tool_call.arguments)
-            arguments.setdefault("_thread_id", thread_id)
-            arguments.setdefault("_agent_name", agent_config.name)
-            arguments.setdefault("_memory_scope", agent_config.memory.scope)
-            arguments.setdefault("_markdown_writable_scopes", agent_config.memory.markdown_writable_scopes)
-            arguments.setdefault("_markdown_max_chars", agent_config.memory.markdown_max_chars)
-            if runtime_options is not None:
-                arguments.setdefault("_user_id", runtime_options.user_id)
-                arguments.setdefault("_project_id", runtime_options.project_id)
-            result = self.tool_service.call_tool(tool_call.name, arguments)
-        except Exception as exc:
-            error_code = self._tool_error_code(exc)
-            result = ToolInvocationResult(
-                content=[{"type": "text", "text": f"Tool {tool_call.name} failed: {exc}"}],
-                structured_content={
-                    "tool_name": tool_call.name,
-                    "error": str(exc),
-                    "error_code": error_code,
-                    "recoverable": error_code in {"TOOL_ARGUMENTS_INVALID", "TOOL_NOT_FOUND", "TOOL_EXECUTION_FAILED"},
-                },
-                is_error=True,
-            )
-        duration_ms = round((time.perf_counter() - started_at) * 1000, 3)
-        recorder.emit(
-            "tool.completed" if not result.is_error else "tool.failed",
-            {
-                "tool_name": tool_call.name,
-                "tool_call_id": tool_call.id,
-                "is_error": result.is_error,
-                "duration_ms": duration_ms,
-                "arguments": self._observable_arguments(arguments),
-                "error_code": result.structured_content.get("error_code") if result.is_error else None,
-                "structured_content": result.structured_content,
-            },
+        outcome = self.tool_orchestrator.execute(
+            tool_call,
+            agent_config=agent_config,
+            thread_id=thread_id,
+            recorder=recorder,
+            runtime_options=runtime_options,
         )
-        return result
+        return outcome.result
 
     @staticmethod
     def _required_inputs_from_tool_result(result: ToolInvocationResult) -> list[dict[str, Any]]:
@@ -947,37 +976,15 @@ class ToolCallingAgentLoop:
 
     @staticmethod
     def _tool_arguments(raw_arguments: str) -> dict[str, Any]:
-        if not raw_arguments.strip():
-            return {}
-        parsed = json.loads(raw_arguments)
-        if not isinstance(parsed, dict):
-            raise ValueError("tool arguments must be a JSON object")
-        return parsed
+        return ToolOrchestrator.tool_arguments(raw_arguments)
 
     @staticmethod
     def _observable_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
-        visible = {key: value for key, value in arguments.items() if not key.startswith("_")}
-        rendered = json.dumps(visible, ensure_ascii=False, default=str)
-        if len(rendered) <= 4000:
-            return visible
-        return {
-            "_truncated": True,
-            "json_chars": len(rendered),
-            "preview": rendered[:3800],
-        }
+        return ToolOrchestrator.observable_arguments(arguments)
 
     @staticmethod
     def _tool_error_code(exc: Exception) -> str:
-        if isinstance(exc, json.JSONDecodeError):
-            return "TOOL_ARGUMENTS_INVALID"
-        if isinstance(exc, KeyError):
-            return "TOOL_NOT_FOUND"
-        message = str(exc).lower()
-        if "disabled" in message:
-            return "TOOL_DISABLED"
-        if "arguments" in message and "json" in message:
-            return "TOOL_ARGUMENTS_INVALID"
-        return "TOOL_EXECUTION_FAILED"
+        return ToolOrchestrator.tool_error_code(exc)
 
     @classmethod
     def _tool_result_content(cls, result: ToolInvocationResult, *, max_chars: int) -> str:

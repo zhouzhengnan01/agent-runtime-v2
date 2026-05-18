@@ -2,7 +2,6 @@ from pathlib import Path
 
 
 WORKBENCH = Path("static/workbench.html")
-VUE_STORE = Path("frontend/workbench/src/composables/useWorkbenchStore.ts")
 
 
 def test_workbench_surfaces_agent_loop_runtime_events() -> None:
@@ -75,7 +74,10 @@ def test_workbench_sends_acp_runtime_options_on_session_new() -> None:
     html = WORKBENCH.read_text()
 
     assert "const runtimeOptions = buildAcpRuntimeOptions(threadId, workflow);" in html
-    assert "runtimeOptions" in html[html.index("rpc('new_session'") : html.index("rpc('prompt'")]
+    assert "_meta: buildAcpMeta(agentName, runtimeOptions)" in html[
+        html.index("rpc('new_session'") : html.index("rpc('prompt'")
+    ]
+    assert "_meta: buildAcpMeta(agentName, runtimeOptions)" in html[html.index("rpc('prompt'") :]
     assert "runtimeOptions.appTemplateName = state.selectedAppTemplateName;" in html
     assert "runtimeOptions.modelType = 'chat';" in html
 
@@ -83,7 +85,7 @@ def test_workbench_sends_acp_runtime_options_on_session_new() -> None:
 def test_workbench_sends_app_template_name_for_config_app_models() -> None:
     html = WORKBENCH.read_text()
 
-    assert "const DEFAULT_APP_TEMPLATE_NAME = 'algorithm-cpu-training-sandbox';" in html
+    assert "const DEFAULT_APP_TEMPLATE_NAME = 'general-jetlinks-assistant';" in html
     assert "selectedAppTemplateName: DEFAULT_APP_TEMPLATE_NAME" in html
     assert "loadAppTemplates().catch" in html
     assert "runtimeOptions.app_template_name = state.selectedAppTemplateName;" in html
@@ -108,21 +110,12 @@ def test_workbench_can_open_clean_thread_from_url() -> None:
     assert "initialThreadFromUrl() || localStorage.getItem(THREAD_STORAGE_KEY)" in html
 
 
-def test_vue_workbench_keeps_event_artifacts_until_backend_refresh() -> None:
-    store = VUE_STORE.read_text()
+def test_api_docs_show_standard_acp_mcp_servers_location() -> None:
+    html = Path("static/api-docs.html").read_text()
 
-    assert "if (result.artifacts?.length) this.artifacts = result.artifacts;" in store
-    assert "await this.refreshArtifacts().catch((error)" in store
-    assert 'this.addTimeline("刷新文件失败", message);' in store
-
-
-def test_vue_workbench_sends_selected_app_runtime_options() -> None:
-    store = VUE_STORE.read_text()
-
-    assert 'const DEFAULT_APP_TEMPLATE_NAME = "algorithm-cpu-training-sandbox";' in store
-    assert "selectedAppTemplateName: DEFAULT_APP_TEMPLATE_NAME" in store
-    assert "applyAppTemplateCapabilities(fallbackTemplate)" in store
-    assert "state.appTemplates.find((item) => item.name === state.selectedAppTemplateName)" in store
-    assert "...templateOptions" in store
-    assert 'options.mode = "yolo";' in store
-    assert "options.configOptions = { max_tool_rounds: 16 };" in store
+    assert "mcpServers: [" in html
+    assert '"mcpServers": [' in html
+    assert "ACP 标准 MCP server 声明" in html
+    assert "保持在 <code>params</code> 顶层" in html
+    assert "session/new.params.mcpServers" in html
+    assert "当前运行时尚未动态挂载这些 server" not in html

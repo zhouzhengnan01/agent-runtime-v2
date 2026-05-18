@@ -88,6 +88,7 @@
         <a href="#acp-ws">ACP WebSocket</a>
         <a href="#acp-methods">ACP 方法</a>
         <a href="#runtime-options">Runtime Options</a>
+        <a href="#thread-workspace">线程目录与默认工具</a>
         <a href="#schemas">数据模型</a>
         <a href="#responses">返回值</a>
         <a href="#errors">错误码</a>
@@ -114,11 +115,11 @@
             <span class="chip">Artifact Workspace</span>
           </div>
           <h1>JetLinks Agent Runtime 接口文档</h1>
-          <p class="muted">本页描述当前服务的运行接口、ACP WebSocket 对接方式、模型托管语义、workflow/skill/runtimeOptions 的约定。默认通用智能体走 agent loop；workflow 只有在请求显式传入时才会执行。</p>
+          <p class="muted">本页描述当前服务的运行接口、ACP WebSocket 对接方式、模型托管语义、workflow/skill/_meta.runtimeOptions 的约定。默认通用智能体走 agent loop；workflow 只有在请求显式传入时才会执行。</p>
           <div class="grid">
             <div class="callout">
               <strong>服务地址</strong>
-              <p><code>http://127.0.0.1:8010</code>。生产环境以部署网关地址为准。</p>
+              <p><code>http://127.0.0.1:8000</code>。生产环境以部署网关地址为准。</p>
             </div>
             <div class="callout">
               <strong>核心入口</strong>
@@ -146,7 +147,7 @@
               <div class="method-name"><span class="tag ws">WS</span><h3>/api/acp/ws</h3></div>
               <span class="muted">JSON-RPC 2.0 over WebSocket，服务端接受子协议 <code>acp.v1</code></span>
             </div>
-            <pre><code>const ws = new WebSocket('ws://127.0.0.1:8010/api/acp/ws', 'acp.v1');
+            <pre><code>const ws = new WebSocket('ws://127.0.0.1:8000/api/acp/ws', 'acp.v1');
 
 ws.onmessage = (event) =&gt; {
   const packet = JSON.parse(event.data);
@@ -166,6 +167,7 @@ ws.onmessage = (event) =&gt; {
               <tr><td><code>agentName</code></td><td>string</td><td>实际执行的 agent 名称，默认 <code>default</code>。</td></tr>
               <tr><td><code>cwd</code></td><td>string</td><td>当前工作目录，外部 ACP backend 会使用它作为会话根目录。</td></tr>
               <tr><td><code>backend.type</code></td><td>string</td><td><code>local</code> 或 <code>acp_stdio</code>。</td></tr>
+              <tr><td><code>mcpServers</code></td><td>array</td><td>ACP 标准 MCP server 声明，来自 <code>session/new.params.mcpServers</code>；响应会对 Authorization、token、key 等敏感值脱敏。</td></tr>
               <tr><td><code>modelId</code></td><td>string|null</td><td>当前选中的托管模型 ID。</td></tr>
               <tr><td><code>modelName</code></td><td>string|null</td><td>解析后的真实模型名或兼容旧逻辑时的模型名。</td></tr>
               <tr><td><code>appTemplateName</code></td><td>string|null</td><td>会话使用的 app template 名称。</td></tr>
@@ -186,23 +188,23 @@ ws.onmessage = (event) =&gt; {
           <ol class="flow">
             <li>连接 <code>/api/acp/ws</code>，生产模式下通过 query token 或 header 传鉴权。</li>
             <li>发送 <code>initialize</code>，读取能力信息和 <code>_meta.jetlinks.modelManagement</code>。</li>
-            <li>发送 <code>session/new</code> 创建会话。产品入口推荐传 <code>appTemplateName</code>，由服务端从 <code>config/apps/*.json</code> 带出默认 agent、workflow、skill 和示例配置。</li>
+	            <li>发送 <code>session/new</code> 创建会话。产品入口推荐在 <code>_meta.appTemplateName</code> 传应用模板名，由服务端从 <code>config/apps/*.json</code> 带出默认 agent、workflow、skill 和示例配置；需要接入外部 MCP 时，把标准 <code>mcpServers</code> 放在 <code>params</code> 顶层。</li>
             <li>需要切换模型时发送 <code>session/set_model</code>，只传后端模型管理里的 <code>modelId</code>。</li>
             <li>发送 <code>session/prompt</code>，持续接收 <code>session/update</code>，最后收到同 id 的 JSON-RPC result。</li>
             <li>如果最终 <code>_meta.jetlinks.stopReason</code> 为 <code>input_required</code>，表示本轮已经结束但需要用户补充输入；前端应展示上传或参数输入控件，补齐后再发送下一次 <code>session/prompt</code>。顶层 <code>stopReason</code> 保持官方兼容值 <code>end_turn</code>。</li>
             <li>会话结束后发送 <code>session/close</code>；需要中断时发送 <code>session/cancel</code>。</li>
           </ol>
-          <h3>应用模板与 runtimeOptions 优先级</h3>
+          <h3>应用模板与 _meta.runtimeOptions 优先级</h3>
           <p class="muted">应用模板是推荐的产品入口。模板 JSON 保存在 <code>config/apps/*.json</code>，例如 <code>config/apps/iot-architecture-diagram.json</code>、<code>config/apps/project-report-ppt.json</code>、<code>config/apps/technical-doc-writer.json</code>。也可以通过 <code>GET /api/apps/templates</code> 列出模板，或用 <code>GET /api/apps/templates/{template_name}</code> 查看单个模板完整 JSON。</p>
           <table>
             <thead><tr><th>来源</th><th>作用</th><th>优先级</th></tr></thead>
             <tbody>
               <tr><td><code>config/apps/&lt;name&gt;.json</code></td><td>应用初始配置，声明 <code>agent_name</code>、<code>workflow</code>、<code>selected_skills</code>、<code>selected_mcp_tools</code>、<code>runtime_options</code>、<code>prompt_examples</code>。</td><td>基础默认值</td></tr>
-              <tr><td><code>session/new.runtimeOptions</code></td><td>创建会话时覆盖模板默认值，并作为该 ACP session 的默认运行参数保存。</td><td>高于应用模板</td></tr>
-              <tr><td><code>session/prompt.runtimeOptions</code></td><td>只覆盖当前这一轮 prompt，适合临时切换 skill、workflow、模型或采样参数。</td><td>最高</td></tr>
+	              <tr><td><code>session/new._meta.runtimeOptions</code></td><td>创建会话时覆盖模板默认值，并作为该 ACP session 的默认运行参数保存。</td><td>高于应用模板</td></tr>
+	              <tr><td><code>session/prompt._meta.runtimeOptions</code></td><td>只覆盖当前这一轮 prompt，适合临时切换 skill、workflow、模型或采样参数。</td><td>最高</td></tr>
             </tbody>
           </table>
-          <p class="muted"><code>selectedSkills</code> 只表示本轮允许或优先使用的 skill，不会单独触发 workflow。要走产物生成流程，需要模板或 runtimeOptions 同时设置 <code>workflow: "artifact_workflow"</code>；如果 workflow 为空、<code>agent_loop</code> 或 <code>default</code>，则进入通用 agent loop，skill 会作为模型可调用工具暴露。</p>
+          <p class="muted"><code>selectedSkills</code> 只表示本轮允许或优先使用的 skill，不会单独触发 workflow。要走产物生成流程，需要模板或 <code>_meta.runtimeOptions</code> 同时设置 <code>workflow: "artifact_workflow"</code>；如果 workflow 为空、<code>agent_loop</code> 或 <code>default</code>，则进入通用 agent loop，skill 会作为模型可调用工具暴露。</p>
           <pre><code>// 1. 推荐：用应用模板创建会话，不必每轮手动传 workflow / selectedSkills
 ws.send(JSON.stringify({
   jsonrpc: '2.0',
@@ -210,8 +212,10 @@ ws.send(JSON.stringify({
   method: 'session/new',
   params: {
     sessionId: 's-iot-diagram',
-    threadId: 'thread-iot-diagram',
-    appTemplateName: 'iot-architecture-diagram'
+    _meta: {
+      appTemplateName: 'iot-architecture-diagram',
+      runtimeOptions: { threadId: 'thread-iot-diagram' }
+    }
   }
 }));
 
@@ -233,7 +237,7 @@ ws.send(JSON.stringify({
   }
 }));
 
-// 3. 如果某一轮要临时覆盖，再传 runtimeOptions
+// 3. 如果某一轮要临时覆盖，再传 _meta.runtimeOptions
 ws.send(JSON.stringify({
   jsonrpc: '2.0',
   id: 4,
@@ -241,9 +245,11 @@ ws.send(JSON.stringify({
   params: {
     sessionId: 's-iot-diagram',
     prompt: [{ type: 'text', text: '这一轮改成技术文档' }],
-    runtimeOptions: {
-      workflow: 'artifact_workflow',
-      selectedSkills: ['markdown-rendering']
+    _meta: {
+      runtimeOptions: {
+        workflow: 'artifact_workflow',
+        selectedSkills: ['markdown-rendering']
+      }
     }
   }
 }));</code></pre>
@@ -263,9 +269,19 @@ ws.send(JSON.stringify({
   id: 2,
   method: 'session/new',
   params: {
-    threadId: 'thread-001',
     cwd: '/tmp',
-    appTemplateName: 'iot-architecture-diagram'
+    mcpServers: [
+      {
+        name: 'jetlinks-session',
+        url: 'http://127.0.0.1:9100/api/ai/agent/mcp/session-token',
+        headers: [{ name: 'Authorization', value: 'Bearer session-token' }],
+        type: 'http'
+      }
+    ],
+    _meta: {
+      appTemplateName: 'iot-architecture-diagram',
+      runtimeOptions: { threadId: 'thread-001' }
+    }
   }
 }));
 
@@ -346,7 +362,7 @@ ws.send(JSON.stringify({
                 <tr><td><code>agentInfo</code></td><td>object</td><td>服务端信息。</td></tr>
                 <tr><td><code>agentCapabilities</code></td><td>object</td><td>能力声明。</td></tr>
                 <tr><td><code>_meta.jetlinks.modelManagement</code></td><td>string</td><td>模型托管模式，当前为 <code>server</code>。</td></tr>
-                <tr><td><code>_meta.jetlinks.runtimeOptions</code></td><td>string[]</td><td>当前支持的 runtimeOptions 字段名列表。</td></tr>
+	                <tr><td><code>_meta.jetlinks.runtimeOptions</code></td><td>string[]</td><td>服务端返回的能力说明：当前支持的 runtimeOptions 字段名列表。</td></tr>
                 <tr><td><code>_meta.jetlinks.artifactWorkspace</code></td><td>boolean</td><td>是否启用线程成果工作区。</td></tr>
                 <tr><td><code>_meta.jetlinks.methods</code></td><td>string[]</td><td>当前 WebSocket 入口支持的 ACP/JetLinks 方法列表。</td></tr>
               </tbody>
@@ -354,16 +370,16 @@ ws.send(JSON.stringify({
           </div>
           <div class="method">
             <div class="method-head"><div class="method-name"><span class="tag ws">RPC</span><h3>session/new</h3></div></div>
-            <p class="muted">创建会话。可传 <code>agentName</code>、<code>threadId</code>、<code>appTemplateName</code>、<code>runtimeOptions</code>。如果传了托管模型 ID，会解析成完整模型配置。</p>
+	            <p class="muted">创建会话。ACP 标准字段如 <code>cwd</code>、<code>mcpServers</code> 保持在 <code>params</code> 顶层；JetLinks 扩展如 <code>agentName</code>、<code>appTemplateName</code>、<code>runtimeOptions</code> 统一放在 <code>params._meta</code>。如果传了托管模型 ID，会解析成完整模型配置。</p>
             <table>
               <thead><tr><th>请求参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
               <tbody>
                 <tr><td><code>sessionId</code></td><td>string</td><td>否</td><td>显式指定会话 ID，不传则自动生成。</td></tr>
-                <tr><td><code>agentName</code></td><td>string</td><td>否</td><td>要执行的 agent 名称，默认 <code>default</code>。</td></tr>
-                <tr><td><code>threadId</code></td><td>string</td><td>否</td><td>线程 ID，默认自动生成。</td></tr>
-                <tr><td><code>cwd</code></td><td>string</td><td>否</td><td>会话工作目录，外部 backend 会使用它。</td></tr>
-                <tr><td><code>appTemplateName</code></td><td>string</td><td>否</td><td>从应用模板派生会话初始配置。</td></tr>
-                <tr><td><code>runtimeOptions</code></td><td>object</td><td>否</td><td>本次会话默认 runtimeOptions。</td></tr>
+	                <tr><td><code>cwd</code></td><td>string</td><td>否</td><td>会话工作目录，外部 backend 会使用它。</td></tr>
+	                <tr><td><code>mcpServers</code></td><td>array</td><td>否</td><td>ACP 标准 MCP server 声明，支持 <code>http</code>、<code>sse</code>、stdio 形态。WebSocket session 会保存并在 <code>session/list</code> 回传；local agent loop 会对 <code>http</code>/<code>sse</code> server 动态执行 <code>initialize</code>、<code>tools/list</code> 并把远端工具暴露为 <code>{server}__{tool}</code>，调用时转发到 <code>tools/call</code>；stdio server 也可动态挂载，但必须显式设置 <code>RUNTIME_MCP_STDIO_ENABLED=true</code>，并可用 <code>RUNTIME_MCP_STDIO_ALLOWED_COMMANDS</code> 限制命令；<code>tools/list</code> 默认缓存 60 秒，可用 <code>RUNTIME_MCP_TOOLS_CACHE_SECONDS</code> 调整；发现失败会产生 <code>mcp.discovery.failed</code> 运行事件。响应会脱敏敏感 header/env 值。</td></tr>
+	                <tr><td><code>_meta.agentName</code></td><td>string</td><td>否</td><td>要执行的 agent 名称，默认 <code>default</code>。</td></tr>
+	                <tr><td><code>_meta.appTemplateName</code></td><td>string</td><td>否</td><td>从应用模板派生会话初始配置。</td></tr>
+	                <tr><td><code>_meta.runtimeOptions</code></td><td>object</td><td>否</td><td>本次会话默认 runtimeOptions，例如 <code>threadId</code>、模型、workflow、skills。</td></tr>
               </tbody>
             </table>
             <pre><code>{
@@ -371,13 +387,26 @@ ws.send(JSON.stringify({
   "id": 2,
   "method": "session/new",
   "params": {
-    "agentName": "default",
-    "threadId": "thread-001",
     "cwd": "/tmp",
-    "runtimeOptions": {
-      "modelName": "qwen-vl-30b",
-      "workflow": "artifact_workflow",
-      "selectedSkills": ["drawio-generation"]
+    "mcpServers": [
+      {
+        "name": "jetlinks-session",
+        "url": "http://127.0.0.1:9100/api/ai/agent/mcp/session-token",
+        "headers": [
+          { "name": "Authorization", "value": "Bearer session-token" }
+        ],
+        "type": "http"
+      }
+    ],
+    "_meta": {
+      "agentName": "default",
+      "appTemplateName": "iot-architecture-diagram",
+      "runtimeOptions": {
+        "threadId": "thread-001",
+        "modelName": "qwen-vl-30b",
+        "workflow": "artifact_workflow",
+        "selectedSkills": ["drawio-generation"]
+      }
     }
   }
 }</code></pre>
@@ -389,6 +418,7 @@ ws.send(JSON.stringify({
                 <tr><td><code>threadId</code></td><td>string</td><td>运行线程 ID。</td></tr>
                 <tr><td><code>agentName</code></td><td>string</td><td>最终使用的 agent 名称。</td></tr>
                 <tr><td><code>cwd</code></td><td>string</td><td>会话工作目录。</td></tr>
+                <tr><td><code>mcpServers</code></td><td>array</td><td>本会话保存的 MCP server 声明；敏感 header/env 值会以 <code>********</code> 回传。</td></tr>
                 <tr><td><code>backend.type</code></td><td>string</td><td>后端类型。</td></tr>
                 <tr><td><code>appTemplateName</code></td><td>string|null</td><td>应用模板名。</td></tr>
                 <tr><td><code>runtimeOptions</code></td><td>object</td><td>已归一化的运行参数。</td></tr>
@@ -405,9 +435,9 @@ ws.send(JSON.stringify({
               <thead><tr><th>请求参数</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
               <tbody>
                 <tr><td><code>sessionId</code></td><td>string</td><td>否</td><td>目标会话 ID。不传时会自动新建会话。</td></tr>
-                <tr><td><code>agentName</code></td><td>string</td><td>否</td><td>覆盖当前会话使用的 agent。</td></tr>
-                <tr><td><code>prompt</code></td><td>string | array</td><td>是</td><td>一轮输入文本或多块输入，见上面的块类型表。</td></tr>
-                <tr><td><code>runtimeOptions</code></td><td>object</td><td>否</td><td>本轮覆盖参数，优先级高于会话默认值。</td></tr>
+	                <tr><td><code>prompt</code></td><td>string | array</td><td>是</td><td>一轮输入文本或多块输入，见上面的块类型表。</td></tr>
+	                <tr><td><code>_meta.agentName</code></td><td>string</td><td>否</td><td>覆盖当前会话使用的 agent。</td></tr>
+	                <tr><td><code>_meta.runtimeOptions</code></td><td>object</td><td>否</td><td>本轮覆盖参数，优先级高于会话默认值。</td></tr>
                 <tr><td><code>cwd</code></td><td>string</td><td>否</td><td>仅外部 backend 场景使用。</td></tr>
               </tbody>
             </table>
@@ -418,9 +448,11 @@ ws.send(JSON.stringify({
   "params": {
     "sessionId": "acp-session-abc123",
     "prompt": [{ "type": "text", "text": "人员翻越围栏进入禁区" }],
-    "runtimeOptions": {
-      "workflow": "evidence_first_detection",
-      "selectedSkills": ["behavior-detection"]
+    "_meta": {
+      "runtimeOptions": {
+        "workflow": "evidence_first_detection",
+        "selectedSkills": ["behavior-detection"]
+      }
     }
   }
 }</code></pre>
@@ -514,9 +546,9 @@ ws.send(JSON.stringify({
             <thead><tr><th>方法</th><th>作用</th><th>关键参数</th></tr></thead>
             <tbody>
               <tr><td><code>session/list</code></td><td>列出当前 WebSocket 连接内的会话。</td><td>无，直接返回会话列表。</td></tr>
-              <tr><td><code>session/load</code></td><td>加载并更新已有会话的 cwd/runtimeOptions。</td><td><code>sessionId</code> 必填；可选 <code>cwd</code>、<code>runtimeOptions</code>。</td></tr>
-              <tr><td><code>session/fork</code></td><td>从已有会话派生新会话。</td><td><code>sessionId</code> 必填；可选 <code>newSessionId</code>、<code>threadId</code>、<code>cwd</code>、<code>runtimeOptions</code>。</td></tr>
-              <tr><td><code>session/resume</code></td><td>恢复会话；如果不存在则创建。</td><td><code>sessionId</code> 必填；可选 <code>agentName</code>、<code>threadId</code>、<code>cwd</code>、<code>appTemplateName</code>、<code>runtimeOptions</code>。</td></tr>
+	              <tr><td><code>session/load</code></td><td>加载并更新已有会话的 cwd/runtimeOptions/MCP servers。</td><td><code>sessionId</code> 必填；可选 <code>cwd</code>、<code>mcpServers</code>、<code>_meta.runtimeOptions</code>。</td></tr>
+	              <tr><td><code>session/fork</code></td><td>从已有会话派生新会话。</td><td><code>sessionId</code> 必填；可选 <code>newSessionId</code>、<code>cwd</code>、<code>mcpServers</code>、<code>_meta.runtimeOptions.threadId</code>、<code>_meta.runtimeOptions</code>；不传 <code>mcpServers</code> 时继承源会话。</td></tr>
+	              <tr><td><code>session/resume</code></td><td>恢复会话；如果不存在则创建。</td><td><code>sessionId</code> 必填；可选 <code>cwd</code>、<code>mcpServers</code>、<code>_meta.agentName</code>、<code>_meta.appTemplateName</code>、<code>_meta.runtimeOptions</code>。</td></tr>
               <tr><td><code>session/cancel</code></td><td>取消当前会话正在执行的 prompt。</td><td><code>sessionId</code> 必填。</td></tr>
               <tr><td><code>session/close</code></td><td>关闭会话并清理外部 ACP backend。</td><td><code>sessionId</code> 必填。</td></tr>
               <tr><td><code>session/request_permission</code></td><td>权限请求。没有显式结果时会先发送 <code>session/update: permission_request</code> 给前端，并默认返回 cancelled；前端确认后可再次调用并传 <code>approved=true</code> 或 <code>selectedOptionId</code>。当前 session <code>mode=yolo</code> 时服务端自动批准。</td><td><code>sessionId</code> 必填。</td></tr>
@@ -568,7 +600,7 @@ ws.send(JSON.stringify({
               <tr><td><code>yolo</code></td><td>工具策略同 autonomous，并自动批准 <code>session/request_permission</code>；缺少运行必需输入时仍返回 <code>input_required</code>。</td></tr>
             </tbody>
           </table>
-          <p class="muted"><code>session/set_config_option</code> 当前支持 <code>modelName</code>、<code>temperature</code>、<code>selectedSkills</code>、<code>workflow</code>、<code>sandboxProfile</code>。这些值会写入当前 session 的 <code>runtimeOptions</code>，后续 <code>session/prompt</code> 自动继承；本轮 prompt 里显式传入的 <code>runtimeOptions</code> 仍然优先。</p>
+          <p class="muted"><code>session/set_config_option</code> 当前支持 <code>modelName</code>、<code>temperature</code>、<code>selectedSkills</code>、<code>workflow</code>、<code>sandboxProfile</code>。这些值会写入当前 session 的 <code>runtimeOptions</code>，后续 <code>session/prompt</code> 自动继承；本轮 prompt 里显式传入的 <code>_meta.runtimeOptions</code> 仍然优先。</p>
           <pre><code>ws.send(JSON.stringify({
   jsonrpc: '2.0',
   id: 22,
@@ -611,7 +643,7 @@ ws.send(JSON.stringify({
 
         <section id="runtime-options" class="section">
           <h2>Runtime Options</h2>
-          <p class="muted">在 ACP WebSocket 中，<code>session/prompt.runtimeOptions</code> 优先级最高，<code>session/new.runtimeOptions</code> 次之，<code>appTemplateName</code> 引用的 <code>config/apps/*.json</code> 作为应用默认值；服务初始化传入的模型和 skill 默认值、环境变量、agent JSON 再作为兜底。</p>
+	          <p class="muted">在 ACP WebSocket 中，运行扩展统一放在 <code>params._meta</code>：<code>session/prompt._meta.runtimeOptions</code> 优先级最高，<code>session/new._meta.runtimeOptions</code> 次之，<code>_meta.appTemplateName</code> 引用的 <code>config/apps/*.json</code> 作为应用默认值；服务初始化传入的模型和 skill 默认值、环境变量、agent JSON 再作为兜底。</p>
           <table>
             <thead><tr><th>字段</th><th>说明</th><th>示例</th></tr></thead>
             <tbody>
@@ -626,6 +658,47 @@ ws.send(JSON.stringify({
               <tr><td><code>requestTimeoutSeconds</code></td><td>模型请求超时时间。</td><td><code>120</code></td></tr>
             </tbody>
           </table>
+        </section>
+
+        <section id="thread-workspace" class="section">
+          <h2>线程目录与默认工具</h2>
+          <p class="muted">每个运行线程都有独立文件目录。ACP <code>sessionId</code> 会映射到运行时 <code>threadId</code>；如果调用方没有显式传 <code>threadId</code>，服务会自动生成。目录会在 prompt、上传或文件工具调用时创建。</p>
+          <table>
+            <thead><tr><th>目录或文件</th><th>用途</th><th>模型可见路径</th></tr></thead>
+            <tbody>
+              <tr><td><code>.runtime/threads/{thread_id}/workspace/</code></td><td>ACP 文件操作、工具执行时的工作区，适合中间草稿和可修改工作文件。</td><td><code>/mnt/user-data/workspace/...</code></td></tr>
+              <tr><td><code>.runtime/threads/{thread_id}/uploads/</code></td><td>用户上传文件，<code>/api/uploads/{thread_id}</code> 会写入这里。工具应把它当作输入区。</td><td><code>/mnt/user-data/uploads/...</code></td></tr>
+              <tr><td><code>.runtime/threads/{thread_id}/outputs/</code></td><td>技能、大模型工具和 artifact 写出的持久产物。最终成果应写到这里。</td><td><code>/mnt/user-data/outputs/...</code></td></tr>
+              <tr><td><code>.runtime/threads/{thread_id}/previews/</code></td><td>预览文件。</td><td>通过接口返回的 preview URL 访问。</td></tr>
+              <tr><td><code>.runtime/threads/{thread_id}/versions/</code></td><td>版本文件。</td><td>内部版本目录。</td></tr>
+              <tr><td><code>memory/conversation.jsonl</code></td><td>可恢复对话历史，运行时会用它合并多轮上下文。</td><td>不直接暴露给模型；由运行时注入上下文。</td></tr>
+              <tr><td><code>memory/conversation.md</code></td><td>人可读的对话 transcript。</td><td>不直接暴露给模型；用于排障和审计。</td></tr>
+              <tr><td><code>manifest.json</code></td><td>产物清单，<code>/api/artifacts/{thread_id}</code> 主要读取它和 <code>outputs/</code>。</td><td>通过 <code>artifact_manifest_read</code> 读取。</td></tr>
+            </tbody>
+          </table>
+          <p class="muted">默认 <code>default</code> agent 已内置线程文件和产物工具，所以即使应用模板只选择 domain skill，模型也能先查看当前线程已有输入、产物和工作文件，再决定继续执行哪一步。</p>
+          <table>
+            <thead><tr><th>默认工具</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>present_files</code></td><td>列出当前线程的 <code>outputs/</code>、<code>uploads/</code>，可选列出 <code>workspace/</code>。</td></tr>
+              <tr><td><code>artifact_manifest_read</code></td><td>读取当前线程产物清单。</td></tr>
+              <tr><td><code>artifact_list</code></td><td>列出当前线程 outputs 产物。</td></tr>
+              <tr><td><code>artifact_read</code></td><td>读取文本类 outputs 产物。</td></tr>
+              <tr><td><code>artifact_write</code></td><td>写入持久产物并更新 manifest。</td></tr>
+              <tr><td><code>artifact_patch</code></td><td>补丁式修改文本产物并更新 manifest。</td></tr>
+              <tr><td><code>artifact_manifest_update</code></td><td>更新 primary artifact 或 manifest metadata。</td></tr>
+              <tr><td><code>local_read_file</code></td><td>读取 <code>workspace/</code>、<code>uploads/</code> 或受控 <code>session_cwd</code> 内文本文件。</td></tr>
+              <tr><td><code>local_search_text</code></td><td>在当前工作区内搜索文本。</td></tr>
+              <tr><td><code>local_write_file</code></td><td>写入 workspace 文件。</td></tr>
+              <tr><td><code>local_patch_file</code></td><td>对 workspace 文本文件做精确替换补丁。</td></tr>
+            </tbody>
+          </table>
+          <pre><code>// 推荐：模型或前端先查看线程里已有内容，再继续执行
+present_files({ include_workspace: true })
+artifact_manifest_read({})
+artifact_list({})
+artifact_read({ path: "training-summary.md" })
+local_read_file({ path: "/mnt/user-data/workspace/plan.md" })</code></pre>
         </section>
 
         <section id="responses" class="section">
@@ -1159,7 +1232,7 @@ GET /api/artifacts/thread-001/outputs/report.pdf?download=true</code></pre>
 
         <section id="apps" class="section">
           <h2>Apps 应用模板接口</h2>
-          <p class="muted">应用模板是会话初始 JSON 配置，文件位于 <code>config/apps/*.json</code>，也兼容 <code>config/apps/templates.json</code> 集合文件。Workbench 应用中心不写死模板，只调用 <code>GET /api/apps/templates</code>；模板用于把一个产品入口绑定到默认 <code>agent_name</code>、<code>workflow</code>、<code>selected_skills</code>、<code>selected_mcp_tools</code>、<code>runtime_options</code> 和示例 prompt。ACP WebSocket 可在 <code>session/new</code> 中传 <code>appTemplateName</code> 引用模板。</p>
+	          <p class="muted">应用模板是会话初始 JSON 配置，文件位于 <code>config/apps/*.json</code>，也兼容 <code>config/apps/templates.json</code> 集合文件。Workbench 应用中心不写死模板，只调用 <code>GET /api/apps/templates</code>；模板用于把一个产品入口绑定到默认 <code>agent_name</code>、<code>workflow</code>、<code>selected_skills</code>、<code>selected_mcp_tools</code>、<code>runtime_options</code> 和示例 prompt。ACP WebSocket 在 <code>session/new.params._meta.appTemplateName</code> 中引用模板。</p>
           <table>
             <thead><tr><th>接口</th><th>说明</th><th>响应</th></tr></thead>
             <tbody>
@@ -1172,8 +1245,8 @@ ls config/apps
 cat config/apps/iot-architecture-diagram.json
 
 # 通过 HTTP 查看
-curl http://127.0.0.1:8010/api/apps/templates
-curl http://127.0.0.1:8010/api/apps/templates/iot-architecture-diagram</code></pre>
+curl http://127.0.0.1:8000/api/apps/templates
+curl http://127.0.0.1:8000/api/apps/templates/iot-architecture-diagram</code></pre>
           <pre><code>{
   "name": "iot-architecture-diagram",
   "title": "IoT 架构图",
@@ -1191,15 +1264,53 @@ curl http://127.0.0.1:8010/api/apps/templates/iot-architecture-diagram</code></p
           <table>
             <thead><tr><th>配置项</th><th>说明</th></tr></thead>
             <tbody>
-              <tr><td><code>name</code></td><td>模板唯一名，用于 URL 路径和 ACP <code>appTemplateName</code>。</td></tr>
+	              <tr><td><code>name</code></td><td>模板唯一名，用于 URL 路径和 ACP <code>_meta.appTemplateName</code>。</td></tr>
               <tr><td><code>category</code> / <code>icon</code> / <code>tags</code></td><td>应用中心卡片展示与筛选信息。</td></tr>
               <tr><td><code>agent_name</code></td><td>默认 agent，必须引用已有 <code>config/agents/*.json</code>。</td></tr>
               <tr><td><code>workflow</code></td><td>默认工作流；为空时走 agent 默认链路。</td></tr>
               <tr><td><code>selected_skills</code></td><td>默认启用的 Skill 列表。</td></tr>
               <tr><td><code>selected_mcp_tools</code></td><td>默认启用的 MCP 工具列表。</td></tr>
-              <tr><td><code>runtime_options</code></td><td>模板默认运行参数；请求显式传入的 <code>runtimeOptions</code> 优先级更高，<code>skill_parameters</code> 会按 Skill 合并。</td></tr>
+	              <tr><td><code>runtime_options</code></td><td>模板默认运行参数；请求显式传入的 <code>_meta.runtimeOptions</code> 优先级更高，<code>skill_parameters</code> 会按 Skill 合并。</td></tr>
             </tbody>
           </table>
+          <h3>自主训练模板：reference-image-yolo-training</h3>
+          <p class="muted"><code>reference-image-yolo-training</code> 是参考图驱动的 YOLO 自主训练入口。它使用 <code>agent_loop</code>，默认 <code>mode: "yolo"</code>，并选择主 skill <code>reference-image-yolo-trainer</code>。运行时会把 composite skill 展开成子技能和默认线程工具一起暴露给模型。</p>
+          <table>
+            <thead><tr><th>阶段</th><th>负责 skill</th><th>关键产物</th></tr></thead>
+            <tbody>
+              <tr><td><code>generate_images</code></td><td><code>image-dataset-generation</code></td><td><code>image-dataset-generation.md</code> 或生成图片目录。</td></tr>
+              <tr><td><code>auto_annotate</code></td><td><code>data-auto-annotation</code></td><td><code>annotations.coco.json</code>、<code>data-auto-annotation.md</code>。</td></tr>
+              <tr><td><code>build_yolo_dataset</code></td><td><code>dataset-curator</code></td><td><code>data.yaml</code>、<code>dataset-curator.md</code>、<code>dataset-curator.json</code>。</td></tr>
+              <tr><td><code>train_detector</code></td><td><code>cpu-training-runner</code></td><td><code>best.pt</code>、<code>last.pt</code>、<code>results.csv</code>、<code>args.yaml</code>、<code>training-summary.md</code>。</td></tr>
+              <tr><td><code>evaluate_detector</code></td><td><code>detector-evaluator</code></td><td><code>detector-evaluator.md</code>、<code>detector-evaluator.json</code>。</td></tr>
+              <tr><td><code>record_experiment</code></td><td><code>experiment-ledger</code></td><td><code>experiment-ledger.md</code>、<code>experiment-ledger.json</code>。</td></tr>
+            </tbody>
+          </table>
+          <p class="muted">闭环完成证据以当前线程 artifacts 为准：至少需要 <code>best.pt</code>、<code>results.csv</code>、<code>training-summary.md</code>。stage 进度会同时识别 skill 输出标记和 stage 声明的 <code>produces</code> 产物。</p>
+          <pre><code>{
+  "method": "session/new",
+  "params": {
+    "sessionId": "s-reference-yolo",
+    "_meta": {
+      "appTemplateName": "reference-image-yolo-training",
+      "runtimeOptions": { "threadId": "thread-reference-yolo" }
+    }
+  }
+}
+
+{
+  "method": "session/prompt",
+  "params": {
+    "sessionId": "s-reference-yolo",
+    "prompt": [
+      {
+        "type": "text",
+        "text": "根据上传参考图训练棕榈果 YOLO 检测模型，labels=palm fruit，先用 mock=true 验证完整自主训练闭环。"
+      }
+    ]
+  }
+}</code></pre>
+          <p class="muted">本地 mock smoke 已验证 runtime 链路能生成并复核 <code>best.pt</code>、<code>results.csv</code>、<code>training-summary.md</code> 等产物。真实生产训练仍依赖外部大模型工具调用质量、生图服务、自动标注服务、YOLO 训练环境和评估集。</p>
         </section>
 
         <section id="plugins" class="section">
@@ -1214,7 +1325,7 @@ curl http://127.0.0.1:8010/api/apps/templates/iot-architecture-diagram</code></p
               <tr><td><code>/api/workflows/plugins/{plugin_id}</code></td><td>DELETE</td><td>删除 workflow 插件；protected 插件不可删除。</td><td>Admin token</td></tr>
             </tbody>
           </table>
-          <pre><code>curl -X POST http://127.0.0.1:8010/api/workflows/plugins \
+          <pre><code>curl -X POST http://127.0.0.1:8000/api/workflows/plugins \
   -H "Authorization: Bearer $RUNTIME_API_TOKEN" \
   -F "file=@workflow-plugin.zip"</code></pre>
 
@@ -1373,7 +1484,7 @@ int exitCode = process.waitFor();
 
         <section id="bootstrap" class="section">
           <h2>后端初始化模型与 Skill</h2>
-          <p class="muted">模型管理由后端做时，推荐通过 <code>create_app(bootstrap=...)</code> 或等价容器配置注入。请求级 runtimeOptions 仍然拥有最高优先级。</p>
+          <p class="muted">模型管理由后端做时，推荐通过 <code>create_app(bootstrap=...)</code> 或等价容器配置注入。请求级 <code>_meta.runtimeOptions</code> 仍然拥有最高优先级。</p>
           <pre><code>from app.main import create_app
 
 app = create_app(
@@ -1398,7 +1509,7 @@ app = create_app(
 )</code></pre>
           <div class="callout">
             <strong>优先级</strong>
-            <p><code>runtimeOptions</code> 请求覆盖 &gt; 服务初始化模型/skills &gt; 环境变量 &gt; <code>config/agents/default.json</code> 默认值。</p>
+	            <p><code>_meta.runtimeOptions</code> 请求覆盖 &gt; 服务初始化模型/skills &gt; 环境变量 &gt; <code>config/agents/default.json</code> 默认值。</p>
           </div>
         </section>
       </div>

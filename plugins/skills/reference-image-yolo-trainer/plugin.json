@@ -1,0 +1,9 @@
+{
+  "id": "reference-image-yolo-trainer",
+  "name": "reference-image-yolo-trainer",
+  "version": "0.1.0",
+  "description": "Composite reference-image YOLO training skill wrapper.",
+  "skills": [
+    "skills/reference-image-yolo-trainer/manifest.json"
+  ]
+}

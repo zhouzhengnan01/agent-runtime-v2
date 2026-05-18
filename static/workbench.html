@@ -3078,7 +3078,7 @@
     };
 
     const THREAD_STORAGE_KEY = 'jetlinks.runtime.threadId';
-    const DEFAULT_APP_TEMPLATE_NAME = 'algorithm-cpu-training-sandbox';
+    const DEFAULT_APP_TEMPLATE_NAME = 'general-jetlinks-assistant';
     const MAX_TIMELINE_ITEMS = 120;
     const MAX_CHAT_UPLOAD_BYTES = 128 * 1024 * 1024;
     const CHAT_UPLOAD_CONCURRENCY = 3;
@@ -3427,6 +3427,13 @@
       }
       renderInspectorTabs();
       schedulePanelUpdate();
+    }
+
+    function runStartedTimelineText(data) {
+      const threadId = data.thread_id || '';
+      const workflow = data.workflow;
+      if (!workflow || workflow === 'agent_loop') return threadId;
+      return threadId ? `${workflow} · ${threadId}` : workflow;
     }
 
     function schedulePanelUpdate() {
@@ -6468,6 +6475,10 @@
       const outboundMessages = applyCapabilityContext(state.messages
         .filter((message) => !message.streaming)
         .map(({ role, content }) => ({ role, content })));
+      const acpHistoryMessages = applyCapabilityContext(state.messages
+        .slice(0, -1)
+        .filter((message) => !message.streaming)
+        .map(({ role, content }) => ({ role, content })));
       beginAssistantMessage();
       if (state.pendingAutoContinueStatus) {
         setAssistantProgress(state.pendingAutoContinueStatus);
@@ -6491,7 +6502,7 @@
         const attachments = await attachmentsForRequest();
         if (els.transport.value === 'acp-ws') {
           try {
-            await sendViaAcpWs(requestAgent, content, threadId, attachments, outboundMessages, requestWorkflow);
+            await sendViaAcpWs(requestAgent, content, threadId, attachments, acpHistoryMessages, requestWorkflow);
           } catch (err) {
             if (!shouldFallbackToSse(err)) throw err;
             addTimeline('连接降级', 'ACP WS 已断开，切换 SSE');
@@ -6560,16 +6571,16 @@
       return runtimeOptions;
     }
 
-    function buildAcpRuntimeOptions(threadId, workflow) {
-      const runtimeOptions = {
-        ...selectedAppTemplateRuntimeOptions(),
-        threadId,
-        selectedSkills: [...state.selectedChatSkills],
+	    function buildAcpRuntimeOptions(threadId, workflow) {
+	      const runtimeOptions = {
+	        ...selectedAppTemplateRuntimeOptions(),
+	        threadId,
+	        selectedSkills: [...state.selectedChatSkills],
         selectedMcpTools: [...state.selectedChatMcpTools]
-      };
-      if (state.selectedAppTemplateName) {
-        runtimeOptions.appTemplateName = state.selectedAppTemplateName;
-        runtimeOptions.modelType = 'chat';
+	      };
+	      if (state.selectedAppTemplateName) {
+	        runtimeOptions.appTemplateName = state.selectedAppTemplateName;
+	        runtimeOptions.modelType = 'chat';
       }
       if (state.yoloExecution) {
         runtimeOptions.mode = 'yolo';
@@ -6578,9 +6589,16 @@
         runtimeOptions.mode = 'autonomous';
         runtimeOptions.configOptions = { max_tool_rounds: 12 };
       }
-      if (workflow) runtimeOptions.workflow = workflow;
-      return runtimeOptions;
-    }
+	      if (workflow) runtimeOptions.workflow = workflow;
+	      return runtimeOptions;
+	    }
+
+	    function buildAcpMeta(agentName, runtimeOptions) {
+	      return {
+	        agentName,
+	        runtimeOptions
+	      };
+	    }
 
     async function sendViaSse(agentName, threadId, attachments, messages, workflow) {
       const runtimeOptions = buildRuntimeOptions(threadId, workflow);
@@ -6660,22 +6678,18 @@
         await rpc('initialize', {
           protocolVersion: 1,
           clientInfo: { name: 'jetlinks-workbench', version: '0.1.0' }
-        });
-        const session = await rpc('new_session', {
-          cwd: '/',
-          agentName: agentName,
-          threadId,
-          runtimeOptions
-        });
-        const promptResult = await rpc('prompt', {
-          sessionId: session.sessionId,
-          agentName: agentName,
-          threadId,
-          prompt: [{ type: 'text', text: content }],
-          messages,
-          attachments,
-          runtimeOptions
-        });
+	        });
+	        const session = await rpc('new_session', {
+	          cwd: '/',
+	          _meta: buildAcpMeta(agentName, runtimeOptions)
+	        });
+	        const promptResult = await rpc('prompt', {
+	          sessionId: session.sessionId,
+	          prompt: [{ type: 'text', text: content }],
+	          messages,
+	          attachments,
+	          _meta: buildAcpMeta(agentName, runtimeOptions)
+	        });
         if (promptResult?.result && !state.finalResultApplied) {
           applyFinalResult(promptResult.result);
         }
@@ -6784,7 +6798,7 @@
       switch (event.type) {
         case 'run.started':
           setAssistantProgress('任务已启动，正在准备上下文…');
-          addTimeline('启动', `${data.workflow || 'workflow'} · ${data.thread_id || ''}`);
+          addTimeline('启动', runStartedTimelineText(data));
           break;
         case 'context.compacted':
           setAssistantProgress('上下文较长，正在压缩后继续执行…');

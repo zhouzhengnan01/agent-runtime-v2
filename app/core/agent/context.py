@@ -51,13 +51,13 @@ class ConversationContextManager:
         self.keep_last_messages = keep_last_messages
 
     def compact(self, messages: list[dict[str, Any]]) -> ContextCompactionResult:
-        normalized = [dict(message) for message in messages]
+        normalized = self.normalize_for_model_prompt(messages)
         before_chars = self._serialized_chars(normalized)
         if before_chars <= self.max_chars:
             return self._unchanged(normalized, before_chars)
 
         if len(normalized) <= self.keep_first_messages + self.keep_last_messages + 1:
-            return self._unchanged(normalized, before_chars)
+            return self._compact_short_oversized_history(normalized, before_chars)
 
         head_end = min(max(0, self.keep_first_messages), len(normalized))
         tail_start = max(head_end, len(normalized) - max(1, self.keep_last_messages))
@@ -85,6 +85,50 @@ class ConversationContextManager:
             compacted_message_count=len(compacted),
             summarized_message_count=len(middle),
         )
+
+    def _compact_short_oversized_history(
+        self,
+        normalized: list[dict[str, Any]],
+        before_chars: int,
+    ) -> ContextCompactionResult:
+        if len(normalized) <= 1:
+            compacted = [self._summary_message(normalized, max_chars=max(800, self.max_chars // 2))]
+            after_chars = self._serialized_chars(compacted)
+            return ContextCompactionResult(
+                messages=compacted,
+                compacted=True,
+                before_chars=before_chars,
+                after_chars=after_chars,
+                original_message_count=len(normalized),
+                compacted_message_count=len(compacted),
+                summarized_message_count=len(normalized),
+            )
+
+        latest_index = self._latest_user_message_index(normalized)
+        if latest_index <= 0:
+            latest_index = len(normalized) - 1
+        summarized = normalized[:latest_index]
+        tail = normalized[latest_index:]
+        summary_budget = self._summary_budget([], tail)
+        summary = self._summary_message(summarized, max_chars=summary_budget)
+        compacted = [summary, *tail]
+        after_chars = self._serialized_chars(compacted)
+        return ContextCompactionResult(
+            messages=compacted,
+            compacted=True,
+            before_chars=before_chars,
+            after_chars=after_chars,
+            original_message_count=len(normalized),
+            compacted_message_count=len(compacted),
+            summarized_message_count=len(summarized),
+        )
+
+    @staticmethod
+    def _latest_user_message_index(messages: list[dict[str, Any]]) -> int:
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") == "user":
+                return index
+        return len(messages) - 1
 
     def _summary_budget(self, head: list[dict[str, Any]], tail: list[dict[str, Any]]) -> int:
         preserved_chars = self._serialized_chars([*head, *tail])
@@ -199,6 +243,98 @@ class ConversationContextManager:
             compacted_message_count=len(messages),
             summarized_message_count=0,
         )
+
+    @classmethod
+    def normalize_for_model_prompt(cls, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return model-safe chat history without changing valid transcripts.
+
+        OpenAI-compatible chat completions require tool outputs to correspond to
+        prior assistant tool calls. Stored history can become invalid after
+        manual edits, legacy imports, failed runs, or deterministic compaction.
+        This normalizer keeps valid call/output runs intact, drops orphan tool
+        outputs, and inserts a short synthetic output only when a prior
+        assistant tool call has no matching tool message before the next
+        non-tool message.
+        """
+
+        normalized: list[dict[str, Any]] = []
+        pending_tool_call_ids: list[str] = []
+        for raw_message in messages:
+            message = cls._normalized_message(raw_message)
+            if message is None:
+                continue
+
+            role = message.get("role")
+            if role == "tool":
+                tool_call_id = message.get("tool_call_id")
+                if isinstance(tool_call_id, str) and tool_call_id in pending_tool_call_ids:
+                    normalized.append(message)
+                    pending_tool_call_ids.remove(tool_call_id)
+                continue
+
+            if pending_tool_call_ids:
+                normalized.extend(cls._missing_tool_outputs(pending_tool_call_ids))
+                pending_tool_call_ids = []
+
+            normalized.append(message)
+            if role == "assistant":
+                pending_tool_call_ids = cls._tool_call_ids(message)
+
+        if pending_tool_call_ids:
+            normalized.extend(cls._missing_tool_outputs(pending_tool_call_ids))
+        return normalized
+
+    @staticmethod
+    def _normalized_message(message: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(message, dict):
+            return None
+        role = message.get("role")
+        if role not in {"system", "user", "assistant", "tool"}:
+            return None
+        normalized = dict(message)
+        content = normalized.get("content")
+        if content is None:
+            normalized["content"] = ""
+        elif not isinstance(content, str):
+            normalized["content"] = ConversationContextManager._content_text(content)
+        return normalized
+
+    @staticmethod
+    def _tool_call_ids(message: dict[str, Any]) -> list[str]:
+        raw_calls = message.get("tool_calls")
+        if not isinstance(raw_calls, list):
+            return []
+        ids: list[str] = []
+        for index, raw_call in enumerate(raw_calls):
+            if not isinstance(raw_call, dict):
+                continue
+            raw_id = raw_call.get("id")
+            call_id = raw_id if isinstance(raw_id, str) and raw_id else f"call_{index}"
+            ids.append(call_id)
+        return ids
+
+    @staticmethod
+    def _missing_tool_outputs(tool_call_ids: list[str]) -> list[dict[str, Any]]:
+        return [
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps(
+                    {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Tool call output was not available in stored conversation history.",
+                            }
+                        ],
+                        "structuredContent": {"missing_tool_output": True},
+                        "isError": True,
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+            for call_id in tool_call_ids
+        ]
 
 
 def _has_tool_calls(message: dict[str, Any]) -> bool:

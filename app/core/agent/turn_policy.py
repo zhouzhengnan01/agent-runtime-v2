@@ -129,6 +129,7 @@ def decide_turn_policy(input_state: TurnPolicyInput) -> TurnPolicy:
     execute_markers = (
         "生成",
         "修改",
+        "修复",
         "写",
         "训练",
         "执行",
@@ -140,6 +141,7 @@ def decide_turn_policy(input_state: TurnPolicyInput) -> TurnPolicy:
         "train",
         "implement",
         "build",
+        "fix",
     )
     explore_markers = (
         "看看",
@@ -156,10 +158,12 @@ def decide_turn_policy(input_state: TurnPolicyInput) -> TurnPolicy:
         "read",
     )
 
-    if any(marker in lower_text for marker in verify_markers) or any(marker in text for marker in verify_markers):
-        return TurnPolicy(phase="verify", reason="The user request emphasizes validation or review.")
-    if any(marker in lower_text for marker in execute_markers) or any(marker in text for marker in execute_markers):
+    has_execute_marker = any(marker in lower_text for marker in execute_markers) or any(marker in text for marker in execute_markers)
+    has_verify_marker = any(marker in lower_text for marker in verify_markers) or any(marker in text for marker in verify_markers)
+    if has_execute_marker:
         return TurnPolicy(phase="execute", reason="The user request appears to ask for concrete changes or outputs.")
+    if has_verify_marker:
+        return TurnPolicy(phase="verify", reason="The user request emphasizes validation or review.")
     if artifact_count > 0 and _latest_user_message_is_short(input_state.messages):
         return TurnPolicy(phase="verify", reason="Existing thread artifacts are available and the new turn is short.")
     if any(marker in lower_text for marker in explore_markers) or any(marker in text for marker in explore_markers):

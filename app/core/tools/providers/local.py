@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import subprocess
@@ -12,6 +13,7 @@ from app.core.tools.schemas import ToolDefinition, ToolInvocationResult
 
 LOCAL_TOOL_NAMES = {
     "local_read_file",
+    "local_patch_file",
     "local_write_file",
     "local_search_text",
     "local_todo",
@@ -37,6 +39,8 @@ class LocalToolProvider:
                 return self._read_file(paths, arguments)
             if operation == "write_file":
                 return self._write_file(paths, arguments)
+            if operation == "patch_file":
+                return self._patch_file(paths, arguments)
             if operation == "search_text":
                 return self._search_text(paths, arguments)
             if operation == "todo":
@@ -58,9 +62,9 @@ class LocalToolProvider:
         )
 
     def _read_file(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
-        target = self._workspace_path(paths, str(arguments.get("path") or ""))
+        target = self._workspace_path(paths, str(arguments.get("path") or ""), arguments)
         if not target.is_file():
-            raise FileNotFoundError(f"File not found: {self._display_path(paths, target)}")
+            raise FileNotFoundError(f"File not found: {self._display_path(paths, target, arguments)}")
         max_chars = self._bounded_int(arguments.get("max_chars"), default=12000, minimum=100, maximum=50000)
         text = target.read_text(encoding="utf-8", errors="replace")
         truncated = len(text) > max_chars
@@ -68,7 +72,7 @@ class LocalToolProvider:
         return ToolInvocationResult(
             content=[{"type": "text", "text": content}],
             structured_content={
-                "path": self._display_path(paths, target),
+                "path": self._display_path(paths, target, arguments),
                 "chars": len(content),
                 "truncated": truncated,
             },
@@ -76,11 +80,11 @@ class LocalToolProvider:
         )
 
     def _write_file(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
-        target = self._workspace_path(paths, str(arguments.get("path") or ""))
+        target = self._workspace_path(paths, str(arguments.get("path") or ""), arguments)
         content = str(arguments.get("content") or "")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        display_path = self._display_path(paths, target)
+        display_path = self._display_path(paths, target, arguments)
         return ToolInvocationResult(
             content=[{"type": "text", "text": f"Wrote {len(content)} characters to {display_path}"}],
             structured_content={
@@ -90,13 +94,50 @@ class LocalToolProvider:
             is_error=False,
         )
 
+    def _patch_file(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
+        target = self._workspace_path(paths, str(arguments.get("path") or ""), arguments)
+        old_text = str(arguments.get("old_text") or "")
+        new_text = str(arguments.get("new_text") or "")
+        if not old_text:
+            raise ValueError("old_text is required")
+        if not target.is_file():
+            raise FileNotFoundError(f"File not found: {self._display_path(paths, target, arguments)}")
+        original = target.read_text(encoding="utf-8", errors="replace")
+        occurrences = original.count(old_text)
+        display_path = self._display_path(paths, target, arguments)
+        if occurrences == 0:
+            raise ValueError(f"old_text was not found in {display_path}")
+        if occurrences > 1:
+            raise ValueError(f"old_text matched {occurrences} times in {display_path}; expected exactly one")
+        updated = original.replace(old_text, new_text, 1)
+        target.write_text(updated, encoding="utf-8")
+        diff = "".join(
+            difflib.unified_diff(
+                original.splitlines(keepends=True),
+                updated.splitlines(keepends=True),
+                fromfile=f"a/{display_path}",
+                tofile=f"b/{display_path}",
+                n=3,
+            )
+        )
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": f"Patched {display_path}\n{diff[:12000]}"}],
+            structured_content={
+                "path": display_path,
+                "replacements": 1,
+                "diff": diff[:50000],
+                "diff_truncated": len(diff) > 50000,
+            },
+            is_error=False,
+        )
+
     def _search_text(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
         pattern = str(arguments.get("pattern") or "")
         if not pattern:
             raise ValueError("pattern is required")
-        root = self._workspace_path(paths, str(arguments.get("path") or "."))
+        root = self._workspace_path(paths, str(arguments.get("path") or "."), arguments)
         if not root.exists():
-            raise FileNotFoundError(f"Path not found: {self._display_path(paths, root)}")
+            raise FileNotFoundError(f"Path not found: {self._display_path(paths, root, arguments)}")
         max_results = self._bounded_int(arguments.get("max_results"), default=50, minimum=1, maximum=200)
         case_sensitive = bool(arguments.get("case_sensitive", False))
         needle = pattern if case_sensitive else pattern.lower()
@@ -116,7 +157,7 @@ class LocalToolProvider:
                 if needle in haystack:
                     results.append(
                         {
-                            "path": self._display_path(paths, file_path),
+                            "path": self._display_path(paths, file_path, arguments),
                             "line": line_number,
                             "text": line[:500],
                         }
@@ -170,9 +211,9 @@ class LocalToolProvider:
         command = str(arguments.get("command") or "").strip()
         if not command:
             raise ValueError("command is required")
-        cwd = self._workspace_path(paths, str(arguments.get("cwd") or "."))
+        cwd = self._workspace_path(paths, str(arguments.get("cwd") or "."), arguments)
         if not cwd.is_dir():
-            raise NotADirectoryError(f"cwd is not a directory: {self._display_path(paths, cwd)}")
+            raise NotADirectoryError(f"cwd is not a directory: {self._display_path(paths, cwd, arguments)}")
         timeout = self._bounded_int(arguments.get("timeout_seconds"), default=20, minimum=1, maximum=60)
         max_chars = self._bounded_int(arguments.get("max_chars"), default=12000, minimum=100, maximum=50000)
         completed = subprocess.run(
@@ -199,7 +240,7 @@ class LocalToolProvider:
             content=[{"type": "text", "text": text}],
             structured_content={
                 "command": command,
-                "cwd": self._display_path(paths, cwd),
+                "cwd": self._display_path(paths, cwd, arguments),
                 "exit_code": completed.returncode,
                 "stdout": stdout,
                 "stderr": stderr,
@@ -293,7 +334,13 @@ class LocalToolProvider:
             return True
 
     @staticmethod
-    def _display_path(paths: ThreadPaths, path: Path) -> str:
+    def _display_path(paths: ThreadPaths, path: Path, arguments: dict[str, Any] | None = None) -> str:
+        raw_session_cwd = str((arguments or {}).get("_session_cwd") or "").strip()
+        if raw_session_cwd:
+            try:
+                return path.resolve().relative_to(Path(raw_session_cwd).expanduser().resolve()).as_posix()
+            except ValueError:
+                pass
         try:
             return f"/mnt/user-data/uploads/{path.resolve().relative_to(paths.uploads.resolve()).as_posix()}"
         except ValueError:
@@ -304,9 +351,10 @@ class LocalToolProvider:
             return path.name
 
     @staticmethod
-    def _workspace_path(paths: ThreadPaths, raw_path: str) -> Path:
+    def _workspace_path(paths: ThreadPaths, raw_path: str, arguments: dict[str, Any] | None = None) -> Path:
         if not raw_path.strip():
             raise ValueError("path is required")
+        arguments = arguments or {}
         normalized_raw = raw_path.replace("\\", "/")
         uploads_prefix = "/mnt/user-data/uploads"
         if normalized_raw == uploads_prefix or normalized_raw.startswith(uploads_prefix + "/"):
@@ -317,6 +365,31 @@ class LocalToolProvider:
                 candidate.relative_to(uploads)
             except ValueError as exc:
                 raise ValueError("Upload path traversal blocked") from exc
+            return candidate
+        workspace_prefix = "/mnt/user-data/workspace"
+        if normalized_raw == workspace_prefix or normalized_raw.startswith(workspace_prefix + "/"):
+            suffix = normalized_raw[len(workspace_prefix):].lstrip("/")
+            candidate = (paths.workspace / suffix).resolve()
+            workspace = paths.workspace.resolve()
+            try:
+                candidate.relative_to(workspace)
+            except ValueError as exc:
+                raise ValueError("Workspace path traversal blocked") from exc
+            return candidate
+        raw_session_cwd = str(arguments.get("_session_cwd") or "").strip()
+        if raw_session_cwd:
+            session_cwd = Path(raw_session_cwd).expanduser().resolve()
+            if not session_cwd.is_dir():
+                raise NotADirectoryError(f"session cwd is not a directory: {session_cwd}")
+            candidate = (
+                Path(normalized_raw).expanduser().resolve()
+                if Path(normalized_raw).is_absolute()
+                else (session_cwd / normalized_raw.lstrip("/")).resolve()
+            )
+            try:
+                candidate.relative_to(session_cwd)
+            except ValueError as exc:
+                raise ValueError("Workspace path traversal blocked") from exc
             return candidate
         normalized = normalized_raw.lstrip("/")
         candidate = (paths.workspace / normalized).resolve()
@@ -359,6 +432,26 @@ def local_tool_definitions() -> list[ToolDefinition]:
                 "required": ["path", "content"],
             },
             source={"type": LocalToolProvider.source_type, "operation": "write_file"},
+            editable=False,
+        ),
+        ToolDefinition(
+            name="local_patch_file",
+            title="Patch Workspace File",
+            description=(
+                "Patch a UTF-8 text file by replacing one exact old_text occurrence with new_text. "
+                "Use this for localized edits, especially in large files. The patch is rejected if "
+                "old_text is missing or matches more than once."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+            source={"type": LocalToolProvider.source_type, "operation": "patch_file"},
             editable=False,
         ),
         ToolDefinition(

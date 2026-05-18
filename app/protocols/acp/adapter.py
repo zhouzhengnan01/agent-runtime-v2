@@ -211,14 +211,13 @@ class AcpRuntimeAdapter:
         app_template = self._app_template_from_params(params)
         session_runtime_options = _new_session_runtime_options(params, app_template)
         agent_name = (
-            _string(params.get("agentName") or params.get("agent_name") or params.get("agent"))
+            _agent_name_from_meta(params)
             or (app_template.agent_name if app_template is not None else None)
             or "default"
         )
         agent_config = self.loader.load(agent_name)
         thread_id = (
             _string(session_runtime_options.get("thread_id"))
-            or _string(params.get("threadId") or params.get("thread_id"))
             or f"acp-{uuid4().hex[:12]}"
         )
         session_id = _string(params.get("sessionId") or params.get("session_id")) or f"acp-session-{uuid4().hex[:12]}"
@@ -229,11 +228,13 @@ class AcpRuntimeAdapter:
             stored_runtime_options["model_name"] = model_id
         stored_runtime_options = self._resolve_model_runtime_options(stored_runtime_options)
         model_name = _string(stored_runtime_options.get("model_name"))
+        mcp_servers = _mcp_servers_from_params(params)
         sessions[session_id] = AcpWebSocketSession(
             session_id=session_id,
             thread_id=thread_id,
             agent_name=agent_name,
             cwd=cwd,
+            mcp_servers=mcp_servers,
             backend_type=agent_config.backend.type,
             model_id=model_id,
             model_name=model_name,
@@ -247,6 +248,7 @@ class AcpRuntimeAdapter:
             "threadId": thread_id,
             "agentName": agent_name,
             "cwd": cwd,
+            "mcpServers": _mcp_servers_response(mcp_servers),
             "backend": {"type": agent_config.backend.type},
             "appTemplateName": app_template.name if app_template is not None else None,
             "runtimeOptions": _runtime_options_response(stored_runtime_options),
@@ -271,7 +273,7 @@ class AcpRuntimeAdapter:
             session_id = str(session_result["sessionId"])
 
         session = sessions[session_id]
-        agent_name = _string(params.get("agentName") or params.get("agent_name") or params.get("agent")) or session.agent_name
+        agent_name = _agent_name_from_meta(params) or session.agent_name
         agent = self.loader.load(agent_name)
         thread_id = _resolve_thread_id(params, session)
         runtime_options = self._prompt_runtime_options(params, session, thread_id)
@@ -354,6 +356,7 @@ class AcpRuntimeAdapter:
                 session.cwd,
                 artifact_store=self.runtime.artifact_store,
                 thread_id=session.thread_id,
+                mcp_servers=session.mcp_servers,
             )
             session.backend = backend
             session.backend_session_id = backend.backend_session_id
@@ -393,6 +396,7 @@ class AcpRuntimeAdapter:
                     "threadId": session.thread_id,
                     "agentName": session.agent_name,
                     "cwd": session.cwd,
+                    "mcpServers": _mcp_servers_response(session.mcp_servers),
                     "backend": {"type": session.backend_type},
                     "modelId": session.model_id,
                     "modelName": session.model_name,
@@ -413,6 +417,8 @@ class AcpRuntimeAdapter:
         cwd = _string(params.get("cwd"))
         if cwd is not None:
             session.cwd = cwd
+        if _has_mcp_servers(params):
+            session.mcp_servers = _mcp_servers_from_params(params)
         raw_options = _runtime_options_payload(params)
         requested_model = _string(raw_options.get("model_name"))
         session.runtime_options = self._merge_and_resolve_runtime_options(session.runtime_options, raw_options)
@@ -667,15 +673,16 @@ class AcpRuntimeAdapter:
         requested_model = _string(raw_options.get("model_name"))
         thread_id = (
             _string(runtime_options.get("thread_id"))
-            or _string(params.get("threadId") or params.get("thread_id"))
             or f"acp-{uuid4().hex[:12]}"
         )
         cwd = _string(params.get("cwd")) or source.cwd
+        mcp_servers = _mcp_servers_from_params(params) if _has_mcp_servers(params) else list(source.mcp_servers)
         sessions[session_id] = AcpWebSocketSession(
             session_id=session_id,
             thread_id=thread_id,
             agent_name=source.agent_name,
             cwd=cwd,
+            mcp_servers=mcp_servers,
             backend_type=source.backend_type,
             model_id=requested_model or source.model_id,
             model_name=_string(runtime_options.get("model_name")) or source.model_name,
@@ -689,6 +696,7 @@ class AcpRuntimeAdapter:
             "threadId": thread_id,
             "agentName": source.agent_name,
             "cwd": cwd,
+            "mcpServers": _mcp_servers_response(mcp_servers),
             "appTemplateName": source.app_template_name,
             "runtimeOptions": _runtime_options_response(_without_thread_id(runtime_options)),
         }
@@ -701,22 +709,23 @@ class AcpRuntimeAdapter:
             app_template = self._app_template_from_params(params)
             runtime_options = _new_session_runtime_options(params, app_template)
             agent_name = (
-                _string(params.get("agentName") or params.get("agent_name") or params.get("agent"))
+                _agent_name_from_meta(params)
                 or (app_template.agent_name if app_template is not None else None)
                 or "default"
             )
             agent_config = self.loader.load(agent_name)
             model_id = _string(runtime_options.get("model_name"))
             runtime_options = self._resolve_model_runtime_options(runtime_options)
+            mcp_servers = _mcp_servers_from_params(params)
             sessions[session_id] = AcpWebSocketSession(
                 session_id=session_id,
                 thread_id=(
                     _string(runtime_options.get("thread_id"))
-                    or _string(params.get("threadId") or params.get("thread_id"))
                     or f"acp-{uuid4().hex[:12]}"
                 ),
                 agent_name=agent_name,
                 cwd=cwd,
+                mcp_servers=mcp_servers,
                 backend_type=agent_config.backend.type,
                 model_id=model_id,
                 model_name=_string(runtime_options.get("model_name")),
@@ -727,6 +736,8 @@ class AcpRuntimeAdapter:
             )
         else:
             session.cwd = cwd
+            if _has_mcp_servers(params):
+                session.mcp_servers = _mcp_servers_from_params(params)
             raw_options = _runtime_options_payload(params)
             requested_model = _string(raw_options.get("model_name"))
             session.runtime_options = self._merge_and_resolve_runtime_options(session.runtime_options, raw_options)
@@ -756,6 +767,9 @@ class AcpRuntimeAdapter:
         merged["thread_id"] = thread_id
         merged["mode"] = _mode_from_options(merged, fallback=session.mode_id)
         merged["config_options"] = dict(session.config_options)
+        merged["config_options"]["session_cwd"] = session.cwd
+        if session.mcp_servers:
+            merged["config_options"]["mcpServers"] = list(session.mcp_servers)
         return RuntimeOptions.model_validate(merged)
 
     def _merge_and_resolve_runtime_options(self, base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -849,7 +863,7 @@ def _new_session_runtime_options(params: dict[str, Any], app_template: AppTempla
 def _template_runtime_options(app_template: AppTemplate | None) -> dict[str, Any]:
     if app_template is None:
         return {}
-    payload = _runtime_options_payload({"runtimeOptions": app_template.runtime_options})
+    payload = _runtime_options_from_source(app_template.runtime_options)
     if app_template.workflow is not None and "workflow" not in payload:
         payload["workflow"] = app_template.workflow
     if app_template.selected_skills and "selected_skills" not in payload:
@@ -961,18 +975,98 @@ def _auto_permission_option(raw_options: object) -> str | None:
 
 def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
     meta = _params(params.get("_meta"))
-    jetlinks_meta = _params(meta.get("jetlinks"))
     sources = [
-        params,
-        _params(jetlinks_meta.get("runtimeOptions") or jetlinks_meta.get("runtime_options")),
-        _params(params.get("runtimeOptions") or params.get("runtime_options")),
+        meta,
+        _params(meta.get("runtimeOptions") or meta.get("runtime_options")),
     ]
     payload: dict[str, Any] = {}
     for source in sources:
-        for raw_name, field_name in _RUNTIME_OPTION_ALIASES.items():
-            if raw_name in source:
-                payload[field_name] = source[raw_name]
+        payload.update(_runtime_options_from_source(source))
     return payload
+
+
+def _runtime_options_from_source(source: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for raw_name, field_name in _RUNTIME_OPTION_ALIASES.items():
+        if raw_name in source:
+            payload[field_name] = source[raw_name]
+    return payload
+
+
+def _has_mcp_servers(params: dict[str, Any]) -> bool:
+    return "mcpServers" in params or "mcp_servers" in params
+
+
+def _mcp_servers_from_params(params: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_servers = params.get("mcpServers")
+    if raw_servers is None:
+        raw_servers = params.get("mcp_servers")
+    if not isinstance(raw_servers, list):
+        return []
+    servers: list[dict[str, Any]] = []
+    for raw_server in raw_servers:
+        server = _mcp_server_from_source(raw_server)
+        if server is not None:
+            servers.append(server)
+    return servers
+
+
+def _mcp_server_from_source(raw_server: object) -> dict[str, Any] | None:
+    if not isinstance(raw_server, dict):
+        return None
+    server: dict[str, Any] = {}
+    for key in ("name", "type", "url", "command"):
+        value = _string(raw_server.get(key))
+        if value:
+            server[key] = value
+    for key in ("headers", "args", "env"):
+        value = raw_server.get(key)
+        if isinstance(value, list):
+            server[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+    meta = _params(raw_server.get("_meta"))
+    if meta:
+        server["_meta"] = meta
+    return server if server else None
+
+
+def _mcp_servers_response(mcp_servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_redacted_mcp_server(server) for server in mcp_servers]
+
+
+def _redacted_mcp_server(server: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(server)
+    headers = payload.get("headers")
+    if isinstance(headers, list):
+        payload["headers"] = [_redacted_header(header) for header in headers]
+    env = payload.get("env")
+    if isinstance(env, list):
+        payload["env"] = [_redacted_env(item) for item in env]
+    return payload
+
+
+def _redacted_header(header: object) -> object:
+    if not isinstance(header, dict):
+        return header
+    payload = dict(header)
+    if "value" in payload and _sensitive_name(_string(payload.get("name"))):
+        payload["value"] = "********"
+    return payload
+
+
+def _redacted_env(item: object) -> object:
+    if not isinstance(item, dict):
+        return item
+    payload = dict(item)
+    if "value" in payload and _sensitive_name(_string(payload.get("name"))):
+        payload["value"] = "********"
+    return payload
+
+
+def _sensitive_name(name: str | None) -> bool:
+    if name is None:
+        return False
+    lowered = name.lower()
+    return any(token in lowered for token in ("authorization", "token", "secret", "key", "password"))
 
 
 def _session_update_runtime_options(params: dict[str, Any]) -> dict[str, Any]:
@@ -1005,17 +1099,18 @@ def _runtime_options_response(runtime_options: dict[str, Any]) -> dict[str, Any]
 
 def _app_template_name(params: dict[str, Any]) -> str | None:
     meta = _params(params.get("_meta"))
-    jetlinks_meta = _params(meta.get("jetlinks"))
     runtime_options = _runtime_options_payload(params)
     return _string(
-        params.get("appTemplateName")
-        or params.get("app_template_name")
-        or params.get("app")
-        or runtime_options.get("app_template_name")
-        or jetlinks_meta.get("appTemplateName")
-        or jetlinks_meta.get("app_template_name")
-        or jetlinks_meta.get("app")
+        runtime_options.get("app_template_name")
+        or meta.get("appTemplateName")
+        or meta.get("app_template_name")
+        or meta.get("app")
     )
+
+
+def _agent_name_from_meta(params: dict[str, Any]) -> str | None:
+    meta = _params(params.get("_meta"))
+    return _string(meta.get("agentName") or meta.get("agent_name") or meta.get("agent"))
 
 
 def _messages_from_params(params: dict[str, Any]) -> list[Message]:
@@ -1023,7 +1118,7 @@ def _messages_from_params(params: dict[str, Any]) -> list[Message]:
     if isinstance(raw_messages, list) and raw_messages:
         messages = [Message.model_validate(item) for item in raw_messages if isinstance(item, dict)]
         prompt_text, _attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
-        if prompt_text:
+        if prompt_text and not _message_matches_user_text(messages[-1] if messages else None, prompt_text):
             messages.append(Message(role="user", content=prompt_text))
         return messages
 
@@ -1031,6 +1126,10 @@ def _messages_from_params(params: dict[str, Any]) -> list[Message]:
     if not text and not prompt_attachments:
         raise ValueError("prompt text or messages are required")
     return [Message(role="user", content=text or " ")]
+
+
+def _message_matches_user_text(message: Message | None, text: str) -> bool:
+    return message is not None and message.role == "user" and message.content == text
 
 
 def _attachments_from_params(params: dict[str, Any]) -> list[Attachment]:

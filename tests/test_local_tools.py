@@ -31,6 +31,13 @@ def test_local_tools_write_read_search_and_todo(tmp_path: Path) -> None:
     assert read_result.is_error is False
     assert "工具闭环" in read_result.content[0]["text"]
 
+    virtual_read_result = service.call_tool(
+        "local_read_file",
+        {**thread_args, "path": "/mnt/user-data/workspace/notes/plan.md"},
+    )
+    assert virtual_read_result.is_error is False
+    assert "工具闭环" in virtual_read_result.content[0]["text"]
+
     search_result = service.call_tool("local_search_text", {**thread_args, "pattern": "agent", "path": "."})
     assert search_result.is_error is False
     assert search_result.structured_content["matches"][0]["path"] == "notes/plan.md"

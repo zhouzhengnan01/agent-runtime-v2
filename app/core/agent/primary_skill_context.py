@@ -110,7 +110,12 @@ def load_primary_skill_context(
             source=source,
         )
 
-    stages = tuple(_normalize_stage(item) for item in raw_stages if _normalize_stage(item) is not None)
+    normalized_stages: list[PrimarySkillStage] = []
+    for item in raw_stages:
+        stage = _normalize_stage(item)
+        if stage is not None:
+            normalized_stages.append(stage)
+    stages = tuple(normalized_stages)
     if not stages:
         return None
     artifact_names = _artifact_names(merged_artifacts)
@@ -226,7 +231,7 @@ def _normalize_stage(item: dict[str, Any]) -> PrimarySkillStage | None:
         return None
     stage_id = str(item.get("id") or _slug(name)).strip() or _slug(name)
     owner_skills = _owner_skills(item)
-    outputs = tuple(_string_list(item.get("outputs")))
+    outputs = tuple(_string_list(item.get("outputs")) or _string_list(item.get("produces")))
     return PrimarySkillStage(
         id=stage_id,
         name=name,
@@ -311,10 +316,11 @@ def _stage_matches_signal(stage: PrimarySkillStage, signal: str) -> bool:
 
 
 def _stage_completed(stage: PrimarySkillStage, artifact_names: set[str]) -> bool:
-    if stage.owner_skills:
-        return all(_owner_skill_completed(name, artifact_names) for name in stage.owner_skills)
     file_outputs = [name for name in stage.outputs if "." in name]
-    return bool(file_outputs) and all(output.lower() in artifact_names for output in file_outputs)
+    output_evidence_completed = bool(file_outputs) and all(output.lower() in artifact_names for output in file_outputs)
+    if stage.owner_skills:
+        return all(_owner_skill_completed(name, artifact_names) for name in stage.owner_skills) or output_evidence_completed
+    return output_evidence_completed
 
 
 def _owner_skill_completed(skill_name: str, artifact_names: set[str]) -> bool:

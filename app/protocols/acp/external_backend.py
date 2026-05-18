@@ -24,8 +24,10 @@ from acp.schema import (
     DeniedOutcome,
     EmbeddedResourceContentBlock,
     EnvVariable,
+    HttpMcpServer,
     ImageContentBlock,
     KillTerminalResponse,
+    McpServerStdio,
     NewSessionResponse,
     PromptResponse,
     ReadTextFileResponse,
@@ -33,6 +35,7 @@ from acp.schema import (
     RequestPermissionResponse,
     ResourceContentBlock,
     SessionInfoUpdate,
+    SseMcpServer,
     TerminalExitStatus,
     TerminalOutputResponse,
     TextContentBlock,
@@ -43,7 +46,7 @@ from acp.schema import (
     WaitForTerminalExitResponse,
     WriteTextFileResponse,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.config.agent_config import AgentBackendConfig
@@ -51,6 +54,7 @@ from app.core.config.agent_config import AgentBackendConfig
 
 AcpUpdateSender = Any
 PromptBlock = TextContentBlock | ImageContentBlock | AudioContentBlock | ResourceContentBlock | EmbeddedResourceContentBlock
+McpServerConfig = HttpMcpServer | SseMcpServer | McpServerStdio
 SessionUpdate = (
     UserMessageChunk
     | AgentMessageChunk
@@ -64,6 +68,8 @@ SessionUpdate = (
     | SessionInfoUpdate
     | UsageUpdate
 )
+
+_MCP_SERVERS_ADAPTER: TypeAdapter[list[McpServerConfig]] = TypeAdapter(list[McpServerConfig])
 
 
 @dataclass
@@ -272,6 +278,7 @@ class ExternalAcpSession:
         *,
         artifact_store: ArtifactStore,
         thread_id: str,
+        mcp_servers: list[dict[str, Any]] | None = None,
     ) -> ExternalAcpSession:
         if config.command is None:
             raise ValueError("ACP stdio backend requires backend.command")
@@ -286,7 +293,10 @@ class ExternalAcpSession:
         connection, process = await manager.__aenter__()
         try:
             await connection.initialize(protocol_version=PROTOCOL_VERSION)
-            response: NewSessionResponse = await connection.new_session(cwd=cwd, mcp_servers=[])
+            response: NewSessionResponse = await connection.new_session(
+                cwd=cwd,
+                mcp_servers=_typed_mcp_servers(mcp_servers),
+            )
         except Exception:
             await manager.__aexit__(None, None, None)
             raise
@@ -329,6 +339,12 @@ class ExternalAcpSession:
 
     async def cancel(self) -> None:
         await self.connection.cancel(session_id=self.backend_session_id)
+
+
+def _typed_mcp_servers(mcp_servers: list[dict[str, Any]] | None) -> list[McpServerConfig]:
+    if not mcp_servers:
+        return []
+    return _MCP_SERVERS_ADAPTER.validate_python(mcp_servers)
 
 
 def prompt_blocks_from_params(params: dict[str, Any]) -> list[PromptBlock]:

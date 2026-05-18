@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,9 +26,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await cron.scheduler.stop()
 
 
+def _bootstrap_from_env() -> dict[str, Any] | None:
+    path = os.getenv("JETLINKS_RUNTIME_BOOTSTRAP")
+    if not path:
+        return None
+    bootstrap_path = Path(path)
+    if not bootstrap_path.is_file():
+        return None
+    data = json.loads(bootstrap_path.read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else None
+
+
 def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None) -> FastAPI:
-    if bootstrap is not None:
-        default_container.configure(bootstrap)
+    runtime_bootstrap = bootstrap if bootstrap is not None else _bootstrap_from_env()
+    if runtime_bootstrap is not None:
+        default_container.configure(runtime_bootstrap)
     app = FastAPI(title="JetLinks Agent Runtime v2", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
@@ -50,6 +64,12 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
     static_dir = Path(__file__).resolve().parents[1] / "static"
     workbench_path = static_dir / "workbench.html"
     if workbench_path.is_file():
+        @app.get("/workbench", include_in_schema=False)
+        async def workbench_app() -> FileResponse:
+            response = FileResponse(workbench_path)
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
+
         @app.get("/static/workbench.html", include_in_schema=False)
         async def workbench_html() -> FileResponse:
             response = FileResponse(workbench_path)
@@ -63,17 +83,6 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
             response = FileResponse(api_docs_path)
             response.headers["Cache-Control"] = "no-store, max-age=0"
             return response
-
-    workbench_dist = Path(__file__).resolve().parents[1] / "frontend" / "workbench" / "dist"
-    workbench_index = workbench_dist / "index.html"
-    if workbench_index.is_file():
-        @app.get("/workbench", include_in_schema=False)
-        async def workbench_app() -> FileResponse:
-            response = FileResponse(workbench_index)
-            response.headers["Cache-Control"] = "no-store, max-age=0"
-            return response
-
-        app.mount("/workbench", StaticFiles(directory=workbench_dist, html=True), name="workbench")
 
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")

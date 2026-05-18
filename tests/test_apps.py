@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 from app.core.apps import AppTemplateRegistry
 from app.core.apps.models import AppModelOption, select_app_model
 from app.core.apps.runtime_options import merge_runtime_options_with_template
-from app.schemas import RuntimeOptions
+from app.core.agent import AgentRuntime
+from app.core.skills import SkillRegistry
+from app.schemas import ChatRequest, Message, RuntimeOptions
 from app.main import create_app
 from tools.app_smoke_matrix import expected_artifact_patterns, template_expects_artifacts
 
@@ -153,10 +155,10 @@ def test_app_template_registry_rejects_unknown_template(tmp_path: Path) -> None:
 
 
 def test_app_runtime_options_expand_platform_skill_aliases() -> None:
-    template = AppTemplateRegistry().get("_debug-1c81a222b0fa9000")
+    template = AppTemplateRegistry().get("general-jetlinks-assistant")
 
     options = merge_runtime_options_with_template(
-        RuntimeOptions(app_template_name="_debug-1c81a222b0fa9000"),
+        RuntimeOptions(app_template_name="general-jetlinks-assistant", selected_skills=["1778483741456a5glxkmk"]),
         template,
     )
 
@@ -240,6 +242,36 @@ def test_preconfigured_app_template_skills_have_local_entities() -> None:
     assert missing == []
 
 
+def test_effective_app_template_skills_have_local_entities_after_runtime_expansion() -> None:
+    registry = AppTemplateRegistry()
+    runtime = AgentRuntime(app_template_registry=registry)
+    skill_names = {skill.name for skill in SkillRegistry(registry.root_dir).list()}
+
+    missing_by_template: dict[str, list[str]] = {}
+    for template in registry.list():
+        runtime_options = merge_runtime_options_with_template(
+            RuntimeOptions(app_template_name=template.name, thread_id=f"skill-audit-{template.name}"),
+            template,
+        )
+        effective = runtime._effective_request(
+            ChatRequest(
+                messages=[Message(role="user", content=template.prompt_examples[0] if template.prompt_examples else "测试")],
+                runtime_options=runtime_options,
+            )
+        )
+        missing = sorted(
+            {
+                skill_name
+                for skill_name in effective.runtime_options.selected_skills
+                if skill_name not in skill_names
+            }
+        )
+        if missing:
+            missing_by_template[template.name] = missing
+
+    assert missing_by_template == {}
+
+
 def test_preconfigured_app_template_workflows_have_local_entities() -> None:
     registry = AppTemplateRegistry()
     config_workflows = {"agent_loop"} | {path.stem for path in (registry.root_dir / "config" / "workflows").glob("*.json")}
@@ -259,7 +291,7 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
     registry = AppTemplateRegistry()
 
     for template in registry.list():
-        if template.name in {"algorithm-engineer-full-cycle", "algorithm-engineer-workbench", "reference-image-yolo-training"}:
+        if template.name in {"algorithm-engineer-full-cycle", "reference-image-yolo-training"}:
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
         else:
             assert template.runtime_options == {}, template.name
@@ -342,17 +374,17 @@ def test_preconfigured_app_templates_do_not_preselect_artifact_workflow() -> Non
     } == {}
 
 
-def test_algorithm_engineer_workbench_selects_full_stage_skill_chain() -> None:
-    template = AppTemplateRegistry().get("algorithm-engineer-workbench")
+def test_algorithm_engineer_full_cycle_selects_full_stage_skill_chain() -> None:
+    template = AppTemplateRegistry().get("algorithm-engineer-full-cycle")
 
     assert template.workflow == "agent_loop"
     assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
     assert template.selected_skills == [
         "algorithm-engineer",
+        "algorithm-research-scout",
         "dataset-curator",
         "data-auto-annotation",
         "image-dataset-generation",
-        "algorithm-research-scout",
         "model-candidate-selector",
         "remote-gpu-ops",
         "gpu-training-orchestrator",
@@ -377,7 +409,6 @@ def test_algorithm_training_related_templates_use_dedicated_category() -> None:
         "algorithm-cpu-training-sandbox",
         "algorithm-dataset-curation",
         "algorithm-engineer-full-cycle",
-        "algorithm-engineer-workbench",
         "algorithm-evaluation-deployment",
         "algorithm-research-benchmark",
         "algorithm-training-orchestration",
