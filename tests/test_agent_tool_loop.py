@@ -10,6 +10,7 @@ import httpx
 from pytest import MonkeyPatch
 
 from app.core.agent import AgentRuntime
+from app.core.agent.conditional_loop import conditional_loop_policy
 from app.core.agent.primary_skill_context import load_primary_skill_context
 from app.core.agent.tool_loop import ToolCallingAgentLoop
 from app.core.artifacts import ArtifactStore
@@ -825,6 +826,307 @@ def test_agent_loop_exposes_runtime_selected_mcp_tools(
     assert tools_event.data["tool_choice"] == "auto"
 
 
+def test_agent_loop_exposes_session_init_dynamic_tools(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self
+        calls.append({"system_prompt": system_prompt, "messages": list(messages), "tools": tools})
+        if len(calls) == 1:
+            assert [tool["function"]["name"] for tool in tools] == ["jetlinks_session_editor_append"]
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_editor",
+                        name="jetlinks_session_editor_append",
+                        arguments='{"query":"超级管理员"}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        tool_message = next(message for message in messages if message.get("role") == "tool")
+        payload = json.loads(tool_message["content"])
+        assert payload["structuredContent"]["text"] == "【查询结果】超级管理员用户信息"
+        return LlmChatResponse(content="已写入客户端动态工具框。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="session-tools-agent",
+        display_name="Session Tools Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    result, events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="调用客户端 editor.append")],
+                runtime_options=RuntimeOptions(
+                    thread_id="session-dynamic-tools",
+                    config_options={"session_init_tools": "editor.append|【查询结果】超级管理员用户信息"},
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.metadata["tool_call_count"] == 1
+    tools_event = next(event for event in events if event.type == "tools.available")
+    assert tools_event.data["tools"] == ["jetlinks_session_editor_append"]
+    completed = next(event for event in events if event.type == "tool.completed")
+    assert completed.data["structured_content"]["text"] == "【查询结果】超级管理员用户信息"
+
+
+def test_agent_loop_keeps_conditional_client_tool_loops_in_execute_phase(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    system_prompts: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, messages, tools
+        system_prompts.append(system_prompt)
+        if len(system_prompts) == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_editor_1",
+                        name="jetlinks_session_editor_append",
+                        arguments='{"round":1}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        assert "Phase: execute" in system_prompt
+        assert "conditional tool-loop" in system_prompt
+        return LlmChatResponse(content="继续等待下一次查询。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="conditional-session-tools-agent",
+        display_name="Conditional Session Tools Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[
+                    Message(
+                        role="user",
+                        content=(
+                            "帮我查询用户列表，把结果里面的超级管理员的信息放到客户端动态tools框里面，"
+                            "直到查询返回结果里面没有超级管理员用户则停止"
+                        ),
+                    )
+                ],
+                runtime_options=RuntimeOptions(
+                    thread_id="conditional-session-dynamic-tools",
+                    config_options={"session_init_tools": "editor.append|【查询结果】超级管理员用户信息"},
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert len(system_prompts) == 2
+
+
+def test_agent_loop_waits_before_conditional_client_tool_retry(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    llm_calls = 0
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        nonlocal llm_calls
+        del self, system_prompt, messages, tools
+        llm_calls += 1
+        if llm_calls == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_editor_1",
+                        name="jetlinks_session_editor_append",
+                        arguments='{"round":1}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="查询条件已满足，停止。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="conditional-wait-session-tools-agent",
+        display_name="Conditional Wait Session Tools Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    result, events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[
+                    Message(
+                        role="user",
+                        content=(
+                            "如果有则等0.01秒再查询一次，依旧把结果里面的超级管理员的信息放到客户端动态tools框里面，"
+                            "直到查询返回结果里面没有超级管理员用户则停止"
+                        ),
+                    )
+                ],
+                runtime_options=RuntimeOptions(
+                    thread_id="conditional-session-dynamic-tools-wait",
+                    config_options={"session_init_tools": "editor.append|【查询结果】超级管理员用户信息"},
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert llm_calls == 2
+    waiting = next(event for event in events if event.type == "tool.loop.waiting")
+    assert waiting.data["delay_seconds"] == 0.01
+    assert waiting.data["policy"]["marker"] == "超级管理员"
+    assert waiting.data["policy"]["continue_when"] == "contains"
+
+
+def test_conditional_tool_loop_policy_is_domain_agnostic() -> None:
+    absent_stop = conditional_loop_policy(
+        [
+            {
+                "role": "user",
+                "content": "如果还有待处理订单就等2秒再查一次，直到查询返回结果里面没有待处理订单则停止",
+            }
+        ]
+    )
+    present_stop = conditional_loop_policy(
+        [
+            {
+                "role": "user",
+                "content": "每次查询设备任务状态，等500毫秒后重试，直到状态为completed则停止",
+            }
+        ]
+    )
+    configured = conditional_loop_policy(
+        [],
+        RuntimeOptions(
+            config_options={
+                "conditional_tool_loop": {
+                    "marker": "ALARM_CLEARED",
+                    "continue_when": "not_contains",
+                    "poll_interval_seconds": 1.5,
+                }
+            }
+        ),
+    )
+
+    assert absent_stop is not None
+    assert absent_stop.marker == "待处理订单"
+    assert absent_stop.continue_when == "contains"
+    assert absent_stop.delay_seconds == 2
+    assert absent_stop.should_continue("rows: 待处理订单")
+    assert not absent_stop.should_continue("rows: []")
+
+    assert present_stop is not None
+    assert present_stop.marker == "completed"
+    assert present_stop.continue_when == "not_contains"
+    assert present_stop.delay_seconds == 0.5
+    assert present_stop.should_continue("status=running")
+    assert not present_stop.should_continue("status=completed")
+
+    assert configured is not None
+    assert configured.marker == "ALARM_CLEARED"
+    assert configured.continue_when == "not_contains"
+    assert configured.delay_seconds == 1.5
+
+
+def test_conditional_tool_loop_policy_supports_structured_json_conditions() -> None:
+    continue_while_rows = conditional_loop_policy(
+        [],
+        RuntimeOptions(
+            config_options={
+                "conditional_tool_loop": {
+                    "json_path": "rows.length",
+                    "operator": "gt",
+                    "expected": 0,
+                    "poll_interval_seconds": 3,
+                }
+            }
+        ),
+    )
+    stop_when_done = conditional_loop_policy(
+        [],
+        RuntimeOptions(
+            config_options={
+                "conditional_tool_loop": {
+                    "stop_when": {
+                        "json_path": "data.status",
+                        "operator": "eq",
+                        "expected": "DONE",
+                    },
+                    "delay_seconds": 1,
+                }
+            }
+        ),
+    )
+    continue_while_count = conditional_loop_policy(
+        [],
+        RuntimeOptions(
+            config_options={
+                "conditional_tool_loop": {
+                    "retry_when": {
+                        "json_path": "count",
+                        "operator": "gte",
+                        "expected": 1,
+                    }
+                }
+            }
+        ),
+    )
+
+    assert continue_while_rows is not None
+    assert continue_while_rows.should_continue('{"rows":[{"id":1}]}')
+    assert not continue_while_rows.should_continue('{"rows":[]}')
+    assert continue_while_rows.delay_seconds == 3
+
+    assert stop_when_done is not None
+    assert stop_when_done.should_continue('{"data":{"status":"RUNNING"}}')
+    assert not stop_when_done.should_continue('{"data":{"status":"DONE"}}')
+
+    assert continue_while_count is not None
+    assert continue_while_count.should_continue('{"structuredContent":{"count":2}}')
+    assert not continue_while_count.should_continue('{"structuredContent":{"count":0}}')
+
+
 def test_agent_loop_exposes_and_calls_acp_runtime_mcp_server_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -936,6 +1238,146 @@ def test_agent_loop_exposes_and_calls_acp_runtime_mcp_server_tools(
     assert tools_event.data["tools"] == ["jetlinks-session__runtime_status"]
     assert "tools/list" in seen_methods
     assert "tools/call" in seen_methods
+
+
+def test_agent_loop_retries_runtime_mcp_tool_until_structured_condition_stops(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_methods: list[str] = []
+    mcp_tool_calls: list[dict[str, Any]] = []
+    llm_calls: list[dict[str, Any]] = []
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        seen_methods.append(payload["method"])
+        if payload["method"] == "initialize":
+            return httpx.Response(
+                200,
+                headers={"Mcp-Session-Id": "mcp-session-conditional"},
+                json={"jsonrpc": "2.0", "id": payload["id"], "result": {}},
+            )
+        if payload["method"] == "notifications/initialized":
+            assert request.headers["mcp-session-id"] == "mcp-session-conditional"
+            return httpx.Response(202)
+        if payload["method"] == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "query_users",
+                                "description": "Query users by role.",
+                                "inputSchema": {"type": "object", "properties": {"role": {"type": "string"}}},
+                            }
+                        ]
+                    },
+                },
+            )
+        if payload["method"] == "tools/call":
+            assert payload["params"] == {"name": "query_users", "arguments": {"role": "超级管理员"}}
+            mcp_tool_calls.append(payload["params"])
+            rows = [{"username": "超级管理员"}] if len(mcp_tool_calls) == 1 else []
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {
+                        "content": [{"type": "text", "text": f"rows={len(rows)}"}],
+                        "structuredContent": {"rows": rows},
+                    },
+                },
+            )
+        raise AssertionError(payload)
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self
+        llm_calls.append({"system_prompt": system_prompt, "messages": list(messages), "tools": tools})
+        assert [tool["function"]["name"] for tool in tools] == ["db__query_users"]
+        if len(llm_calls) == 2:
+            assert "Phase: execute" in system_prompt
+            assert "conditional tool-loop" in system_prompt
+        if len(llm_calls) <= 2:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id=f"call-query-users-{len(llm_calls)}",
+                        name="db__query_users",
+                        arguments=json.dumps({"role": "超级管理员"}),
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        latest_tool_message = next(message for message in reversed(messages) if message.get("role") == "tool")
+        latest_tool_payload = json.loads(latest_tool_message["content"])
+        assert latest_tool_payload["structuredContent"]["rows"] == []
+        return LlmChatResponse(content="超级管理员用户已经不存在，停止轮询。", finish_reason="stop")
+
+    monkeypatch.setattr(httpx, "Client", lambda **_: original_client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="runtime-mcp-conditional-agent",
+        display_name="Runtime MCP Conditional Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+        runtime={"max_tool_rounds": 4},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    result, events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="查询超级管理员用户，直到不存在则停止")],
+                runtime_options=RuntimeOptions(
+                    thread_id="runtime-mcp-structured-condition",
+                    config_options={
+                        "mcpServers": [
+                            {
+                                "name": "db",
+                                "url": "https://example.test/mcp",
+                                "type": "http",
+                            }
+                        ],
+                        "conditional_tool_loop": {
+                            "json_path": "rows.length",
+                            "operator": "gt",
+                            "expected": 0,
+                            "delay_seconds": 0.01,
+                        },
+                    },
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.reply == "超级管理员用户已经不存在，停止轮询。"
+    assert len(llm_calls) == 3
+    assert len(mcp_tool_calls) == 2
+    assert seen_methods.count("tools/list") == 1
+    assert seen_methods.count("tools/call") == 2
+    waiting_events = [event for event in events if event.type == "tool.loop.waiting"]
+    assert len(waiting_events) == 1
+    assert waiting_events[0].data["delay_seconds"] == 0.01
+    assert waiting_events[0].data["policy"]["condition"] == {
+        "json_path": "rows.length",
+        "operator": "gt",
+        "expected": 0,
+    }
+    assert waiting_events[0].data["policy"]["continue_on_condition"] is True
 
 
 def test_agent_loop_overrides_untrusted_runtime_mcp_tool_payloads(

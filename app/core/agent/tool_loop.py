@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 import time
 from typing import Any
 
+from app.core.agent.conditional_loop import conditional_loop_policy, latest_tool_message_text
 from app.core.agent.context import ContextCompactionResult, ConversationContextManager
 from app.core.agent.primary_skill_context import load_primary_skill_context
 from app.core.agent.tool_loop_guard import (
@@ -139,6 +142,7 @@ class ToolCallingAgentLoop:
                 latest_assistant_reply="",
                 verification=verification,
                 primary_skill_context=primary_skill_context,
+                runtime_options=runtime_options,
             )
         )
         base_prompt, memory_context_count = build_system_prompt(
@@ -358,6 +362,7 @@ class ToolCallingAgentLoop:
                     runtime_options,
                     emit_message_delta=emit_message_delta,
                 )
+            await self._wait_before_conditional_tool_retry(state, recorder, runtime_options)
         return self._finalize_exhausted_turn(
             state,
             final_response,
@@ -439,6 +444,28 @@ class ToolCallingAgentLoop:
                 }
             )
 
+    async def _wait_before_conditional_tool_retry(
+        self,
+        state: ToolLoopState,
+        recorder: EventRecorder,
+        runtime_options: RuntimeOptions | None,
+    ) -> None:
+        policy = conditional_loop_policy(state.conversation, runtime_options)
+        if policy is None or policy.delay_seconds <= 0:
+            return
+        if not policy.should_continue(latest_tool_message_text(state.conversation)):
+            return
+        recorder.emit(
+            "tool.loop.waiting",
+            {
+                "round": state.rounds,
+                "delay_seconds": policy.delay_seconds,
+                "policy": policy.to_metadata(),
+                "reason": "Latest tool result still matches the conditional retry policy.",
+            },
+        )
+        await asyncio.sleep(policy.delay_seconds)
+
     def _advance_turn_state(
         self,
         state: ToolLoopState,
@@ -473,6 +500,7 @@ class ToolCallingAgentLoop:
                 latest_assistant_reply=state.latest_assistant_reply,
                 verification=verification,
                 primary_skill_context=primary_skill_context,
+                runtime_options=runtime_options,
             )
         )
         state.turn_phase = turn_policy.phase
@@ -627,6 +655,9 @@ class ToolCallingAgentLoop:
         allowed_names = self._allowed_tool_names(agent_config)
         selected_skill_names_for_run = selected_skill_names(runtime_options)
         selected_mcp_tool_names = self._selected_mcp_tool_names(runtime_options)
+        runtime_client_tools = self._runtime_client_tools(runtime_options)
+        if runtime_client_tools:
+            selected_mcp_tool_names = selected_mcp_tool_names | {tool.name for tool in runtime_client_tools}
         if self._workspace_tools_enabled(runtime_options, mode):
             allowed_names = allowed_names | self._workspace_tool_names(mode)
         runtime_mcp_discovery = self.tool_service.discover_runtime_mcp_tools(self._runtime_mcp_servers(runtime_options))
@@ -637,7 +668,7 @@ class ToolCallingAgentLoop:
         for failure in runtime_mcp_discovery.failures:
             if recorder is not None:
                 recorder.emit("mcp.discovery.failed", failure.to_event_data())
-        runtime_mcp_tools = runtime_mcp_discovery.tools
+        runtime_mcp_tools = [*runtime_mcp_discovery.tools, *runtime_client_tools]
         if runtime_mcp_tools:
             if runtime_options is not None:
                 runtime_options.config_options["runtime_mcp_tools"] = [tool.to_payload() for tool in runtime_mcp_tools]
@@ -728,6 +759,116 @@ class ToolCallingAgentLoop:
         if not isinstance(raw_servers, list):
             return []
         return [dict(server) for server in raw_servers if isinstance(server, dict)]
+
+    @staticmethod
+    def _runtime_client_tools(runtime_options: RuntimeOptions | None) -> list[ToolDefinition]:
+        if runtime_options is None:
+            return []
+        raw_tools = ToolCallingAgentLoop._runtime_client_tools_payload(runtime_options.config_options)
+        items = ToolCallingAgentLoop._runtime_client_tool_items(raw_tools)
+        definitions: list[ToolDefinition] = []
+        seen: set[str] = set()
+        for item in items:
+            raw_name = str(item.get("name") or item.get("id") or item.get("tool") or item.get("toolName") or "").strip()
+            if not raw_name:
+                continue
+            name = ToolCallingAgentLoop._runtime_client_tool_name(raw_name)
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            source = dict(item.get("source") or {}) if isinstance(item.get("source"), dict) else {}
+            response = str(
+                source.get("response_template")
+                or item.get("response_template")
+                or item.get("responseTemplate")
+                or item.get("response")
+                or item.get("result")
+                or item.get("output")
+                or item.get("text")
+                or f"Client tool {raw_name} completed."
+            )
+            source = {
+                **source,
+                "type": "manual",
+                "response_template": response,
+                "client_tool_name": raw_name,
+            }
+            definitions.append(
+                ToolDefinition(
+                    name=name,
+                    title=str(item.get("title") or raw_name),
+                    description=str(item.get("description") or f"Runtime client dynamic tool: {raw_name}"),
+                    input_schema=ToolCallingAgentLoop._dict_or_default(
+                        item.get("input_schema") or item.get("inputSchema")
+                    ),
+                    output_schema=ToolCallingAgentLoop._dict_or_default(
+                        item.get("output_schema") or item.get("outputSchema")
+                    ),
+                    enabled=bool(item.get("enabled", True)),
+                    source=source,
+                    editable=False,
+                )
+            )
+        return definitions
+
+    @staticmethod
+    def _runtime_client_tools_payload(config_options: dict[str, Any]) -> object:
+        for key in (
+            "session_init_tools",
+            "sessionInitTools",
+            "sessioninittools",
+            "client_tools",
+            "clientTools",
+            "dynamic_tools",
+            "dynamicTools",
+        ):
+            if key in config_options:
+                return config_options[key]
+        return None
+
+    @staticmethod
+    def _runtime_client_tool_items(raw_tools: object) -> list[dict[str, Any]]:
+        if raw_tools is None:
+            return []
+        if isinstance(raw_tools, list):
+            return [dict(item) for item in raw_tools if isinstance(item, dict)]
+        if isinstance(raw_tools, dict):
+            raw_list = raw_tools.get("tools")
+            if isinstance(raw_list, list):
+                return [dict(item) for item in raw_list if isinstance(item, dict)]
+            return [
+                {"name": name, "response": value}
+                for name, value in raw_tools.items()
+                if isinstance(name, str) and not name.startswith("_")
+            ]
+        if isinstance(raw_tools, str):
+            items: list[dict[str, Any]] = []
+            for line in raw_tools.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                raw_name, separator, response = stripped.partition("|")
+                if not separator:
+                    raw_name, separator, response = stripped.partition(":")
+                if raw_name.strip():
+                    items.append({"name": raw_name.strip(), "response": response.strip() if separator else ""})
+            return items
+        return []
+
+    @staticmethod
+    def _runtime_client_tool_name(raw_name: str) -> str:
+        normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", raw_name.strip()).strip("_")
+        if not normalized:
+            return ""
+        if normalized.startswith("jetlinks_session_"):
+            return normalized[:128]
+        return f"jetlinks_session_{normalized}"[:128]
+
+    @staticmethod
+    def _dict_or_default(value: object) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        return {"type": "object", "additionalProperties": True}
 
     @staticmethod
     def _thread_id(runtime_options: RuntimeOptions | None) -> str:

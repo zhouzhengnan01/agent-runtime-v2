@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from app.core.agent.conditional_loop import conditional_loop_policy, latest_tool_message_text
 from app.core.agent.primary_skill_context import PrimarySkillContext
 from app.core.agent.turn_verifier import TurnVerification
+from app.schemas import RuntimeOptions
 
 
 TURN_POLICY_PROMPT = {
@@ -58,6 +60,7 @@ class TurnPolicyInput:
     latest_assistant_reply: str
     verification: TurnVerification
     primary_skill_context: PrimarySkillContext | None = None
+    runtime_options: RuntimeOptions | None = None
 
 
 def decide_turn_policy(input_state: TurnPolicyInput) -> TurnPolicy:
@@ -97,6 +100,21 @@ def decide_turn_policy(input_state: TurnPolicyInput) -> TurnPolicy:
                     f"prefer owner skills {', '.join(context.active_stage_owner_skills)}."
                 ),
             )
+
+    loop_policy = conditional_loop_policy(input_state.messages, input_state.runtime_options)
+    if (
+        loop_policy is not None
+        and input_state.tool_call_count > 0
+        and input_state.current_phase in {"execute", "verify"}
+        and loop_policy.should_continue(latest_tool_message_text(input_state.messages))
+    ):
+        return TurnPolicy(
+            phase="execute",
+            reason=(
+                "A conditional tool-loop policy is active and the latest tool result "
+                "still matches the retry condition; continue executing tools."
+            ),
+        )
 
     if input_state.current_phase == "execute" and input_state.tool_call_count > 0:
         if input_state.verification.verdict == "pending":
