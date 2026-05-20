@@ -231,12 +231,17 @@ def _policy_from_user_text(text: str) -> ConditionalToolLoopPolicy | None:
 
 def _absent_stop_marker(text: str) -> str:
     patterns = (
-        r"直到[^。；;\n]*?没有(?P<target>[^，。；;\n]+?)(?:则|就)?停止",
-        r"直到[^。；;\n]*?不再(?:出现|包含|返回)?(?P<target>[^，。；;\n]+?)(?:则|就)?停止",
-        r"until[^.\n]*?\bno\s+(?P<target>[^,.;\n]+?)(?:\s+then)?\s+stop",
+        r"(?:直到|直至|等到)[^。；;\n]*?没有(?P<target>[^，。；;\n]+?)(?:则|就)?(?:停止|为止)",
+        r"(?:直到|直至|等到)[^。；;\n]*?不再(?:出现|包含|返回)?(?P<target>[^，。；;\n]+?)(?:则|就)?(?:停止|为止)",
+        r"until[^.\n]*?\bno\s+(?P<target>[^,.;\n]+?)(?:\s+then)?\s+(?:stop|finish)",
         r"repeat[^.\n]*?\buntil\s+(?P<target>[^,.;\n]+?)\s+(?:is|are)?\s*(?:gone|absent|missing)",
     )
-    return _first_clean_marker(patterns, text)
+    marker = _first_clean_marker(patterns, text)
+    if marker:
+        return marker
+    if _has_absent_stop_without_marker(text):
+        return _query_target_marker(text)
+    return ""
 
 
 def _present_stop_marker(text: str) -> str:
@@ -257,6 +262,24 @@ def _first_clean_marker(patterns: tuple[str, ...], text: str) -> str:
         if marker:
             return marker
     return ""
+
+
+def _has_absent_stop_without_marker(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:直到|直至|等到)[^。；;\n]*(?:没有|不存在|为空|清空|查不到)[^。；;\n]*(?:停止|为止|结束)?",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _query_target_marker(text: str) -> str:
+    patterns = (
+        r"(?:查|查询|搜索|获取|检查)\s*(?P<target>[^，。；;\n]+?)(?=用户|信息|记录|数据|列表|，|,|。|；|;|如果|若|有|还有|就|并|然后|$)",
+        r"(?:query|search|find|get|check)\s+(?P<target>[^,.;\n]+?)(?=\s+(?:until|if|when|then|and)|[,.;\n]|$)",
+    )
+    return _first_clean_marker(patterns, text)
 
 
 def _delay_from_text(text: str) -> float:

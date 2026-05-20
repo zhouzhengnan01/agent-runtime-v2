@@ -1069,6 +1069,41 @@ def test_conditional_tool_loop_policy_is_domain_agnostic() -> None:
     assert configured.delay_seconds == 1.5
 
 
+def test_conditional_tool_loop_policy_infers_query_target_without_app_loop_config(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", raising=False)
+    monkeypatch.delenv("JETLINKS_CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", raising=False)
+
+    policy = conditional_loop_policy(
+        [
+            {
+                "role": "user",
+                "content": "查超级管理员，若有等3秒再查，直到没有为止",
+            }
+        ],
+        RuntimeOptions(
+            config_options={
+                "mcpServers": [
+                    {
+                        "name": "db",
+                        "type": "http",
+                        "url": "http://127.0.0.1:8000/api/mcp/test-users",
+                    }
+                ]
+            }
+        ),
+    )
+
+    assert policy is not None
+    assert policy.marker == "超级管理员"
+    assert policy.continue_when == "contains"
+    assert policy.delay_seconds == 3
+    assert policy.auto_repeat_tool_call is True
+    assert policy.should_continue("rows: 超级管理员")
+    assert not policy.should_continue("rows: []")
+
+
 def test_conditional_tool_loop_policy_supports_structured_json_conditions(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", raising=False)
     monkeypatch.delenv("JETLINKS_CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", raising=False)
