@@ -286,7 +286,7 @@ def _delay_from_value(value: object, *, unit: object = "秒") -> float:
 
 
 def _auto_repeat_from_text(text: str) -> bool:
-    return bool(
+    return _auto_repeat_enabled_by_env() and bool(
         re.search(
             r"(?:循环|轮询|自动|反复|重复|一直|每隔|每次|继续|直到|直至|等到|不要确认|不用确认|无需确认|until|repeat|poll)",
             text,
@@ -296,19 +296,11 @@ def _auto_repeat_from_text(text: str) -> bool:
 
 
 def _auto_repeat_from_runtime_policy(raw_policy: dict[str, Any]) -> bool:
-    explicit = _first_present(
-        raw_policy,
-        (
-            "auto_repeat_tool_call",
-            "autoRepeatToolCall",
-            "auto_repeat",
-            "autoRepeat",
-            "repeat_tool_call",
-            "repeatToolCall",
-        ),
-    )
-    if explicit is not _MISSING:
-        return _bool_value(explicit)
+    del raw_policy
+    return _auto_repeat_enabled_by_env()
+
+
+def _auto_repeat_enabled_by_env() -> bool:
     return _env_bool("CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", default=True)
 
 
@@ -489,13 +481,6 @@ def _string(value: object) -> str | None:
 
 def _dict_value(value: object) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, dict) else None
-
-
-def _first_present(payload: dict[str, Any], keys: tuple[str, ...]) -> object:
-    for key in keys:
-        if key in payload:
-            return payload[key]
-    return _MISSING
 
 
 def _bool_value(value: object) -> bool:

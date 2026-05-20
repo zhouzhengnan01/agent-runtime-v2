@@ -1133,7 +1133,7 @@ def test_conditional_tool_loop_policy_supports_structured_json_conditions(monkey
     assert continue_while_count.auto_repeat_tool_call is True
 
 
-def test_conditional_tool_loop_policy_auto_repeat_default_can_be_overridden(
+def test_conditional_tool_loop_policy_auto_repeat_is_controlled_by_env_only(
     monkeypatch: MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", "false")
@@ -1177,7 +1177,7 @@ def test_conditional_tool_loop_policy_auto_repeat_default_can_be_overridden(
     assert env_disabled is not None
     assert env_disabled.auto_repeat_tool_call is False
     assert explicit_enabled is not None
-    assert explicit_enabled.auto_repeat_tool_call is True
+    assert explicit_enabled.auto_repeat_tool_call is False
     assert explicit_disabled is not None
     assert explicit_disabled.auto_repeat_tool_call is False
 
