@@ -113,6 +113,44 @@ def test_mcp_management_requires_admin_token_when_configured(tmp_path: Path, mon
     assert allowed.status_code == 200
 
 
+def test_test_users_mcp_returns_rows_until_third_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_mcp_runtime(tmp_path, monkeypatch)
+    client = TestClient(create_app())
+    session_id = "test-loop-session"
+
+    reset = client.post("/api/mcp/test-users/reset", json={"sessionId": session_id})
+    assert reset.status_code == 200
+
+    listed = client.post(
+        "/api/mcp/test-users",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+    )
+    assert listed.status_code == 200
+    tool_names = {tool["name"] for tool in listed.json()["result"]["tools"]}
+    assert "query_users" in tool_names
+
+    counts = []
+    for index in range(3):
+        called = client.post(
+            "/api/mcp/test-users",
+            json={
+                "jsonrpc": "2.0",
+                "id": index + 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "query_users",
+                    "arguments": {"keyword": "超级管理员", "sessionId": session_id},
+                },
+            },
+        )
+        assert called.status_code == 200
+        result = called.json()["result"]
+        assert result["isError"] is False
+        counts.append(result["structuredContent"]["count"])
+
+    assert counts == [2, 2, 0]
+
+
 def _patch_mcp_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_dir = tmp_path / "config" / "mcp"
     config_dir.mkdir(parents=True)
