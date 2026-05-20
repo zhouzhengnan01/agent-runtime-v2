@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 import re
 from typing import Any, Literal
 
@@ -154,14 +155,7 @@ def _policy_from_runtime_options(runtime_options: RuntimeOptions | None) -> Cond
         continue_when=continue_when,  # type: ignore[arg-type]
         delay_seconds=delay_seconds,
         source="runtime_options",
-        auto_repeat_tool_call=_bool_value(
-            raw_policy.get("auto_repeat_tool_call")
-            or raw_policy.get("autoRepeatToolCall")
-            or raw_policy.get("auto_repeat")
-            or raw_policy.get("autoRepeat")
-            or raw_policy.get("repeat_tool_call")
-            or raw_policy.get("repeatToolCall")
-        ),
+        auto_repeat_tool_call=_auto_repeat_from_runtime_policy(raw_policy),
         repeat_tool_name=_string(raw_policy.get("repeat_tool_name") or raw_policy.get("repeatToolName")),
     )
 
@@ -208,14 +202,7 @@ def _structured_policy_from_runtime_options(raw_policy: dict[str, Any]) -> Condi
         source="runtime_options",
         condition=condition,
         continue_on_condition=continue_on_condition,
-        auto_repeat_tool_call=_bool_value(
-            raw_policy.get("auto_repeat_tool_call")
-            or raw_policy.get("autoRepeatToolCall")
-            or raw_policy.get("auto_repeat")
-            or raw_policy.get("autoRepeat")
-            or raw_policy.get("repeat_tool_call")
-            or raw_policy.get("repeatToolCall")
-        ),
+        auto_repeat_tool_call=_auto_repeat_from_runtime_policy(raw_policy),
         repeat_tool_name=_string(raw_policy.get("repeat_tool_name") or raw_policy.get("repeatToolName")),
     )
 
@@ -306,6 +293,23 @@ def _auto_repeat_from_text(text: str) -> bool:
             flags=re.IGNORECASE,
         )
     )
+
+
+def _auto_repeat_from_runtime_policy(raw_policy: dict[str, Any]) -> bool:
+    explicit = _first_present(
+        raw_policy,
+        (
+            "auto_repeat_tool_call",
+            "autoRepeatToolCall",
+            "auto_repeat",
+            "autoRepeat",
+            "repeat_tool_call",
+            "repeatToolCall",
+        ),
+    )
+    if explicit is not _MISSING:
+        return _bool_value(explicit)
+    return _env_bool("CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", default=True)
 
 
 def _flatten_tool_content(content: str) -> str:
@@ -487,6 +491,13 @@ def _dict_value(value: object) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, dict) else None
 
 
+def _first_present(payload: dict[str, Any], keys: tuple[str, ...]) -> object:
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return _MISSING
+
+
 def _bool_value(value: object) -> bool:
     if isinstance(value, bool):
         return value
@@ -495,6 +506,20 @@ def _bool_value(value: object) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return False
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        raw = os.getenv(f"JETLINKS_{name}")
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on", "auto", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
 
 
 def _condition_operator(value: object) -> ConditionOperator:

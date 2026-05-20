@@ -1069,7 +1069,10 @@ def test_conditional_tool_loop_policy_is_domain_agnostic() -> None:
     assert configured.delay_seconds == 1.5
 
 
-def test_conditional_tool_loop_policy_supports_structured_json_conditions() -> None:
+def test_conditional_tool_loop_policy_supports_structured_json_conditions(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", raising=False)
+    monkeypatch.delenv("JETLINKS_CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", raising=False)
+
     continue_while_rows = conditional_loop_policy(
         [],
         RuntimeOptions(
@@ -1117,14 +1120,66 @@ def test_conditional_tool_loop_policy_supports_structured_json_conditions() -> N
     assert continue_while_rows.should_continue('{"rows":[{"id":1}]}')
     assert not continue_while_rows.should_continue('{"rows":[]}')
     assert continue_while_rows.delay_seconds == 3
+    assert continue_while_rows.auto_repeat_tool_call is True
 
     assert stop_when_done is not None
     assert stop_when_done.should_continue('{"data":{"status":"RUNNING"}}')
     assert not stop_when_done.should_continue('{"data":{"status":"DONE"}}')
+    assert stop_when_done.auto_repeat_tool_call is True
 
     assert continue_while_count is not None
     assert continue_while_count.should_continue('{"structuredContent":{"count":2}}')
     assert not continue_while_count.should_continue('{"structuredContent":{"count":0}}')
+    assert continue_while_count.auto_repeat_tool_call is True
+
+
+def test_conditional_tool_loop_policy_auto_repeat_default_can_be_overridden(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CONDITIONAL_TOOL_LOOP_AUTO_REPEAT_DEFAULT", "false")
+    env_disabled = conditional_loop_policy(
+        [],
+        RuntimeOptions(
+            config_options={
+                "conditional_tool_loop": {
+                    "json_path": "rows.length",
+                    "operator": "gt",
+                    "expected": 0,
+                }
+            }
+        ),
+    )
+    explicit_enabled = conditional_loop_policy(
+        [],
+        RuntimeOptions(
+            config_options={
+                "conditional_tool_loop": {
+                    "json_path": "rows.length",
+                    "operator": "gt",
+                    "expected": 0,
+                    "auto_repeat_tool_call": True,
+                }
+            }
+        ),
+    )
+    explicit_disabled = conditional_loop_policy(
+        [],
+        RuntimeOptions(
+            config_options={
+                "conditional_tool_loop": {
+                    "marker": "超级管理员",
+                    "auto_repeat_tool_call": False,
+                }
+            }
+        ),
+    )
+
+    assert env_disabled is not None
+    assert env_disabled.auto_repeat_tool_call is False
+    assert explicit_enabled is not None
+    assert explicit_enabled.auto_repeat_tool_call is True
+    assert explicit_disabled is not None
+    assert explicit_disabled.auto_repeat_tool_call is False
 
 
 def test_agent_loop_exposes_and_calls_acp_runtime_mcp_server_tools(
@@ -1304,10 +1359,7 @@ def test_agent_loop_retries_runtime_mcp_tool_until_structured_condition_stops(
         del self
         llm_calls.append({"system_prompt": system_prompt, "messages": list(messages), "tools": tools})
         assert [tool["function"]["name"] for tool in tools] == ["db__query_users"]
-        if len(llm_calls) == 2:
-            assert "Phase: execute" in system_prompt
-            assert "conditional tool-loop" in system_prompt
-        if len(llm_calls) <= 2:
+        if len(llm_calls) == 1:
             return LlmChatResponse(
                 tool_calls=[
                     LlmToolCall(
@@ -1318,6 +1370,8 @@ def test_agent_loop_retries_runtime_mcp_tool_until_structured_condition_stops(
                 ],
                 finish_reason="tool_calls",
             )
+        assert "Phase: execute" in system_prompt
+        assert "conditional tool-loop" in system_prompt
         latest_tool_message = next(message for message in reversed(messages) if message.get("role") == "tool")
         latest_tool_payload = json.loads(latest_tool_message["content"])
         assert latest_tool_payload["structuredContent"]["rows"] == []
@@ -1365,7 +1419,7 @@ def test_agent_loop_retries_runtime_mcp_tool_until_structured_condition_stops(
 
     assert result.status == "completed"
     assert result.reply == "超级管理员用户已经不存在，停止轮询。"
-    assert len(llm_calls) == 3
+    assert len(llm_calls) == 2
     assert len(mcp_tool_calls) == 2
     assert seen_methods.count("tools/list") == 1
     assert seen_methods.count("tools/call") == 2
@@ -1378,6 +1432,10 @@ def test_agent_loop_retries_runtime_mcp_tool_until_structured_condition_stops(
         "expected": 0,
     }
     assert waiting_events[0].data["policy"]["continue_on_condition"] is True
+    auto_repeat_events = [event for event in events if event.type == "tool.loop.auto_repeating"]
+    assert len(auto_repeat_events) == 1
+    assert auto_repeat_events[0].data["tool_call"]["name"] == "db__query_users"
+    assert auto_repeat_events[0].data["policy"]["auto_repeat_tool_call"] is True
 
 
 def test_agent_loop_auto_repeats_runtime_mcp_tool_for_natural_language_loop(
