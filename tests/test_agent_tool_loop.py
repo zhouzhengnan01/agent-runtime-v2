@@ -1380,6 +1380,137 @@ def test_agent_loop_retries_runtime_mcp_tool_until_structured_condition_stops(
     assert waiting_events[0].data["policy"]["continue_on_condition"] is True
 
 
+def test_agent_loop_auto_repeats_runtime_mcp_tool_for_natural_language_loop(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    mcp_tool_calls: list[dict[str, Any]] = []
+    llm_calls: list[list[Any]] = []
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        if payload["method"] == "initialize":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": {}})
+        if payload["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        if payload["method"] == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "query_users",
+                                "description": "Query users by keyword.",
+                                "inputSchema": {"type": "object", "properties": {"keyword": {"type": "string"}}},
+                            }
+                        ]
+                    },
+                },
+            )
+        if payload["method"] == "tools/call":
+            mcp_tool_calls.append(payload["params"])
+            rows = (
+                [
+                    {"username": "admin", "role": "超级管理员"},
+                    {"username": "pm_8356f1b5b99601d1", "role": "超级管理员"},
+                ]
+                if len(mcp_tool_calls) < 3
+                else []
+            )
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": payload["id"],
+                    "result": {
+                        "content": [{"type": "text", "text": json.dumps({"rows": rows}, ensure_ascii=False)}],
+                        "structuredContent": {"rows": rows},
+                    },
+                },
+            )
+        raise AssertionError(payload)
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt
+        llm_calls.append(list(messages))
+        assert [tool["function"]["name"] for tool in tools] == ["db__query_users"]
+        if len(llm_calls) == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call-query-users",
+                        name="db__query_users",
+                        arguments=json.dumps({"keyword": "超级管理员"}),
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        tool_messages = [message for message in messages if message.get("role") == "tool"]
+        latest_payload = json.loads(tool_messages[-1]["content"])
+        assert latest_payload["structuredContent"]["rows"] == []
+        return LlmChatResponse(content="超级管理员用户已经不存在，停止轮询。", finish_reason="stop")
+
+    monkeypatch.setattr(httpx, "Client", lambda **_: original_client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="runtime-mcp-natural-loop-agent",
+        display_name="Runtime MCP Natural Loop Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+        runtime={"max_tool_rounds": 6},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    result, events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[
+                    Message(
+                        role="user",
+                        content="查询超级管理员用户，如果还有则等0.01秒自动再次查询，直到没有超级管理员用户则停止",
+                    )
+                ],
+                runtime_options=RuntimeOptions(
+                    thread_id="runtime-mcp-natural-auto-repeat",
+                    config_options={
+                        "mcpServers": [
+                            {
+                                "name": "db",
+                                "url": "https://example.test/mcp",
+                                "type": "http",
+                            }
+                        ]
+                    },
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.reply == "超级管理员用户已经不存在，停止轮询。"
+    assert len(llm_calls) == 2
+    assert len(mcp_tool_calls) == 3
+    assert all(call == {"name": "query_users", "arguments": {"keyword": "超级管理员"}} for call in mcp_tool_calls)
+    waiting_events = [event for event in events if event.type == "tool.loop.waiting"]
+    auto_repeat_events = [event for event in events if event.type == "tool.loop.auto_repeating"]
+    assert len(waiting_events) == 2
+    assert len(auto_repeat_events) == 2
+    assert auto_repeat_events[0].data["tool_call"]["name"] == "db__query_users"
+    assert auto_repeat_events[0].data["policy"]["auto_repeat_tool_call"] is True
+
+
 def test_agent_loop_overrides_untrusted_runtime_mcp_tool_payloads(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

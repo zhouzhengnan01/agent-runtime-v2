@@ -292,8 +292,8 @@ class ToolCallingAgentLoop:
         # 结构化结果塞回 conversation，再进入下一轮，直到模型停止调用。
         final_response = LlmChatResponse()
         max_rounds = self._max_tool_rounds(agent_config, runtime_options)
-        for round_index in range(max_rounds):
-            state.rounds = round_index + 1
+        while state.rounds < max_rounds:
+            state.rounds += 1
             self._advance_turn_state(state, agent_config, runtime_options)
             self._apply_context_compaction(state, agent_config, recorder, round_number=state.rounds)
             request_started_at = time.perf_counter()
@@ -362,6 +362,28 @@ class ToolCallingAgentLoop:
                     runtime_options,
                     emit_message_delta=emit_message_delta,
                 )
+            repeated = await self._auto_repeat_conditional_tool_call(
+                state,
+                final_response.tool_calls,
+                agent_config,
+                thread_id,
+                recorder,
+                runtime_options,
+                max_rounds=max_rounds,
+            )
+            if state.required_inputs:
+                self._advance_turn_state(state, agent_config, runtime_options)
+                return self._finalize_completed_turn(
+                    state,
+                    state.latest_assistant_reply,
+                    agent_config,
+                    thread_id,
+                    recorder,
+                    runtime_options,
+                    emit_message_delta=emit_message_delta,
+                )
+            if repeated:
+                continue
             await self._wait_before_conditional_tool_retry(state, recorder, runtime_options)
         return self._finalize_exhausted_turn(
             state,
@@ -465,6 +487,89 @@ class ToolCallingAgentLoop:
             },
         )
         await asyncio.sleep(policy.delay_seconds)
+
+    async def _auto_repeat_conditional_tool_call(
+        self,
+        state: ToolLoopState,
+        tool_calls: list[LlmToolCall],
+        agent_config: AgentConfig,
+        thread_id: str,
+        recorder: EventRecorder,
+        runtime_options: RuntimeOptions | None,
+        *,
+        max_rounds: int,
+    ) -> bool:
+        if not self._can_auto_repeat_conditional_tool_call(state, tool_calls, runtime_options):
+            return False
+        original_call = tool_calls[0]
+        repeated = False
+        while state.rounds < max_rounds:
+            policy = conditional_loop_policy(state.conversation, runtime_options)
+            if policy is None or not policy.should_continue(latest_tool_message_text(state.conversation)):
+                break
+            if policy.delay_seconds > 0:
+                recorder.emit(
+                    "tool.loop.waiting",
+                    {
+                        "round": state.rounds,
+                        "delay_seconds": policy.delay_seconds,
+                        "policy": policy.to_metadata(),
+                        "reason": "Latest tool result still matches the conditional retry policy.",
+                    },
+                )
+                await asyncio.sleep(policy.delay_seconds)
+            state.rounds += 1
+            repeated = True
+            repeat_call = LlmToolCall(
+                id=f"{original_call.id}-conditional-repeat-{state.rounds}",
+                name=original_call.name,
+                arguments=original_call.arguments,
+            )
+            recorder.emit(
+                "tool.loop.auto_repeating",
+                {
+                    "round": state.rounds,
+                    "tool_call": {"id": repeat_call.id, "name": repeat_call.name},
+                    "policy": policy.to_metadata(),
+                    "reason": "Replaying the previous MCP tool call because the conditional loop still matches.",
+                },
+            )
+            state.conversation.append(self._assistant_message(LlmChatResponse(tool_calls=[repeat_call])))
+            self._accumulate_tool_results(
+                state,
+                [repeat_call],
+                agent_config,
+                thread_id,
+                recorder,
+                runtime_options,
+            )
+            if state.required_inputs:
+                break
+        return repeated
+
+    def _can_auto_repeat_conditional_tool_call(
+        self,
+        state: ToolLoopState,
+        tool_calls: list[LlmToolCall],
+        runtime_options: RuntimeOptions | None,
+    ) -> bool:
+        policy = conditional_loop_policy(state.conversation, runtime_options)
+        if policy is None or not policy.auto_repeat_tool_call:
+            return False
+        if len(tool_calls) != 1:
+            return False
+        tool_call = tool_calls[0]
+        if policy.repeat_tool_name and policy.repeat_tool_name != tool_call.name:
+            return False
+        definition = self._tool_definition_by_name(state.tool_definitions, tool_call.name)
+        if definition is None:
+            return False
+        source_type = str(definition.source.get("type") or "")
+        if source_type not in {"mcp_streamable_http", "mcp_stdio"}:
+            return False
+        if source_type == "mcp_streamable_http" and str(definition.source.get("operation") or "call") != "call":
+            return False
+        return True
 
     def _advance_turn_state(
         self,
@@ -869,6 +974,13 @@ class ToolCallingAgentLoop:
         if isinstance(value, dict):
             return dict(value)
         return {"type": "object", "additionalProperties": True}
+
+    @staticmethod
+    def _tool_definition_by_name(tools: list[ToolDefinition], name: str) -> ToolDefinition | None:
+        for tool in tools:
+            if tool.name == name:
+                return tool
+        return None
 
     @staticmethod
     def _thread_id(runtime_options: RuntimeOptions | None) -> str:

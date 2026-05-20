@@ -24,6 +24,15 @@ COMPOSITE_SKILL_GUIDANCE = (
     "are satisfied."
 )
 
+ITERATIVE_TOOL_GUIDANCE = (
+    "Iterative tool guidance is active. When the user gives a repeat-until or "
+    "stop condition, inspect each tool result and continue calling the relevant "
+    "tool while the latest result still satisfies the continue condition. Stop "
+    "only after the stop condition is observed or the tool-round limit is reached. "
+    "Do not claim the task is complete after a single tool call when the latest "
+    "tool result still contains the value the user said must disappear."
+)
+
 
 def build_system_prompt(
     agent_config: AgentConfig,
@@ -47,6 +56,7 @@ def build_system_prompt(
         tool_service=tool_service,
     )
     prompt = prompt_with_composite_skills(prompt, runtime_options)
+    prompt = f"{prompt}\n\n{ITERATIVE_TOOL_GUIDANCE}"
     prompt = prompt_with_primary_skill_stage_context(prompt, primary_skill_context)
     if not agent_config.memory.enabled or not agent_config.memory.inject_context:
         return prompt, 0

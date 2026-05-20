@@ -63,6 +63,8 @@ class ConditionalToolLoopPolicy:
     source: str = "natural_language"
     condition: StructuredCondition | None = None
     continue_on_condition: bool = True
+    auto_repeat_tool_call: bool = False
+    repeat_tool_name: str | None = None
 
     def should_continue(self, latest_tool_text: str) -> bool:
         if self.condition is not None:
@@ -81,7 +83,10 @@ class ConditionalToolLoopPolicy:
             "continue_when": self.continue_when,
             "delay_seconds": self.delay_seconds,
             "source": self.source,
+            "auto_repeat_tool_call": self.auto_repeat_tool_call,
         }
+        if self.repeat_tool_name:
+            payload["repeat_tool_name"] = self.repeat_tool_name
         if self.condition is not None:
             payload["condition"] = self.condition.to_metadata()
             payload["continue_on_condition"] = self.continue_on_condition
@@ -149,6 +154,15 @@ def _policy_from_runtime_options(runtime_options: RuntimeOptions | None) -> Cond
         continue_when=continue_when,  # type: ignore[arg-type]
         delay_seconds=delay_seconds,
         source="runtime_options",
+        auto_repeat_tool_call=_bool_value(
+            raw_policy.get("auto_repeat_tool_call")
+            or raw_policy.get("autoRepeatToolCall")
+            or raw_policy.get("auto_repeat")
+            or raw_policy.get("autoRepeat")
+            or raw_policy.get("repeat_tool_call")
+            or raw_policy.get("repeatToolCall")
+        ),
+        repeat_tool_name=_string(raw_policy.get("repeat_tool_name") or raw_policy.get("repeatToolName")),
     )
 
 
@@ -194,6 +208,15 @@ def _structured_policy_from_runtime_options(raw_policy: dict[str, Any]) -> Condi
         source="runtime_options",
         condition=condition,
         continue_on_condition=continue_on_condition,
+        auto_repeat_tool_call=_bool_value(
+            raw_policy.get("auto_repeat_tool_call")
+            or raw_policy.get("autoRepeatToolCall")
+            or raw_policy.get("auto_repeat")
+            or raw_policy.get("autoRepeat")
+            or raw_policy.get("repeat_tool_call")
+            or raw_policy.get("repeatToolCall")
+        ),
+        repeat_tool_name=_string(raw_policy.get("repeat_tool_name") or raw_policy.get("repeatToolName")),
     )
 
 
@@ -206,6 +229,7 @@ def _policy_from_user_text(text: str) -> ConditionalToolLoopPolicy | None:
             marker=absent_marker,
             continue_when="contains",
             delay_seconds=_delay_from_text(text),
+            auto_repeat_tool_call=_auto_repeat_from_text(text),
         )
     present_marker = _present_stop_marker(text)
     if present_marker:
@@ -213,6 +237,7 @@ def _policy_from_user_text(text: str) -> ConditionalToolLoopPolicy | None:
             marker=present_marker,
             continue_when="not_contains",
             delay_seconds=_delay_from_text(text),
+            auto_repeat_tool_call=_auto_repeat_from_text(text),
         )
     return None
 
@@ -271,6 +296,16 @@ def _delay_from_value(value: object, *, unit: object = "秒") -> float:
     elif normalized_unit in {"分钟", "分", "min", "mins", "minute", "minutes", "m"}:
         seconds = seconds * 60
     return max(0.0, min(seconds, 60.0))
+
+
+def _auto_repeat_from_text(text: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:循环|轮询|自动|反复|重复|一直|每隔|每次|继续|直到|直至|等到|不要确认|不用确认|无需确认|until|repeat|poll)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _flatten_tool_content(content: str) -> str:
@@ -450,6 +485,16 @@ def _string(value: object) -> str | None:
 
 def _dict_value(value: object) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, dict) else None
+
+
+def _bool_value(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "auto", "enabled"}
+    if isinstance(value, (int, float)):
+        return value != 0
+    return False
 
 
 def _condition_operator(value: object) -> ConditionOperator:
