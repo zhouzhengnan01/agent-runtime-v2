@@ -1511,7 +1511,7 @@ def test_agent_loop_auto_repeats_runtime_mcp_tool_for_natural_language_loop(
                     {"username": "admin", "role": "超级管理员"},
                     {"username": "pm_8356f1b5b99601d1", "role": "超级管理员"},
                 ]
-                if len(mcp_tool_calls) < 3
+                if len(mcp_tool_calls) < 4
                 else []
             )
             return httpx.Response(
@@ -1561,7 +1561,7 @@ def test_agent_loop_auto_repeats_runtime_mcp_tool_for_natural_language_loop(
         tools=[],
         skills=[],
         workflows={"default": "agent_loop"},
-        runtime={"max_tool_rounds": 6},
+        runtime={"max_tool_rounds": 2},
     )
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
 
@@ -1594,12 +1594,12 @@ def test_agent_loop_auto_repeats_runtime_mcp_tool_for_natural_language_loop(
     assert result.status == "completed"
     assert result.reply == "超级管理员用户已经不存在，停止轮询。"
     assert len(llm_calls) == 2
-    assert len(mcp_tool_calls) == 3
+    assert len(mcp_tool_calls) == 4
     assert all(call == {"name": "query_users", "arguments": {"keyword": "超级管理员"}} for call in mcp_tool_calls)
     waiting_events = [event for event in events if event.type == "tool.loop.waiting"]
     auto_repeat_events = [event for event in events if event.type == "tool.loop.auto_repeating"]
-    assert len(waiting_events) == 2
-    assert len(auto_repeat_events) == 2
+    assert len(waiting_events) == 3
+    assert len(auto_repeat_events) == 3
     assert auto_repeat_events[0].data["tool_call"]["name"] == "db__query_users"
     assert auto_repeat_events[0].data["policy"]["auto_repeat_tool_call"] is True
 

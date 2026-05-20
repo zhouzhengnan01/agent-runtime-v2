@@ -292,7 +292,9 @@ class ToolCallingAgentLoop:
         # 结构化结果塞回 conversation，再进入下一轮，直到模型停止调用。
         final_response = LlmChatResponse()
         max_rounds = self._max_tool_rounds(agent_config, runtime_options)
-        while state.rounds < max_rounds:
+        run_final_pass_after_conditional_repeat = False
+        while state.rounds < max_rounds or run_final_pass_after_conditional_repeat:
+            run_final_pass_after_conditional_repeat = False
             state.rounds += 1
             self._advance_turn_state(state, agent_config, runtime_options)
             self._apply_context_compaction(state, agent_config, recorder, round_number=state.rounds)
@@ -369,7 +371,6 @@ class ToolCallingAgentLoop:
                 thread_id,
                 recorder,
                 runtime_options,
-                max_rounds=max_rounds,
             )
             if state.required_inputs:
                 self._advance_turn_state(state, agent_config, runtime_options)
@@ -383,6 +384,9 @@ class ToolCallingAgentLoop:
                     emit_message_delta=emit_message_delta,
                 )
             if repeated:
+                policy = conditional_loop_policy(state.conversation, runtime_options)
+                if policy is not None and not policy.should_continue(latest_tool_message_text(state.conversation)):
+                    run_final_pass_after_conditional_repeat = True
                 continue
             await self._wait_before_conditional_tool_retry(state, recorder, runtime_options)
         return self._finalize_exhausted_turn(
@@ -496,14 +500,12 @@ class ToolCallingAgentLoop:
         thread_id: str,
         recorder: EventRecorder,
         runtime_options: RuntimeOptions | None,
-        *,
-        max_rounds: int,
     ) -> bool:
         if not self._can_auto_repeat_conditional_tool_call(state, tool_calls, runtime_options):
             return False
         original_call = tool_calls[0]
         repeated = False
-        while state.rounds < max_rounds:
+        while True:
             policy = conditional_loop_policy(state.conversation, runtime_options)
             if policy is None or not policy.should_continue(latest_tool_message_text(state.conversation)):
                 break
