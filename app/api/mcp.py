@@ -116,8 +116,10 @@ async def test_users_mcp_json_rpc(request: Request) -> Response:
                     {
                         "name": "query_users",
                         "description": (
-                            "Test-only user query tool. The first two calls return two "
-                            "super-admin rows; later calls return an empty rows array."
+                            "Test-only user query tool. By default the first two calls return "
+                            "two super-admin rows and later calls return an empty rows array. "
+                            "Set mode=always_present to keep returning rows for infinite-loop "
+                            "smoke tests."
                         ),
                         "inputSchema": {
                             "type": "object",
@@ -129,6 +131,20 @@ async def test_users_mcp_json_rpc(request: Request) -> Response:
                                 "sessionId": {
                                     "type": "string",
                                     "description": "Optional test session id for counter isolation.",
+                                },
+                                "mode": {
+                                    "type": "string",
+                                    "enum": ["eventually_empty", "always_present"],
+                                    "description": (
+                                        "eventually_empty stops after emptyAfter calls; always_present "
+                                        "keeps returning rows."
+                                    ),
+                                },
+                                "emptyAfter": {
+                                    "type": "integer",
+                                    "description": "1-based call index that starts returning empty rows.",
+                                    "minimum": 1,
+                                    "default": 3,
                                 },
                             },
                             "additionalProperties": True,
@@ -150,12 +166,13 @@ def _test_users_tool_call(request_id: object, raw_params: object) -> Response:
     session_id = _test_users_session_id(arguments)
     call_count = _test_user_loop_counts.get(session_id, 0) + 1
     _test_user_loop_counts[session_id] = call_count
-    rows = [] if call_count >= 3 else _test_super_admin_rows()
+    rows = _test_users_rows_for_call(arguments, call_count)
     structured = {
         "rows": rows,
         "count": len(rows),
         "callIndex": call_count,
         "sessionId": session_id,
+        "mode": _test_users_mode(arguments),
     }
     return _test_users_result(
         request_id,
@@ -165,6 +182,27 @@ def _test_users_tool_call(request_id: object, raw_params: object) -> Response:
             "isError": False,
         },
     )
+
+
+def _test_users_rows_for_call(arguments: dict[str, Any], call_count: int) -> list[dict[str, Any]]:
+    if _test_users_mode(arguments) == "always_present":
+        return _test_super_admin_rows()
+    return [] if call_count >= _test_users_empty_after(arguments) else _test_super_admin_rows()
+
+
+def _test_users_mode(arguments: dict[str, Any]) -> str:
+    value = str(arguments.get("mode") or "eventually_empty").strip().lower()
+    if value in {"always_present", "always-present", "infinite", "always"}:
+        return "always_present"
+    return "eventually_empty"
+
+
+def _test_users_empty_after(arguments: dict[str, Any]) -> int:
+    try:
+        value = int(arguments.get("emptyAfter") or arguments.get("empty_after") or 3)
+    except (TypeError, ValueError):
+        return 3
+    return max(1, min(value, 1000000))
 
 
 def _test_super_admin_rows() -> list[dict[str, Any]]:
