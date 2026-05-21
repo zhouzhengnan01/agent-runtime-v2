@@ -45,8 +45,10 @@ def test_workbench_deep_execution_toggle_is_in_visible_composer_toolbar() -> Non
     assert '<input id="deepExecution" type="checkbox">' in html
     assert '<input id="yoloExecution" type="checkbox">' in html
     assert "runtimeOptions.mode = 'yolo';" in html
-    assert "runtimeOptions.config_options = { max_tool_rounds: 16 };" in html
-    assert "runtimeOptions.configOptions = { max_tool_rounds: 16 };" in html
+    assert "runtimeOptions.config_options = { max_tool_rounds: 16 };" not in html
+    assert "runtimeOptions.config_options = { max_tool_rounds: 12 };" not in html
+    assert "runtimeOptions.configOptions = { max_tool_rounds: 16 };" not in html
+    assert "runtimeOptions.configOptions = { max_tool_rounds: 12 };" not in html
     assert '<label class="tool-pill" title="复杂任务使用 autonomous 模式，允许更多工具循环">' not in html
 
 

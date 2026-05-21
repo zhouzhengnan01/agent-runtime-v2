@@ -589,14 +589,14 @@ ws.send(JSON.stringify({
   }
 }));</code></pre>
           <h3>Mode 与配置项</h3>
-          <p class="muted"><code>session/set_mode</code> 会真正影响 agent loop 的工具暴露和自动执行程度：<code>plan</code> 不暴露工具；<code>safe</code> 只保留低风险/只读工具并限制工具轮数；<code>edit</code> 是默认编辑模式但不暴露本地 shell；<code>autonomous</code> 放宽工具集合并提高工具轮数上限；<code>yolo</code> 在 autonomous 基础上自动批准权限请求。</p>
+          <p class="muted"><code>session/set_mode</code> 会真正影响 agent loop 的工具暴露和自动执行程度：<code>plan</code> 不暴露工具；<code>safe</code> 只保留低风险/只读工具并沿用运行时工具轮数配置；<code>edit</code> 是默认编辑模式但不暴露本地 shell；<code>autonomous</code> 放宽工具集合；<code>yolo</code> 在 autonomous 基础上自动批准权限请求。</p>
           <table>
             <thead><tr><th>mode</th><th>行为</th></tr></thead>
             <tbody>
               <tr><td><code>plan</code></td><td>只规划，不执行工具。</td></tr>
-              <tr><td><code>safe</code></td><td>过滤 skill、本地写文件、本地 shell，最多 2 轮工具调用。</td></tr>
+              <tr><td><code>safe</code></td><td>过滤 skill、本地写文件、本地 shell，工具轮数沿用运行时配置。</td></tr>
               <tr><td><code>edit</code></td><td>默认模式，允许编辑类工具，但过滤本地 shell。</td></tr>
-              <tr><td><code>autonomous</code></td><td>允许更宽工具集合，工具轮数最多提升到原配置 2 倍，上限 16。</td></tr>
+              <tr><td><code>autonomous</code></td><td>允许更宽工具集合，工具轮数沿用运行时配置。</td></tr>
               <tr><td><code>yolo</code></td><td>工具策略同 autonomous，并自动批准 <code>session/request_permission</code>；缺少运行必需输入时仍返回 <code>input_required</code>。</td></tr>
             </tbody>
           </table>

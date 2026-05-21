@@ -6562,10 +6562,8 @@
       }
       if (state.yoloExecution) {
         runtimeOptions.mode = 'yolo';
-        runtimeOptions.config_options = { max_tool_rounds: 16 };
       } else if (state.deepExecution) {
         runtimeOptions.mode = 'autonomous';
-        runtimeOptions.config_options = { max_tool_rounds: 12 };
       }
       if (workflow) runtimeOptions.workflow = workflow;
       return runtimeOptions;
@@ -6583,10 +6581,8 @@
       }
       if (state.yoloExecution) {
         runtimeOptions.mode = 'yolo';
-        runtimeOptions.configOptions = { max_tool_rounds: 16 };
       } else if (state.deepExecution) {
         runtimeOptions.mode = 'autonomous';
-        runtimeOptions.configOptions = { max_tool_rounds: 12 };
       }
 	      if (workflow) runtimeOptions.workflow = workflow;
 	      return runtimeOptions;

@@ -4,7 +4,7 @@
   "description": "Default JetLinks agent shell. App templates inject domain skills; thread file and artifact tools are always available for continuity.",
   "runtime": {
     "stateless": true,
-    "max_tool_rounds": 6,
+    "max_tool_rounds": 1000,
     "context_compression_enabled": true,
     "context_max_chars": 120000,
     "context_keep_first_messages": 2,
