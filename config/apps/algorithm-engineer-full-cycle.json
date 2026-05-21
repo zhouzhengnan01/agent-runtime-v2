@@ -1,7 +1,7 @@
 {
   "name": "algorithm-engineer-full-cycle",
-  "title": "算法工程师全流程",
-  "description": "从业务目标、数据治理、候选算法、GPU benchmark、正式训练、业务评估到上线评审和实验台账的一站式算法迭代入口。",
+  "title": "算法工程师正式版",
+  "description": "正式发布的 CV 模型训练全流程应用。输入抽烟、安全帽佩戴、工业缺陷或设备状态检测等视觉任务后，系统按数据治理、候选算法、训练、评估、上线评审和实验台账连续推进。",
   "category": "algorithm-training",
   "icon": "package",
   "agent_name": "default",
@@ -22,18 +22,48 @@
   ],
   "selected_mcp_tools": [],
   "prompt_examples": [
-    "帮我把棕榈果检测算法工程师全流程跑起来：先盘点数据和 baseline，再选择候选算法，安排 AGX/5090 benchmark、正式训练、评估、上线评审和实验台账。",
-    "围绕 /data/palm_fruit_datasets/organized/latest_integrated_dedup 做一轮目标检测算法迭代，生产 baseline 是 YOLO，候选考虑 RT-DETR、DEIM/D-FINE、RF-DETR 和 DAMO-YOLO。"
+    "帮我训练一个抽烟 CV 检测模型。",
+    "帮我训练一个工业缺陷检测模型，数据在 /data/datasets/<project>/data.yaml，先跑小样本 benchmark，再评估能不能上线。"
   ],
   "runtime_options": {
     "mode": "yolo",
     "config_options": {
-      "max_tool_rounds": 16
+      "max_tool_rounds": 1000,
+      "agent_execution_policy": {
+        "name": "algorithm_engineer_official_release",
+        "mode": "full_cycle_autonomous",
+        "stage_order": [
+          "algorithm-engineer",
+          "dataset-curator",
+          "algorithm-research-scout",
+          "model-candidate-selector",
+          "remote-gpu-ops",
+          "gpu-training-orchestrator",
+          "cpu-training-runner",
+          "detector-evaluator",
+          "deployment-candidate-reviewer",
+          "experiment-ledger"
+        ],
+        "instructions": [
+          "优先连续调用已选择的阶段 skill 推进训练闭环，不要只生成规划文案。",
+          "用户已提供 data.yaml、COCO 标注、图片目录或训练输出时，直接进入对应执行阶段。",
+          "只有缺少数据集、GPU/训练环境、凭据、危险操作确认或必要评估产物时，才通过 required_inputs 阻塞。",
+          "训练产出 best.pt、last.pt、results.csv 后，继续进入评估、上线评审和实验台账阶段。",
+          "CPU mock 只用于链路 smoke，不得声明为可上线模型。"
+        ],
+        "completion_gates": [
+          "数据治理产物或明确 required_inputs",
+          "训练产物 best.pt/last.pt/results.csv 或明确 required_inputs",
+          "评估结论、上线建议和实验台账，或明确 required_inputs"
+        ]
+      }
     }
   },
   "tags": [
+    "CV模型",
     "算法工程师",
-    "全流程",
+    "正式版",
+    "目标检测",
     "训练",
     "评估",
     "上线"
@@ -50,9 +80,11 @@
       "features": [
         "vision",
         "reasoning",
-        "chat"
+        "chat",
+        "tool_call"
       ],
       "priority_features": [
+        "tool_call",
         "chat",
         "reasoning"
       ],

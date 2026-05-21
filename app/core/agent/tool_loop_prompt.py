@@ -24,6 +24,13 @@ COMPOSITE_SKILL_GUIDANCE = (
     "are satisfied."
 )
 
+EXECUTION_POLICY_GUIDANCE = (
+    "Runtime execution policy is active. Follow these app-level execution "
+    "rules when choosing tools and deciding whether to continue. Treat them "
+    "as operational guidance, while still respecting required inputs, safety "
+    "requirements, and explicit user instructions."
+)
+
 ITERATIVE_TOOL_GUIDANCE = (
     "Iterative tool guidance is active. When the user gives a repeat-until or "
     "stop condition, inspect each tool result and continue calling the relevant "
@@ -56,6 +63,7 @@ def build_system_prompt(
         tool_service=tool_service,
     )
     prompt = prompt_with_composite_skills(prompt, runtime_options)
+    prompt = prompt_with_execution_policy(prompt, runtime_options)
     prompt = f"{prompt}\n\n{ITERATIVE_TOOL_GUIDANCE}"
     prompt = prompt_with_primary_skill_stage_context(prompt, primary_skill_context)
     if not agent_config.memory.enabled or not agent_config.memory.inject_context:
@@ -163,6 +171,44 @@ def prompt_with_composite_skills(prompt: str, runtime_options: RuntimeOptions | 
         return prompt
     guidance = "\n\n".join([COMPOSITE_SKILL_GUIDANCE, *sections])
     return f"{prompt}\n\n{guidance}"
+
+
+def prompt_with_execution_policy(prompt: str, runtime_options: RuntimeOptions | None) -> str:
+    if runtime_options is None:
+        return prompt
+    raw_policy = runtime_options.config_options.get("agent_execution_policy")
+    if not isinstance(raw_policy, dict):
+        raw_policy = runtime_options.config_options.get("executionPolicy")
+    if not isinstance(raw_policy, dict):
+        return prompt
+    rendered = render_execution_policy(raw_policy)
+    if not rendered:
+        return prompt
+    return f"{prompt}\n\n{EXECUTION_POLICY_GUIDANCE}\n{rendered}"
+
+
+def render_execution_policy(policy: dict[str, Any]) -> str:
+    name = str(policy.get("name") or policy.get("id") or "").strip()
+    mode = str(policy.get("mode") or "").strip()
+    lines: list[str] = []
+    title = "Execution policy"
+    if name:
+        title = f"{title}: {name}"
+    lines.append(title)
+    if mode:
+        lines.append(f"Mode: {mode}")
+    stage_order = string_list(policy.get("stage_order") or policy.get("stageOrder"))
+    if stage_order:
+        lines.append(f"Stage order: {', '.join(stage_order)}")
+    instructions = string_list(policy.get("instructions"))
+    if instructions:
+        lines.append("Instructions:")
+        lines.extend(f"- {item}" for item in instructions)
+    completion_gates = string_list(policy.get("completion_gates") or policy.get("completionGates"))
+    if completion_gates:
+        lines.append("Completion gates:")
+        lines.extend(f"- {item}" for item in completion_gates)
+    return "\n".join(lines).strip()
 
 
 def render_composite_skill_context(item: dict[str, Any]) -> str:

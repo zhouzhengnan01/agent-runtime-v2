@@ -378,7 +378,13 @@ def test_algorithm_engineer_full_cycle_selects_full_stage_skill_chain() -> None:
     template = AppTemplateRegistry().get("algorithm-engineer-full-cycle")
 
     assert template.workflow == "agent_loop"
-    assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
+    assert template.title == "算法工程师正式版"
+    assert template.runtime_options["mode"] == "yolo"
+    assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
+    policy = template.runtime_options["config_options"]["agent_execution_policy"]
+    assert policy["mode"] == "full_cycle_autonomous"
+    assert policy["stage_order"][0] == "algorithm-engineer"
+    assert policy["stage_order"][-1] == "experiment-ledger"
     assert template.selected_skills == [
         "algorithm-engineer",
         "algorithm-research-scout",
