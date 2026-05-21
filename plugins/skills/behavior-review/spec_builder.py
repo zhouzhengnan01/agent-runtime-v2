@@ -148,7 +148,10 @@ class SpecBuilder:
     def _select_skill(user_text: str, attachments: list[Attachment], allowed_skills: list[str]) -> str:
         text = SpecBuilder._normalized_text(user_text)
         candidates: list[tuple[str, tuple[str, ...]]] = [
-            ("behavior-review", ("复判", "复核", "二次审核", "人工审核", "告警审核", "review")),
+            (
+                "behavior-review",
+                ("复判", "复核", "二次审核", "二次研判", "人工审核", "告警审核", "连续复判", "不间断复判", "review"),
+            ),
             ("behavior-detection", ("翻越", "摔倒", "逗留", "禁区", "行为", "识别", "intrusion")),
             (
                 "drawio-generation",
@@ -197,7 +200,16 @@ class SpecBuilder:
             "xmind-generation": ["multi_level_topics", "notes", "tasks"],
             "markdown-rendering": ["mermaid", "table", "echarts_block", "attachment_block"],
             "behavior-detection": ["evidence_first", "no_visual_score_without_visual_evidence"],
-            "behavior-review": ["evidence_first", "review_decision", "evidence_gaps", "actions"],
+            "behavior-review": [
+                "evidence_first",
+                "second_pass_logic",
+                "review_decision",
+                "risk_score",
+                "false_positive_suppression",
+                "evidence_gaps",
+                "actions",
+                "continuous_review",
+            ],
         }
         return defaults.get(skill_name, [])
 
@@ -374,12 +386,18 @@ class SpecBuilder:
     @staticmethod
     def _behavior_review_spec(user_text: str, attachments: list[Attachment]) -> dict[str, Any]:
         spec = SpecBuilder._behavior_spec(user_text, attachments)
+        continuous = any(keyword in user_text for keyword in ("连续", "不间断", "一直", "持续", "轮询", "每隔", "循环"))
         spec.update(
             {
                 "event_id": "待生成",
+                "batch_id": "default",
+                "review_round": 1,
                 "original_decision": "critical" if attachments else "needs_visual_confirmation",
                 "review_policy": "evidence_first",
                 "manual_review_required": not bool(attachments),
+                "continuous_review": continuous,
+                "poll_interval_seconds": 3 if continuous else 0,
+                "false_positive_signals": [],
             }
         )
         return spec

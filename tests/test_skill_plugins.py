@@ -137,6 +137,63 @@ def test_skill_registry_exposes_model_tags_as_metadata() -> None:
     assert "model_tags" not in (data_auto.input_schema or {}).get("properties", {})
 
 
+def test_behavior_review_outputs_second_pass_logic_and_continuous_state(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("behavior-review-continuous")
+
+    result = SkillRunner(store).run(
+        "behavior-review",
+        {
+            "event_id": "alarm-1",
+            "batch_id": "batch-1",
+            "review_round": 3,
+            "text_rule_candidates": ["翻越进入禁区"],
+            "has_visual_evidence": True,
+            "detector_confidence": 0.91,
+            "rule_confidence": 0.8,
+            "continuous_review": True,
+            "poll_interval_seconds": 3,
+        },
+        paths,
+    )
+
+    assert result.data["review_decision"] == "confirm_incident"
+    assert result.data["risk_level"] == "high"
+    assert result.data["risk_score"] >= 0.87
+    assert result.data["continuous_review"]["enabled"] is True
+    assert result.data["continuous_review"]["next_action"] == "poll_next_batch"
+    assert [step["stage"] for step in result.data["second_review_logic"]] == [
+        "文本规则初筛",
+        "证据完整性检查",
+        "模型/规则一致性",
+        "误报抑制",
+        "二次研判结论",
+    ]
+    report = (paths.outputs / "behavior-review.md").read_text(encoding="utf-8")
+    assert "## 二次研判链路" in report
+    assert "## 连续复判" in report
+
+
+def test_behavior_review_suppresses_visual_confirmation_without_evidence(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("behavior-review-no-evidence")
+
+    result = SkillRunner(store).run(
+        "behavior-review",
+        {
+            "text_rule_candidates": ["老人摔倒"],
+            "has_visual_evidence": False,
+            "continuous_review": True,
+        },
+        paths,
+    )
+
+    assert result.data["review_decision"] == "need_more_evidence"
+    assert result.data["risk_score"] == 0.0
+    assert result.data["manual_review_required"] is True
+    assert result.data["second_review_logic"][1]["decision"] == "evidence_missing"
+
+
 def test_skill_registry_uses_config_skills_as_entity_catalog() -> None:
     registry = SkillRegistry()
     skills = registry.list()

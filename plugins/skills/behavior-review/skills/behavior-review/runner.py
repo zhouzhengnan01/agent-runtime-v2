@@ -460,27 +460,98 @@ flowchart LR
         )
 
     def _behavior_review(self, spec: dict[str, Any], paths: ThreadPaths) -> SkillRunResult:
-        has_visual_evidence = bool(spec.get("has_visual_evidence"))
+        structured_evidence = [item for item in spec.get("structured_evidence", []) if isinstance(item, dict)]
+        has_visual_evidence = bool(spec.get("has_visual_evidence")) or bool(structured_evidence)
         candidates = [str(item) for item in spec.get("text_rule_candidates", [])] or ["待确认行为类型"]
         event_id = str(spec.get("event_id") or "待生成")
+        batch_id = str(spec.get("batch_id") or "default")
+        review_round = self._bounded_int(spec.get("review_round"), default=1, minimum=1, maximum=100000)
+        continuous_requested = bool(spec.get("continuous_review"))
+        poll_interval_seconds = self._bounded_int(spec.get("poll_interval_seconds"), default=3, minimum=0, maximum=3600)
         original_decision = str(spec.get("original_decision") or ("critical" if has_visual_evidence else "needs_visual_confirmation"))
+        detector_confidence = self._bounded_float(
+            spec.get("detector_confidence") or spec.get("confidence"),
+            default=0.86 if has_visual_evidence else 0.0,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        text_rule_confidence = self._bounded_float(
+            spec.get("rule_confidence") or spec.get("text_rule_confidence"),
+            default=0.72,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        false_positive_signals = [str(item) for item in spec.get("false_positive_signals", []) if str(item).strip()]
+        risk_score = self._review_risk_score(
+            has_visual_evidence=has_visual_evidence,
+            detector_confidence=detector_confidence,
+            text_rule_confidence=text_rule_confidence,
+            false_positive_signals=false_positive_signals,
+        )
+        if not has_visual_evidence:
+            review_decision = "need_more_evidence"
+            risk_level = "pending"
+            confidence = 0.0
+            evidence_gaps = ["缺少图片、视频或结构化视觉证据", "不能仅凭文本规则输出视觉确认结论"]
+            actions = ["请求上传图片/视频/结构化检测结果", "保留文本规则命中记录", "暂不升级为视觉确认事件"]
+            manual_review_required = True
+        elif risk_score >= 0.78:
+            review_decision = "confirm_incident"
+            risk_level = "high"
+            confidence = detector_confidence
+            evidence_gaps = []
+            actions = ["生成告警工单", "保留证据截图/视频片段", "通知值班人员复核", "记录处置闭环"]
+            manual_review_required = False
+        elif risk_score >= 0.45:
+            review_decision = "suspected_incident"
+            risk_level = "medium"
+            confidence = detector_confidence
+            evidence_gaps = ["视觉/结构化证据与文本规则一致性不足", "建议补充前后帧或多角度证据"]
+            actions = ["进入人工复核队列", "补充前后帧证据", "暂缓高风险升级"]
+            manual_review_required = True
+        else:
+            review_decision = "likely_false_positive"
+            risk_level = "low"
+            confidence = detector_confidence
+            evidence_gaps = ["存在误报抑制信号，需保留原始证据以便追溯"]
+            actions = ["标记为疑似误报", "保留样本进入误报回流集", "不触发高风险处置"]
+            manual_review_required = True
+        second_review_logic = self._second_review_logic(
+            has_visual_evidence=has_visual_evidence,
+            detector_confidence=detector_confidence,
+            text_rule_confidence=text_rule_confidence,
+            risk_score=risk_score,
+            false_positive_signals=false_positive_signals,
+            review_decision=review_decision,
+        )
+        continuous_review = {
+            "enabled": continuous_requested,
+            "batch_id": batch_id,
+            "review_round": review_round,
+            "poll_interval_seconds": poll_interval_seconds if continuous_requested else 0,
+            "continue_when": "pending_count > 0",
+            "next_action": "poll_next_batch" if continuous_requested else "finish_current_review",
+        }
         payload = {
             "event_id": event_id,
+            "batch_id": batch_id,
+            "review_round": review_round,
             "category": candidates[0],
             "original_decision": original_decision,
-            "review_decision": "confirm_incident" if has_visual_evidence else "need_more_evidence",
-            "risk_level": "high" if has_visual_evidence else "pending",
+            "review_decision": review_decision,
+            "risk_level": risk_level,
+            "risk_score": risk_score,
             "evidence_mode": "visual_or_structured" if has_visual_evidence else "text_only",
-            "confidence": 0.86 if has_visual_evidence else 0.0,
-            "text_rule_confidence": 0.72,
-            "evidence_gaps": [] if has_visual_evidence else ["缺少图片、视频或结构化视觉证据", "不能仅凭文本规则输出视觉置信度"],
-            "actions": (
-                ["生成告警工单", "保留证据截图/视频片段", "通知值班人员复核", "记录处置闭环"]
-                if has_visual_evidence
-                else ["请求上传图片/视频/结构化检测结果", "保留文本规则命中记录", "暂不升级为视觉确认事件"]
-            ),
-            "manual_review_required": not has_visual_evidence,
-            "reason": "复判遵循证据优先原则：有视觉证据才确认事件，缺证据时只给文本规则命中和补证建议。",
+            "confidence": confidence,
+            "text_rule_confidence": text_rule_confidence,
+            "detector_confidence": detector_confidence,
+            "false_positive_signals": false_positive_signals,
+            "second_review_logic": second_review_logic,
+            "continuous_review": continuous_review,
+            "evidence_gaps": evidence_gaps,
+            "actions": actions,
+            "manual_review_required": manual_review_required,
+            "reason": "二次研判遵循证据优先原则：文本规则只负责触发疑似告警，视觉或结构化证据负责确认，误报信号会降低风险分并进入复核/样本回流。",
         }
         md_artifact = self.artifact_store.write_text_artifact(paths, "behavior-review.md", self._behavior_review_markdown(payload))
         json_artifact = self.artifact_store.write_text_artifact(
@@ -502,13 +573,33 @@ flowchart LR
             f"- 原始判断: {payload['original_decision']}",
             f"- 复判结论: {payload['review_decision']}",
             f"- 风险等级: {payload['risk_level']}",
+            f"- 风险分: {payload['risk_score']}",
             f"- 证据模式: {payload['evidence_mode']}",
             f"- 视觉置信度: {payload['confidence']}",
             f"- 文本规则置信度: {payload['text_rule_confidence']}",
+            f"- 人工复核: {payload['manual_review_required']}",
+            "",
+            "## 二次研判链路",
+            "",
+        ]
+        for step in payload.get("second_review_logic", []):
+            lines.append(f"- {step.get('stage')}: {step.get('decision')}（{step.get('reason')}）")
+        continuous = payload.get("continuous_review", {})
+        lines.extend(
+            [
+                "",
+                "## 连续复判",
+                "",
+                f"- 启用: {continuous.get('enabled')}",
+                f"- 批次: {continuous.get('batch_id')}",
+                f"- 轮次: {continuous.get('review_round')}",
+                f"- 下一步: {continuous.get('next_action')}",
+                f"- 轮询间隔秒: {continuous.get('poll_interval_seconds')}",
             "",
             "## 证据缺口",
             "",
-        ]
+            ]
+        )
         for item in payload["evidence_gaps"] or ["暂无缺口"]:
             lines.append(f"- {item}")
         lines.extend(["", "## 处置建议", ""])
@@ -521,10 +612,81 @@ flowchart LR
                 "",
                 "- 没有图片、视频或结构化视觉证据时，不输出视觉确认结论。",
                 "- 文本规则命中只能作为疑似告警，不能替代视觉证据。",
+                "- 二次研判同时检查证据完整性、规则/模型一致性、风险分和误报抑制信号。",
                 "- 高风险事件需要保留证据、处理动作和复判人/复判系统记录。",
             ]
         )
         return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _review_risk_score(
+        *,
+        has_visual_evidence: bool,
+        detector_confidence: float,
+        text_rule_confidence: float,
+        false_positive_signals: list[str],
+    ) -> float:
+        if not has_visual_evidence:
+            return 0.0
+        score = detector_confidence * 0.7 + text_rule_confidence * 0.3
+        score -= min(0.35, len(false_positive_signals) * 0.12)
+        return round(max(0.0, min(score, 1.0)), 3)
+
+    @staticmethod
+    def _second_review_logic(
+        *,
+        has_visual_evidence: bool,
+        detector_confidence: float,
+        text_rule_confidence: float,
+        risk_score: float,
+        false_positive_signals: list[str],
+        review_decision: str,
+    ) -> list[dict[str, str]]:
+        return [
+            {
+                "stage": "文本规则初筛",
+                "decision": "rule_hit" if text_rule_confidence > 0 else "rule_missing",
+                "reason": f"文本规则置信度 {text_rule_confidence:.2f}，只作为疑似告警入口。",
+            },
+            {
+                "stage": "证据完整性检查",
+                "decision": "evidence_ready" if has_visual_evidence else "evidence_missing",
+                "reason": "存在图片、视频或结构化视觉证据。" if has_visual_evidence else "缺少可确认视觉证据。",
+            },
+            {
+                "stage": "模型/规则一致性",
+                "decision": "consistent" if has_visual_evidence and detector_confidence >= 0.65 else "needs_review",
+                "reason": f"检测置信度 {detector_confidence:.2f}，结合文本规则进行交叉验证。",
+            },
+            {
+                "stage": "误报抑制",
+                "decision": "suppressed" if false_positive_signals else "not_triggered",
+                "reason": "；".join(false_positive_signals) if false_positive_signals else "未发现遮挡、重复告警、区域错配等误报信号。",
+            },
+            {
+                "stage": "二次研判结论",
+                "decision": review_decision,
+                "reason": f"综合风险分 {risk_score:.3f} 后输出复判结论。",
+            },
+        ]
+
+    @staticmethod
+    def _bounded_float(value: object, *, default: float, minimum: float, maximum: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = default
+        if math.isnan(number) or math.isinf(number):
+            number = default
+        return max(minimum, min(number, maximum))
+
+    @staticmethod
+    def _bounded_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            number = default
+        return max(minimum, min(number, maximum))
 
     @staticmethod
     def _string_pairs(value: object) -> list[list[str]]:

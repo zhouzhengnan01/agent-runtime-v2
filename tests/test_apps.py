@@ -291,7 +291,13 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
     registry = AppTemplateRegistry()
 
     for template in registry.list():
-        if template.name in {"algorithm-engineer-full-cycle", "reference-image-yolo-training"}:
+        if template.name == "algorithm-engineer-full-cycle":
+            assert template.runtime_options["mode"] == "yolo"
+            assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
+        elif template.name == "behavior-review":
+            assert template.runtime_options["mode"] == "yolo"
+            assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
+        elif template.name == "reference-image-yolo-training":
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
         else:
             assert template.runtime_options == {}, template.name
@@ -372,6 +378,34 @@ def test_preconfigured_app_templates_do_not_preselect_artifact_workflow() -> Non
         for template in registry.list()
         if template.workflow == "artifact_workflow"
     } == {}
+
+
+def test_behavior_review_template_enables_continuous_second_pass_policy() -> None:
+    template = AppTemplateRegistry().get("behavior-review")
+
+    assert template.workflow == "agent_loop"
+    assert template.title == "行为识别连续复判"
+    assert template.runtime_options["mode"] == "yolo"
+    assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
+    policy = template.runtime_options["config_options"]["agent_execution_policy"]
+    assert policy["mode"] == "continuous_review"
+    assert policy["stage_order"] == [
+        "alert_ingest",
+        "evidence_integrity_check",
+        "second_pass_judgement",
+        "false_positive_suppression",
+        "risk_grade",
+        "action_recommendation",
+        "review_ledger",
+    ]
+    conditional = template.runtime_options["config_options"]["conditional_tool_loop"]
+    assert conditional["continue_while"] == {
+        "json_path": "$.pending_count",
+        "operator": "gt",
+        "expected": 0,
+    }
+    assert conditional["poll_interval_seconds"] == 3
+    assert "tool_call" in template.models[0].features
 
 
 def test_algorithm_engineer_full_cycle_selects_full_stage_skill_chain() -> None:
