@@ -31,6 +31,9 @@ from app.core.tools.orchestrator import ToolOrchestrator
 from app.schemas import AgentRunResult, ArtifactRef, Message, RuntimeOptions
 
 
+MAX_TOOL_ROUNDS_LIMIT = 1000
+
+
 @dataclass
 class ToolLoopResult:
     result: AgentRunResult
@@ -1034,14 +1037,14 @@ class ToolCallingAgentLoop:
         if mode == "plan":
             return 1
         if mode == "safe":
-            return min(base, 2)
+            return base
         if mode in {"autonomous", "yolo"}:
-            return max(base, min(base * 2, 16))
+            return min(MAX_TOOL_ROUNDS_LIMIT, max(base, min(base * 2, 16)))
         return base
 
     @staticmethod
     def _base_tool_rounds(agent_config: AgentConfig, runtime_options: RuntimeOptions | None) -> int:
-        configured = max(1, agent_config.runtime.max_tool_rounds)
+        configured = min(max(1, agent_config.runtime.max_tool_rounds), MAX_TOOL_ROUNDS_LIMIT)
         if runtime_options is None:
             return configured
         raw_value = runtime_options.config_options.get("max_tool_rounds")
@@ -1051,7 +1054,7 @@ class ToolCallingAgentLoop:
             requested = int(raw_value)
         except (TypeError, ValueError):
             return configured
-        return min(max(1, requested), 32)
+        return min(max(1, requested), MAX_TOOL_ROUNDS_LIMIT)
 
     @staticmethod
     def _runtime_mode(runtime_options: RuntimeOptions | None) -> str:

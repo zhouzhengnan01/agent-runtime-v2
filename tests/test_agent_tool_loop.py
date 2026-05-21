@@ -2092,11 +2092,15 @@ def test_agent_loop_allows_request_scoped_tool_round_override() -> None:
     assert ToolCallingAgentLoop._max_tool_rounds(
         agent,
         RuntimeOptions(mode="safe", config_options={"max_tool_rounds": 14}),
-    ) == 2
+    ) == 14
     assert ToolCallingAgentLoop._max_tool_rounds(
         agent,
         RuntimeOptions(config_options={"max_tool_rounds": 100}),
-    ) == 32
+    ) == 100
+    assert ToolCallingAgentLoop._max_tool_rounds(
+        agent,
+        RuntimeOptions(config_options={"max_tool_rounds": 5000}),
+    ) == 1000
 
 
 def test_agent_loop_surfaces_skill_required_inputs(
