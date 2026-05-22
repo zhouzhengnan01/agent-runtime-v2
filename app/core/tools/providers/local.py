@@ -4,6 +4,8 @@ import difflib
 import json
 import os
 import subprocess
+import tarfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,8 @@ LOCAL_TOOL_NAMES = {
     "local_todo",
     "local_shell_command",
     "present_files",
+    "extract_archive",
+    "validate_yolo_training_inputs",
 }
 
 
@@ -49,6 +53,10 @@ class LocalToolProvider:
                 return self._shell_command(paths, arguments)
             if operation == "present_files":
                 return self._present_files(paths, arguments)
+            if operation == "extract_archive":
+                return self._extract_archive(paths, arguments)
+            if operation == "validate_yolo_training_inputs":
+                return self._validate_yolo_training_inputs(paths, arguments)
         except Exception as exc:
             return ToolInvocationResult(
                 content=[{"type": "text", "text": f"{tool.name} failed: {exc}"}],
@@ -268,6 +276,164 @@ class LocalToolProvider:
             is_error=False,
         )
 
+    def _extract_archive(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
+        archive = self._thread_scoped_path(
+            paths,
+            str(arguments.get("path") or arguments.get("archive_path") or ""),
+            arguments,
+            scopes={"uploads", "workspace", "outputs"},
+        )
+        if not archive.is_file():
+            raise FileNotFoundError(f"Archive not found: {self._display_path(paths, archive, arguments)}")
+        if not self._is_supported_archive(archive):
+            raise ValueError("Archive must be .zip, .tar, .tar.gz, or .tgz")
+        default_output = f"extracted/{archive.stem.removesuffix('.tar')}"
+        output_dir = self._thread_scoped_path(
+            paths,
+            str(arguments.get("output_dir") or arguments.get("target_dir") or default_output),
+            arguments,
+            scopes={"workspace", "outputs"},
+        )
+        overwrite = bool(arguments.get("overwrite", True))
+        max_files = self._bounded_int(arguments.get("max_files"), default=10000, minimum=1, maximum=100000)
+        max_bytes = self._bounded_int(
+            arguments.get("max_bytes"),
+            default=512 * 1024 * 1024,
+            minimum=1024,
+            maximum=2 * 1024 * 1024 * 1024,
+        )
+        if output_dir.exists() and any(output_dir.iterdir()) and not overwrite:
+            raise FileExistsError(f"Output directory is not empty: {self._display_path(paths, output_dir, arguments)}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        extracted = self._extract_archive_to(archive, output_dir, max_files=max_files, max_bytes=max_bytes)
+        image_files = [path for path in extracted if self._is_image_file(path)]
+        dataset_root = self._best_dataset_root(output_dir, image_files)
+        text = (
+            f"Extracted {len(extracted)} files from {self._display_path(paths, archive, arguments)} "
+            f"to {self._display_path(paths, output_dir, arguments)}. "
+            f"Detected {len(image_files)} image files."
+        )
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": text}],
+            structured_content={
+                "status": "completed",
+                "archive_path": self._display_path(paths, archive, arguments),
+                "output_dir": self._display_path(paths, output_dir, arguments),
+                "dataset_root": self._display_path(paths, dataset_root, arguments),
+                "file_count": len(extracted),
+                "image_count": len(image_files),
+                "top_level_entries": self._top_level_entries(output_dir),
+                "sample_images": [self._display_path(paths, path, arguments) for path in image_files[:20]],
+            },
+            is_error=False,
+        )
+
+    def _validate_yolo_training_inputs(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
+        dataset_value = str(arguments.get("dataset_root") or arguments.get("data") or "").strip()
+        ref_value = str(arguments.get("ref_image") or arguments.get("reference_image") or "").strip()
+        labels = self._string_list(arguments.get("labels") or arguments.get("class_names"))
+        training = dict(arguments.get("training") or {}) if isinstance(arguments.get("training"), dict) else {}
+        runtime = dict(arguments.get("runtime") or {}) if isinstance(arguments.get("runtime"), dict) else {}
+        split = dict(arguments.get("split") or {}) if isinstance(arguments.get("split"), dict) else {}
+
+        missing: list[str] = []
+        errors: list[str] = []
+        warnings: list[str] = []
+        normalized: dict[str, Any] = {
+            "labels": labels,
+            "training": training,
+            "runtime": runtime,
+            "split": split,
+        }
+
+        dataset_path: Path | None = None
+        if not dataset_value:
+            missing.append("dataset_root")
+        else:
+            dataset_path = self._thread_scoped_path(
+                paths,
+                dataset_value,
+                arguments,
+                scopes={"uploads", "workspace", "outputs"},
+            )
+            normalized["dataset_root"] = self._display_path(paths, dataset_path, arguments)
+            if dataset_path.is_file() and self._is_supported_archive(dataset_path):
+                errors.append("dataset_root points to an archive; call extract_archive first and pass the extracted directory.")
+            elif not dataset_path.exists():
+                errors.append(f"dataset_root does not exist: {normalized['dataset_root']}")
+            elif not dataset_path.is_dir():
+                errors.append(f"dataset_root must be a directory: {normalized['dataset_root']}")
+            else:
+                image_count = sum(1 for path in dataset_path.rglob("*") if path.is_file() and self._is_image_file(path))
+                normalized["image_count"] = image_count
+                if image_count <= 0:
+                    errors.append(f"dataset_root contains no image files: {normalized['dataset_root']}")
+                elif image_count < 10:
+                    warnings.append("dataset_root has fewer than 10 images; evaluation metrics may be unstable.")
+
+        if ref_value:
+            ref_path = self._thread_scoped_path(
+                paths,
+                ref_value,
+                arguments,
+                scopes={"uploads", "workspace", "outputs"},
+            )
+            normalized["ref_image"] = self._display_path(paths, ref_path, arguments)
+            if not ref_path.is_file():
+                errors.append(f"ref_image does not exist: {normalized['ref_image']}")
+            elif not self._is_image_file(ref_path):
+                errors.append(f"ref_image is not a supported image file: {normalized['ref_image']}")
+        if not labels:
+            missing.append("labels")
+
+        for key in ("model", "epochs", "imgsz", "batch", "device"):
+            if training.get(key) in {None, ""}:
+                missing.append(f"training.{key}")
+        for key in ("epochs", "imgsz", "batch", "workers", "patience"):
+            if key not in training or training.get(key) in {None, ""}:
+                continue
+            try:
+                if int(training[key]) <= 0:
+                    errors.append(f"training.{key} must be greater than 0")
+            except (TypeError, ValueError):
+                errors.append(f"training.{key} must be an integer")
+        if "amp" in training and not isinstance(training["amp"], bool):
+            raw_amp = str(training["amp"]).strip().lower()
+            if raw_amp not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
+                errors.append("training.amp must be a boolean")
+        if not runtime.get("conda_env_name"):
+            missing.append("runtime.conda_env_name")
+
+        split_values = [split.get(key) for key in ("train", "val", "test") if split.get(key) not in {None, ""}]
+        if split_values:
+            try:
+                total = sum(float(value) for value in split_values)
+                if abs(total - 1.0) > 0.05:
+                    warnings.append(f"dataset split ratios sum to {total:.3f}; expected approximately 1.0.")
+            except (TypeError, ValueError):
+                errors.append("split ratios must be numeric")
+
+        ready = not missing and not errors
+        next_questions = self._yolo_next_questions(missing)
+        text = "YOLO training inputs are ready." if ready else "YOLO training inputs are not ready."
+        if missing:
+            text += "\nMissing: " + ", ".join(missing)
+        if errors:
+            text += "\nErrors: " + "; ".join(errors)
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": text}],
+            structured_content={
+                "ready": ready,
+                "missing": missing,
+                "errors": errors,
+                "warnings": warnings,
+                "next_questions": next_questions,
+                "normalized": normalized,
+            },
+            is_error=False,
+        )
+
     def _file_entries(
         self,
         paths: ThreadPaths,
@@ -294,6 +460,7 @@ class LocalToolProvider:
                 "path": relative,
                 "virtual_path": virtual_path,
                 "size": size,
+                "kind": self._file_kind(file_path),
             }
             if scope == "workspace":
                 entry["workspace_path"] = self._display_path(paths, file_path)
@@ -334,6 +501,134 @@ class LocalToolProvider:
             return True
 
     @staticmethod
+    def _is_supported_archive(path: Path) -> bool:
+        name = path.name.lower()
+        return name.endswith((".zip", ".tar", ".tar.gz", ".tgz"))
+
+    @staticmethod
+    def _is_image_file(path: Path) -> bool:
+        return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+
+    @classmethod
+    def _file_kind(cls, path: Path) -> str:
+        if cls._is_supported_archive(path):
+            return "archive"
+        if cls._is_image_file(path):
+            return "image"
+        if path.suffix.lower() in {".yaml", ".yml", ".json", ".txt", ".md", ".csv"}:
+            return "text"
+        return "file"
+
+    @classmethod
+    def _extract_archive_to(cls, archive: Path, output_dir: Path, *, max_files: int, max_bytes: int) -> list[Path]:
+        extracted: list[Path] = []
+        total_bytes = 0
+        if archive.name.lower().endswith(".zip"):
+            with zipfile.ZipFile(archive) as handle:
+                infos = [info for info in handle.infolist() if not info.is_dir()]
+                if len(infos) > max_files:
+                    raise ValueError(f"Archive contains too many files: {len(infos)} > {max_files}")
+                for info in infos:
+                    cls._reject_unsafe_archive_name(info.filename)
+                    total_bytes += max(0, int(info.file_size))
+                    if total_bytes > max_bytes:
+                        raise ValueError(f"Archive expands beyond max_bytes: {total_bytes} > {max_bytes}")
+                    target = cls._safe_extract_target(output_dir, info.filename)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with handle.open(info) as source, target.open("wb") as dest:
+                        dest.write(source.read())
+                    extracted.append(target)
+        else:
+            with tarfile.open(archive) as handle:
+                members = [member for member in handle.getmembers() if member.isfile()]
+                if len(members) > max_files:
+                    raise ValueError(f"Archive contains too many files: {len(members)} > {max_files}")
+                for member in members:
+                    cls._reject_unsafe_archive_name(member.name)
+                    if member.issym() or member.islnk():
+                        raise ValueError(f"Archive links are not allowed: {member.name}")
+                    total_bytes += max(0, int(member.size))
+                    if total_bytes > max_bytes:
+                        raise ValueError(f"Archive expands beyond max_bytes: {total_bytes} > {max_bytes}")
+                    target = cls._safe_extract_target(output_dir, member.name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    source = handle.extractfile(member)
+                    if source is None:
+                        continue
+                    with source, target.open("wb") as dest:
+                        dest.write(source.read())
+                    extracted.append(target)
+        return extracted
+
+    @staticmethod
+    def _reject_unsafe_archive_name(name: str) -> None:
+        normalized = name.replace("\\", "/")
+        parts = Path(normalized).parts
+        if normalized.startswith("/") or any(part in {"..", ""} for part in parts):
+            raise ValueError(f"Unsafe archive path blocked: {name}")
+
+    @staticmethod
+    def _safe_extract_target(output_dir: Path, name: str) -> Path:
+        target = (output_dir / name.replace("\\", "/")).resolve()
+        root = output_dir.resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Archive path traversal blocked: {name}") from exc
+        return target
+
+    @classmethod
+    def _best_dataset_root(cls, output_dir: Path, image_files: list[Path]) -> Path:
+        if not image_files:
+            return output_dir
+        image_dirs = {path.parent for path in image_files}
+        candidates = [output_dir, output_dir / "images", output_dir / "dataset", output_dir / "data"]
+        for candidate in candidates:
+            if candidate.is_dir() and any(path.is_relative_to(candidate) for path in image_files):
+                if candidate != output_dir or len(image_dirs) != 1:
+                    return candidate
+        common = Path(os.path.commonpath([str(path.parent) for path in image_files]))
+        return common if common.is_dir() else output_dir
+
+    @staticmethod
+    def _top_level_entries(output_dir: Path) -> list[str]:
+        try:
+            return sorted(path.name for path in output_dir.iterdir())[:50]
+        except OSError:
+            return []
+
+    @staticmethod
+    def _string_list(value: object) -> list[str]:
+        if isinstance(value, str):
+            raw_items = value.replace("，", ",").replace("、", ",").split(",")
+        elif isinstance(value, list):
+            raw_items = [str(item) for item in value]
+        else:
+            return []
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            clean = item.strip().strip("'\"`")
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            result.append(clean)
+        return result
+
+    @staticmethod
+    def _yolo_next_questions(missing: list[str]) -> list[str]:
+        questions: list[str] = []
+        if "dataset_root" in missing:
+            questions.append("请上传数据集压缩包，或提供解压后的 dataset_root。")
+        if "labels" in missing:
+            questions.append("请补充 labels=person,cigarette 这样的检测类别。")
+        if any(item.startswith("training.") for item in missing):
+            questions.append("请补充 model/epochs/imgsz/batch/device 等训练参数。")
+        if "runtime.conda_env_name" in missing:
+            questions.append("请补充 conda_env_name，例如 conda_env_name=cv_train。")
+        return questions
+
+    @staticmethod
     def _display_path(paths: ThreadPaths, path: Path, arguments: dict[str, Any] | None = None) -> str:
         raw_session_cwd = str((arguments or {}).get("_session_cwd") or "").strip()
         if raw_session_cwd:
@@ -346,9 +641,63 @@ class LocalToolProvider:
         except ValueError:
             pass
         try:
+            return f"/mnt/user-data/outputs/{path.resolve().relative_to(paths.outputs.resolve()).as_posix()}"
+        except ValueError:
+            pass
+        try:
             return path.resolve().relative_to(paths.workspace.resolve()).as_posix()
         except ValueError:
             return path.name
+
+    @staticmethod
+    def _thread_scoped_path(
+        paths: ThreadPaths,
+        raw_path: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        scopes: set[str],
+    ) -> Path:
+        if not raw_path.strip():
+            raise ValueError("path is required")
+        arguments = arguments or {}
+        normalized_raw = raw_path.replace("\\", "/")
+        virtual_roots = {
+            "uploads": ("/mnt/user-data/uploads", paths.uploads),
+            "workspace": ("/mnt/user-data/workspace", paths.workspace),
+            "outputs": ("/mnt/user-data/outputs", paths.outputs),
+        }
+        for scope, (prefix, root) in virtual_roots.items():
+            if scope not in scopes:
+                continue
+            if normalized_raw == prefix or normalized_raw.startswith(prefix + "/"):
+                suffix = normalized_raw[len(prefix):].lstrip("/")
+                candidate = (root / suffix).resolve()
+                try:
+                    candidate.relative_to(root.resolve())
+                except ValueError as exc:
+                    raise ValueError(f"{scope} path traversal blocked") from exc
+                return candidate
+        raw_session_cwd = str(arguments.get("_session_cwd") or "").strip()
+        if raw_session_cwd:
+            session_cwd = Path(raw_session_cwd).expanduser().resolve()
+            candidate = (
+                Path(normalized_raw).expanduser().resolve()
+                if Path(normalized_raw).is_absolute()
+                else (session_cwd / normalized_raw.lstrip("/")).resolve()
+            )
+            try:
+                candidate.relative_to(session_cwd)
+            except ValueError as exc:
+                raise ValueError("Session path traversal blocked") from exc
+            return candidate
+        default_root = paths.outputs if "outputs" in scopes and normalized_raw.startswith("outputs/") else paths.workspace
+        normalized = normalized_raw.removeprefix("outputs/").lstrip("/") if default_root == paths.outputs else normalized_raw.lstrip("/")
+        candidate = (default_root / normalized).resolve()
+        try:
+            candidate.relative_to(default_root.resolve())
+        except ValueError as exc:
+            raise ValueError("Thread path traversal blocked") from exc
+        return candidate
 
     @staticmethod
     def _workspace_path(paths: ThreadPaths, raw_path: str, arguments: dict[str, Any] | None = None) -> Path:
@@ -503,6 +852,71 @@ def local_tool_definitions() -> list[ToolDefinition]:
             },
             enabled=shell_enabled,
             source={"type": LocalToolProvider.source_type, "operation": "shell_command"},
+            editable=False,
+        ),
+        ToolDefinition(
+            name="extract_archive",
+            title="Extract Thread Archive",
+            description=(
+                "Safely extract a .zip, .tar, .tar.gz, or .tgz file from uploads/workspace/outputs into "
+                "the current thread workspace or outputs, then return the extracted dataset_root and image count."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Archive path, usually /mnt/user-data/uploads/name.zip."},
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Destination under /mnt/user-data/workspace or /mnt/user-data/outputs.",
+                    },
+                    "overwrite": {"type": "boolean", "default": True},
+                    "max_files": {"type": "integer", "minimum": 1, "maximum": 100000},
+                    "max_bytes": {"type": "integer", "minimum": 1024},
+                },
+                "required": ["path"],
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                    "dataset_root": {"type": "string"},
+                    "image_count": {"type": "integer"},
+                    "file_count": {"type": "integer"},
+                },
+            },
+            source={"type": LocalToolProvider.source_type, "operation": "extract_archive"},
+            editable=False,
+        ),
+        ToolDefinition(
+            name="validate_yolo_training_inputs",
+            title="Validate YOLO Training Inputs",
+            description=(
+                "Check whether dataset_root, reference image, labels, runtime, and training parameters are ready "
+                "before calling gpu-training-orchestrator. This tool does not train."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "dataset_root": {"type": "string"},
+                    "ref_image": {"type": "string"},
+                    "labels": {"type": "array", "items": {"type": "string"}},
+                    "training": {"type": "object"},
+                    "runtime": {"type": "object"},
+                    "split": {"type": "object"},
+                },
+                "required": ["dataset_root", "labels", "training", "runtime"],
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "ready": {"type": "boolean"},
+                    "missing": {"type": "array"},
+                    "errors": {"type": "array"},
+                    "warnings": {"type": "array"},
+                    "normalized": {"type": "object"},
+                },
+            },
+            source={"type": LocalToolProvider.source_type, "operation": "validate_yolo_training_inputs"},
             editable=False,
         ),
         ToolDefinition(

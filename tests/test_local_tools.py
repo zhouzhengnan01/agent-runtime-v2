@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,56 @@ def test_present_files_lists_thread_outputs_and_optional_workspace(tmp_path: Pat
     assert outputs_only.structured_content["files"][0]["scope"] == "outputs"
     assert outputs_only.structured_content["files"][0]["path"] == "result.md"
     assert with_workspace.is_error is False
+
+
+def test_extract_archive_and_validate_yolo_training_inputs(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("yolo-tools")
+    archive = paths.uploads / "generated_images.zip"
+    with zipfile.ZipFile(archive, "w") as handle:
+        handle.writestr("images/scene1.jpg", b"fake-jpg-1")
+        handle.writestr("images/scene2.jpg", b"fake-jpg-2")
+    ref_image = paths.uploads / "reference.jpg"
+    ref_image.write_bytes(b"fake-ref")
+    service = ToolInvocationService(artifact_store=store)
+
+    extracted = service.call_tool(
+        "extract_archive",
+        {
+            "_thread_id": "yolo-tools",
+            "path": "/mnt/user-data/uploads/generated_images.zip",
+            "output_dir": "/mnt/user-data/workspace/dataset_root",
+        },
+    )
+    dataset_root = extracted.structured_content["dataset_root"]
+    validated = service.call_tool(
+        "validate_yolo_training_inputs",
+        {
+            "_thread_id": "yolo-tools",
+            "dataset_root": dataset_root,
+            "ref_image": "/mnt/user-data/uploads/reference.jpg",
+            "labels": ["person"],
+            "training": {
+                "model": "yolo11n.pt",
+                "epochs": 1,
+                "imgsz": 320,
+                "batch": 1,
+                "device": "cpu",
+                "amp": False,
+            },
+            "runtime": {"conda_env_name": "cv_train"},
+            "split": {"train": 0.7, "val": 0.2, "test": 0.1},
+        },
+    )
+
+    assert extracted.is_error is False
+    assert extracted.structured_content["image_count"] == 2
+    assert dataset_root == "dataset_root/images"
+    assert (paths.workspace / "dataset_root" / "images" / "scene1.jpg").is_file()
+    assert validated.is_error is False
+    assert validated.structured_content["ready"] is True
+    assert validated.structured_content["normalized"]["image_count"] == 2
+    assert validated.structured_content["normalized"]["training"]["amp"] is False
 
 
 def test_local_tools_block_path_traversal(tmp_path: Path) -> None:

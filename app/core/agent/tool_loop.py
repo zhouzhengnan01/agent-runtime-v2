@@ -850,6 +850,8 @@ class ToolCallingAgentLoop:
             "local_patch_file",
             "local_write_file",
             "local_todo",
+            "extract_archive",
+            "validate_yolo_training_inputs",
         }
         if mode in {"autonomous", "yolo"}:
             names.add("local_shell_command")
@@ -1077,7 +1079,7 @@ class ToolCallingAgentLoop:
         if mode == "safe":
             if source_type == "skill":
                 return False
-            if source_type == "local" and operation in {"write_file", "patch_file", "shell_command"}:
+            if source_type == "local" and operation in {"write_file", "patch_file", "shell_command", "extract_archive"}:
                 return False
             return True
         if mode == "edit":

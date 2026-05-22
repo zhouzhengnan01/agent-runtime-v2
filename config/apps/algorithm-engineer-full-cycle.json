@@ -46,6 +46,10 @@
         ],
         "instructions": [
           "优先连续调用已选择的阶段 skill 推进训练闭环，不要只生成规划文案。",
+          "通用 agent_loop 训练任务中，先用 present_files 观察上传文件；如果数据集是 zip/tar 压缩包，必须先调用 extract_archive 得到 dataset_root。",
+          "调用 gpu-training-orchestrator 前，必须用 validate_yolo_training_inputs 校验 dataset_root、参考图、labels、训练参数和 conda 环境；ready=false 时追问或补齐，不要启动训练。",
+          "GPU YOLO 训练默认传 training.amp=false，除非用户明确要求 AMP，避免受限网络环境下 AMP 自检下载权重导致卡住。",
+          "不要把压缩包直接传给 data-auto-annotation 或 gpu-training-orchestrator；不要用 /mnt/user-data/outputs 冒充 dataset_root，除非校验通过。",
           "用户已提供 data.yaml、COCO 标注、图片目录或训练输出时，直接进入对应执行阶段。",
           "只有缺少数据集、GPU/训练环境、凭据、危险操作确认或必要评估产物时，才通过 required_inputs 阻塞。",
           "训练产出 best.pt、last.pt、results.csv 后，继续进入评估、上线评审和实验台账阶段。",

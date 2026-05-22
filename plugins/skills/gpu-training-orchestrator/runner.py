@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 import re
 from pathlib import Path
 from typing import Any
@@ -11,13 +13,45 @@ from typing import Any
 def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) -> dict[str, Any]:
     del skill_name
     package_root = Path(__file__).resolve().parent
-    script_path = package_root / "scripts" / "run_in_conda.ps1"
-    if not script_path.exists():
-        raise FileNotFoundError(f"run_in_conda.ps1 not found: {script_path}")
+    ps1_path = package_root / "scripts" / "run_in_conda.ps1"
+    python_script_path = package_root / "scripts" / "run_yolo_training.py"
+    if not python_script_path.exists():
+        raise FileNotFoundError(f"run_yolo_training.py not found: {python_script_path}")
 
     request_path = paths.workspace / "gpu-training-orchestrator-input.json"
     spec = _normalize_training_spec(spec, paths)
     request_path.write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+    preflight = _preflight_training_spec(spec)
+    if preflight:
+        return {
+            "skill_name": "gpu-training-orchestrator",
+            "outputs": [],
+            "data": {
+                "execution_type": "conda_ps1",
+                "returncode": 0,
+                "requires_input": True,
+                "required_inputs": preflight,
+                "final_reply": _required_inputs_reply(preflight),
+            },
+        }
+    if _skip_training_requested(spec):
+        summary = _dry_run_summary(spec, request_path)
+        output = artifact_store.write_text_artifact(
+            paths,
+            "gpu-training-orchestrator-dry-run.json",
+            json.dumps(summary, ensure_ascii=False, indent=2),
+        )
+        return {
+            "skill_name": "gpu-training-orchestrator",
+            "outputs": [output],
+            "data": {
+                "execution_type": "dry_run",
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+                "final_reply": _dry_run_reply(summary),
+            },
+        }
     config_dir = paths.workspace / "ultralytics_config"
     config_dir.mkdir(parents=True, exist_ok=True)
     settings_file = config_dir / "settings.json"
@@ -28,16 +62,14 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
     env["ULTRALYTICS_SETTINGS"] = str(settings_file.resolve())
     env["ULTRALYTICS_HOME"] = str(config_dir.resolve())
 
+    command, execution_type = _training_command(
+        ps1_path=ps1_path,
+        python_script_path=python_script_path,
+        request_path=request_path,
+        spec=spec,
+    )
     completed = subprocess.run(
-        [
-            "powershell",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(script_path),
-            "-InputJsonPath",
-            str(request_path),
-        ],
+        command,
         cwd=str(package_root),
         capture_output=True,
         env=env,
@@ -64,7 +96,7 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
         "skill_name": "gpu-training-orchestrator",
         "outputs": outputs,
         "data": {
-            "execution_type": "conda_ps1",
+            "execution_type": execution_type,
             "returncode": completed.returncode,
             "stdout": stdout_text[-4000:] if stdout_text else "",
             "stderr": stderr_text[-4000:] if stderr_text else "",
@@ -78,8 +110,8 @@ def _normalize_training_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]
     overrides = str(spec.get("overrides_text") or "")
     run_name = str(ctx.get("run_name") or f"smoking_yolo_{paths.thread_id}")
     project_dir = str(ctx.get("project_dir") or (Path(paths.outputs) / "training_runs").resolve())
-    dataset_root = str(ctx.get("dataset_root") or "")
-    coco_json = str(ctx.get("coco_json") or "")
+    dataset_root = str(ctx.get("dataset_root") or spec.get("dataset_root") or "")
+    coco_json = str(ctx.get("coco_json") or spec.get("coco_json") or "")
     class_names = _normalize_labels(ctx.get("class_names") or ctx.get("labels") or spec.get("class_names") or spec.get("labels"))
 
     normalized = {
@@ -105,11 +137,150 @@ def _normalize_training_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]
             "device": "0",
             "workers": 4,
             "patience": 20,
+            "amp": False,
         },
         "output": {"project_dir": project_dir, "run_name": run_name},
     }
+    normalized["dry_run"] = _bool_value(spec.get("dry_run"), False)
+    normalized["skip_training"] = _bool_value(spec.get("skip_training"), False)
+    if isinstance(spec.get("dataset"), dict):
+        dataset_spec = spec["dataset"]
+        normalized["dataset"]["root_dir"] = str(dataset_spec.get("root_dir") or normalized["dataset"]["root_dir"])
+        normalized["dataset"]["coco_json"] = str(dataset_spec.get("coco_json") or normalized["dataset"]["coco_json"])
+        if isinstance(dataset_spec.get("split"), dict):
+            normalized["dataset"]["split"].update(dataset_spec["split"])
+        if dataset_spec.get("class_names"):
+            normalized["dataset"]["class_names"] = _normalize_labels(dataset_spec.get("class_names"))
+    if isinstance(spec.get("training"), dict):
+        normalized["training"].update({key: value for key, value in spec["training"].items() if value not in {None, ""}})
+    if isinstance(spec.get("runtime"), dict):
+        normalized["runtime"].update({key: value for key, value in spec["runtime"].items() if value not in {None, ""}})
     _apply_overrides_text(normalized, overrides)
     return normalized
+
+
+def _training_command(
+    *,
+    ps1_path: Path,
+    python_script_path: Path,
+    request_path: Path,
+    spec: dict[str, Any],
+) -> tuple[list[str], str]:
+    powershell = _powershell_executable()
+    if powershell and ps1_path.exists():
+        return (
+            [
+                powershell,
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(ps1_path),
+                "-InputJsonPath",
+                str(request_path),
+            ],
+            "conda_ps1",
+        )
+    env_name = str((spec.get("runtime") or {}).get("conda_env_name") or "").strip()
+    conda = shutil.which("conda")
+    if conda and env_name:
+        return (
+            [
+                conda,
+                "run",
+                "--no-capture-output",
+                "-n",
+                env_name,
+                "python",
+                "-u",
+                str(python_script_path),
+                "--input",
+                str(request_path),
+            ],
+            "conda_python",
+        )
+    return (
+        [sys.executable, "-u", str(python_script_path), "--input", str(request_path)],
+        "python_direct",
+    )
+
+
+def _powershell_executable() -> str:
+    return shutil.which("powershell") or shutil.which("pwsh") or ""
+
+
+def _preflight_training_spec(spec: dict[str, Any]) -> list[dict[str, str]]:
+    dataset = spec.get("dataset") if isinstance(spec.get("dataset"), dict) else {}
+    root_dir = str(dataset.get("root_dir") or "").strip()
+    class_names = dataset.get("class_names") if isinstance(dataset, dict) else []
+    runtime = spec.get("runtime") if isinstance(spec.get("runtime"), dict) else {}
+    required: list[dict[str, str]] = []
+    if not root_dir:
+        required.append(
+            {
+                "type": "dataset_root",
+                "reason": "gpu-training-orchestrator needs an extracted dataset_root. Call extract_archive first when the upload is a zip/tar archive.",
+            }
+        )
+    elif root_dir.lower().endswith((".zip", ".tar", ".tar.gz", ".tgz")):
+        required.append(
+            {
+                "type": "dataset_root",
+                "reason": "dataset_root points to an archive. Call extract_archive first and pass the extracted directory.",
+            }
+        )
+    if not class_names:
+        required.append({"type": "labels", "reason": "Provide labels/class_names before training, for example labels=person."})
+    if not str(runtime.get("conda_env_name") or "").strip():
+        required.append({"type": "runtime", "reason": "Provide runtime.conda_env_name, for example conda_env_name=cv_train."})
+    return required
+
+
+def _skip_training_requested(spec: dict[str, Any]) -> bool:
+    if _bool_value(spec.get("dry_run"), False) or _bool_value(spec.get("skip_training"), False):
+        return True
+    overrides = str(spec.get("overrides_text") or "")
+    return _flag_override(overrides, "dry_run") or _flag_override(overrides, "skip_training")
+
+
+def _dry_run_summary(spec: dict[str, Any], request_path: Path) -> dict[str, Any]:
+    dataset = spec.get("dataset") if isinstance(spec.get("dataset"), dict) else {}
+    training = spec.get("training") if isinstance(spec.get("training"), dict) else {}
+    runtime = spec.get("runtime") if isinstance(spec.get("runtime"), dict) else {}
+    output = spec.get("output") if isinstance(spec.get("output"), dict) else {}
+    return {
+        "status": "dry_run_completed",
+        "request_path": str(request_path),
+        "dataset": dataset,
+        "training": training,
+        "runtime": runtime,
+        "output": output,
+        "notes": [
+            "skip_training/dry_run was requested; no YOLO training process was started.",
+            "Use the same request without dry_run/skip_training to start real training.",
+        ],
+    }
+
+
+def _dry_run_reply(summary: dict[str, Any]) -> str:
+    dataset = summary.get("dataset") if isinstance(summary.get("dataset"), dict) else {}
+    training = summary.get("training") if isinstance(summary.get("training"), dict) else {}
+    runtime = summary.get("runtime") if isinstance(summary.get("runtime"), dict) else {}
+    return (
+        "gpu-training-orchestrator dry-run completed.\n"
+        f"- dataset_root: {dataset.get('root_dir') or ''}\n"
+        f"- labels: {dataset.get('class_names') or []}\n"
+        f"- model: {training.get('model') or ''}\n"
+        f"- epochs: {training.get('epochs') or ''}\n"
+        f"- conda_env_name: {runtime.get('conda_env_name') or ''}\n"
+        "- no training process was started."
+    )
+
+
+def _required_inputs_reply(required: list[dict[str, str]]) -> str:
+    lines = ["gpu-training-orchestrator requires more input before training:"]
+    for item in required:
+        lines.append(f"- {item.get('type', 'input')}: {item.get('reason', '')}")
+    return "\n".join(lines)
 
 
 def _apply_overrides_text(config: dict[str, Any], overrides_text: str) -> None:
@@ -145,6 +316,10 @@ def _apply_overrides_text(config: dict[str, Any], overrides_text: str) -> None:
         if value is not None:
             training[key] = value
 
+    amp_value = _find_bool_override(text, "amp")
+    if amp_value is not None:
+        training["amp"] = amp_value
+
     split_changed = False
     for key in ("train", "val", "test"):
         value = _find_float_override(text, f"dataset.split.{key}")
@@ -159,6 +334,42 @@ def _apply_overrides_text(config: dict[str, Any], overrides_text: str) -> None:
         if total > 0 and abs(total - 1.0) > 1e-6:
             for key in ("train", "val", "test"):
                 split[key] = round(float(split.get(key, 0) or 0) / total, 6)
+
+    if _flag_override(text, "dry_run"):
+        config["dry_run"] = True
+    if _flag_override(text, "skip_training"):
+        config["skip_training"] = True
+
+
+def _flag_override(text: str, key: str) -> bool:
+    match = re.search(rf"(?<![\w.]){re.escape(key)}\s*[:=]\s*([^\s,，;；]+)", text, flags=re.IGNORECASE)
+    if match:
+        return _bool_value(match.group(1), False)
+    return False
+
+
+def _find_bool_override(text: str, key: str) -> bool | None:
+    match = re.search(rf"(?<![\w.]){re.escape(key)}\s*[:=]\s*([^\s,，;；]+)", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    raw_value = match.group(1).strip().lower()
+    if raw_value in {"1", "true", "yes", "on"}:
+        return True
+    if raw_value in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _bool_value(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
 
 
 def _normalize_labels(value: Any) -> list[str]:

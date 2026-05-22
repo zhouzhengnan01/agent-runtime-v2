@@ -28,7 +28,8 @@ allowed-tools: Read, Write, Shell
 
 常用可选字段：
 - `runtime.enforce_conda_env`（默认 `true`）
-- `training.epochs/imgsz/batch/device/workers/patience`
+- `training.epochs/imgsz/batch/device/workers/patience/amp`
+- `training.amp` 默认建议为 `false`，避免受限网络环境下 Ultralytics AMP 自检尝试下载权重。
 - `dataset.class_names`
 - `dataset.copy_images`
 

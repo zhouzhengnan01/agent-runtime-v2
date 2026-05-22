@@ -66,6 +66,18 @@ def _load_json(path: Path) -> Dict:
         return json.load(f)
 
 
+def _bool_value(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 def _normalize_flat_payload(payload: dict) -> dict:
     spec = payload.get("spec") if isinstance(payload.get("spec"), dict) else payload
     conda_env = str(spec.get("conda_env_name") or "yolo").strip()
@@ -79,6 +91,7 @@ def _normalize_flat_payload(payload: dict) -> dict:
     device = str(spec.get("device") or "0").strip()
     patience = int(spec.get("patience") or 8)
     workers = int(spec.get("workers") or 4)
+    amp = _bool_value(spec.get("amp"), False)
     split_train = float(spec.get("split_train") or 0.7)
     split_val = float(spec.get("split_val") or 0.2)
     split_test = float(spec.get("split_test") or 0.1)
@@ -108,6 +121,7 @@ def _normalize_flat_payload(payload: dict) -> dict:
             "device": device,
             "patience": patience,
             "workers": workers,
+            "amp": amp,
         },
         "output": {"project_dir": project_dir, "run_name": run_name},
     }
@@ -456,6 +470,7 @@ def run(config_path: Path) -> None:
     log_info(f"设备选择: {device} (CUDA available={_has_cuda}, device_count={torch.cuda.device_count() if _has_cuda else 0})")
     workers = int(training_cfg.get("workers", 8))
     patience = int(training_cfg.get("patience", 50))
+    amp = _bool_value(training_cfg.get("amp"), False)
 
     try:
         from ultralytics import YOLO
@@ -478,6 +493,7 @@ def run(config_path: Path) -> None:
         device=device,
         workers=workers,
         patience=patience,
+        amp=amp,
         project=str(train_project),
         name="train",
         exist_ok=True,

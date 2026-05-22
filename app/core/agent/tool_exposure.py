@@ -122,7 +122,7 @@ def _is_verification_friendly_tool(tool: ToolDefinition) -> bool:
     return (
         _is_read_only_tool(tool)
         or _is_delegate_tool(tool)
-        or (source_type == "local" and operation == "shell_command")
+        or (source_type == "local" and operation in {"shell_command", "validate_yolo_training_inputs"})
         or (source_type == "skill" and tool.name.endswith(("evaluator", "verifier")))
         or (source_type == "artifact_workspace" and operation == "manifest_update")
     )
@@ -133,7 +133,10 @@ def _is_execution_tool(tool: ToolDefinition) -> bool:
     operation = str(tool.source.get("operation") or "")
     return (
         source_type == "skill"
-        or (source_type == "local" and operation in {"write_file", "patch_file", "shell_command", "todo"})
+        or (
+            source_type == "local"
+            and operation in {"write_file", "patch_file", "shell_command", "todo", "extract_archive", "validate_yolo_training_inputs"}
+        )
         or (source_type == "artifact_workspace" and operation in {"write", "patch", "manifest_update"})
     )
 
@@ -167,12 +170,14 @@ def _stable_order(tools: list[ToolDefinition]) -> list[ToolDefinition]:
             return (3, tool.name)
         if source_type == "local" and operation == "write_file":
             return (4, tool.name)
-        if source_type == "artifact_workspace" and operation in {"write", "patch", "manifest_update"}:
+        if source_type == "local" and operation in {"extract_archive", "validate_yolo_training_inputs"}:
             return (5, tool.name)
-        if source_type == "local" and operation in {"todo", "shell_command"}:
+        if source_type == "artifact_workspace" and operation in {"write", "patch", "manifest_update"}:
             return (6, tool.name)
-        if source_type == "skill":
+        if source_type == "local" and operation in {"todo", "shell_command"}:
             return (7, tool.name)
-        return (8, tool.name)
+        if source_type == "skill":
+            return (8, tool.name)
+        return (9, tool.name)
 
     return sorted(tools, key=rank)

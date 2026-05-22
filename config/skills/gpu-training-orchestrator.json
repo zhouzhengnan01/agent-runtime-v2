@@ -41,7 +41,39 @@
         "type": "string"
       },
       "data": {
-        "type": "string"
+        "type": "string",
+        "description": "Legacy path field. Prefer dataset_root or dataset.root_dir for an extracted image/dataset directory."
+      },
+      "dataset_root": {
+        "type": "string",
+        "description": "Extracted image/dataset directory. Do not pass .zip/.tar archives; call extract_archive first."
+      },
+      "ref_image": {
+        "type": "string",
+        "description": "Optional reference image path used by generation/annotation flows."
+      },
+      "labels": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Detection labels/classes such as ['person']."
+      },
+      "training": {
+        "type": "object",
+        "description": "YOLO training parameters such as model, epochs, imgsz, batch, device, workers, patience, amp. Use amp=false on restricted-network GPU machines to avoid Ultralytics AMP self-check downloads."
+      },
+      "runtime": {
+        "type": "object",
+        "description": "Runtime parameters such as conda_env_name."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "description": "When true, write a dry-run summary and do not start training."
+      },
+      "skip_training": {
+        "type": "boolean",
+        "description": "When true, validate and write the normalized request without starting training."
       },
       "epochs": {
         "type": "integer"

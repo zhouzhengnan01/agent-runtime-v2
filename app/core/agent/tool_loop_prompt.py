@@ -40,6 +40,18 @@ ITERATIVE_TOOL_GUIDANCE = (
     "tool result still contains the value the user said must disappear."
 )
 
+YOLO_TRAINING_GUIDANCE = """YOLO training agent guidance is active.
+For YOLO, object detection, dataset generation, auto-annotation, best.pt, or gpu-training-orchestrator requests:
+- First inspect available uploads/outputs/workspace with present_files when file state matters.
+- If a dataset is an archive (.zip, .tar, .tar.gz, .tgz), call extract_archive before annotation or training. Do not pass archives directly to data-auto-annotation or gpu-training-orchestrator.
+- Before calling gpu-training-orchestrator, call validate_yolo_training_inputs with dataset_root, ref_image when available, labels, training, runtime, and split.
+- If validate_yolo_training_inputs.ready is false, ask for the missing values or call the tool needed to produce them; do not start training.
+- If the user requests dry_run or skip_training, include dry_run=true and skip_training=true in the gpu-training-orchestrator arguments.
+- Prefer training.amp=false for GPU YOLO training unless the user explicitly requests AMP; this avoids Ultralytics AMP self-check downloads on restricted-network machines.
+- Pass the validated extracted dataset_root to gpu-training-orchestrator. Do not substitute /mnt/user-data/outputs for dataset_root unless validation confirms it contains images.
+- After training, inspect artifacts with artifact_list or present_files and only claim training success when best.pt/results.csv or an explicit successful training summary exists.
+- If an execution tool is unavailable, say exactly which tool is missing instead of writing scripts that cannot be executed."""
+
 
 def build_system_prompt(
     agent_config: AgentConfig,
@@ -64,6 +76,7 @@ def build_system_prompt(
     )
     prompt = prompt_with_composite_skills(prompt, runtime_options)
     prompt = prompt_with_execution_policy(prompt, runtime_options)
+    prompt = prompt_with_yolo_training_guidance(prompt, runtime_options)
     prompt = f"{prompt}\n\n{ITERATIVE_TOOL_GUIDANCE}"
     prompt = prompt_with_primary_skill_stage_context(prompt, primary_skill_context)
     if not agent_config.memory.enabled or not agent_config.memory.inject_context:
@@ -187,6 +200,26 @@ def prompt_with_execution_policy(prompt: str, runtime_options: RuntimeOptions | 
     return f"{prompt}\n\n{EXECUTION_POLICY_GUIDANCE}\n{rendered}"
 
 
+def prompt_with_yolo_training_guidance(prompt: str, runtime_options: RuntimeOptions | None) -> str:
+    if runtime_options is None:
+        return prompt
+    selected = {item.strip() for item in runtime_options.selected_skills if item.strip()}
+    mode = str(runtime_options.mode or "").strip()
+    policy = runtime_options.config_options.get("agent_execution_policy")
+    policy_text = json_like_text(policy)
+    enabled = (
+        mode == "yolo"
+        or "gpu-training-orchestrator" in selected
+        or "data-auto-annotation" in selected
+        or "image-dataset-generation" in selected
+        or "yolo" in policy_text.lower()
+        or "训练" in policy_text
+    )
+    if not enabled:
+        return prompt
+    return f"{prompt}\n\n{YOLO_TRAINING_GUIDANCE}"
+
+
 def render_execution_policy(policy: dict[str, Any]) -> str:
     name = str(policy.get("name") or policy.get("id") or "").strip()
     mode = str(policy.get("mode") or "").strip()
@@ -279,3 +312,19 @@ def string_list(value: object) -> list[str]:
     if not isinstance(value, list | tuple):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def json_like_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key, item in value.items():
+            parts.append(str(key))
+            parts.append(json_like_text(item))
+        return " ".join(parts)
+    if isinstance(value, list | tuple):
+        return " ".join(json_like_text(item) for item in value)
+    return str(value)

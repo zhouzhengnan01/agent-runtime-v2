@@ -164,6 +164,58 @@ def test_agent_loop_exposes_workspace_tools_in_yolo_session_cwd(
     assert "local_shell_command" in seen_tools
 
 
+def test_agent_loop_injects_yolo_training_guidance(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, messages
+        prompts.append(system_prompt)
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="完成。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="yolo-guidance-agent",
+        display_name="YOLO Guidance Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["present_files", "extract_archive", "validate_yolo_training_inputs"],
+        skills=["gpu-training-orchestrator"],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="训练 YOLO 并输出 best.pt")],
+                runtime_options=RuntimeOptions(
+                    thread_id="yolo-guidance",
+                    mode="yolo",
+                    selected_skills=["gpu-training-orchestrator"],
+                ),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert "YOLO training agent guidance is active." in prompts[0]
+    assert "call extract_archive" in prompts[0]
+    assert "validate_yolo_training_inputs.ready is false" in prompts[0]
+    assert "training.amp=false" in prompts[0]
+    assert "extract_archive" in seen_tools
+    assert "validate_yolo_training_inputs" in seen_tools
+
+
 def test_agent_loop_runs_gpu_training_orchestrator_plugin_runner(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -173,7 +225,8 @@ def test_agent_loop_runs_gpu_training_orchestrator_plugin_runner(
 
     def fake_training_subprocess_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
         del kwargs
-        request_path = Path(command[command.index("-InputJsonPath") + 1])
+        request_arg = "-InputJsonPath" if "-InputJsonPath" in command else "--input"
+        request_path = Path(command[command.index(request_arg) + 1])
         payload = json.loads(request_path.read_text(encoding="utf-8"))
         run_root = Path(payload["output"]["project_dir"]) / payload["output"]["run_name"]
         train_dir = run_root / "runs" / "train"
@@ -272,6 +325,7 @@ def test_agent_loop_runs_gpu_training_orchestrator_plugin_runner(
     request_payload = json.loads((outputs.parent / "workspace" / "gpu-training-orchestrator-input.json").read_text())
     assert request_payload["training"]["epochs"] == 1
     assert request_payload["training"]["device"] == "cpu"
+    assert request_payload["training"]["amp"] is False
 
 
 def test_agent_loop_skips_tools_when_model_tool_choice_is_none(

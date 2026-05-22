@@ -24,7 +24,9 @@
     "local_read_file",
     "local_search_text",
     "local_write_file",
-    "local_patch_file"
+    "local_patch_file",
+    "extract_archive",
+    "validate_yolo_training_inputs"
   ],
   "skills": [],
   "routing": {
