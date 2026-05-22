@@ -73,6 +73,8 @@ def _requires_data_auto_annotation(request: ChatRequest, selected_skills: set[st
             image_markers: tuple[str, ...] = ("图片", "图像", "照片", "截图", "image", "photo", "picture")
             return _mentions_any(text, annotation_markers) and _mentions_any(text, image_markers)
         return True
+    if _is_algorithm_training_flow(selected_skills):
+        return False
     text = _last_user_text(request).lower()
     if not text:
         return False

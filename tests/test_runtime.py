@@ -1121,6 +1121,54 @@ def test_agent_runtime_algorithm_training_flow_does_not_require_image_just_becau
     assert "data-auto-annotation" in seen_tools
 
 
+def test_agent_runtime_yolo_training_zip_text_does_not_trigger_image_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen_tools: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen_tools.extend(tool["function"]["name"] for tool in tools)
+        return LlmChatResponse(content="已进入 YOLO 训练 dry-run。")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="yolo-zip-preflight-agent",
+        display_name="YOLO Zip Preflight Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content=(
+                    "处理上传的 generated_images.zip，labels=fallen_person，"
+                    "调用 gpu-training-orchestrator 做 dry_run。"
+                ),
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            thread_id="yolo-zip-preflight",
+            mode="yolo",
+            selected_skills=["gpu-training-orchestrator"],
+        ),
+    )
+
+    result, _events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert "requires_input" not in result.metadata
+    assert result.reply == "已进入 YOLO 训练 dry-run。"
+    assert "gpu-training-orchestrator" in seen_tools
+
+
 def test_agent_runtime_uses_existing_thread_upload_for_selected_skill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
