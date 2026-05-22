@@ -243,7 +243,10 @@ def artifact_workspace_tool_definitions() -> list[ToolDefinition]:
         ToolDefinition(
             name="artifact_read",
             title="Read Artifact",
-            description="Read a UTF-8 text artifact from current thread outputs.",
+            description=(
+                "Read a UTF-8 text artifact from current thread outputs. Accepts artifact_list paths such as "
+                "'result.md', 'outputs/result.md', or '/mnt/user-data/outputs/result.md'."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -258,7 +261,10 @@ def artifact_workspace_tool_definitions() -> list[ToolDefinition]:
         ToolDefinition(
             name="artifact_write",
             title="Write Artifact",
-            description="Write a UTF-8 text artifact into current thread outputs and update the manifest.",
+            description=(
+                "Write a UTF-8 text artifact into current thread outputs and update the manifest. "
+                "Accepts paths such as 'result.md', 'outputs/result.md', or '/mnt/user-data/outputs/result.md'."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -274,7 +280,10 @@ def artifact_workspace_tool_definitions() -> list[ToolDefinition]:
         ToolDefinition(
             name="artifact_patch",
             title="Patch Artifact",
-            description="Patch a text artifact by replacing old_text with new_text, then update the manifest.",
+            description=(
+                "Patch a text artifact by replacing old_text with new_text, then update the manifest. "
+                "Accepts paths such as 'result.md', 'outputs/result.md', or '/mnt/user-data/outputs/result.md'."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {

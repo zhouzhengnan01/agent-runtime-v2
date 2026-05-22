@@ -39,11 +39,16 @@ def test_artifact_workspace_tools_write_list_read_patch_and_sync_memory(tmp_path
     assert read_result.is_error is False
     assert "Old Title" in read_result.content[0]["text"]
 
+    virtual_read_result = service.call_tool("artifact_read", {**args, "path": "/mnt/user-data/outputs/index.html"})
+    assert virtual_read_result.is_error is False
+    assert virtual_read_result.structured_content["path"] == "outputs/index.html"
+    assert "Old Title" in virtual_read_result.content[0]["text"]
+
     patch_result = service.call_tool(
         "artifact_patch",
         {
             **args,
-            "path": "index.html",
+            "path": "/mnt/user-data/outputs/index.html",
             "old_text": "Old Title",
             "new_text": "New Title",
             "expected_replacements": 1,

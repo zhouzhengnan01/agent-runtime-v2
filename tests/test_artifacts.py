@@ -27,6 +27,17 @@ def test_artifact_list(tmp_path: Path) -> None:
     assert manifest["artifacts"][0]["path"] == "outputs/a/result.md"
 
 
+def test_artifact_store_accepts_virtual_output_paths(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("t1")
+
+    store.write_text_artifact(paths, "/mnt/user-data/outputs/reports/result.md", "# hi")
+
+    assert (paths.outputs / "reports" / "result.md").read_text() == "# hi"
+    assert store.output_path(paths, "/mnt/user-data/outputs/reports/result.md") == paths.outputs / "reports" / "result.md"
+    assert store.output_path(paths, "mnt/user-data/outputs/reports/result.md") == paths.outputs / "reports" / "result.md"
+
+
 def test_artifact_store_prepares_thread_workspace_dirs(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path)
     paths = store.prepare_thread("thread/one")

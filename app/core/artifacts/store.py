@@ -193,7 +193,7 @@ class ArtifactStore:
 
     @staticmethod
     def _safe_output_path(paths: ThreadPaths, filename: str) -> Path:
-        name = filename.replace("\\", "/").lstrip("/")
+        name = ArtifactStore._normalize_output_name(filename)
         if name.startswith("outputs/"):
             name = name[len("outputs/") :]
         candidate = (paths.outputs / name).resolve()
@@ -203,6 +203,16 @@ class ArtifactStore:
         except ValueError as exc:
             raise ValueError("Output path traversal blocked") from exc
         return candidate
+
+    @staticmethod
+    def _normalize_output_name(filename: str) -> str:
+        name = filename.replace("\\", "/").strip()
+        if name == VIRTUAL_OUTPUTS_PREFIX or name == VIRTUAL_OUTPUTS_PREFIX.lstrip("/"):
+            return ""
+        for prefix in (VIRTUAL_OUTPUTS_PREFIX + "/", VIRTUAL_OUTPUTS_PREFIX.lstrip("/") + "/"):
+            if name.startswith(prefix):
+                return name[len(prefix) :]
+        return name.lstrip("/")
 
     def _ensure_manifest(self, paths: ThreadPaths) -> None:
         if paths.manifest.exists():
