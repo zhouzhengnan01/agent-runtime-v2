@@ -1,0 +1,50 @@
+{
+  "name": "tianjin-data-analyst",
+  "title": "园区智能问数",
+  "description": "自然语言查询天津园区业务数据，生成 SQL、表格分析、图表配置和导出结果。",
+  "category": "park-operations",
+  "icon": "table",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [
+    "tianjin-chatbi-analyst"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "统计今天各联网单位的火警数量，图表类型用 bar。",
+    "列出当前可用的数据源并检查第一个数据源连接。"
+  ],
+  "tags": [
+    "天津园区",
+    "园区运营",
+    "模型原生"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_env": "LLM_API_KEY"
+    }
+  ]
+}

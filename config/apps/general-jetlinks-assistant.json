@@ -9,8 +9,8 @@
   "selected_skills": [],
   "selected_mcp_tools": [],
   "prompt_examples": [
-    "帮我梳理当前 JetLinks 项目的下一步开发计划",
-    "总结这个需求并拆成可执行任务"
+    "用一句话说明 JetLinks Agent Runtime v2 的定位；这是 smoke 测试，不要调用工具。",
+    "总结这个需求并拆成可执行任务。"
   ],
   "tags": [
     "通用",
@@ -42,7 +42,7 @@
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key": "abc@123"
+      "api_key_env": "LLM_API_KEY"
     }
   ]
 }

@@ -54,7 +54,7 @@
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key": "abc@123"
+      "api_key_env": "LLM_API_KEY"
     }
   ]
 }

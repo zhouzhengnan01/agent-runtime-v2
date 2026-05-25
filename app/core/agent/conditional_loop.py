@@ -297,7 +297,7 @@ def _delay_from_text(text: str) -> float:
 
 def _delay_from_value(value: object, *, unit: object = "秒") -> float:
     try:
-        seconds = float(value)
+        seconds = float(str(value))
     except (TypeError, ValueError):
         return 0.0
     normalized_unit = str(unit or "秒").lower()

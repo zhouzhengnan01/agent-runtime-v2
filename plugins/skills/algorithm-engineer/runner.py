@@ -130,7 +130,7 @@ def _required_inputs(skill_name: str, spec: dict[str, Any]) -> list[dict[str, An
     requirements: list[dict[str, Any]] = []
     dataset = str(spec.get("data_yaml") or spec.get("dataset_path") or "").strip()
     if skill_name in {"algorithm-engineer", "dataset-curator", "gpu-training-orchestrator", "cpu-training-runner"}:
-        if not dataset or dataset == "/data/palm_fruit_datasets/organized/latest_integrated_dedup":
+        if not dataset:
             requirements.append(
                 _requirement(
                     "dataset-curator",
@@ -208,7 +208,7 @@ def _summary(skill_name: str, base: dict[str, Any]) -> str:
     if skill_name == "cpu-training-runner":
         return "在本机 CPU 沙盒中启动受限 YOLO 训练任务，并收集 best.pt、last.pt、results.csv 和训练摘要。"
     if skill_name == "detector-evaluator":
-        return "同时解释检测指标和棕榈果计数业务指标，避免只按 mAP 上线。"
+        return "同时解释检测指标和业务验收指标，避免只按 mAP 上线。"
     if skill_name == "deployment-candidate-reviewer":
         return "检查候选权重、评估报告、推理服务加载、回滚路径和全量回刷计划。"
     return f"围绕 {base['objective']} 生成结构化算法工程产物。"
@@ -240,12 +240,12 @@ def _phases(skill_name: str, base: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _commands(skill_name: str, base: dict[str, Any]) -> list[str]:
-    dataset = base.get("dataset_path") or "/data/palm_fruit_datasets/organized/latest_integrated_dedup"
+    dataset = base.get("dataset_path") or "<dataset_or_data.yaml>"
     commands = {
         "dataset-curator": [
-            f"python scripts/build_yolo_dataset_from_dedup.py --source {dataset} --output /data/palm_fruit_datasets/training/palm_integrated_exact_dedup_v1",
-            "python scripts/audit_yolo_dataset.py --data /data/palm_fruit_datasets/training/palm_integrated_exact_dedup_v1/data.yaml",
-            "python scripts/find_label_conflicts.py --source /data/palm_fruit_datasets/organized/latest_integrated_dedup",
+            f"python scripts/build_yolo_dataset.py --source {dataset} --output /data/training/<dataset-version>",
+            "python scripts/audit_yolo_dataset.py --data /data/training/<dataset-version>/data.yaml",
+            f"python scripts/find_label_conflicts.py --source {dataset}",
         ],
         "remote-gpu-ops": [
             "nvidia-smi",
@@ -263,7 +263,7 @@ def _commands(skill_name: str, base: dict[str, Any]) -> list[str]:
         ],
         "detector-evaluator": [
             "yolo detect val model=runs/detect/<name>/weights/best.pt data=data.yaml imgsz=640 conf=0.25",
-            "python scripts/compare_counting_ab.py --baseline <baseline.pt> --candidate <best.pt> --review-set <review.csv>",
+            "python scripts/compare_business_ab.py --baseline <baseline.pt> --candidate <best.pt> --review-set <review.csv>",
         ],
         "deployment-candidate-reviewer": [
             "python scripts/check_model_package.py --model best.pt --data data.yaml --results results.csv",
@@ -280,7 +280,16 @@ def _commands(skill_name: str, base: dict[str, Any]) -> list[str]:
 
 def _metrics(skill_name: str) -> list[str]:
     if skill_name in {"detector-evaluator", "deployment-candidate-reviewer", "algorithm-engineer"}:
-        return ["precision", "recall", "mAP50", "mAP50-95", "totalAccuracy", "netTotalAccuracy", "absDiffAvg", "per-tree count error"]
+        return [
+            "precision",
+            "recall",
+            "mAP50",
+            "mAP50-95",
+            "businessPrecision",
+            "businessRecall",
+            "absDiffAvg",
+            "per-object count error",
+        ]
     if skill_name == "dataset-curator":
         return ["unique images", "labeled images", "empty labels", "box count", "class distribution", "conflict groups"]
     if skill_name == "gpu-training-orchestrator":
@@ -309,7 +318,7 @@ def _deliverables(skill_name: str) -> list[str]:
 def _risks(skill_name: str) -> list[str]:
     risks = [
         "外部 GPU / SAM3 / 训练服务不可达时，只能生成计划，不能完成真实训练或标注。",
-        "mAP 不等于业务计数成功，必须保留人工审核集 A/B。",
+        "mAP 不等于业务成功，必须保留人工审核集 A/B 和业务验收指标。",
         "长训练任务必须先做小 benchmark，避免占满 GPU 后才发现配置错误。",
     ]
     if skill_name == "deployment-candidate-reviewer":
@@ -407,9 +416,9 @@ def _algorithm_engineer_sequence_reply(sequence: list[object], artifact_names: l
         }
     ]
     lines = [
-        "棕榈果检测算法工程师工作台已搭好。",
+        "算法工程师全流程工作台已搭好。",
         "",
-        "这不是单纯生成文档，而是把一次模型迭代拆成可执行的工程闭环：需求澄清、数据治理、候选算法、AGX/5090 训练、检测与计数评估、上线评审、实验台账。",
+        "这不是单纯生成文档，而是把一次视觉模型迭代拆成可执行的工程闭环：需求澄清、数据治理、候选算法、AGX/5090 训练、检测/分割/计数评估、上线评审、实验台账。",
         "",
         "当前看板：",
         *stage_lines,
@@ -418,7 +427,7 @@ def _algorithm_engineer_sequence_reply(sequence: list[object], artifact_names: l
         "- YOLO 数据集或 `data.yaml`",
         "- 当前生产 baseline 权重和评估集",
         "- 训练目标机器：AGX、5090，或先用 CPU 沙盒 smoke run",
-        "- 验收指标：mAP、recall、计数误差、推理耗时、上线阈值",
+        "- 验收指标：mAP、recall、业务误差、推理耗时、上线阈值",
         "",
         f"已生成 {len(artifact_names)} 个工程产物，关键产物：{', '.join(key_artifacts) if key_artifacts else '已写入右侧文件面板'}。",
         "",
@@ -580,7 +589,18 @@ def _algorithm_engineer_workspace_payload(base: dict[str, Any], spec: dict[str, 
         "permission_gates": permissions,
         "artifact_tree": artifact_tree,
         "commands": _app_commands(base),
-        "metrics": ["mAP50", "mAP50-95", "precision", "recall", "totalAccuracy", "netTotalAccuracy", "absDiffAvg", "per-tree count error", "GPU memory peak", "epoch time"],
+        "metrics": [
+            "mAP50",
+            "mAP50-95",
+            "precision",
+            "recall",
+            "businessPrecision",
+            "businessRecall",
+            "absDiffAvg",
+            "per-object count error",
+            "GPU memory peak",
+            "epoch time",
+        ],
         "deliverables": ["algorithm-engineer.md", "algorithm-engineer.json", "experiment_ledger.yaml", "deployment_review.md"],
         "risks": _risks("algorithm-engineer"),
         "next_actions": ["确认 baseline 和数据路径", "运行数据治理审计", "只读检查 GPU 机器", "选择 2-3 个候选模型跑 benchmark", "把结果写入实验台账"],
@@ -588,14 +608,14 @@ def _algorithm_engineer_workspace_payload(base: dict[str, Any], spec: dict[str, 
 
 
 def _app_commands(base: dict[str, Any]) -> list[str]:
-    dataset = base.get("dataset_path") or "/data/palm_fruit_datasets/organized/latest_integrated_dedup"
+    dataset = base.get("dataset_path") or "<dataset_or_data.yaml>"
     return [
         f"python scripts/audit_dataset_entrypoint.py --source {dataset}",
         "nvidia-smi && df -h && docker ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'",
         "rsync -avP --partial --inplace <dataset> <gpu-host>:/data/training/<dataset-version>/",
         "yolo detect train model=rtdetr-l.pt data=data.yaml epochs=1 fraction=0.1 batch=2 imgsz=640 name=bench_rtdetr_l_e1_frac01",
         "yolo detect train model=rtdetr-l.pt data=data.yaml epochs=30 batch=2 imgsz=640 patience=8 amp=False name=formal_rtdetr_l_e30",
-        "python scripts/compare_counting_ab.py --baseline <baseline.pt> --candidate <best.pt> --review-set <review.csv>",
+        "python scripts/compare_business_ab.py --baseline <baseline.pt> --candidate <best.pt> --review-set <review.csv>",
         "python scripts/append_experiment_ledger.py --experiment-id <id> --status completed --results runs/detect/<name>/results.csv",
     ]
 

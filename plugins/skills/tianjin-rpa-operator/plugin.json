@@ -1,0 +1,10 @@
+{
+  "id": "tianjin-rpa-operator",
+  "name": "tianjin-rpa-operator",
+  "version": "0.1.0",
+  "description": "使用大模型和当前会话文件设计天津园区 RPA 流程、执行步骤、日志检查和统计建议；启动和停止流程必须 confirm=true。",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-rpa-operator/manifest.json"
+  ]
+}

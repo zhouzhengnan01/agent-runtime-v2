@@ -10,7 +10,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from xml.sax.saxutils import escape as xml_escape
+from xml.sax.saxutils import escape
+
+
+def xml_escape(value: str) -> str:
+    return escape(value, {"\"": "&quot;"})
 
 from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation

@@ -12,7 +12,7 @@
   ],
   "selected_mcp_tools": [],
   "prompt_examples": [
-    "找几个比 YOLO 更适合棕榈果密集检测和计数的候选算法，重点比较 RT-DETR、DEIM/D-FINE、RF-DETR 和 DAMO-YOLO。",
+    "找几个比 YOLO 更适合当前目标检测任务的候选算法，重点比较 RT-DETR、DEIM/D-FINE、RF-DETR 和 DAMO-YOLO。",
     "根据 AGX 部署、5090 训练、小目标遮挡和计数误差约束，筛选 2-3 个值得 benchmark 的候选模型。"
   ],
   "tags": [
@@ -47,7 +47,7 @@
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key": "abc@123"
+      "api_key_env": "LLM_API_KEY"
     }
   ]
 }

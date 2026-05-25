@@ -1,0 +1,10 @@
+{
+  "id": "tianjin-content-operator",
+  "name": "tianjin-content-operator",
+  "version": "0.1.0",
+  "description": "使用大模型和当前会话文件生成天津园区公众号、小红书、海报和素材包内容；发布类动作需要 confirm=true。",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-content-operator/manifest.json"
+  ]
+}

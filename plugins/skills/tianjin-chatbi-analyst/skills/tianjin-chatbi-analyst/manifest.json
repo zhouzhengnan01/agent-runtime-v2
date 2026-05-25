@@ -1,0 +1,143 @@
+{
+  "name": "tianjin-chatbi-analyst",
+  "description": "使用大模型和当前会话文件实现天津园区智能问数，进行自然语言问数、数据源管理、Schema 查询、图表读取和导出。",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "使用大模型和当前会话文件实现天津园区智能问数，进行自然语言问数、数据源管理、Schema 查询、图表读取和导出。",
+    "keywords": [
+      "智能问数",
+      "ChatBI",
+      "SQL",
+      "数据源",
+      "图表",
+      "查询",
+      "园区数据"
+    ],
+    "examples": [
+      "统计今天各单位火警数量",
+      "列出可用数据源",
+      "读取某个数据源 schema"
+    ]
+  },
+  "quality_template": [
+    "local_model_generation",
+    "artifact_report"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-chatbi-analyst"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "query",
+          "list_datasources",
+          "get_datasource_schema",
+          "create_datasource",
+          "test_datasource",
+          "get_chart",
+          "export_chart"
+        ],
+        "description": "要执行的能力动作。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "可选。仅 mode=backend 时用于覆盖天津后端 API base URL。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "query": {
+        "type": "string",
+        "description": "自然语言查询问题。"
+      },
+      "datasource": {
+        "type": "string",
+        "description": "可选数据源 ID。"
+      },
+      "chart_type": {
+        "type": "string",
+        "default": "auto",
+        "description": "auto/bar/line/pie/table 等图表类型。"
+      },
+      "time_range": {
+        "type": "string",
+        "description": "今天/昨天/本周/近7天等时间范围。"
+      },
+      "datasource_id": {
+        "type": "string"
+      },
+      "chart_id": {
+        "type": "string"
+      },
+      "format": {
+        "type": "string",
+        "default": "csv"
+      },
+      "name": {
+        "type": "string"
+      },
+      "ds_type": {
+        "type": "string",
+        "enum": [
+          "mysql",
+          "postgresql",
+          "sqlserver",
+          "oracle",
+          "sqlite"
+        ]
+      },
+      "config": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "description": {
+        "type": "string"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "backend"
+        ],
+        "default": "local",
+        "description": "执行模式。默认 local：使用当前 Runtime 大模型和会话文件生成成果；backend：显式调用天津后端 HTTP API。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

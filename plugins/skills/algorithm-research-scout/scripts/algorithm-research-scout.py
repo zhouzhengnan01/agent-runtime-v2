@@ -8,7 +8,7 @@ This script performs research verification only:
 - license check through GitHub API
 - pretrained weight existence check through releases and README
 - public mAP/FPS metric extraction from README/abstract text
-- suitability scoring for dense palm fruit detection or similar tasks
+- suitability scoring for dense, small-object, or domain-specific detection tasks
 
 It does NOT run local ONNX/TensorRT/BModel compilation.
 
@@ -181,7 +181,7 @@ def http_get(url: str, headers: dict[str, str] | None = None, timeout: int = 20)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Research candidate object detection algorithms.")
     parser.add_argument("--input-json", default=None, help="JSON string or path to JSON file.")
-    parser.add_argument("--task-type", default="棕榈果密集检测", help="Task type.")
+    parser.add_argument("--task-type", default="目标检测", help="Task type.")
     parser.add_argument("--baseline", default="YOLO", help="Current baseline.")
     parser.add_argument("--constraints", nargs="*", default=None, help="Constraints.")
     parser.add_argument("--mode", choices=["offline-template", "online-research"], default="online-research")
@@ -914,7 +914,7 @@ def table_metrics(metrics: dict[str, list[dict[str, str]]]) -> str:
         for f in findings[:8]:
             any_row = True
             lines.append(
-                f"| {md(source)} | {md(f.get('metric'))} | {md(f.get('value'))} | {md(f.get('context'))} | 公开资料抽取，需核验数据集/硬件/输入尺寸，不能直接代表棕榈果数据集效果 |"
+                f"| {md(source)} | {md(f.get('metric'))} | {md(f.get('value'))} | {md(f.get('context'))} | 公开资料抽取，需核验数据集/硬件/输入尺寸，不能直接代表当前业务数据集效果 |"
             )
     if not any_row:
         lines.append("| 未抽取到公开指标 | - | - | - | 需要人工查看论文表格或官方 model zoo |")
@@ -949,7 +949,9 @@ def render_report(data: dict[str, Any], papers: list[dict[str, Any]], repos: dic
         rec_lines.append("\n".join(f"- {md(r)}" for r in reasons))
         rec_lines.append("")
 
-    return f"""# 棕榈果密集检测候选算法调研报告
+    task_type = data.get("task_type") or data.get("objective") or "目标检测"
+
+    return f"""# 目标检测候选算法调研报告
 
 生成时间：{now()}
 
@@ -957,7 +959,7 @@ def render_report(data: dict[str, Any], papers: list[dict[str, Any]], repos: dic
 
 - Skill：`algorithm-research-scout`
 - 模式：`{md(data.get("mode", "online-research"))}`
-- 任务类型：{md(data.get("task_type", "棕榈果密集检测"))}
+- 任务类型：{md(task_type)}
 - 当前 baseline：{md(data.get("baseline", "YOLO"))}
 
 约束条件：
@@ -971,9 +973,9 @@ def render_report(data: dict[str, Any], papers: list[dict[str, Any]], repos: dic
 结论使用方式：
 
 - 调研评分代表“是否值得进入 benchmark”，不代表最终一定优于 YOLO。
-- 公开 mAP/FPS 只能作为参考，不能直接代表棕榈果数据集效果。
+- 公开 mAP/FPS 只能作为参考，不能直接代表当前业务数据集效果。
 - License 未核验或权重 license 未核验时，不能直接进入商用交付。
-- 最终是否比 YOLO 更适合棕榈果密集检测，需要在统一数据集上 benchmark 后确认。
+- 最终是否比 YOLO 更适合当前业务目标，需要在统一数据集上 benchmark 后确认。
 
 ## 3. 候选算法总表
 
@@ -999,7 +1001,7 @@ def render_report(data: dict[str, Any], papers: list[dict[str, Any]], repos: dic
 
 {table_metrics(metrics)}
 
-## 9. 棕榈果密集检测适配评分
+## 9. 业务场景适配评分
 
 {chr(10).join(rec_lines)}
 
@@ -1015,7 +1017,7 @@ def render_report(data: dict[str, Any], papers: list[dict[str, Any]], repos: dic
 
 ## 11. 风险与不确定项
 
-- 公开论文和 README 指标可能来自 COCO 或其他数据集，与棕榈果密集检测不可直接比较。
+- 公开论文和 README 指标可能来自 COCO 或其他数据集，与当前业务数据集不可直接比较。
 - GitHub 搜索可能找到非官方仓库，需要人工确认官方性。
 - 代码 license 不等于权重 license。
 - README 中的权重链接可能失效，需要进一步验证下载可用性。
@@ -1025,7 +1027,7 @@ def render_report(data: dict[str, Any], papers: list[dict[str, Any]], repos: dic
 ## 12. 还需要人工补充的信息
 
 - 当前 YOLO baseline 的实际指标：Precision、Recall、mAP50、mAP50-95。
-- 棕榈果数据集规模、图片分辨率、目标大小分布。
+- 当前业务数据集规模、图片分辨率、目标大小分布。
 - 是否要求商用 license 完全明确。
 - 训练资源和期望模型大小。
 - 是否更重视 Recall 还是 Precision。

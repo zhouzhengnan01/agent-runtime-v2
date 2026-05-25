@@ -3920,7 +3920,10 @@
         doc: '¶',
         mindmap: '☷',
         shield: '◉',
-        package: '✦'
+        package: '✦',
+        park: '▥',
+        content: '▧',
+        calendar: '◷'
       };
       return icons[icon] || '✦';
     }
@@ -3930,7 +3933,8 @@
         general: '通用',
         generation: '生成',
         vision: '视觉',
-        'algorithm-training': '算法训练'
+        'algorithm-training': '算法训练',
+        'park-operations': '园区运营'
       };
       return labels[category] || category || '通用';
     }
@@ -3939,8 +3943,9 @@
       const order = {
         general: 10,
         'algorithm-training': 20,
-        vision: 30,
-        generation: 40
+        'park-operations': 30,
+        vision: 40,
+        generation: 50
       };
       return order[category] || 100;
     }

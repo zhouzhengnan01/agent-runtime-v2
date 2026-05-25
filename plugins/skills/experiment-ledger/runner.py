@@ -24,6 +24,11 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
         return _cpu_training_local_notice(skill_name, spec, paths, artifact_store)
     title = str(spec.get("title") or SKILL_TITLES.get(skill_name, skill_name))
     payload = _payload(skill_name, spec)
+    required_inputs = _required_inputs(skill_name, spec)
+    if required_inputs:
+        payload["requires_input"] = True
+        payload["required_inputs"] = required_inputs
+        payload["blocked_stages"] = [item["stage"] for item in required_inputs]
     markdown = _markdown(skill_name, title, spec, payload)
     base = _safe_name(skill_name)
     md_artifact = artifact_store.write_text_artifact(paths, f"{base}.md", markdown)
@@ -39,6 +44,9 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
             "summary": payload["summary"],
             "phase_count": len(payload["phases"]),
             "artifact_names": [md_artifact.name, json_artifact.name],
+            "requires_input": bool(required_inputs),
+            "required_inputs": required_inputs,
+            "blocked_stages": [item["stage"] for item in required_inputs],
         },
     }
 
@@ -73,9 +81,22 @@ def format_reply(skill_name: str, verification: object, run_result: Any) -> str:
         [
             f"{SKILL_TITLES.get(skill_name, skill_name)}已生成。",
             data.get("summary", ""),
+            _required_inputs_reply(data),
             f"产物：{', '.join(names)}" if names else "",
         ]
     ).strip()
+
+
+def _required_inputs_reply(data: dict[str, Any]) -> str:
+    raw_items = data.get("required_inputs")
+    if not isinstance(raw_items, list) or not raw_items:
+        return ""
+    lines = ["继续真实执行前需要补齐："]
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        lines.append(f"- {item.get('stage')}: {item.get('reason')}")
+    return "\n".join(lines)
 
 
 def _payload(skill_name: str, spec: dict[str, Any]) -> dict[str, Any]:
@@ -105,6 +126,78 @@ def _payload(skill_name: str, spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _required_inputs(skill_name: str, spec: dict[str, Any]) -> list[dict[str, Any]]:
+    requirements: list[dict[str, Any]] = []
+    dataset = str(spec.get("data_yaml") or spec.get("dataset_path") or "").strip()
+    if skill_name in {"algorithm-engineer", "dataset-curator", "gpu-training-orchestrator", "cpu-training-runner"}:
+        if not dataset:
+            requirements.append(
+                _requirement(
+                    "dataset-curator",
+                    "dataset",
+                    ".zip,.tar,.tar.gz,.csv,.json,.jsonl,.parquet,.yaml,.yml",
+                    "没有数据集，不能完成数据盘点或 baseline。请提供 YOLO data.yaml、已标注数据集压缩包，或可访问的数据集路径。",
+                )
+            )
+    if skill_name in {"algorithm-engineer", "remote-gpu-ops", "gpu-training-orchestrator"}:
+        if not _has_gpu_connection(spec):
+            requirements.append(
+                _requirement(
+                    "remote-gpu-ops",
+                    "json",
+                    "application/json",
+                    "没有 GPU 连接信息，不能完成 AGX/5090 benchmark 或正式训练。请提供 AGX/5090 host、SSH/密钥、训练镜像/环境和数据挂载路径。",
+                )
+            )
+    if skill_name in {"algorithm-engineer", "detector-evaluator", "deployment-candidate-reviewer"}:
+        if not _has_training_artifact(spec):
+            requirements.append(
+                _requirement(
+                    "detector-evaluator",
+                    "model",
+                    ".onnx,.pt,.pth,.bin,.safetensors,.gguf,.pkl,.joblib,.csv",
+                    "没有训练产物，不能完成评估。请提供 baseline.pt/best.pt、results.csv 或训练输出目录。",
+                )
+            )
+    if skill_name in {"algorithm-engineer", "deployment-candidate-reviewer"}:
+        if not _has_evaluation_result(spec):
+            requirements.append(
+                _requirement(
+                    "deployment-candidate-reviewer",
+                    "file",
+                    "*/*",
+                    "没有评估结果，不能完成上线评审。请提供评估报告、候选模型指标、上线阈值和回滚要求。",
+                )
+            )
+    return requirements
+
+
+def _requirement(stage: str, input_type: str, accept: str, reason: str) -> dict[str, Any]:
+    return {"stage": stage, "type": input_type, "accept": accept, "required": True, "reason": reason}
+
+
+def _has_gpu_connection(spec: dict[str, Any]) -> bool:
+    text = _spec_text(spec).lower()
+    markers = ("ssh://", "agx_host", "5090_host", "gpu_host", "nvidia-smi", "cuda", "docker image", "训练机")
+    return any(marker in text for marker in markers)
+
+
+def _has_training_artifact(spec: dict[str, Any]) -> bool:
+    text = _spec_text(spec).lower()
+    markers = ("best.pt", "baseline.pt", "last.pt", "results.csv", "runs/detect", "训练输出")
+    return any(marker in text for marker in markers)
+
+
+def _has_evaluation_result(spec: dict[str, Any]) -> bool:
+    text = _spec_text(spec).lower()
+    markers = ("evaluation_report", "评估报告", "map50", "map50-95", "precision", "recall", "上线阈值")
+    return any(marker in text for marker in markers)
+
+
+def _spec_text(spec: dict[str, Any]) -> str:
+    return json.dumps(spec, ensure_ascii=False, default=str)
+
+
 def _summary(skill_name: str, base: dict[str, Any]) -> str:
     if skill_name == "algorithm-engineer":
         return "把算法工程师日常工作收敛成一个工作台入口：任务澄清、数据治理、算法选型、GPU 训练、评估上线和实验台账。"
@@ -115,7 +208,7 @@ def _summary(skill_name: str, base: dict[str, Any]) -> str:
     if skill_name == "cpu-training-runner":
         return "在本机 CPU 沙盒中启动受限 YOLO 训练任务，并收集 best.pt、last.pt、results.csv 和训练摘要。"
     if skill_name == "detector-evaluator":
-        return "同时解释检测指标和棕榈果计数业务指标，避免只按 mAP 上线。"
+        return "同时解释检测指标和业务验收指标，避免只按 mAP 上线。"
     if skill_name == "deployment-candidate-reviewer":
         return "检查候选权重、评估报告、推理服务加载、回滚路径和全量回刷计划。"
     return f"围绕 {base['objective']} 生成结构化算法工程产物。"
@@ -147,12 +240,12 @@ def _phases(skill_name: str, base: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _commands(skill_name: str, base: dict[str, Any]) -> list[str]:
-    dataset = base.get("dataset_path") or "/data/palm_fruit_datasets/organized/latest_integrated_dedup"
+    dataset = base.get("dataset_path") or "<dataset_or_data.yaml>"
     commands = {
         "dataset-curator": [
-            f"python scripts/build_yolo_dataset_from_dedup.py --source {dataset} --output /data/palm_fruit_datasets/training/palm_integrated_exact_dedup_v1",
-            "python scripts/audit_yolo_dataset.py --data /data/palm_fruit_datasets/training/palm_integrated_exact_dedup_v1/data.yaml",
-            "python scripts/find_label_conflicts.py --source /data/palm_fruit_datasets/organized/latest_integrated_dedup",
+            f"python scripts/build_yolo_dataset.py --source {dataset} --output /data/training/<dataset-version>",
+            "python scripts/audit_yolo_dataset.py --data /data/training/<dataset-version>/data.yaml",
+            f"python scripts/find_label_conflicts.py --source {dataset}",
         ],
         "remote-gpu-ops": [
             "nvidia-smi",
@@ -170,7 +263,7 @@ def _commands(skill_name: str, base: dict[str, Any]) -> list[str]:
         ],
         "detector-evaluator": [
             "yolo detect val model=runs/detect/<name>/weights/best.pt data=data.yaml imgsz=640 conf=0.25",
-            "python scripts/compare_counting_ab.py --baseline <baseline.pt> --candidate <best.pt> --review-set <review.csv>",
+            "python scripts/compare_business_ab.py --baseline <baseline.pt> --candidate <best.pt> --review-set <review.csv>",
         ],
         "deployment-candidate-reviewer": [
             "python scripts/check_model_package.py --model best.pt --data data.yaml --results results.csv",
@@ -187,7 +280,16 @@ def _commands(skill_name: str, base: dict[str, Any]) -> list[str]:
 
 def _metrics(skill_name: str) -> list[str]:
     if skill_name in {"detector-evaluator", "deployment-candidate-reviewer", "algorithm-engineer"}:
-        return ["precision", "recall", "mAP50", "mAP50-95", "totalAccuracy", "netTotalAccuracy", "absDiffAvg", "per-tree count error"]
+        return [
+            "precision",
+            "recall",
+            "mAP50",
+            "mAP50-95",
+            "businessPrecision",
+            "businessRecall",
+            "absDiffAvg",
+            "per-object count error",
+        ]
     if skill_name == "dataset-curator":
         return ["unique images", "labeled images", "empty labels", "box count", "class distribution", "conflict groups"]
     if skill_name == "gpu-training-orchestrator":
@@ -216,7 +318,7 @@ def _deliverables(skill_name: str) -> list[str]:
 def _risks(skill_name: str) -> list[str]:
     risks = [
         "外部 GPU / SAM3 / 训练服务不可达时，只能生成计划，不能完成真实训练或标注。",
-        "mAP 不等于业务计数成功，必须保留人工审核集 A/B。",
+        "mAP 不等于业务成功，必须保留人工审核集 A/B 和业务验收指标。",
         "长训练任务必须先做小 benchmark，避免占满 GPU 后才发现配置错误。",
     ]
     if skill_name == "deployment-candidate-reviewer":
@@ -314,9 +416,9 @@ def _algorithm_engineer_sequence_reply(sequence: list[object], artifact_names: l
         }
     ]
     lines = [
-        "棕榈果检测算法工程师工作台已搭好。",
+        "算法工程师全流程工作台已搭好。",
         "",
-        "这不是单纯生成文档，而是把一次模型迭代拆成可执行的工程闭环：需求澄清、数据治理、候选算法、AGX/5090 训练、检测与计数评估、上线评审、实验台账。",
+        "这不是单纯生成文档，而是把一次视觉模型迭代拆成可执行的工程闭环：需求澄清、数据治理、候选算法、AGX/5090 训练、检测/分割/计数评估、上线评审、实验台账。",
         "",
         "当前看板：",
         *stage_lines,
@@ -325,7 +427,7 @@ def _algorithm_engineer_sequence_reply(sequence: list[object], artifact_names: l
         "- YOLO 数据集或 `data.yaml`",
         "- 当前生产 baseline 权重和评估集",
         "- 训练目标机器：AGX、5090，或先用 CPU 沙盒 smoke run",
-        "- 验收指标：mAP、recall、计数误差、推理耗时、上线阈值",
+        "- 验收指标：mAP、recall、业务误差、推理耗时、上线阈值",
         "",
         f"已生成 {len(artifact_names)} 个工程产物，关键产物：{', '.join(key_artifacts) if key_artifacts else '已写入右侧文件面板'}。",
         "",
@@ -487,7 +589,18 @@ def _algorithm_engineer_workspace_payload(base: dict[str, Any], spec: dict[str, 
         "permission_gates": permissions,
         "artifact_tree": artifact_tree,
         "commands": _app_commands(base),
-        "metrics": ["mAP50", "mAP50-95", "precision", "recall", "totalAccuracy", "netTotalAccuracy", "absDiffAvg", "per-tree count error", "GPU memory peak", "epoch time"],
+        "metrics": [
+            "mAP50",
+            "mAP50-95",
+            "precision",
+            "recall",
+            "businessPrecision",
+            "businessRecall",
+            "absDiffAvg",
+            "per-object count error",
+            "GPU memory peak",
+            "epoch time",
+        ],
         "deliverables": ["algorithm-engineer.md", "algorithm-engineer.json", "experiment_ledger.yaml", "deployment_review.md"],
         "risks": _risks("algorithm-engineer"),
         "next_actions": ["确认 baseline 和数据路径", "运行数据治理审计", "只读检查 GPU 机器", "选择 2-3 个候选模型跑 benchmark", "把结果写入实验台账"],
@@ -495,14 +608,14 @@ def _algorithm_engineer_workspace_payload(base: dict[str, Any], spec: dict[str, 
 
 
 def _app_commands(base: dict[str, Any]) -> list[str]:
-    dataset = base.get("dataset_path") or "/data/palm_fruit_datasets/organized/latest_integrated_dedup"
+    dataset = base.get("dataset_path") or "<dataset_or_data.yaml>"
     return [
         f"python scripts/audit_dataset_entrypoint.py --source {dataset}",
         "nvidia-smi && df -h && docker ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'",
         "rsync -avP --partial --inplace <dataset> <gpu-host>:/data/training/<dataset-version>/",
         "yolo detect train model=rtdetr-l.pt data=data.yaml epochs=1 fraction=0.1 batch=2 imgsz=640 name=bench_rtdetr_l_e1_frac01",
         "yolo detect train model=rtdetr-l.pt data=data.yaml epochs=30 batch=2 imgsz=640 patience=8 amp=False name=formal_rtdetr_l_e30",
-        "python scripts/compare_counting_ab.py --baseline <baseline.pt> --candidate <best.pt> --review-set <review.csv>",
+        "python scripts/compare_business_ab.py --baseline <baseline.pt> --candidate <best.pt> --review-set <review.csv>",
         "python scripts/append_experiment_ledger.py --experiment-id <id> --status completed --results runs/detect/<name>/results.csv",
     ]
 

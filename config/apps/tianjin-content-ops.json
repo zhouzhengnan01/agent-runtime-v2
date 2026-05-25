@@ -1,0 +1,51 @@
+{
+  "name": "tianjin-content-ops",
+  "title": "内容运营助手",
+  "description": "生成公众号、小红书内容，管理内容记录、热点洞察和发布素材包。",
+  "category": "park-operations",
+  "icon": "content",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [
+    "tianjin-content-operator",
+    "tianjin-market-research"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "围绕智慧园区消防安全生成一篇小红书内容。",
+    "查看小红书热点洞察并给出三条内容选题。"
+  ],
+  "tags": [
+    "天津园区",
+    "园区运营",
+    "模型原生"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_env": "LLM_API_KEY"
+    }
+  ]
+}

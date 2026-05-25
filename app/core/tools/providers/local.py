@@ -405,7 +405,9 @@ class LocalToolProvider:
         if not runtime.get("conda_env_name"):
             missing.append("runtime.conda_env_name")
 
-        split_values = [split.get(key) for key in ("train", "val", "test") if split.get(key) not in {None, ""}]
+        split_values: list[Any] = [
+            split.get(key) for key in ("train", "val", "test") if split.get(key) not in {None, ""}
+        ]
         if split_values:
             try:
                 total = sum(float(value) for value in split_values)
@@ -552,11 +554,11 @@ class LocalToolProvider:
                         raise ValueError(f"Archive expands beyond max_bytes: {total_bytes} > {max_bytes}")
                     target = cls._safe_extract_target(output_dir, member.name)
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    source = handle.extractfile(member)
-                    if source is None:
+                    tar_source = handle.extractfile(member)
+                    if tar_source is None:
                         continue
-                    with source, target.open("wb") as dest:
-                        dest.write(source.read())
+                    with tar_source, target.open("wb") as dest:
+                        dest.write(tar_source.read())
                     extracted.append(target)
         return extracted
 

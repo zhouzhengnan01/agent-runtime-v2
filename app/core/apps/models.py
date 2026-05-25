@@ -25,6 +25,7 @@ class AppModelOption(BaseModel):
     model: str | None = None
     base_url: str | None = None
     api_key: str | None = None
+    api_key_env: str | None = None
     api_key_enc: str | None = None
     tool_choice: str | None = None
     temperature: float | None = None

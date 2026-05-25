@@ -87,6 +87,42 @@ class ToolOrchestrator:
         arguments["_memory_scope"] = agent_config.memory.scope
         arguments["_markdown_writable_scopes"] = agent_config.memory.markdown_writable_scopes
         arguments["_markdown_max_chars"] = agent_config.memory.markdown_max_chars
+        arguments["_llm_model"] = (
+            (runtime_options.model_name if runtime_options is not None else None)
+            or agent_config.model.model
+            or agent_config.model.default_model
+            or ""
+        )
+        arguments["_llm_base_url"] = (
+            (runtime_options.base_url if runtime_options is not None else None)
+            or agent_config.model.base_url
+            or ""
+        )
+        arguments["_llm_api_key"] = (
+            (runtime_options.api_key if runtime_options is not None else None)
+            or agent_config.model.api_key
+            or ""
+        )
+        arguments["_llm_temperature"] = (
+            runtime_options.temperature
+            if runtime_options is not None and runtime_options.temperature is not None
+            else agent_config.model.temperature
+        )
+        arguments["_llm_top_p"] = (
+            runtime_options.top_p
+            if runtime_options is not None and runtime_options.top_p is not None
+            else agent_config.model.top_p
+        )
+        arguments["_llm_max_tokens"] = (
+            runtime_options.max_tokens
+            if runtime_options is not None and runtime_options.max_tokens is not None
+            else agent_config.model.max_tokens
+        )
+        arguments["_llm_request_timeout_seconds"] = (
+            runtime_options.request_timeout_seconds
+            if runtime_options is not None and runtime_options.request_timeout_seconds is not None
+            else agent_config.model.request_timeout_seconds
+        )
         if runtime_options is not None:
             arguments["_user_id"] = runtime_options.user_id
             arguments["_project_id"] = runtime_options.project_id

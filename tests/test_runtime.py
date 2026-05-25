@@ -241,7 +241,7 @@ def test_app_template_models_supply_default_chat_model(
               "priority": 0,
               "model": "chat-model",
               "base_url": "http://chat.local/v1",
-              "api_key": "chat-key",
+              "api_key_env": "CHAT_MODEL_API_KEY",
               "temperature": 0.2,
               "max_tokens": 1024
             }
@@ -272,6 +272,7 @@ def test_app_template_models_supply_default_chat_model(
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("CHAT_MODEL_API_KEY", "chat-env-key")
     monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"), app_template_registry=AppTemplateRegistry(tmp_path))
     agent = AgentConfig(
@@ -290,7 +291,7 @@ def test_app_template_models_supply_default_chat_model(
     assert seen == {
         "model": "chat-model",
         "base_url": "http://chat.local/v1",
-        "api_key": "chat-key",
+        "api_key": "chat-env-key",
         "temperature": 0.2,
         "max_tokens": 1024,
     }

@@ -48,6 +48,7 @@ SMOKE_TOKEN="${SMOKE_TOKEN:-${RUNTIME_API_TOKEN:-}}"
 AUTO_START_RUNTIME="${AUTO_START_RUNTIME:-true}"
 RUNTIME_PID=""
 RUNTIME_LOG="${RUNTIME_LOG:-/tmp/jetlinks-quality-gate-runtime.log}"
+WORKBENCH_SMOKE_FILE=""
 
 runtime_required=false
 case "${RUN_UI_SMOKE}" in
@@ -62,6 +63,9 @@ case "${RUN_SMOKE}" in
 esac
 
 cleanup_runtime() {
+  if [ -n "${WORKBENCH_SMOKE_FILE}" ]; then
+    rm -f "${WORKBENCH_SMOKE_FILE}"
+  fi
   if [ -n "${RUNTIME_PID}" ] && kill -0 "${RUNTIME_PID}" >/dev/null 2>&1; then
     kill "${RUNTIME_PID}" >/dev/null 2>&1 || true
     wait "${RUNTIME_PID}" >/dev/null 2>&1 || true
@@ -131,15 +135,18 @@ echo "== pytest quality gate =="
 case "${RUN_UI_SMOKE}" in
   0|false|False|no|No)
     ;;
-	  1|true|True|yes|Yes)
-	    if ! curl -fsS "${BASE_URL}/health" >/dev/null 2>&1; then
-	      echo "Workbench UI smoke requires reachable Runtime: ${BASE_URL}/health" >&2
-	      exit 1
-	    fi
-	    echo "== workbench static smoke =="
-	    curl -fsS "${BASE_URL}/workbench" | grep -q "JetLinks"
-	    curl -fsS "${BASE_URL}/static/workbench.html" | grep -q "JetLinks"
-	    ;;
+  1|true|True|yes|Yes)
+    if ! curl -fsS "${BASE_URL}/health" >/dev/null 2>&1; then
+      echo "Workbench UI smoke requires reachable Runtime: ${BASE_URL}/health" >&2
+      exit 1
+    fi
+    echo "== workbench static smoke =="
+    WORKBENCH_SMOKE_FILE="$(mktemp)"
+    curl -fsS "${BASE_URL}/workbench" -o "${WORKBENCH_SMOKE_FILE}"
+    grep -q "JetLinks" "${WORKBENCH_SMOKE_FILE}"
+    curl -fsS "${BASE_URL}/static/workbench.html" -o "${WORKBENCH_SMOKE_FILE}"
+    grep -q "JetLinks" "${WORKBENCH_SMOKE_FILE}"
+    ;;
   *)
     echo "Invalid RUN_UI_SMOKE=${RUN_UI_SMOKE}; expected true/false" >&2
     exit 2

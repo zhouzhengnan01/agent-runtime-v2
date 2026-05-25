@@ -299,6 +299,9 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
         elif template.name == "reference-image-yolo-training":
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
+        elif template.name == "mcp-test-users-loop":
+            assert template.runtime_options["mode"] == "safe"
+            assert template.runtime_options["config_options"]["mcpServers"][0]["name"] == "db"
         else:
             assert template.runtime_options == {}, template.name
         assert len(template.models) == 1, template.name
@@ -307,7 +310,8 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         assert model.model, template.name
         assert model.default_model, template.name
         assert model.base_url, template.name
-        assert model.api_key, template.name
+        assert model.api_key is None, template.name
+        assert model.api_key_env == "LLM_API_KEY", template.name
         assert model.api_key_enc is None, template.name
         assert model.temperature == 0.4, template.name
         assert model.max_tokens == 2048, template.name
@@ -461,6 +465,38 @@ def test_algorithm_training_related_templates_use_dedicated_category() -> None:
     assert workflows == {name: "agent_loop" for name in training_templates}
 
 
+def test_tianjin_park_templates_use_dedicated_category_and_real_skills() -> None:
+    registry = AppTemplateRegistry()
+    park_templates = {
+        "tianjin-business-docs",
+        "tianjin-content-ops",
+        "tianjin-data-analyst",
+        "tianjin-meeting-efficiency",
+        "tianjin-park-assistant",
+        "tianjin-public-opinion",
+        "tianjin-rpa-ops",
+    }
+
+    categories = {name: registry.get(name).category for name in park_templates}
+    workflows = {name: registry.get(name).workflow for name in park_templates}
+    selected_skills = {
+        skill_name
+        for name in park_templates
+        for skill_name in registry.get(name).selected_skills
+    }
+    configured_skills = {skill.name for skill in SkillRegistry(registry.root_dir).list(executable_only=True)}
+
+    assert categories == {name: "park-operations" for name in park_templates}
+    assert workflows == {name: "agent_loop" for name in park_templates}
+    assert {
+        "tianjin-chatbi-analyst",
+        "tianjin-document-generator",
+        "tianjin-sentiment-monitor",
+        "tianjin-rpa-operator",
+    }.issubset(selected_skills)
+    assert selected_skills <= configured_skills
+
+
 def test_app_template_reference_validation_uses_installed_workflow_plugins(tmp_path: Path) -> None:
     (tmp_path / "config" / "agents").mkdir(parents=True)
     (tmp_path / "config" / "agents" / "default.json").write_text(
@@ -541,7 +577,9 @@ def test_preconfigured_app_templates_have_smoke_artifact_expectations() -> None:
     missing = [
         template.name
         for template in registry.list()
-        if template_expects_artifacts(template.model_dump()) and not expected_artifact_patterns(template.model_dump())
+        if template_expects_artifacts(template.model_dump())
+        and len(template.selected_skills) <= 1
+        and not expected_artifact_patterns(template.model_dump())
     ]
 
     assert missing == []

@@ -3,10 +3,15 @@ from __future__ import annotations
 import io
 import importlib.util
 import json
+import threading
 import subprocess
 import sys
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+from xml.etree import ElementTree
 
 import pytest
 from fastapi.testclient import TestClient
@@ -118,7 +123,424 @@ def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
         assert (package / "sandbox.yml").is_file()
         assert (package / "runner.py").is_file()
         assert (package / "spec_builder.py").is_file()
-        assert (package / "scripts" / "run_skill.py").is_file()
+
+
+def test_tianjin_park_skill_defaults_to_local_generation_without_backend(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("tianjin-local")
+
+    result = SkillRunner(store).run(
+        "tianjin-chatbi-analyst",
+        {"action": "query", "query": "统计各单位火警数量", "chart_type": "bar"},
+        paths,
+    )
+
+    assert result.data["mode"] == "local"
+    assert result.data["success"] is True
+    assert result.outputs[0].name == "tianjin-chatbi-analyst-query.md"
+    report = (paths.outputs / "tianjin-chatbi-analyst-query.md").read_text(encoding="utf-8")
+    assert "智能问数分析" in report
+    assert "统计各单位火警数量" in report
+
+
+def test_tianjin_park_skill_uses_runtime_llm_when_available(tmp_path: Path) -> None:
+    server = _OpenAICompatibleTestServer("## 模型生成结果\n\n天津园区会议纪要已由大模型生成。")
+    server.start()
+    try:
+        store = ArtifactStore(root_dir=tmp_path / "runtime")
+        paths = store.prepare_thread("tianjin-llm")
+
+        result = SkillRunner(store).run(
+            "tianjin-meeting-minutes",
+            {
+                "action": "analyze",
+                "title": "天津园区例会",
+                "transcriptLines": [{"speakerName": "张工", "time": "09:30", "text": "张工负责完成园区大屏接入。"}],
+                "_llm_base_url": server.base_url,
+                "_llm_model": "test-model",
+                "_llm_api_key": "test-key",
+                "_llm_max_tokens": 512,
+            },
+            paths,
+        )
+    finally:
+        server.stop()
+
+    assert server.requests[0]["path"] == "/v1/chat/completions"
+    assert server.requests[0]["headers"]["authorization"] == "Bearer test-key"
+    assert server.requests[0]["body"]["model"] == "test-model"
+    assert result.data["mode"] == "local"
+    assert result.data["llm_configured"] is True
+    report = (paths.outputs / "tianjin-meeting-minutes-analyze.md").read_text(encoding="utf-8")
+    assert "模型生成结果" in report
+    assert "天津园区会议纪要已由大模型生成" in report
+
+
+def test_tianjin_document_skill_local_mode_uses_defaults_for_model_generation(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("tianjin-document-local")
+
+    result = SkillRunner(store).run(
+        "tianjin-document-generator",
+        {
+            "action": "generate",
+            "projectName": "天津园区智能运营平台",
+            "clientName": "天津示例客户",
+            "keyInfo": "模型原生生成商务文档",
+        },
+        paths,
+    )
+
+    names = [artifact.name for artifact in result.outputs]
+    assert result.data["mode"] == "local"
+    assert result.data["success"] is True
+    assert "天津园区智能运营平台-方案建议书.md" in names
+    report = (paths.outputs / "tianjin-document-generator-generate.md").read_text(encoding="utf-8")
+    assert "天津园区智能运营平台" in report
+    assert "模型原生生成商务文档" in report
+
+
+def test_tianjin_park_skill_can_call_backend_when_explicitly_requested(tmp_path: Path) -> None:
+    server = _TianjinTestServer()
+    server.start()
+    try:
+        store = ArtifactStore(root_dir=tmp_path / "runtime")
+        paths = store.prepare_thread("tianjin-backend")
+
+        result = SkillRunner(store).run(
+            "tianjin-chatbi-analyst",
+            {
+                "action": "query",
+                "mode": "backend",
+                "query": "统计各单位火警数量",
+                "chart_type": "bar",
+                "api_base_url": server.api_base_url,
+            },
+            paths,
+        )
+    finally:
+        server.stop()
+
+    assert server.requests[0]["method"] == "POST"
+    assert server.requests[0]["path"] == "/api/v1/chatbi/query"
+    assert server.requests[0]["body"]["query"] == "统计各单位火警数量"
+    assert result.data["ok"] is True
+    assert result.data["success"] is True
+    assert result.outputs[0].name == "tianjin-chatbi-analyst-query.md"
+    assert result.outputs[1].name == "tianjin-chatbi-analyst-query.json"
+    report = (paths.outputs / "tianjin-chatbi-analyst-query.md").read_text(encoding="utf-8")
+    assert "天津园区智能问数结果" in report
+    assert "火警数量" in report
+
+
+def test_tianjin_document_skill_downloads_generated_document(tmp_path: Path) -> None:
+    server = _TianjinTestServer()
+    server.start()
+    try:
+        store = ArtifactStore(root_dir=tmp_path / "runtime")
+        paths = store.prepare_thread("tianjin-document")
+
+        result = SkillRunner(store).run(
+            "tianjin-document-generator",
+            {
+                "action": "generate",
+                "document_type": "price_file",
+                "mode": "backend",
+                "template_type": "software",
+                "project_name": "智慧园区平台",
+                "client_name": "天津示例客户",
+                "key_info": "建设智慧园区运营平台",
+                "api_base_url": server.api_base_url,
+            },
+            paths,
+        )
+    finally:
+        server.stop()
+
+    names = [artifact.name for artifact in result.outputs]
+    assert server.requests[0]["path"] == "/api/v1/document/generate"
+    assert server.requests[1]["path"] == "/api/v1/document/download/doc-1"
+    assert "智慧园区平台报价.txt" in names
+    assert (paths.outputs / "智慧园区平台报价.txt").read_text(encoding="utf-8") == "报价文档正文"
+
+
+def test_tianjin_meeting_skill_normalizes_transcript_aliases(tmp_path: Path) -> None:
+    server = _TianjinTestServer()
+    server.start()
+    try:
+        store = ArtifactStore(root_dir=tmp_path / "runtime")
+        paths = store.prepare_thread("tianjin-meeting")
+
+        result = SkillRunner(store).run(
+            "tianjin-meeting-minutes",
+            {
+                "action": "analyze",
+                "mode": "backend",
+                "title": "天津园区例会",
+                "transcriptLines": [
+                    {
+                        "speakerName": "张工",
+                        "time": "09:30",
+                        "text": "张工负责完成消防告警联动，2026-05-20日交付。",
+                    }
+                ],
+                "api_base_url": server.api_base_url,
+            },
+            paths,
+        )
+    finally:
+        server.stop()
+
+    request = server.requests[0]
+    assert request["path"] == "/api/v1/meeting/analyze"
+    assert request["body"]["name"] == "天津园区例会"
+    assert request["body"]["transcriptLines"] == [
+        {
+            "speaker": "张工",
+            "timestamp": "09:30",
+            "content": "张工负责完成消防告警联动，2026-05-20日交付。",
+        }
+    ]
+    assert result.data["success"] is True
+    report = (paths.outputs / "tianjin-meeting-minutes-analyze.md").read_text(encoding="utf-8")
+    assert "消防告警联动" in report
+
+
+def test_tianjin_calendar_skill_normalizes_natural_text_aliases(tmp_path: Path) -> None:
+    server = _TianjinTestServer()
+    server.start()
+    try:
+        store = ArtifactStore(root_dir=tmp_path / "runtime")
+        paths = store.prepare_thread("tianjin-calendar")
+
+        result = SkillRunner(store).run(
+            "tianjin-calendar-reminder",
+            {
+                "action": "parse_event",
+                "mode": "backend",
+                "text": "明天下午三点在会议室开天津园区例会",
+                "api_base_url": server.api_base_url,
+            },
+            paths,
+        )
+    finally:
+        server.stop()
+
+    request = server.requests[0]
+    assert request["path"] == "/api/v1/calendar/events/parse"
+    assert request["body"]["natural_text"] == "明天下午3点在会议室开天津园区例会"
+    assert request["body"]["user_timezone"] == "Asia/Shanghai"
+    assert result.data["success"] is True
+    report = (paths.outputs / "tianjin-calendar-reminder-parse_event.md").read_text(encoding="utf-8")
+    assert "明天下午3点" in report
+
+
+def test_tianjin_dangerous_skill_requires_confirmation(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("tianjin-rpa")
+
+    result = SkillRunner(store).run(
+        "tianjin-rpa-operator",
+        {"action": "start_process", "process_id": 1},
+        paths,
+    )
+
+    assert result.data["requires_input"] is True
+    assert result.data["required_inputs"][0]["type"] == "confirmation"
+
+
+class _TianjinTestServer:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def api_base_url(self) -> str:
+        host, port = self._server.server_address
+        return f"http://{host}:{port}/api/v1"
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=5)
+
+    def _handler(self) -> type[BaseHTTPRequestHandler]:
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                outer._handle(self)
+
+            def do_POST(self) -> None:
+                outer._handle(self)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                return
+
+        return Handler
+
+    def _handle(self, handler: BaseHTTPRequestHandler) -> None:
+        length = int(handler.headers.get("Content-Length") or "0")
+        raw_body = handler.rfile.read(length) if length else b""
+        body: Any = {}
+        if raw_body:
+            body = json.loads(raw_body.decode("utf-8"))
+        parsed = urlparse(handler.path)
+        self.requests.append({"method": handler.command, "path": parsed.path, "query": parsed.query, "body": body})
+        if parsed.path == "/api/v1/chatbi/query":
+            self._json(
+                handler,
+                {
+                    "success": True,
+                    "message": "查询成功",
+                    "data": {
+                        "query": body["query"],
+                        "sql": "select unit, count(*) as 火警数量 from alarms group by unit",
+                        "data": [{"联网单位": "A园区", "火警数量": 3}],
+                        "analysis": "A园区火警数量为3",
+                        "chart": {"type": "bar"},
+                    },
+                },
+            )
+            return
+        if parsed.path == "/api/v1/document/generate":
+            self._json(
+                handler,
+                {
+                    "success": True,
+                    "message": "文档生成成功",
+                    "data": {
+                        "document_id": "doc-1",
+                        "title": "智慧园区平台报价",
+                        "content": "报价文档正文",
+                        "download_url": "/api/v1/document/download/doc-1?format=txt",
+                    },
+                },
+            )
+            return
+        if parsed.path == "/api/v1/meeting/analyze":
+            line = body["transcriptLines"][0]
+            self._json(
+                handler,
+                {
+                    "success": True,
+                    "message": "会议分析完成",
+                    "data": {
+                        "summaryPoints": [
+                            {"id": 1, "time": line["timestamp"], "type": "key", "content": line["content"]}
+                        ],
+                        "tasks": [
+                            {
+                                "id": 1,
+                                "priority": "medium",
+                                "extractTime": line["timestamp"],
+                                "description": "完成消防告警联动",
+                                "assignee": line["speaker"],
+                                "deadline": "2026-05-20",
+                            }
+                        ],
+                        "keywords": [{"word": "消防告警联动", "count": 1}],
+                        "topics": [{"name": "园区运营", "frequency": 80}],
+                    },
+                },
+            )
+            return
+        if parsed.path == "/api/v1/calendar/events/parse":
+            self._json(
+                handler,
+                {
+                    "success": True,
+                    "message": "事件解析成功",
+                    "data": {
+                        "title": "天津园区例会",
+                        "start_time": "2026-05-20T15:00:00+08:00",
+                        "end_time": "2026-05-20T16:00:00+08:00",
+                        "priority": "medium",
+                        "original_text": body["natural_text"],
+                    },
+                },
+            )
+            return
+        if parsed.path == "/api/v1/document/download/doc-1":
+            payload = "报价文档正文".encode("utf-8")
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/plain; charset=utf-8")
+            handler.send_header("Content-Disposition", "attachment; filename*=UTF-8''%E6%99%BA%E6%85%A7%E5%9B%AD%E5%8C%BA%E5%B9%B3%E5%8F%B0%E6%8A%A5%E4%BB%B7.txt")
+            handler.send_header("Content-Length", str(len(payload)))
+            handler.end_headers()
+            handler.wfile.write(payload)
+            return
+        self._json(handler, {"success": False, "message": "not found"}, status=404)
+
+    @staticmethod
+    def _json(handler: BaseHTTPRequestHandler, payload: dict[str, Any], *, status: int = 200) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+
+class _OpenAICompatibleTestServer:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.requests: list[dict[str, Any]] = []
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def base_url(self) -> str:
+        host, port = self._server.server_address
+        return f"http://{host}:{port}/v1"
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=5)
+
+    def _handler(self) -> type[BaseHTTPRequestHandler]:
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or "0")
+                raw_body = self.rfile.read(length) if length else b""
+                body = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+                parsed = urlparse(self.path)
+                outer.requests.append(
+                    {
+                        "path": parsed.path,
+                        "headers": {key.lower(): value for key, value in self.headers.items()},
+                        "body": body,
+                    }
+                )
+                payload = {
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": outer.content},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+                response = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                return
+
+        return Handler
 
 
 def test_skill_registry_exposes_model_tags_as_metadata() -> None:
@@ -194,6 +616,25 @@ def test_behavior_review_suppresses_visual_confirmation_without_evidence(tmp_pat
     assert result.data["second_review_logic"][1]["decision"] == "evidence_missing"
 
 
+def test_drawio_generation_escapes_attribute_quotes(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("drawio-quotes")
+
+    result = SkillRunner(store).run(
+        "drawio-generation",
+        {
+            "title": 'JetLinks "Smoke" 架构',
+            "nodes": ['入口 "A"', 'Runtime "B"'],
+            "edges": [['入口 "A"', 'Runtime "B"']],
+            "swimlanes": ['交互 "层"'],
+        },
+        paths,
+    )
+
+    drawio_artifact = next(artifact for artifact in result.outputs if artifact.name.endswith(".drawio"))
+    ElementTree.fromstring((paths.outputs / drawio_artifact.name).read_text(encoding="utf-8"))
+
+
 def test_skill_registry_uses_config_skills_as_entity_catalog() -> None:
     registry = SkillRegistry()
     skills = registry.list()
@@ -259,14 +700,48 @@ def test_algorithm_engineer_spec_builder_does_not_treat_agx_5090_as_dataset_path
 
     spec = spec_builder.build_spec(
         "algorithm-engineer",
-        "围绕棕榈果检测，打通 AGX/5090 训练编排和计数评估。",
-        "围绕棕榈果检测，打通 AGX/5090 训练编排和计数评估。",
+        "围绕通用目标检测，打通 AGX/5090 训练编排和业务评估。",
+        "围绕通用目标检测，打通 AGX/5090 训练编排和业务评估。",
         [],
         {},
     )
 
-    assert spec["dataset_path"] == "/data/palm_fruit_datasets/organized/latest_integrated_dedup"
+    assert spec["dataset_path"] == ""
+    assert spec["domain"] == "multi-domain computer vision object detection"
     assert spec["machines"] == ["AGX Orin", "5090 GPU server"]
+
+
+def test_algorithm_engineer_spec_builder_extracts_user_named_cv_task() -> None:
+    spec_builder = _load_algorithm_engineer_spec_builder()
+
+    smoking = spec_builder.build_spec(
+        "algorithm-engineer",
+        "帮我训练一个抽烟 CV 检测模型。",
+        "帮我训练一个抽烟 CV 检测模型。",
+        [],
+        {},
+    )
+    helmet = spec_builder.build_spec(
+        "algorithm-engineer",
+        "帮我训练一个安全帽佩戴检测模型。",
+        "帮我训练一个安全帽佩戴检测模型。",
+        [],
+        {},
+    )
+    defect = spec_builder.build_spec(
+        "algorithm-engineer",
+        "帮我训练一个工业缺陷检测模型。",
+        "帮我训练一个工业缺陷检测模型。",
+        [],
+        {},
+    )
+
+    assert smoking["objective"] == "抽烟检测模型训练"
+    assert smoking["domain"] == "抽烟视觉检测"
+    assert helmet["objective"] == "安全帽佩戴检测模型训练"
+    assert helmet["domain"] == "安全帽佩戴视觉检测"
+    assert defect["objective"] == "工业缺陷检测模型训练"
+    assert defect["domain"] == "工业缺陷视觉检测"
 
 
 def test_algorithm_engineer_spec_builder_extracts_cpu_training_options() -> None:
@@ -394,7 +869,7 @@ def test_algorithm_engineer_sequence_reply_is_professional_status_card() -> None
 
     reply = runner.format_reply("algorithm-engineer", object(), run_result)
 
-    assert reply.startswith("棕榈果检测算法工程师工作台已搭好。")
+    assert reply.startswith("算法工程师全流程工作台已搭好。")
     assert "当前看板：" in reply
     assert "数据治理：已建立" in reply
     assert "CPU 训练沙盒" in reply

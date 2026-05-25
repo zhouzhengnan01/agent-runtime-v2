@@ -978,6 +978,12 @@ def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     for source in sources:
         payload.update(_runtime_options_from_source(source))
+    session_tools = _session_init_tools_payload(params)
+    if session_tools is not None:
+        raw_config_options = payload.get("config_options")
+        config_options = dict(raw_config_options) if isinstance(raw_config_options, dict) else {}
+        config_options["session_init_tools"] = session_tools
+        payload["config_options"] = config_options
     return payload
 
 
@@ -987,6 +993,24 @@ def _runtime_options_from_source(source: dict[str, Any]) -> dict[str, Any]:
         if raw_name in source:
             payload[field_name] = source[raw_name]
     return payload
+
+
+def _session_init_tools_payload(params: dict[str, Any]) -> object:
+    meta = _params(params.get("_meta"))
+    runtime_options = _params(meta.get("runtimeOptions") or meta.get("runtime_options"))
+    for source in (params, meta, runtime_options):
+        for key in (
+            "sessionInitTools",
+            "session_init_tools",
+            "sessioninittools",
+            "clientTools",
+            "client_tools",
+            "dynamicTools",
+            "dynamic_tools",
+        ):
+            if key in source:
+                return source[key]
+    return None
 
 
 def _has_mcp_servers(params: dict[str, Any]) -> bool:

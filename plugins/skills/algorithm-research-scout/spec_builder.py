@@ -30,8 +30,8 @@ def score_skill(
         return 0
     text = routing_text.lower().replace("rt detr", "rt-detr").replace("d fine", "d-fine")
     score = sum(24 for keyword in KEYWORDS if keyword in text)
-    if score and ("棕榈" in text or "palm" in text):
-        score += 20
+    if score and any(marker in text for marker in ("目标检测", "视觉", "object detection", "detector")):
+        score += 12
     return score
 
 
@@ -47,7 +47,12 @@ def build_spec(
     spec = dict(base_spec)
     spec["skill_name"] = skill_name
     spec["task_type"] = "object_detection"
-    spec["objective"] = "palm fruit detection" if ("棕榈" in text or "palm" in text.lower()) else "object detection"
+    if "棕榈" in text or "palm" in text.lower():
+        spec["objective"] = "palm fruit detection"
+    elif any(marker in text.lower() for marker in ("通用", "多场景", "multi-domain", "general")):
+        spec["objective"] = "multi-domain object detection"
+    else:
+        spec["objective"] = "object detection"
     spec.setdefault("baseline", "production YOLO baseline")
     spec.setdefault("max_results", 8)
     spec.setdefault("mode", "online-research")

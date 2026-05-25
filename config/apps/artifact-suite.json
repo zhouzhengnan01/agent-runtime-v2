@@ -16,7 +16,7 @@
   ],
   "selected_mcp_tools": [],
   "prompt_examples": [
-    "围绕 JetLinks IoT 平台生成一组交付物：架构图、项目汇报 PPT、设备台账 Excel、任务拆解脑图和技术说明文档"
+    "这是 smoke 测试：按顺序各调用一次 drawio-generation、pptx-generation、excel-generation、xmind-generation、markdown-rendering 工具，主题为 JetLinks IoT 平台最小交付物。每个工具只调用一次，不要重复优化或生成 v2/v3 版本；完成后只汇总产物文件名。"
   ],
   "tags": [
     "全量",
@@ -47,7 +47,7 @@
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key": "abc@123"
+      "api_key_env": "LLM_API_KEY"
     }
   ]
 }

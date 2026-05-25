@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from collections.abc import AsyncIterator
 from typing import Any, cast
@@ -800,7 +801,19 @@ class AgentRuntime:
             decrypted = self._decrypt_app_model_api_key(model.api_key_enc, app_template_name, model)
             if decrypted:
                 updates["api_key"] = decrypted
+        if "api_key" not in explicit and "api_key" not in updates:
+            api_key = self._api_key_from_app_model_env(model)
+            if api_key:
+                updates["api_key"] = api_key
         return updates
+
+    @staticmethod
+    def _api_key_from_app_model_env(model: AppModelOption) -> str | None:
+        env_name = (model.api_key_env or "").strip()
+        if not env_name:
+            return None
+        value = os.getenv(env_name, "").strip()
+        return value or None
 
     def _decrypt_app_model_api_key(self, encrypted: str, app_template_name: str, model: AppModelOption) -> str | None:
         purposes = [

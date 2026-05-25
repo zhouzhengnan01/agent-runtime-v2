@@ -1,0 +1,135 @@
+{
+  "name": "tianjin-calendar-reminder",
+  "description": "使用大模型和当前会话文件实现天津园区日历提醒，解析自然语言日程、创建事件/提醒、查询日程和效率建议。",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "使用大模型和当前会话文件实现天津园区日历提醒，解析自然语言日程、创建事件/提醒、查询日程和效率建议。",
+    "keywords": [
+      "日历",
+      "提醒",
+      "日程",
+      "自然语言",
+      "效率建议"
+    ],
+    "examples": [
+      "明天下午三点提醒我开项目会",
+      "创建一个高优先级提醒",
+      "查本周日程"
+    ]
+  },
+  "quality_template": [
+    "local_model_generation",
+    "artifact_report"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-calendar-reminder"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "parse_event",
+          "create_event",
+          "list_events",
+          "create_reminder",
+          "list_reminders",
+          "efficiency_suggestions"
+        ],
+        "description": "要执行的能力动作。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "可选。仅 mode=backend 时用于覆盖天津后端 API base URL。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "natural_text": {
+        "type": "string"
+      },
+      "base_time": {
+        "type": "string"
+      },
+      "user_timezone": {
+        "type": "string",
+        "default": "Asia/Shanghai"
+      },
+      "title": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "start_time": {
+        "type": "string"
+      },
+      "end_time": {
+        "type": "string"
+      },
+      "remind_time": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      },
+      "priority": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "keyword": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "backend"
+        ],
+        "default": "local",
+        "description": "执行模式。默认 local：使用当前 Runtime 大模型和会话文件生成成果；backend：显式调用天津后端 HTTP API。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

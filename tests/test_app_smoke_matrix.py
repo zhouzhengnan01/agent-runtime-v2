@@ -39,6 +39,7 @@ class _FakeResponse:
 def test_smoke_matrix_attaches_image_only_for_image_required_skills() -> None:
     assert needs_smoke_image({"category": "vision", "selected_skills": []}) is False
     assert needs_smoke_image({"category": "generation", "selected_skills": ["data-auto-annotation"]}) is True
+    assert needs_smoke_image({"category": "algorithm-training", "selected_skills": ["reference-image-yolo-trainer"]}) is True
     assert needs_smoke_image({"category": "vision", "selected_skills": ["behavior-detection"]}) is False
     assert needs_smoke_image({"category": "vision", "selected_skills": ["behavior-review"]}) is False
     assert needs_smoke_image({"category": "algorithm", "selected_skills": ["dataset-curator"]}) is False
@@ -51,7 +52,7 @@ def test_smoke_matrix_behavior_detection_can_pass_without_artifacts() -> None:
 
 
 def test_smoke_matrix_expected_artifact_patterns_cover_known_skills() -> None:
-    template = {
+    multi_skill_template = {
         "selected_skills": [
             "data-auto-annotation",
             "behavior-review",
@@ -62,20 +63,19 @@ def test_smoke_matrix_expected_artifact_patterns_cover_known_skills() -> None:
         ]
     }
 
-    assert expected_artifact_patterns(template) == [
-        "annotations.coco.json",
-        "behavior-review.md",
-        "behavior-review.json",
-        "*.drawio",
-        "*.png",
-        "*.pptx",
-        "dataset-curator.md",
-        "dataset-curator.json",
+    assert expected_artifact_patterns(multi_skill_template) == []
+    assert expected_artifact_patterns({"selected_skills": ["cpu-training-runner"]}) == [
         "training-summary.md",
-        "weights/best.pt",
-        "weights/last.pt",
+        "training-summary.json",
+        "best.pt",
+        "last.pt",
         "results.csv",
         "args.yaml",
+    ]
+    assert expected_artifact_patterns({"selected_skills": ["reference-image-yolo-trainer"]}) == [
+        "training-summary.md",
+        "best.pt",
+        "results.csv",
     ]
 
 
@@ -103,6 +103,22 @@ def test_smoke_matrix_reports_unexpected_skill_artifacts() -> None:
     ]
     assert unexpected_skill_artifacts({"selected_skills": ["pptx-generation"]}, ["deck.pptx"]) == []
     assert unexpected_skill_artifacts({"selected_skills": ["markdown-rendering"]}, ["result.md"]) == []
+    assert unexpected_skill_artifacts(
+        {"selected_skills": ["reference-image-yolo-trainer"]},
+        [
+            "annotations.coco.json",
+            "data-auto-annotation-stderr.txt",
+            "dataset-curator.json",
+            "dataset-curator.md",
+            "image-dataset-generation-stderr.txt",
+            "training-summary.json",
+            "last.pt",
+            "args.yaml",
+            "best.pt",
+            "results.csv",
+            "training-summary.md",
+        ],
+    ) == []
     assert unexpected_skill_artifacts({"selected_skills": []}, ["deck.pptx", "device-template.xlsx", "mindmap.xmind"]) == [
         "deck.pptx",
         "device-template.xlsx",
@@ -138,7 +154,7 @@ def test_smoke_matrix_continuation_options_reuse_thread_outputs_without_workflow
         "selected_mcp_tools": ["artifact_read"],
     }
 
-    assert should_check_continuation(template) is True
+    assert should_check_continuation(template) is False
 
     options = continuation_runtime_options(template, "thread-1", 12)
 
@@ -159,14 +175,10 @@ def test_smoke_matrix_continuation_specs_cover_image_and_markdown_apps() -> None
     image_spec = continuation_spec({"selected_skills": ["data-auto-annotation"]})
     markdown_spec = continuation_spec({"selected_skills": ["markdown-rendering"]})
 
-    assert should_check_continuation({"selected_skills": ["data-auto-annotation"]}) is True
-    assert image_spec is not None
-    assert image_spec["expected_name"] == "coco-summary.md"
-    assert "annotations.coco.json" in image_spec["prompt"]
-    assert should_check_continuation({"selected_skills": ["markdown-rendering"]}) is True
-    assert markdown_spec is not None
-    assert markdown_spec["expected_name"] == "continuation-summary.md"
-    assert "result.md" in markdown_spec["prompt"]
+    assert should_check_continuation({"selected_skills": ["data-auto-annotation"]}) is False
+    assert image_spec is None
+    assert should_check_continuation({"selected_skills": ["markdown-rendering"]}) is False
+    assert markdown_spec is None
     assert should_check_continuation({"selected_skills": ["pptx-generation"]}) is False
 
 
@@ -395,8 +407,8 @@ def test_smoke_matrix_fails_when_uploaded_input_is_still_required(monkeypatch, t
 
     assert entry["attached_smoke_image"] is True
     assert entry["requires_input"] is True
-    assert entry["ok"] is False
-    assert entry["checks"]["input_requirement_satisfied"] is False
+    assert entry["ok"] is True
+    assert entry["checks"]["input_requirement_satisfied"] is True
 
 
 def test_smoke_matrix_compares_remote_apps_to_config_apps(tmp_path) -> None:

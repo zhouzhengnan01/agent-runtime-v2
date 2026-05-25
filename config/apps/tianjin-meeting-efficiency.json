@@ -1,0 +1,52 @@
+{
+  "name": "tianjin-meeting-efficiency",
+  "title": "会议日程与效率培训",
+  "description": "分析会议纪要、创建日程提醒，并查询培训和效率建议。",
+  "category": "park-operations",
+  "icon": "calendar",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [
+    "tianjin-meeting-minutes",
+    "tianjin-calendar-reminder",
+    "tianjin-efficiency-training"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "分析这段会议转写并提取行动项。",
+    "解析“明天下午三点提醒我开项目复盘会”。"
+  ],
+  "tags": [
+    "天津园区",
+    "园区运营",
+    "模型原生"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_env": "LLM_API_KEY"
+    }
+  ]
+}

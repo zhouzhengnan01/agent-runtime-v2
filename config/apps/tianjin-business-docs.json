@@ -1,0 +1,50 @@
+{
+  "name": "tianjin-business-docs",
+  "title": "商务文档与报价投标",
+  "description": "生成报价、投标、合同等商务文档，并生成/管理报价记录和投标记录。",
+  "category": "park-operations",
+  "icon": "doc",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [
+    "tianjin-document-generator"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "给天津示例客户的智慧园区项目生成一份报价文档。",
+    "估算智慧园区平台实施项目的服务报价。"
+  ],
+  "tags": [
+    "天津园区",
+    "园区运营",
+    "模型原生"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key_env": "LLM_API_KEY"
+    }
+  ]
+}

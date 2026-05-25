@@ -1,0 +1,161 @@
+{
+  "name": "tianjin-content-operator",
+  "description": "使用大模型和当前会话文件实现天津园区内容运营，生成公众号/小红书内容、海报、素材包，管理内容记录。发布类动作需要 confirm=true。",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "使用大模型和当前会话文件实现天津园区内容运营，生成公众号/小红书内容、海报、素材包，管理内容记录。发布类动作需要 confirm=true。",
+    "keywords": [
+      "内容运营",
+      "公众号",
+      "小红书",
+      "海报",
+      "发布",
+      "素材包",
+      "热点"
+    ],
+    "examples": [
+      "生成一篇小红书文案",
+      "生成公众号内容",
+      "列出待发布内容"
+    ]
+  },
+  "quality_template": [
+    "local_model_generation",
+    "artifact_report"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-content-operator"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "generate",
+          "generate_xhs_poster",
+          "publish_xhs",
+          "list_xhs_records",
+          "save_xhs_record",
+          "xhs_insights",
+          "list_wechat_accounts",
+          "list_wechat_records",
+          "save_wechat_record",
+          "publish_wechat",
+          "history"
+        ],
+        "description": "要执行的能力动作。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "可选。仅 mode=backend 时用于覆盖天津后端 API base URL。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "platform": {
+        "type": "string",
+        "enum": [
+          "xiaohongshu",
+          "wechat"
+        ]
+      },
+      "topic": {
+        "type": "string"
+      },
+      "content_type": {
+        "type": "string"
+      },
+      "audience": {
+        "type": "string"
+      },
+      "keywords": {
+        "type": "string"
+      },
+      "style": {
+        "type": "string"
+      },
+      "length": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "subtitle": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "ids": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "status": {
+        "type": "string"
+      },
+      "keyword": {
+        "type": "string"
+      },
+      "confirm": {
+        "type": "boolean",
+        "description": "发布类动作必须显式设置 true。"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "backend"
+        ],
+        "default": "local",
+        "description": "执行模式。默认 local：使用当前 Runtime 大模型和会话文件生成成果；backend：显式调用天津后端 HTTP API。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

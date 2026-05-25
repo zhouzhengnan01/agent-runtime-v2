@@ -20,7 +20,7 @@ weight checks, license risks, public mAP/FPS metrics, and benchmark recommendati
 ## When to Use
 
 Trigger when the user asks:
-- "调研比 YOLO 更适合棕榈果密集检测的算法"
+- "调研比 YOLO 更适合当前目标检测任务的算法"
 - "列一张候选检测算法表" / "列出候选算法"
 - "对比 YOLO、RT-DETR、D-FINE、RF-DETR、DAMO-YOLO"
 - "找适合小目标/密集目标/遮挡目标检测的模型"
@@ -54,12 +54,12 @@ Optional environment variables:
 
 ```bash
 python <skill-dir>/scripts/algorithm-research-scout.py \
-  --task-type "棕榈果密集检测" \
+  --task-type "目标检测" \
   --baseline "YOLO11s" \
   --constraints "小目标" "密集目标" "遮挡严重" "边缘部署" "商用落地" \
   --mode online-research \
   --max-results 6 \
-  --output palm_fruit_algorithm_research.md \
+  --output object_detection_algorithm_research.md \
   --json-output-dir outputs
 ```
 
@@ -67,7 +67,7 @@ python <skill-dir>/scripts/algorithm-research-scout.py \
 
 ```bash
 python <skill-dir>/scripts/algorithm-research-scout.py \
-  --input-json '{"skill_name":"algorithm-research-scout","task_type":"棕榈果密集检测","baseline":"YOLO11s","constraints":["小目标","密集目标","遮挡严重"],"mode":"online-research"}' \
+  --input-json '{"skill_name":"algorithm-research-scout","task_type":"目标检测","baseline":"YOLO11s","constraints":["小目标","密集目标","遮挡严重"],"mode":"online-research"}' \
   --output report.md \
   --json-output-dir outputs
 ```
@@ -76,7 +76,7 @@ python <skill-dir>/scripts/algorithm-research-scout.py \
 
 | Parameter | Description | Default |
 |---|---|---|
-| `--task-type` | Detection task description | "棕榈果密集检测" |
+| `--task-type` | Detection task description | "目标检测" |
 | `--baseline` | Current baseline algorithm | "YOLO" |
 | `--constraints` | Space-separated constraint list | None |
 | `--mode` | `online-research` or `offline-template` | `online-research` |
@@ -97,7 +97,7 @@ The script generates a Markdown report with these sections:
 6. **预训练权重核验表** — weight assets and links
 7. **License 风险表** — license and commercial risk analysis
 8. **公开 mAP/FPS 指标表** — extracted public metrics with comparability notes
-9. **棕榈果密集检测适配评分** — per-algorithm suitability scores (0–100)
+9. **业务场景适配评分** — per-algorithm suitability scores (0–100)
 10. **Benchmark 推荐短名单** — prioritized benchmark recommendations
 11. **风险与不确定项** — known risks and uncertainties
 12. **还需要人工补充的信息** — information requiring human follow-up

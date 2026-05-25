@@ -1,0 +1,10 @@
+{
+  "id": "tianjin-system-monitor",
+  "name": "tianjin-system-monitor",
+  "version": "0.1.0",
+  "description": "使用大模型和当前会话文件生成天津园区系统运行概览、巡检报告和日志分析建议。",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-system-monitor/manifest.json"
+  ]
+}

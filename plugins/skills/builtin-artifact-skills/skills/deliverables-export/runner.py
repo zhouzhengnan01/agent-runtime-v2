@@ -5,7 +5,11 @@ import re
 import zipfile
 from collections.abc import Mapping
 from typing import Any
-from xml.sax.saxutils import escape as xml_escape
+from xml.sax.saxutils import escape
+
+
+def xml_escape(value: str) -> str:
+    return escape(value, {"\"": "&quot;"})
 
 from app.core.artifacts.store import ArtifactStore, ThreadPaths
 from app.core.skills.runner_types import SkillRunResult

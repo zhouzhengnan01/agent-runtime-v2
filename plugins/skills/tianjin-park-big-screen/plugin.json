@@ -1,0 +1,10 @@
+{
+  "id": "tianjin-park-big-screen",
+  "name": "tianjin-park-big-screen",
+  "version": "0.1.0",
+  "description": "生成天津园区运营大屏驾驶舱方案、数据契约和静态 HTML 预览。",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-park-big-screen/manifest.json"
+  ]
+}

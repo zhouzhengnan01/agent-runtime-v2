@@ -1,0 +1,19 @@
+{
+  "id": "tianjin-park-tools",
+  "name": "Tianjin Park Operations Tools",
+  "version": "0.1.0",
+  "description": "Model-native Tianjin park operations skills with optional backend HTTP integration.",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-chatbi-analyst/manifest.json",
+    "skills/tianjin-document-generator/manifest.json",
+    "skills/tianjin-content-operator/manifest.json",
+    "skills/tianjin-sentiment-monitor/manifest.json",
+    "skills/tianjin-market-research/manifest.json",
+    "skills/tianjin-meeting-minutes/manifest.json",
+    "skills/tianjin-calendar-reminder/manifest.json",
+    "skills/tianjin-rpa-operator/manifest.json",
+    "skills/tianjin-system-monitor/manifest.json",
+    "skills/tianjin-efficiency-training/manifest.json"
+  ]
+}

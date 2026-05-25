@@ -100,7 +100,11 @@ def _requires_algorithm_training_inputs(request: ChatRequest, selected_skills: s
         "data.yaml",
         "数据治理",
         "算法工程师",
-        "棕榈果",
+        "目标检测",
+        "视觉模型",
+        "cv模型",
+        "cv 模型",
+        "检测模型",
     )
     return _mentions_any(text, training_markers)
 

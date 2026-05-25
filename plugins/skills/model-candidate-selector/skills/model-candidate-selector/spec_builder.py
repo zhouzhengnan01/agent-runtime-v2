@@ -11,6 +11,9 @@ SKILL_KEYWORDS: dict[str, tuple[str, ...]] = {
         "完整应用",
         "一站式",
         "工作台",
+        "cv模型",
+        "cv 模型",
+        "训练一个",
         "全流程搞定",
         "整合",
         "算法工程师",
@@ -117,6 +120,8 @@ def score_skill(
     if skill_name not in allowed_skills or skill_name not in SKILL_KEYWORDS:
         return 0
     text = _normalize(routing_text)
+    if skill_name == "algorithm-engineer" and not _is_algorithm_engineer_request(text):
+        return 0
     score = 0
     for keyword in SKILL_KEYWORDS[skill_name]:
         if keyword in text:
@@ -128,6 +133,34 @@ def score_skill(
     if attachments:
         score += 6
     return score
+
+
+def _is_algorithm_engineer_request(text: str) -> bool:
+    strong_markers = (
+        "算法工程师",
+        "算法迭代",
+        "训练模型",
+        "检测模型",
+        "cv模型",
+        "cv 模型",
+        "训练一个",
+        "模型上线",
+        "yolo",
+        "rtdetr",
+        "rt-detr",
+        "best.pt",
+        "data.yaml",
+        "数据治理",
+        "训练编排",
+        "gpu 训练",
+        "cpu 训练",
+        "计数误差",
+    )
+    if any(marker in text for marker in strong_markers):
+        return True
+    workflow_markers = ("全流程", "端到端", "工作台", "一站式", "完整应用", "整合")
+    algorithm_markers = ("算法", "模型", "训练", "数据集", "上线", "benchmark", "评估")
+    return any(marker in text for marker in workflow_markers) and any(marker in text for marker in algorithm_markers)
 
 
 def build_spec(
@@ -152,7 +185,7 @@ def build_spec(
     spec["mock"] = "mock" in _normalize(user_text or routing_text) or "模拟" in _normalize(user_text or routing_text)
     spec["machines"] = _machines(user_text or routing_text)
     spec["candidate_algorithms"] = _candidate_algorithms(user_text or routing_text)
-    spec["business_metrics"] = ["totalAccuracy", "netTotalAccuracy", "absDiffAvg", "per-tree count error"]
+    spec["business_metrics"] = ["businessPrecision", "businessRecall", "absDiffAvg", "per-object count error"]
     spec["detection_metrics"] = ["precision", "recall", "mAP50", "mAP50-95"]
     spec["attachments"] = [_attachment_payload(item) for item in attachments]
     spec["safety_rules"] = [
@@ -170,8 +203,13 @@ def _normalize(value: str) -> str:
 
 def _objective(text: str) -> str:
     normalized = _normalize(text)
+    target = _cv_task_target(normalized)
+    if target:
+        return f"{target}检测模型训练"
+    if _is_multi_domain_request(normalized):
+        return "通用视觉检测算法工程迭代"
     if "计数" in normalized:
-        return "果串检测与计数误差优化"
+        return "目标检测与业务计数误差优化"
     if "标注" in normalized:
         return "自动预标注与训练数据闭环"
     if "上线" in normalized or "部署" in normalized:
@@ -181,9 +219,64 @@ def _objective(text: str) -> str:
 
 def _domain(text: str) -> str:
     normalized = _normalize(text)
+    target = _cv_task_target(normalized)
+    if target:
+        return f"{target}视觉检测"
+    if _is_multi_domain_request(normalized):
+        return "multi-domain computer vision object detection"
     if "棕榈" in normalized or "palm" in normalized:
         return "palm fruit detection"
     return "computer vision object detection"
+
+
+def _cv_task_target(normalized_text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", normalized_text.strip())
+    patterns = (
+        r"(?:训练|做|构建|开发|搞)(?:一个|一套|个)?(?P<target>[^，。,.；;]+?)(?:cv\s*)?(?:检测|识别|分类|分割)?模型",
+        r"(?P<target>[^，。,.；;\s]+?)(?:检测|识别|分类|分割)(?:模型|算法|任务)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, flags=re.IGNORECASE)
+        if not match:
+            continue
+        target = _clean_task_target(match.group("target"))
+        if target:
+            return target
+    return ""
+
+
+def _clean_task_target(value: str) -> str:
+    target = value.strip(" 的：:，。,.；;")
+    prefixes = ("帮我", "请", "想要", "需要", "我要", "做一个", "做一套")
+    for prefix in prefixes:
+        if target.startswith(prefix):
+            target = target[len(prefix) :].strip(" 的：:，。,.；;")
+    suffixes = ("cv", "视觉", "目标")
+    for suffix in suffixes:
+        if target.endswith(suffix):
+            target = target[: -len(suffix)].strip(" 的：:，。,.；;")
+    if target in {"目标", "通用", "视觉", "cv", "模型", "检测"}:
+        return ""
+    return target
+
+
+def _is_multi_domain_request(normalized_text: str) -> bool:
+    return any(
+        marker in normalized_text
+        for marker in (
+            "不仅仅",
+            "不只是",
+            "不止",
+            "不限于",
+            "通用",
+            "多场景",
+            "多品类",
+            "多个目标",
+            "不同目标",
+            "multi-domain",
+            "general",
+        )
+    )
 
 
 def _baseline(text: str) -> str:
@@ -199,7 +292,7 @@ def _extract_path(text: str) -> str:
         path = match.group(1)
         if _looks_like_filesystem_path(path):
             return path
-    return "/data/palm_fruit_datasets/organized/latest_integrated_dedup"
+    return ""
 
 
 def _extract_data_yaml(text: str) -> str:

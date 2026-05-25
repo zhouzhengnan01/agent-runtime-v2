@@ -1,0 +1,10 @@
+{
+  "id": "tianjin-sentiment-monitor",
+  "name": "tianjin-sentiment-monitor",
+  "version": "0.1.0",
+  "description": "使用大模型和当前会话文件完成天津园区舆情分析、风险研判、报告生成和知识沉淀。",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-sentiment-monitor/manifest.json"
+  ]
+}

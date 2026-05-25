@@ -91,15 +91,12 @@ async def test_users_mcp_json_rpc(request: Request) -> Response:
         return _test_users_error(request_id, -32600, "JSON-RPC method is required.")
 
     if method == "initialize":
+        raw_params = payload.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
         return _test_users_result(
             request_id,
             {
-                "protocolVersion": str(
-                    (payload.get("params") if isinstance(payload.get("params"), dict) else {}).get(
-                        "protocolVersion"
-                    )
-                    or MCP_PROTOCOL_VERSION
-                ),
+                "protocolVersion": str(params.get("protocolVersion") or MCP_PROTOCOL_VERSION),
                 "capabilities": {"tools": {"listChanged": True}},
                 "serverInfo": {"name": "jetlinks-test-users-mcp", "version": "0.1.0"},
             },
@@ -159,10 +156,11 @@ async def test_users_mcp_json_rpc(request: Request) -> Response:
 
 
 def _test_users_tool_call(request_id: object, raw_params: object) -> Response:
-    params = raw_params if isinstance(raw_params, dict) else {}
+    params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
     if params.get("name") != "query_users":
         return _test_users_error(request_id, -32602, "Unknown test MCP tool.")
-    arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+    raw_arguments = params.get("arguments")
+    arguments: dict[str, Any] = raw_arguments if isinstance(raw_arguments, dict) else {}
     session_id = _test_users_session_id(arguments)
     call_count = _test_user_loop_counts.get(session_id, 0) + 1
     _test_user_loop_counts[session_id] = call_count

@@ -32,7 +32,7 @@ EXECUTION_POLICY_GUIDANCE = (
 )
 
 ITERATIVE_TOOL_GUIDANCE = (
-    "Iterative tool guidance is active. When the user gives a repeat-until or "
+    "Iterative tool guidance is active for conditional tool-loop behavior. When the user gives a repeat-until or "
     "stop condition, inspect each tool result and continue calling the relevant "
     "tool while the latest result still satisfies the continue condition. Stop "
     "only after the stop condition is observed or the tool-round limit is reached. "

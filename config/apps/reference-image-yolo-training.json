@@ -11,7 +11,7 @@
   ],
   "selected_mcp_tools": [],
   "prompt_examples": [
-    "根据我上传的一张棕榈果参考图生成训练数据，自动标注，构建 YOLO 数据集，并训练输出 best.pt。labels=palm fruit，先用 mock=true 验证闭环。",
+    "这是 smoke 测试：使用当前已上传的参考图 smoke-image.jpg，labels=[\"person\",\"helmet\"]，mock=true，生成目标检测训练数据，自动标注，构建 YOLO 数据集，并跑 CPU mock 训练输出 best.pt、results.csv 和 training-summary.md。",
     "用这张参考图扩充目标检测训练集，生成 COCO/YOLO 数据集后跑 CPU smoke 训练，最后给我 best.pt、results.csv 和训练摘要。"
   ],
   "runtime_options": {
@@ -54,7 +54,7 @@
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key": "abc@123"
+      "api_key_env": "LLM_API_KEY"
     }
   ]
 }

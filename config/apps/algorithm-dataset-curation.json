@@ -13,8 +13,8 @@
   ],
   "selected_mcp_tools": [],
   "prompt_examples": [
-    "审计 /data/palm_fruit_datasets/organized/latest_integrated_dedup，输出去重、标签冲突、空标签、缺标签和 YOLO data.yaml 构建方案。",
-    "把棕榈果去重图库整理成训练集 palm_integrated_exact_dedup_v1，manual 标签优先，training 次之，review queue 再次。"
+    "这是 smoke 测试：只调用 dataset-curator 生成一个最小数据集审计报告，source_path=/mnt/user-data/uploads，output_path=/mnt/user-data/outputs/dataset-smoke，不要调用 SAM3 或图像生成。",
+    "把目标检测图库整理成训练集 <project>_train_v1，manual 标签优先，training 次之，review queue 再次。"
   ],
   "tags": [
     "数据治理",
@@ -47,7 +47,7 @@
       "tool_choice": "auto",
       "temperature": 0.4,
       "max_tokens": 2048,
-      "api_key": "abc@123"
+      "api_key_env": "LLM_API_KEY"
     }
   ]
 }
