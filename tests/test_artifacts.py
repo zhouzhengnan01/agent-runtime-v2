@@ -27,6 +27,20 @@ def test_artifact_list(tmp_path: Path) -> None:
     assert manifest["artifacts"][0]["path"] == "outputs/a/result.md"
 
 
+def test_artifact_ref_urls_encode_path_segments(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("thread with spaces")
+
+    ref = store.write_bytes_artifact(paths, "中文 预览/report #1?.png", b"image")
+
+    assert ref.path == "/mnt/user-data/outputs/中文 预览/report #1?.png"
+    assert ref.preview_url == (
+        "/api/artifacts/thread-with-spaces/"
+        "mnt/user-data/outputs/%E4%B8%AD%E6%96%87%20%E9%A2%84%E8%A7%88/report%20%231%3F.png"
+    )
+    assert ref.download_url == f"{ref.preview_url}?download=true"
+
+
 def test_artifact_store_accepts_virtual_output_paths(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path)
     paths = store.prepare_thread("t1")
