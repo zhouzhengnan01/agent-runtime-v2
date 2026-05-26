@@ -13,7 +13,7 @@
   ],
   "selected_mcp_tools": [],
   "prompt_examples": [
-    "帮我训练一个YOLO抽烟检测模型"
+    "帮我训练一个YOLO抽烟检测模型，合成提示词为：把 image2 中的目标自然合成到 image1 的场景中，形成真实监控画面，标注类别为：person，cigarette，训练参数为：conda_env_name=yolo_jetson model=yolo11n.pt epochs=10 imgsz=640 batch=8 device=0 workers=4 patience=20 dataset.split.train=0.7 dataset.split.val=0.2 dataset.split.test=0.1"
   ],
   "tags": [
     "算法工程师",

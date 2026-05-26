@@ -214,6 +214,8 @@ def composite_images(
     count: int = 1,
     timeout: int = 180,
     sleep: float = 1.0,
+    retries: int = 3,
+    retry_sleep: float = 5.0,
     prompt_extend: bool = False,
     watermark: bool = False,
 ) -> List[str]:
@@ -252,27 +254,33 @@ def composite_images(
         write_request_preview(payload, out_dir / f"request_{index:03d}.json", selected_inputs)
         print(f"[{index}/{count}] requesting {model} with 2 images...")
         total_start = time.perf_counter()
-        try:
-            data = request_one(api_url, api_key, payload, timeout)
-            saved_paths = save_images_from_response(data, out_dir, stem, timeout)
-            timing = {
-                "request_started_at": now_iso(),
-                "total_seconds": elapsed_seconds(total_start),
-                "selected_inputs": selected_inputs,
-                "saved_images": [str(path.resolve()) for path in saved_paths],
-                "finished_at": now_iso(),
-            }
-            data["_local_timing"] = timing
-            (out_dir / f"response_{index:03d}.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            if not saved_paths:
-                print(f"[{index}/{count}] no image found; response saved.")
-            for image_path in saved_paths:
-                saved.append(str(image_path.resolve()))
-                print(f"[{index}/{count}] saved {image_path.resolve()}")
-        except Exception as exc:
-            (out_dir / f"error_{index:03d}.txt").write_text(str(exc), encoding="utf-8")
-            print(f"[{index}/{count}] failed: {exc}")
-            raise
+        attempts = max(1, int(retries))
+        for attempt in range(1, attempts + 1):
+            try:
+                data = request_one(api_url, api_key, payload, timeout)
+                saved_paths = save_images_from_response(data, out_dir, stem, timeout)
+                timing = {
+                    "request_started_at": now_iso(),
+                    "total_seconds": elapsed_seconds(total_start),
+                    "selected_inputs": selected_inputs,
+                    "saved_images": [str(path.resolve()) for path in saved_paths],
+                    "finished_at": now_iso(),
+                    "attempt": attempt,
+                }
+                data["_local_timing"] = timing
+                (out_dir / f"response_{index:03d}.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                if not saved_paths:
+                    print(f"[{index}/{count}] no image found; response saved.")
+                for image_path in saved_paths:
+                    saved.append(str(image_path.resolve()))
+                    print(f"[{index}/{count}] saved {image_path.resolve()}")
+                break
+            except Exception as exc:
+                (out_dir / f"error_{index:03d}.txt").write_text(str(exc), encoding="utf-8")
+                print(f"[{index}/{count}] attempt {attempt}/{attempts} failed: {exc}")
+                if attempt >= attempts:
+                    raise
+                time.sleep(max(0.0, float(retry_sleep)))
         if index < count and sleep > 0:
             time.sleep(sleep)
     return saved
@@ -292,6 +300,8 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--sleep", type=float, default=1.0)
+    parser.add_argument("--retries", type=int, default=3)
+    parser.add_argument("--retry-sleep", type=float, default=5.0)
     parser.add_argument("--prompt-extend", action="store_true")
     parser.add_argument("--watermark", action="store_true")
     args = parser.parse_args()
@@ -309,6 +319,8 @@ def main() -> None:
         count=args.count,
         timeout=args.timeout,
         sleep=args.sleep,
+        retries=args.retries,
+        retry_sleep=args.retry_sleep,
         prompt_extend=args.prompt_extend,
         watermark=args.watermark,
     )

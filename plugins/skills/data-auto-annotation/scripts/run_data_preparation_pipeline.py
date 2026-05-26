@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -71,21 +72,51 @@ def _write_command_logs(cmd: List[str], stdout_text: str, stderr_text: str) -> N
     _append_text(LOG_DIR / f"{stem}-stderr.txt", stderr_text)
 
 
-def _run(cmd: List[str], dry_run: bool = False) -> str:
+def _run(cmd: List[str], dry_run: bool = False, *, retries: int = 1, retry_sleep: float = 5.0) -> str:
     print("[data-prep] " + " ".join(cmd))
     if dry_run:
         return ""
-    completed = subprocess.run(cmd, capture_output=True, check=False)
-    stdout_text = _decode_bytes(completed.stdout)
-    stderr_text = _decode_bytes(completed.stderr)
-    _write_command_logs(cmd, stdout_text, stderr_text)
-    if stdout_text:
-        print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
-    if stderr_text:
-        print(stderr_text, end="" if stderr_text.endswith("\n") else "\n", file=sys.stderr)
-    if completed.returncode != 0:
-        raise subprocess.CalledProcessError(completed.returncode, cmd, output=completed.stdout, stderr=completed.stderr)
-    return stdout_text
+    attempts = max(1, int(retries))
+    last_completed: subprocess.CompletedProcess[bytes] | None = None
+    for attempt in range(1, attempts + 1):
+        completed = subprocess.run(cmd, capture_output=True, check=False)
+        last_completed = completed
+        stdout_text = _decode_bytes(completed.stdout)
+        stderr_text = _decode_bytes(completed.stderr)
+        _write_command_logs(cmd, stdout_text, stderr_text)
+        if stdout_text:
+            print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+        if stderr_text:
+            print(stderr_text, end="" if stderr_text.endswith("\n") else "\n", file=sys.stderr)
+        if completed.returncode == 0:
+            return stdout_text
+        combined = f"{stdout_text}\n{stderr_text}"
+        if attempt >= attempts or not _looks_transient_subprocess_error(combined):
+            raise subprocess.CalledProcessError(completed.returncode, cmd, output=completed.stdout, stderr=completed.stderr)
+        message = f"[data-prep] transient command failure; retrying {attempt + 1}/{attempts} after {retry_sleep}s"
+        print(message)
+        _write_command_logs(cmd, message + "\n", "")
+        time.sleep(max(0.0, float(retry_sleep)))
+    if last_completed is None:
+        raise RuntimeError("Command did not run")
+    raise subprocess.CalledProcessError(last_completed.returncode, cmd, output=last_completed.stdout, stderr=last_completed.stderr)
+
+
+def _looks_transient_subprocess_error(text: str) -> bool:
+    lowered = (text or "").lower()
+    markers = (
+        "connectionreseterror",
+        "connection reset",
+        "connection aborted",
+        "remote host",
+        "远程主机",
+        "timeout",
+        "timed out",
+        "temporarily unavailable",
+        "protocolerror",
+        "ssl",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 def _initialize_log_dir(output_dir: Path) -> None:
@@ -160,7 +191,16 @@ def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str],
     raise ValueError(f"Unsupported dataset format: {fmt}. Convert labels to COCO or YOLO first.")
 
 
-def _plan_synthetic(real_coco: Path, task: str, generation_prompt: str, split_train: float, work_dir: Path, max_synthetic: int, planner_llm: Dict[str, Any], dry_run: bool) -> Path:
+def _plan_synthetic(
+    real_coco: Path,
+    task: str,
+    generation_prompt: str,
+    split_train: float,
+    work_dir: Path,
+    max_synthetic: int,
+    planner_llm: Dict[str, Any],
+    dry_run: bool,
+) -> Path:
     plan_path = work_dir / "synthetic_plan.json"
     cmd = [
         sys.executable,
@@ -316,7 +356,7 @@ def _generate_and_annotate_synthetic(plan_path: Path, image1: Path, image2: Path
                 for path in scene_dir.rglob("*")
                 if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
             }
-            stdout_text = _run([sys.executable, str(GENERATION_SCRIPT), "--input", str(input_json)], dry_run)
+            stdout_text = _run([sys.executable, str(GENERATION_SCRIPT), "--input", str(input_json)], dry_run, retries=3, retry_sleep=8.0)
             if dry_run:
                 continue
             generated_image = _extract_generated_image_path(stdout_text, scene_dir, before_files)
@@ -410,6 +450,13 @@ def _bool_value(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _normalize_yolo_task(value: Any) -> str:
+    text = str(value or "detect").strip().lower().replace("-", "_").replace(" ", "_")
+    if text in {"segment", "seg", "segmentation", "instance_segmentation"}:
+        return "segment"
+    return "detect"
+
+
 def _list_value(value: Any) -> List[str]:
     if value is None:
         return []
@@ -450,7 +497,7 @@ def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     args.split_val = float(_coalesce(split.get("val"), dataset.get("split_val"), args.split_val, default=args.split_val))
     args.split_test = float(_coalesce(split.get("test"), dataset.get("split_test"), args.split_test, default=args.split_test))
     training = spec.get("training") if isinstance(spec.get("training"), dict) else {}
-    args.training_task = _coalesce(training.get("task"), spec.get("training_task"), args.training_task, default=args.training_task)
+    args.training_task = _normalize_yolo_task(_coalesce(training.get("task"), spec.get("training_task"), args.training_task, default=args.training_task))
     return args
 
 
@@ -511,7 +558,16 @@ def main() -> None:
     plan_path = ""
 
     if not args.skip_generation:
-        plan = _plan_synthetic(real_coco, args.task, args.generation_prompt, args.split_train, work_dir, args.max_synthetic, args.planner_llm, args.dry_run)
+        plan = _plan_synthetic(
+            real_coco,
+            args.task,
+            args.generation_prompt,
+            args.split_train,
+            work_dir,
+            args.max_synthetic,
+            args.planner_llm,
+            args.dry_run,
+        )
         plan_path = str(plan)
         recommended_count = _read_recommended_synthetic_count(plan)
         print(f"[data-prep] recommended_synthetic_count={recommended_count}")

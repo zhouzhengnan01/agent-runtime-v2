@@ -48,6 +48,8 @@ def _normalize_runtime_payload(payload: dict) -> dict:
         "size": spec.get("size") or "768*768",
         "count": spec.get("count") or 1,
         "sleep": spec.get("sleep") or 1.0,
+        "retries": spec.get("retries") or 3,
+        "retry_sleep": spec.get("retry_sleep") or spec.get("retrySleep") or 5.0,
         "negative_prompt": spec.get("negative_prompt") or spec.get("negativePrompt") or "",
         "prompt_extend": spec.get("prompt_extend") or spec.get("promptExtend") or False,
         "watermark": spec.get("watermark") or False,
@@ -152,6 +154,8 @@ def main() -> None:
         "--count", str(int(model.get("count", 1) or 1)),
         "--timeout", str(int(model.get("timeout", 180) or 180)),
         "--sleep", str(float(model.get("sleep", 1.0) or 1.0)),
+        "--retries", str(int(model.get("retries", 3) or 3)),
+        "--retry-sleep", str(float(model.get("retry_sleep", 5.0) or 5.0)),
     ]
     negative_prompt = str(model.get("negative_prompt", "") or "").strip()
     if negative_prompt:

@@ -123,16 +123,46 @@ class YoloTrainingWorkflow:
             recorder.emit("run.completed", {"result": result.model_dump()})
             return result, recorder.events
 
-        prompt_text = _extract_generation_prompt(user_text, allow_free_text=waiting_prompt)
+        request_spec = _extract_yolo_training_request_spec(
+            user_text,
+            agent_config=agent_config,
+            runtime_options=runtime_options,
+            recorder=recorder,
+        )
+        synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
+        if synthetic_generation is not None:
+            _save_synthetic_generation_enabled(paths, synthetic_generation)
+        persisted_synthetic_generation = _load_synthetic_generation_enabled(paths)
+        if persisted_synthetic_generation is not None:
+            generation_enabled = generation_enabled and persisted_synthetic_generation
+
+        prompt_text = _spec_string(request_spec, "generation_prompt") or _extract_generation_prompt(user_text, allow_free_text=waiting_prompt)
         if prompt_text:
             _save_generation_prompt(paths, prompt_text)
         else:
             prompt_text = _load_generation_prompt(paths)
-        labels = _extract_annotation_labels(user_text)
+        labels = _spec_string_list(request_spec, "labels") or _extract_annotation_labels(user_text)
         if labels:
             _save_annotation_labels(paths, labels)
         else:
             labels = _load_annotation_labels(paths)
+        training_cfg = _spec_training_config(request_spec)
+        training_cfg_available = bool(training_cfg)
+        if training_cfg:
+            _save_training_config(paths, training_cfg)
+        else:
+            training_cfg = _load_training_config(paths)
+            training_cfg_available = bool(training_cfg)
+        if not training_cfg:
+            training_cfg = _extract_training_config(user_text)
+            training_cfg_available = _has_explicit_training_config(user_text)
+            if training_cfg_available:
+                _save_training_config(paths, training_cfg)
+        task_description = _spec_string(request_spec, "task_description")
+        if task_description:
+            _save_detection_task_description(paths, task_description)
+        else:
+            task_description = _load_detection_task_description(paths)
 
         if not dataset_pkg or (generation_enabled and (not composite_image1 or not composite_image2)):
             required_inputs = []
@@ -183,7 +213,7 @@ class YoloTrainingWorkflow:
             recorder.emit("run.completed", {"result": result.model_dump()})
             return result, recorder.events
 
-        if training_enabled and not _has_explicit_training_config(user_text):
+        if training_enabled and not training_cfg_available:
             _set_waiting_prompt(paths, True)
             reply = (
                 "为避免使用默认训练配置，请在同一条消息补充训练参数后继续，例如：\n"
@@ -212,8 +242,8 @@ class YoloTrainingWorkflow:
         pipeline_work_dir = str((workflow_output_root / PIPELINE_WORK_DIR).resolve())
         project_dir = str((workflow_output_root / "training_run").resolve())
         run_name = "."
-        training_cfg = _extract_training_config(user_text)
-        task_description = _extract_detection_task_description(user_text, prompt_text, labels)
+        if not task_description:
+            task_description = _extract_detection_task_description(user_text, prompt_text, labels)
         data_prep_output_dir = str((workflow_output_root / "prepared_data").resolve())
         data_prep_spec = {
             "skill_name": "data-auto-annotation",
@@ -228,6 +258,7 @@ class YoloTrainingWorkflow:
             "work_dir": pipeline_work_dir,
             "output_dir": data_prep_output_dir,
             "skip_generation": not generation_enabled,
+            "split_requested": training_enabled,
             "split": training_cfg["split"],
             "training": training_cfg["training"],
             "planner_llm": _planner_llm_config(agent_config, runtime_options),
@@ -240,6 +271,7 @@ class YoloTrainingWorkflow:
                 "class_names": labels,
                 "labels": labels,
                 "skip_generation": not generation_enabled,
+                "split_requested": training_enabled,
                 "work_dir": pipeline_work_dir,
                 "output_dir": data_prep_output_dir,
                 "run_name": run_name,
@@ -285,7 +317,7 @@ class YoloTrainingWorkflow:
             recorder.emit("run.failed", {"result": result.model_dump(), "error": stderr_tail or stdout_tail})
             return result, recorder.events
 
-        dataset_yaml = str(data_prep_data.get("dataset_yaml") or (Path(data_prep_output_dir) / "dataset.yaml"))
+        dataset_yaml = _resolve_prepared_dataset_yaml(data_prep_data, Path(data_prep_output_dir))
 
         if not training_enabled:
             _set_waiting_prompt(paths, False)
@@ -830,6 +862,157 @@ def _parse_json_object(raw: str) -> dict[str, Any]:
     return payload
 
 
+def _extract_yolo_training_request_spec(
+    user_text: str,
+    *,
+    agent_config: Any,
+    runtime_options: RuntimeOptions,
+    recorder: EventRecorder,
+) -> dict[str, Any]:
+    if not (user_text or "").strip():
+        return {}
+    llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_request_spec"})
+    if not llm.configured:
+        recorder.emit("llm.completed", {"purpose": "workflow_request_spec", "used_fallback": True, "reason": "not_configured"})
+        return {}
+    system_prompt = (
+        "你是 YOLO 训练工作流的参数抽取器。请从用户中文或英文消息中抽取结构化规格。"
+        "只返回 JSON 对象，不要解释。字段："
+        "task_description 字符串，描述要训练的检测任务；"
+        "use_synthetic_generation 布尔值或 null，用户要求合成/生图/把 image2 合成到 image1 时为 true，明确不合成时为 false；"
+        "generation_prompt 字符串，合成提示词原文；"
+        "labels 字符串数组，标注类别；"
+        "training 对象，字段可含 task, model, epochs, imgsz, batch, device, workers, patience；"
+        "runtime 对象，字段可含 conda_env_name, enforce_conda_env；"
+        "split 对象，字段可含 train, val, test。"
+        "没有出现的字段返回空字符串、空数组、空对象或 null。不要编造默认训练参数。"
+    )
+    try:
+        raw = llm.complete_sync(system_prompt, [Message(role="user", content=user_text)])
+        payload = _parse_json_object(raw)
+        spec = payload if isinstance(payload, dict) else {}
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_request_spec",
+                "used_fallback": False,
+                "extracted_keys": sorted(str(key) for key in spec.keys()),
+            },
+        )
+        return spec
+    except Exception as exc:
+        recorder.emit("llm.completed", {"purpose": "workflow_request_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        return {}
+
+
+def _spec_string(spec: dict[str, Any], key: str) -> str:
+    value = spec.get(key)
+    return str(value).strip() if isinstance(value, str) else ""
+
+
+def _spec_optional_bool(spec: dict[str, Any], key: str) -> bool | None:
+    value = spec.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on", "需要", "是", "启用"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off", "不需要", "否", "禁用"}:
+            return False
+    return None
+
+
+def _spec_string_list(spec: dict[str, Any], key: str) -> list[str]:
+    value = spec.get(key)
+    if not isinstance(value, list):
+        return []
+    labels: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        label = str(item).strip().strip("\"'`，,;；。")
+        if not label:
+            continue
+        lower = label.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        labels.append(label)
+    return labels
+
+
+def _spec_training_config(spec: dict[str, Any]) -> dict[str, Any]:
+    raw_training = spec.get("training") if isinstance(spec.get("training"), dict) else {}
+    raw_runtime = spec.get("runtime") if isinstance(spec.get("runtime"), dict) else {}
+    raw_split = spec.get("split") if isinstance(spec.get("split"), dict) else {}
+    if not (raw_training or raw_runtime or raw_split):
+        return {}
+    cfg = _extract_training_config("")
+    for key in ("task", "model", "device"):
+        value = raw_training.get(key)
+        if value not in (None, ""):
+            cfg["training"][key] = str(value).strip()
+    cfg["training"]["task"] = _normalize_yolo_task(cfg["training"].get("task"))
+    for key in ("epochs", "imgsz", "batch", "workers", "patience"):
+        value = _coerce_int(raw_training.get(key))
+        if value is not None:
+            cfg["training"][key] = value
+    value = raw_runtime.get("conda_env_name")
+    if value not in (None, ""):
+        cfg["runtime"]["conda_env_name"] = str(value).strip()
+    value = _coerce_bool(raw_runtime.get("enforce_conda_env"))
+    if value is not None:
+        cfg["runtime"]["enforce_conda_env"] = value
+    for key in ("train", "val", "test"):
+        value = _coerce_float(raw_split.get(key))
+        if value is not None:
+            cfg["split"][key] = value
+    return cfg if _training_config_has_required_fields(raw_training, raw_runtime) else {}
+
+
+def _training_config_has_required_fields(raw_training: dict[str, Any], raw_runtime: dict[str, Any]) -> bool:
+    required_training = ("model", "epochs", "imgsz", "batch", "device", "workers", "patience")
+    return bool(raw_runtime.get("conda_env_name")) and all(raw_training.get(key) not in (None, "") for key in required_training)
+
+
+def _normalize_yolo_task(value: Any) -> str:
+    text = str(value or "detect").strip().lower().replace("-", "_").replace(" ", "_")
+    if text in {"segment", "seg", "segmentation", "instance_segmentation"}:
+        return "segment"
+    return "detect"
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        if value in (None, ""):
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off"}:
+            return False
+    return None
+
+
 def _human_fallback_reply(fallback_reply: str, summary: dict[str, Any], best_pt: str) -> str:
     facts: dict[str, Any] = {}
     try:
@@ -1039,7 +1222,7 @@ def _extract_training_config(user_text: str) -> dict[str, Any]:
             "test": _float_param(user_text, "dataset.split.test", 0.1),
         },
         "training": {
-            "task": _string_param(user_text, "training_task", "detect"),
+            "task": _normalize_yolo_task(_string_param(user_text, "training_task", "detect")),
             "model": _string_param(user_text, "model", "yolo11n.pt"),
             "epochs": _int_param(user_text, "epochs", 50),
             "imgsz": _int_param(user_text, "imgsz", 640),
@@ -1141,14 +1324,13 @@ def _extract_annotation_labels(user_text: str) -> list[str]:
     text = (user_text or "").strip()
     if not text:
         return []
-    match = re.search(
-        r"(?:labels?|lables?|lable|classes?|class|标注类别|类别|标签|标注标签)\s*[:=：]\s*([^\r\n]+)",
+    raw = _extract_labeled_section(
         text,
-        flags=re.IGNORECASE,
+        ("labels", "label", "lables", "lable", "classes", "class", "标注类别", "类别", "标签", "标注标签"),
+        ("训练参数", "conda_env_name", "model", "epochs", "imgsz", "batch", "device", "workers", "patience", "dataset.split."),
     )
-    if not match:
+    if not raw:
         return []
-    raw = match.group(1)
     raw = re.split(
         r"\s+(?:conda_env_name|model|epochs|imgsz|batch|device|workers|patience|dataset\.split\.)\s*[:=]",
         raw,
@@ -1173,9 +1355,13 @@ def _extract_generation_prompt(user_text: str, *, allow_free_text: bool = False)
     text = (user_text or "").strip()
     if not text:
         return ""
-    match = re.search(r"(?:prompt|提示词)\s*[:：]\s*(.+)", text, flags=re.IGNORECASE | re.DOTALL)
-    if match:
-        return _strip_config_lines_from_prompt(match.group(1).strip())
+    raw = _extract_labeled_section(
+        text,
+        ("prompt", "提示词", "合成提示词", "生图提示词"),
+        ("标注类别", "类别", "标签", "标注标签", "labels", "label", "classes", "class", "训练参数", "conda_env_name"),
+    )
+    if raw:
+        return _strip_config_lines_from_prompt(raw)
     if not allow_free_text:
         return ""
     lowered = text.lower()
@@ -1185,6 +1371,56 @@ def _extract_generation_prompt(user_text: str, *, allow_free_text: bool = False)
     if _looks_like_config_only_text(text):
         return ""
     return text if len(text) >= 12 else ""
+
+
+def _extract_labeled_section(text: str, starts: tuple[str, ...], stops: tuple[str, ...]) -> str:
+    start = -1
+    for label in sorted(starts, key=len, reverse=True):
+        candidate = _find_label_value_start(text, label)
+        if candidate >= 0 and (start < 0 or candidate < start):
+            start = candidate
+    if start < 0:
+        return ""
+    end = len(text)
+    for label in sorted(stops, key=len, reverse=True):
+        candidate = _find_label_prefix_start(text, label, start)
+        if candidate >= 0:
+            end = min(end, candidate)
+    return text[start:end].strip().strip(",，;；。 ")
+
+
+def _find_label_value_start(text: str, label: str, search_from: int = 0) -> int:
+    prefix = _find_label_prefix_start(text, label, search_from)
+    if prefix < 0:
+        return -1
+    index = prefix + len(label)
+    while index < len(text) and text[index].isspace():
+        index += 1
+    if index < len(text) and text[index] in {"为", "是"}:
+        index += 1
+        while index < len(text) and text[index].isspace():
+            index += 1
+    if index < len(text) and text[index] in {":", "=", "："}:
+        return index + 1
+    return -1
+
+
+def _find_label_prefix_start(text: str, label: str, search_from: int = 0) -> int:
+    lower_text = text.lower()
+    lower_label = label.lower()
+    pos = lower_text.find(lower_label, search_from)
+    while pos >= 0:
+        index = pos + len(label)
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index < len(text) and text[index] in {"为", "是"}:
+            index += 1
+            while index < len(text) and text[index].isspace():
+                index += 1
+        if index < len(text) and text[index] in {":", "=", "："}:
+            return pos
+        pos = lower_text.find(lower_label, pos + 1)
+    return -1
 
 
 def _strip_config_lines_from_prompt(value: str) -> str:
@@ -1313,6 +1549,32 @@ def _read_data_preparation_summary(paths: ThreadPaths) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _resolve_prepared_dataset_yaml(data_prep_data: dict[str, Any], output_dir: Path) -> str:
+    explicit = str(data_prep_data.get("dataset_yaml") or data_prep_data.get("data_yaml") or "").strip()
+    if explicit:
+        explicit_path = Path(explicit).expanduser()
+        if explicit_path.is_file():
+            return str(explicit_path.resolve())
+
+    summary_path = output_dir / "data_preparation_summary.json"
+    if summary_path.is_file():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            summary = {}
+        if isinstance(summary, dict):
+            for key in ("dataset_yaml", "data_yaml"):
+                value = str(summary.get(key) or "").strip()
+                if value and Path(value).expanduser().is_file():
+                    return str(Path(value).expanduser().resolve())
+
+    candidates = [output_dir / "dataset.yaml", output_dir / "data.yaml", *sorted(output_dir.rglob("dataset.yaml")), *sorted(output_dir.rglob("data.yaml"))]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return str((output_dir / "dataset.yaml").resolve())
+
+
 def _read_pipeline_paths(paths: ThreadPaths) -> dict[str, str]:
     result: dict[str, str] = {}
     prep_summary = _read_data_preparation_summary(paths)
@@ -1433,6 +1695,59 @@ def _load_annotation_labels(paths: ThreadPaths) -> list[str]:
     except Exception:
         return []
     return [str(item).strip() for item in payload if str(item).strip()] if isinstance(payload, list) else []
+
+
+def _training_config_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "training_config.json"
+
+
+def _save_training_config(paths: ThreadPaths, training_cfg: dict[str, Any]) -> None:
+    if training_cfg:
+        _training_config_marker_path(paths).write_text(json.dumps(training_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_training_config(paths: ThreadPaths) -> dict[str, Any]:
+    marker = _training_config_marker_path(paths)
+    if not marker.exists():
+        return {}
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _detection_task_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "detection_task_description.txt"
+
+
+def _save_detection_task_description(paths: ThreadPaths, task_description: str) -> None:
+    if task_description:
+        _detection_task_marker_path(paths).write_text(task_description.strip(), encoding="utf-8")
+
+
+def _load_detection_task_description(paths: ThreadPaths) -> str:
+    marker = _detection_task_marker_path(paths)
+    return marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+
+
+def _synthetic_generation_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "synthetic_generation_enabled.json"
+
+
+def _save_synthetic_generation_enabled(paths: ThreadPaths, enabled: bool) -> None:
+    _synthetic_generation_marker_path(paths).write_text(json.dumps(bool(enabled)), encoding="utf-8")
+
+
+def _load_synthetic_generation_enabled(paths: ThreadPaths) -> bool | None:
+    marker = _synthetic_generation_marker_path(paths)
+    if not marker.exists():
+        return None
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, bool) else None
 
 
 def _save_reference_image_path(paths: ThreadPaths, path: str) -> None:
