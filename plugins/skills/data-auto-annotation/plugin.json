@@ -2,7 +2,8 @@
   "id": "data-auto-annotation",
   "name": "data-auto-annotation",
   "version": "0.2.0",
-  "description": "Use SAM3 to auto-annotate a single image and export standard COCO JSON. Use when the user uploads an image and asks for automatic labeling or COCO output.",
+  "description": "Use SAM3 to auto-annotate images, or prepare YOLO training datasets with optional synthetic image composition, COCO merge, split verification, and dataset.yaml export.",
+  "runner": "runner.py",
   "skills": [
     "skills/*/manifest.json"
   ]

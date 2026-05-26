@@ -10,8 +10,9 @@ from app.core.workflow import WorkflowPluginManager, WorkflowRegistry
 def test_workflow_registry_builtin_uses_workflow_plugin_packages(tmp_path: Path) -> None:
     registry = WorkflowRegistry.builtin(ArtifactStore(root_dir=tmp_path / "threads"), root_dir=tmp_path)
 
-    assert {"artifact_workflow", "evidence_first_detection"} <= registry.names()
+    assert {"artifact_workflow", "evidence_first_detection", "yolo_training_flow"} <= registry.names()
     assert type(registry.get("artifact_workflow")).__name__ == "ArtifactWorkflow"
+    assert type(registry.get("yolo_training_flow")).__name__ == "YoloTrainingWorkflow"
     assert registry.config("artifact_workflow") is not None
     assert registry.config("artifact_workflow").handler == "artifact.py:ArtifactWorkflow"  # type: ignore[union-attr]
 

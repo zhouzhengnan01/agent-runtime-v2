@@ -98,6 +98,14 @@
         "type": "number",
         "default": 1.0
       },
+      "retries": {
+        "type": "integer",
+        "default": 3
+      },
+      "retry_sleep": {
+        "type": "number",
+        "default": 5.0
+      },
       "prompt_extend": {
         "type": "boolean",
         "default": false

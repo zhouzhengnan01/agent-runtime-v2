@@ -1327,6 +1327,8 @@ parser.add_argument("--size")
 parser.add_argument("--count")
 parser.add_argument("--timeout")
 parser.add_argument("--sleep")
+parser.add_argument("--retries")
+parser.add_argument("--retry-sleep")
 args = parser.parse_args()
 target = Path(args.output_dir) / "composite_001.png"
 target.write_bytes(b"png")

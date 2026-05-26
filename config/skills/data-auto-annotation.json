@@ -1,30 +1,43 @@
 {
   "name": "data-auto-annotation",
-  "description": "Use SAM3 to auto-annotate uploaded images and export a standard COCO JSON dataset artifact.",
+  "description": "Use SAM3 to auto-annotate uploaded images, or prepare YOLO training datasets through inspection, optional synthetic image composition, COCO merge, split verification, and dataset.yaml export.",
   "output_kind": "json",
   "generation": true,
+  "workflow_capabilities": [
+    "auto_annotation",
+    "data_preparation"
+  ],
   "quality_template": [
     "coco_schema",
     "image_dimensions",
     "bbox_xywh",
-    "category_mapping"
+    "category_mapping",
+    "dataset_yaml",
+    "split_verification"
   ],
   "routing": {
-    "summary": "Use for automatic image annotation, object detection pre-labeling, and COCO JSON export from uploaded images.",
+    "summary": "Use for automatic image annotation, object detection pre-labeling, COCO JSON export, and YOLO training dataset preparation.",
     "keywords": [
       "自动标注",
       "数据标注",
       "COCO",
+      "YOLO",
+      "dataset.yaml",
+      "数据集准备",
+      "训练数据准备",
+      "合成数据",
       "目标检测",
       "sam3",
       "annotation",
       "labeling",
-      "dataset"
+      "dataset",
+      "data preparation"
     ],
     "examples": [
       "把这张图片自动标注成 COCO",
       "用 person car 标注图片并导出 coco.json",
-      "生成目标检测预标注数据"
+      "生成目标检测预标注数据",
+      "把这个 YOLO 数据集准备成可训练的 dataset.yaml 并按 7:2:1 切分"
     ]
   },
   "execution": {
@@ -56,8 +69,7 @@
   "input_schema": {
     "type": "object",
     "required": [
-      "skill_name",
-      "image_path"
+      "skill_name"
     ],
     "properties": {
       "skill_name": {
@@ -73,6 +85,38 @@
           "type": "string"
         },
         "description": "Class labels to detect, e.g. person, car, helmet."
+      },
+      "dataset_root": {
+        "type": "string",
+        "description": "Optional dataset root for full YOLO data preparation. When provided, the runner uses the dataset preparation pipeline instead of single SAM3 annotation."
+      },
+      "work_dir": {
+        "type": "string",
+        "description": "Optional pipeline working directory."
+      },
+      "output_dir": {
+        "type": "string",
+        "description": "Optional prepared dataset output directory."
+      },
+      "image1": {
+        "type": "string",
+        "description": "Optional first image source or background folder for synthetic image composition."
+      },
+      "image2": {
+        "type": "string",
+        "description": "Optional second image source or foreground/object folder for synthetic image composition."
+      },
+      "generation_prompt": {
+        "type": "string",
+        "description": "Optional prompt used to generate synthetic/composite training images."
+      },
+      "split_requested": {
+        "type": "boolean",
+        "default": true
+      },
+      "skip_generation": {
+        "type": "boolean",
+        "default": false
       },
       "format": {
         "type": "string",

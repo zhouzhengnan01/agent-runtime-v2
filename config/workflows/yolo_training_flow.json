@@ -1,0 +1,12 @@
+{
+  "name": "yolo_training_flow",
+  "display_name": "YOLO Training Flow",
+  "description": "General YOLO training flow: dataset upload, optional synthetic image generation, SAM3 auto-annotation, real-only validation/test split, and YOLO training.",
+  "enabled": true,
+  "handler": "yolo_training_flow.py:YoloTrainingWorkflow",
+  "trigger": "explicit_runtime_options",
+  "metadata": {
+    "domain": "algorithm-training",
+    "scenario": "yolo-training"
+  }
+}

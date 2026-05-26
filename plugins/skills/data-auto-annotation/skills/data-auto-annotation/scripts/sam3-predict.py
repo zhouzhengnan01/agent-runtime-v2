@@ -17,9 +17,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import requests
-from PIL import Image
-
 DEFAULT_URL = "http://192.168.33.140:8800/sam3/predict"
 URL_ENV_NAMES = ("SAM3_PREDICT_URL", "SAM3_URL")
 DEFAULT_TOKEN = "abc@123"
@@ -75,6 +72,36 @@ def effective_url(value: str) -> str:
     return normalized
 
 
+def _requests_module() -> Any:
+    import requests
+
+    return requests
+
+
+def _image_module() -> Any:
+    from PIL import Image
+
+    return Image
+
+
+def parse_input_json_arg(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    normalized = value.strip()
+    text = normalized
+    if not normalized.startswith("{"):
+        try:
+            candidate = Path(normalized)
+            if candidate.is_file():
+                text = candidate.read_text(encoding="utf-8")
+        except OSError:
+            text = normalized
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("--input-json must be a JSON object or a path to a JSON object file")
+    return parsed
+
+
 def resolve_prompts(args: argparse.Namespace) -> list[str]:
     if args.text_prompts_json:
         prompts = json.loads(args.text_prompts_json)
@@ -84,11 +111,10 @@ def resolve_prompts(args: argparse.Namespace) -> list[str]:
     if args.text_prompts:
         return args.text_prompts
     if args.input_json:
-        parsed = json.loads(args.input_json)
-        if isinstance(parsed, dict):
-            labels = parsed.get("labels")
-            if isinstance(labels, list) and all(isinstance(item, str) for item in labels):
-                return labels
+        parsed = parse_input_json_arg(args.input_json)
+        labels = parsed.get("labels") if parsed else None
+        if isinstance(labels, list) and all(isinstance(item, str) for item in labels):
+            return labels
     return ["person", "monitor"]
 
 
@@ -116,8 +142,8 @@ def resolve_image_paths(args: argparse.Namespace) -> list[Path]:
         return paths
 
     if args.input_json:
-        parsed = json.loads(args.input_json)
-        if not isinstance(parsed, dict):
+        parsed = parse_input_json_arg(args.input_json)
+        if parsed is None:
             raise ValueError("--input-json must be a JSON object")
 
         for key in ("image_path", "image_paths", "path", "paths", "input_dir", "input_path"):
@@ -182,6 +208,7 @@ def seed_categories(labels: list[str], category_map: dict[str, int], categories:
 
 
 def image_size(image_path: Path) -> tuple[int, int]:
+    Image = _image_module()
     with Image.open(image_path) as img:
         return img.size
 
@@ -194,6 +221,7 @@ def response_to_coco(
     categories: list[dict[str, Any]],
     annotation_start_id: int = 1,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    Image = _image_module()
     with Image.open(image_path) as img:
         width, height = img.size
 
@@ -228,6 +256,7 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def post_image(args: argparse.Namespace, headers: dict[str, str], data: dict[str, str], image_path: Path) -> Any:
+    requests = _requests_module()
     content_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
     with image_path.open("rb") as f:
         files = {"file": (image_path.name, f, content_type)}
@@ -252,7 +281,7 @@ def _error_payload(error_type: str, message: str, args: argparse.Namespace) -> d
     }
 
 
-def _http_error_payload(exc: requests.exceptions.HTTPError, args: argparse.Namespace) -> dict[str, Any]:
+def _http_error_payload(exc: Any, args: argparse.Namespace) -> dict[str, Any]:
     response = exc.response
     status_code = response.status_code if response is not None else None
     response_text = response.text[:2000] if response is not None else ""
@@ -277,6 +306,7 @@ def _print_error(payload: dict[str, Any]) -> None:
 def main() -> int:
     args = build_args()
     image_paths = resolve_image_paths(args)
+    requests = _requests_module()
 
     for image_path in image_paths:
         if not image_path.is_file():
