@@ -1,0 +1,103 @@
+{
+  "name": "behavior-detection",
+  "description": "Evidence-first behavior detection.",
+  "output_kind": "json",
+  "generation": false,
+  "routing": {
+    "summary": "Use for behavior or safety-event judgment from text, image, video, or structured visual evidence.",
+    "keywords": [
+      "翻越",
+      "摔倒",
+      "逗留",
+      "禁区",
+      "行为",
+      "识别",
+      "intrusion",
+      "fall",
+      "loitering"
+    ],
+    "examples": [
+      "人员翻越围栏进入禁区",
+      "老人摔倒",
+      "有人长时间逗留"
+    ]
+  },
+  "quality_template": [
+    "evidence_first",
+    "text_rule_judgment",
+    "no_visual_score_without_visual_evidence"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "text_rule_candidates",
+      "has_visual_evidence"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "behavior-detection"
+      },
+      "text_rule_candidates": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "has_visual_evidence": {
+        "type": "boolean"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "decision",
+      "category",
+      "confidence",
+      "evidence_mode"
+    ],
+    "properties": {
+      "decision": {
+        "type": "string"
+      },
+      "category": {
+        "type": "string"
+      },
+      "confidence": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "evidence_mode": {
+        "type": "string",
+        "enum": [
+          "text_only",
+          "visual_or_structured"
+        ]
+      },
+      "reason": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "vision"
+  ]
+}

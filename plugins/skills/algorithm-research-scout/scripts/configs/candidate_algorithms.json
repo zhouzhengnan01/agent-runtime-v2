@@ -1,0 +1,78 @@
+{
+  "candidates": [
+    {
+      "name": "YOLO family",
+      "aliases": [
+        "YOLOv8",
+        "YOLOv9",
+        "YOLOv10",
+        "YOLO11",
+        "YOLO12",
+        "Ultralytics YOLO"
+      ],
+      "official_repos": [
+        "ultralytics/ultralytics"
+      ],
+      "priority_hint": "baseline",
+      "why": "工程链路成熟，适合作为强 baseline 和部署可行性参考。",
+      "risk": "不同分支 license、后处理、导出和部署支持差异较大，需要逐项核验。"
+    },
+    {
+      "name": "RT-DETR family",
+      "aliases": [
+        "RT-DETR",
+        "RT-DETRv2",
+        "Real-Time DETR"
+      ],
+      "official_repos": [
+        "lyuwenyu/RT-DETR",
+        "PaddlePaddle/PaddleDetection"
+      ],
+      "priority_hint": "p0",
+      "why": "实时端到端检测候选，适合与 YOLO 对比召回、定位和密集场景表现。",
+      "risk": "DETR/Transformer 结构的部署适配和延迟需要重点核验。"
+    },
+    {
+      "name": "D-FINE / DEIM family",
+      "aliases": [
+        "D-FINE",
+        "DEIM",
+        "D-FINE object detection",
+        "DEIM object detection"
+      ],
+      "official_repos": [
+        "Peterande/D-FINE",
+        "ShihuaHuang95/DEIM"
+      ],
+      "priority_hint": "p1",
+      "why": "实时 DETR 改进方向，适合进入新算法调研候选池。",
+      "risk": "工程成熟度、权重、训练文档和部署案例需要核验。"
+    },
+    {
+      "name": "RF-DETR family",
+      "aliases": [
+        "RF-DETR",
+        "Roboflow RF-DETR"
+      ],
+      "official_repos": [
+        "roboflow/rf-detr"
+      ],
+      "priority_hint": "p1",
+      "why": "DETR 类新候选，可用于判断是否存在比 YOLO 更适合特定数据集的替代方向。",
+      "risk": "需核验训练支持、权重 license、导出支持和实际维护状态。"
+    },
+    {
+      "name": "DAMO-YOLO family",
+      "aliases": [
+        "DAMO-YOLO",
+        "DAMO YOLO"
+      ],
+      "official_repos": [
+        "tinyvision/DAMO-YOLO"
+      ],
+      "priority_hint": "p2",
+      "why": "YOLO 外的工业检测候选，可作为补充对比。",
+      "risk": "维护状态、版本兼容、权重可获取性和部署链路可能不如主流 YOLO。"
+    }
+  ]
+}

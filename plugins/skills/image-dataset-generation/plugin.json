@@ -1,0 +1,12 @@
+{
+  "id": "image-dataset-generation",
+  "name": "image-dataset-generation",
+  "version": "0.1.0",
+  "description": "Composite two image sources into synthetic training images through the TokenCloud/Bailian image generation API.",
+  "workflow_capabilities": [
+    "image_generation"
+  ],
+  "skills": [
+    "SKILL.md"
+  ]
+}

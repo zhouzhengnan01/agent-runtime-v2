@@ -1,0 +1,1758 @@
+﻿from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+from app.core.artifacts import ArtifactStore, ThreadPaths
+from app.core.events import EventRecorder
+from app.core.llm.openai_compatible import OpenAICompatibleClient
+from app.core.skills import SkillRunner
+from app.schemas import AgentRunResult, Attachment, ChatEvent, Message, RuntimeOptions, VerificationResult
+
+_DATASET_PACKAGE_EXTS = (".zip", ".tar", ".tar.gz")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
+WORKFLOW_NAME = "yolo_training_flow"
+WORKFLOW_OUTPUT_DIR = "yolo_training_flow"
+PIPELINE_WORK_DIR = "pipeline_work"
+DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "data-auto-annotation", "gpu-training-orchestrator"]
+
+
+class YoloTrainingWorkflow:
+    """General YOLO training flow with optional synthetic data generation."""
+
+    def __init__(self, artifact_store: ArtifactStore) -> None:
+        self.artifact_store = artifact_store
+        self.skill_runner = SkillRunner(artifact_store)
+
+    def run_with_events(
+        self,
+        agent_config: Any,
+        messages: list[Message],
+        attachments: list[Attachment],
+        thread_id: str | None,
+        on_event: Any = None,
+        workflow_name: str | None = None,
+        runtime_options: RuntimeOptions | None = None,
+    ) -> tuple[AgentRunResult, list[ChatEvent]]:
+        runtime_options = runtime_options or RuntimeOptions()
+        workflow = workflow_name or WORKFLOW_NAME
+        paths = self.artifact_store.prepare_thread(thread_id)
+        recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id, on_emit=on_event)
+        recorder.emit("run.started", {"workflow": workflow})
+
+        user_text = _last_user_text(messages)
+        selected_skills = _selected_skills(runtime_options)
+        if _has_runtime_selected_skills(runtime_options):
+            _save_selected_skills(paths, selected_skills)
+        else:
+            selected_skills = _load_selected_skills(paths) or selected_skills
+        generation_enabled = _capability_enabled(selected_skills, "image_generation")
+        training_enabled = _capability_enabled(selected_skills, "training")
+        waiting_prompt = _is_waiting_prompt(paths)
+        workflow_completed = _is_workflow_completed(paths)
+        workflow_output_root = paths.outputs / WORKFLOW_OUTPUT_DIR
+        existing_dataset_pkg = _load_dataset_package_path(paths)
+        existing_composite_image1 = _load_composite_image1_path(paths)
+        existing_composite_image2 = _load_composite_image2_path(paths)
+        explicit_attachment_roles = _parse_attachment_role_hints(user_text)
+
+        dataset_attachment = _find_dataset_package_attachment(attachments, role_hints=explicit_attachment_roles) if not existing_dataset_pkg else None
+        composite_attachments = _find_composite_input_attachments(
+            attachments,
+            include_thread_files=False,
+            dataset_attachment=dataset_attachment,
+            allow_archives=bool(existing_dataset_pkg or dataset_attachment),
+            role_hints=explicit_attachment_roles,
+        )
+        if not composite_attachments and waiting_prompt and not (existing_composite_image1 and existing_composite_image2):
+            composite_attachments = _find_composite_input_attachments(
+                attachments,
+                include_thread_files=True,
+                dataset_attachment=dataset_attachment,
+                allow_archives=bool(existing_dataset_pkg or dataset_attachment),
+                role_hints=explicit_attachment_roles,
+            )
+
+        if dataset_attachment and dataset_attachment.path:
+            _set_workflow_completed(paths, False)
+            resolved_dataset = _resolve_uploaded_local_path(paths.root, dataset_attachment.path)
+            _save_dataset_package_path(paths, str(resolved_dataset))
+            _clear_composite_input_paths(paths)
+        if composite_attachments:
+            _set_workflow_completed(paths, False)
+            _save_composite_input_paths(paths, _prepare_composite_input_paths(paths, composite_attachments, explicit_attachment_roles))
+
+        dataset_pkg = _load_dataset_package_path(paths)
+        composite_image1 = _load_composite_image1_path(paths)
+        composite_image2 = _load_composite_image2_path(paths)
+        if dataset_pkg:
+            dataset_pkg = str(_resolve_uploaded_local_path(paths.root, dataset_pkg))
+        if composite_image1:
+            composite_image1 = str(_resolve_uploaded_local_path(paths.root, composite_image1))
+        if composite_image2:
+            composite_image2 = str(_resolve_uploaded_local_path(paths.root, composite_image2))
+
+        if not _is_yolo_training_intent(
+            user_text,
+            attachments,
+            agent_config=agent_config,
+            runtime_options=runtime_options,
+            recorder=recorder,
+            has_active_training_state=bool((dataset_pkg or waiting_prompt) and not workflow_completed),
+        ):
+            reply = _chat_reply_for_non_training_intent(
+                user_text,
+                agent_config=agent_config,
+                runtime_options=runtime_options,
+                recorder=recorder,
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=paths.thread_id,
+                status="completed",
+                reply=reply,
+                metadata={"workflow": workflow, "phase": "chat", "training_intent": False},
+            )
+            recorder.emit("agent.message", {"text": reply})
+            recorder.emit("run.completed", {"result": result.model_dump()})
+            return result, recorder.events
+
+        prompt_text = _extract_generation_prompt(user_text, allow_free_text=waiting_prompt)
+        if prompt_text:
+            _save_generation_prompt(paths, prompt_text)
+        else:
+            prompt_text = _load_generation_prompt(paths)
+        labels = _extract_annotation_labels(user_text)
+        if labels:
+            _save_annotation_labels(paths, labels)
+        else:
+            labels = _load_annotation_labels(paths)
+
+        if not dataset_pkg or (generation_enabled and (not composite_image1 or not composite_image2)):
+            required_inputs = []
+            if not dataset_pkg:
+                required_inputs.append({"type": "dataset", "accept": ".zip,.tar,.tar.gz", "required": True, "reason": "需要上传数据集压缩包"})
+            if generation_enabled:
+                if not composite_image1:
+                    required_inputs.append({"type": "image", "accept": "image/*,.zip,.tar,.tar.gz,folder", "required": True, "reason": "需要上传用于合成的 image1 图片或图片文件夹"})
+                if not composite_image2:
+                    required_inputs.append({"type": "image", "accept": "image/*,.zip,.tar,.tar.gz,folder", "required": True, "reason": "需要上传用于合成的 image2 图片或图片文件夹"})
+            return self._input_required_result(
+                recorder,
+                agent_config.name,
+                paths.thread_id,
+                workflow,
+                required_inputs,
+            )
+
+        if generation_enabled and not prompt_text:
+            _set_waiting_prompt(paths, True)
+            reply = "请继续输入合成提示词，格式为 prompt: 你的描述"
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=paths.thread_id,
+                status="completed",
+                reply=reply,
+                metadata={"workflow": workflow, "phase": "await_prompt", "requires_prompt_text": True},
+            )
+            recorder.emit("agent.message", {"text": reply})
+            recorder.emit("run.completed", {"result": result.model_dump()})
+            return result, recorder.events
+
+        if not labels:
+            _set_waiting_prompt(paths, True)
+            reply = (
+                "请补充自动标注类别后继续，例如：\n"
+                "labels=person,cigarette\n"
+                "也支持 label=person cigarette、classes=person,cigarette、标注类别：person，cigarette"
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=paths.thread_id,
+                status="completed",
+                reply=reply,
+                metadata={"workflow": workflow, "phase": "await_labels", "requires_prompt_text": True, "requires_labels": True},
+            )
+            recorder.emit("agent.message", {"text": reply})
+            recorder.emit("run.completed", {"result": result.model_dump()})
+            return result, recorder.events
+
+        if training_enabled and not _has_explicit_training_config(user_text):
+            _set_waiting_prompt(paths, True)
+            reply = (
+                "为避免使用默认训练配置，请在同一条消息补充训练参数后继续，例如：\n"
+                "conda_env_name=yolo_jetson model=yolo11n.pt epochs=10 imgsz=640 batch=8 "
+                "device=0 workers=4 patience=20 dataset.split.train=0.7 dataset.split.val=0.2 dataset.split.test=0.1"
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=paths.thread_id,
+                status="completed",
+                reply=reply,
+                metadata={"workflow": workflow, "phase": "await_prompt", "requires_prompt_text": True, "requires_training_config": True},
+            )
+            recorder.emit("agent.message", {"text": reply})
+            recorder.emit("run.completed", {"result": result.model_dump()})
+            return result, recorder.events
+
+        _reset_generated_dir(workflow_output_root / PIPELINE_WORK_DIR)
+        _reset_generated_dir(workflow_output_root / "training_run")
+        _set_waiting_prompt(paths, False)
+        recorder.emit("spec.started", {"selected_skills": selected_skills, "attachment_count": len(attachments)})
+
+        unpack_root = workflow_output_root / "uploaded_dataset"
+        dataset_root = _unpack_dataset_archive(dataset_pkg, unpack_root, paths.root)
+
+        pipeline_work_dir = str((workflow_output_root / PIPELINE_WORK_DIR).resolve())
+        project_dir = str((workflow_output_root / "training_run").resolve())
+        run_name = "."
+        training_cfg = _extract_training_config(user_text)
+        task_description = _extract_detection_task_description(user_text, prompt_text, labels)
+        data_prep_output_dir = str((workflow_output_root / "prepared_data").resolve())
+        data_prep_spec = {
+            "skill_name": "data-auto-annotation",
+            "overrides_text": user_text,
+            "attachments": [_attachment_payload(item) for item in attachments],
+            "dataset_root": str(dataset_root),
+            "image1": composite_image1,
+            "image2": composite_image2,
+            "task": task_description,
+            "generation_prompt": prompt_text,
+            "labels": labels,
+            "work_dir": pipeline_work_dir,
+            "output_dir": data_prep_output_dir,
+            "skip_generation": not generation_enabled,
+            "split": training_cfg["split"],
+            "training": training_cfg["training"],
+            "planner_llm": _planner_llm_config(agent_config, runtime_options),
+            "workflow_context": {
+                "dataset_root": str(dataset_root),
+                "image1": composite_image1,
+                "image2": composite_image2,
+                "task": task_description,
+                "generation_prompt": prompt_text,
+                "class_names": labels,
+                "labels": labels,
+                "skip_generation": not generation_enabled,
+                "work_dir": pipeline_work_dir,
+                "output_dir": data_prep_output_dir,
+                "run_name": run_name,
+                "phase": "data_preparation",
+            },
+        }
+
+        recorder.emit("skill.started", {"skill_name": "data-auto-annotation", "attempt": 0})
+        annotation_result = self.skill_runner.run("data-auto-annotation", data_prep_spec, paths)
+        recorder.emit("skill.completed", {"skill_name": "data-auto-annotation", "output_count": len(annotation_result.outputs)})
+
+        data_prep_data = annotation_result.data if isinstance(annotation_result.data, dict) else {}
+        data_prep_returncode = int(data_prep_data.get("returncode", 0) or 0)
+        if data_prep_returncode != 0:
+            outputs = [*annotation_result.outputs]
+            for artifact in outputs:
+                recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
+                recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
+            stderr_tail = str(data_prep_data.get("stderr") or "").strip()
+            stdout_tail = str(data_prep_data.get("stdout") or "").strip()
+            reply = (
+                "数据处理流程失败，尚未进入生图和流式标注阶段。\n\n"
+                f"- 失败阶段：`data-auto-annotation`\n"
+                f"- returncode：`{data_prep_returncode}`\n"
+                f"- 主要错误：\n```text\n{(stderr_tail or stdout_tail)[-2000:]}\n```"
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=paths.thread_id,
+                status="failed",
+                reply=reply,
+                artifacts=outputs,
+                verification=VerificationResult(passed=False, retry_count=0, checks=[], failed_checks=["data-auto-annotation failed"]),
+                metadata={
+                    "workflow": workflow,
+                    "phase": "data_preparation_failed",
+                    "data_preparation_spec": data_prep_spec,
+                    "data_preparation_result": data_prep_data,
+                    "labels": labels,
+                },
+            )
+            recorder.emit("agent.message", {"text": reply})
+            recorder.emit("run.failed", {"result": result.model_dump(), "error": stderr_tail or stdout_tail})
+            return result, recorder.events
+
+        dataset_yaml = str(data_prep_data.get("dataset_yaml") or (Path(data_prep_output_dir) / "dataset.yaml"))
+
+        if not training_enabled:
+            _set_waiting_prompt(paths, False)
+            _set_workflow_completed(paths, True)
+            outputs = [*annotation_result.outputs]
+            for artifact in outputs:
+                recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
+                recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
+            pipeline_paths = _read_pipeline_paths(paths)
+            summary = _read_data_preparation_summary(paths)
+            reply = (
+                "数据处理流程已完成，当前未选择 `gpu-training-orchestrator`，所以不会要求训练参数，也不会启动 YOLO 训练。\n\n"
+                f"- prepared_dataset: `{summary.get('prepared_dataset') or data_prep_output_dir}`\n"
+                f"- dataset.yaml: `{summary.get('dataset_yaml') or dataset_yaml}`\n"
+                f"- synthetic_plan: `{pipeline_paths.get('synthetic_plan') or '未生成或未启用生图'}`"
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=paths.thread_id,
+                status="completed",
+                reply=reply,
+                artifacts=outputs,
+                verification=VerificationResult(passed=True, retry_count=0, checks=[], failed_checks=[]),
+                metadata={
+                    "workflow": workflow,
+                    "phase": "data_preparation_completed",
+                    "data_preparation_spec": data_prep_spec,
+                    "data_preparation_summary": summary,
+                    "dataset_yaml": dataset_yaml,
+                    "labels": labels,
+                },
+            )
+            recorder.emit("agent.message", {"text": reply})
+            recorder.emit("run.completed", {"result": result.model_dump()})
+            return result, recorder.events
+
+        training_spec = {
+            "skill_name": "gpu-training-orchestrator",
+            "overrides_text": user_text,
+            "data_yaml": dataset_yaml,
+            "project_dir": project_dir,
+            "run_name": run_name,
+            "training": training_cfg["training"],
+            "runtime": training_cfg["runtime"],
+            "workflow_context": {
+                "dataset_yaml": dataset_yaml,
+                "project_dir": project_dir,
+                "run_name": run_name,
+                "phase": "training",
+            },
+        }
+
+        recorder.emit("skill.started", {"skill_name": "gpu-training-orchestrator", "attempt": 0})
+        training_result = self.skill_runner.run("gpu-training-orchestrator", training_spec, paths)
+        recorder.emit("skill.completed", {"skill_name": "gpu-training-orchestrator", "output_count": len(training_result.outputs)})
+
+        outputs = [*annotation_result.outputs, *training_result.outputs]
+        for artifact in outputs:
+            recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
+            recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
+
+        pipeline_paths = _read_pipeline_paths(paths)
+        summary = _read_run_summary(paths)
+        best_pt = _find_best_pt(paths)
+        template_reply = ""
+        if isinstance(training_result.data, dict):
+            template_reply = str(training_result.data.get("final_reply") or "").strip()
+        reply = _generate_model_controlled_reply(
+            agent_config=agent_config,
+            runtime_options=runtime_options,
+            recorder=recorder,
+            user_text=user_text,
+            workflow=workflow,
+            labels=labels,
+            summary=summary,
+            best_pt=best_pt,
+            merged_dataset_root=pipeline_paths.get("dataset_root") or str(dataset_root),
+            merged_coco=pipeline_paths.get("coco_json") or "",
+            generation_result={},
+            annotation_result=annotation_result.data if isinstance(annotation_result.data, dict) else {},
+            training_result=training_result.data if isinstance(training_result.data, dict) else {},
+            fallback_reply=template_reply,
+        )
+        if not reply:
+            reply = template_reply or (
+                "训练已完成\n"
+                f"- 保存目录: {summary.get('train_save_dir') or project_dir}\n"
+                f"- best.pt: {best_pt if best_pt else '未生成'}"
+            )
+        _set_waiting_prompt(paths, False)
+        _set_workflow_completed(paths, True)
+
+        result = AgentRunResult(
+            agent=agent_config.name,
+            thread_id=paths.thread_id,
+            status="completed",
+            reply=reply,
+            artifacts=outputs,
+            verification=VerificationResult(passed=True, retry_count=0, checks=[], failed_checks=[]),
+            metadata={
+                "workflow": workflow,
+                "phase": "training_completed",
+                "training_spec": training_spec,
+                "data_preparation_spec": data_prep_spec,
+                "training_summary": summary,
+                "best_pt": best_pt,
+                "merged_dataset_root": pipeline_paths.get("dataset_root") or str(dataset_root),
+                "merged_coco_json": pipeline_paths.get("coco_json") or "",
+                "synthetic_plan": pipeline_paths.get("synthetic_plan") or "",
+                "training_input": pipeline_paths.get("training_input") or "",
+                "labels": labels,
+            },
+        )
+        recorder.emit("agent.message", {"text": reply})
+        recorder.emit("run.completed", {"result": result.model_dump()})
+        return result, recorder.events
+
+    def _input_required_result(
+        self,
+        recorder: EventRecorder,
+        agent_name: str,
+        thread_id: str,
+        workflow: str,
+        required_inputs: list[dict[str, Any]],
+    ) -> tuple[AgentRunResult, list[ChatEvent]]:
+        labels = "?".join(_input_label(item.get("type")) for item in required_inputs)
+        reply = f"请补充{labels}"
+        result = AgentRunResult(
+            agent=agent_name,
+            thread_id=thread_id,
+            status="completed",
+            reply=reply,
+            metadata={"workflow": workflow, "requires_input": True, "required_inputs": required_inputs},
+        )
+        recorder.emit("agent.message", {"text": reply})
+        recorder.emit("run.completed", {"result": result.model_dump()})
+        return result, recorder.events
+
+
+SmokingDetectionTrainingWorkflow = YoloTrainingWorkflow
+
+
+def _find_dataset_package_attachment(attachments: list[Attachment], role_hints: dict[str, str] | None = None) -> Attachment | None:
+    hinted = _attachment_for_role(attachments, "dataset", role_hints or {})
+    if hinted is not None:
+        return hinted
+    named_candidates: list[Attachment] = []
+    fallback_candidates: list[Attachment] = []
+    for item in attachments:
+        name = item.name.lower()
+        path = (item.path or "").lower()
+        if any(name.endswith(ext) or path.endswith(ext) for ext in _DATASET_PACKAGE_EXTS):
+            if _looks_like_dataset_name(name, path):
+                named_candidates.append(item)
+            elif not _looks_like_composite_role_name(name, path):
+                fallback_candidates.append(item)
+    return (named_candidates or fallback_candidates or [None])[0]
+
+
+def _attachment_payload(attachment: Any) -> dict[str, Any]:
+    if isinstance(attachment, dict):
+        return dict(attachment)
+    model_dump = getattr(attachment, "model_dump", None)
+    if callable(model_dump):
+        value = model_dump()
+        return dict(value) if isinstance(value, dict) else {}
+    return {}
+
+
+def _find_image_attachment(attachments: list[Attachment], *, include_thread_files: bool = True) -> Attachment | None:
+    for item in attachments:
+        if not include_thread_files and bool(item.metadata.get("thread_file")):
+            continue
+        mime = (item.mime_type or "").lower()
+        name = item.name.lower()
+        path = (item.path or "").lower()
+        if mime.startswith("image/") or any(name.endswith(ext) or path.endswith(ext) for ext in _IMAGE_EXTS):
+            return item
+    return None
+
+
+def _find_composite_input_attachments(
+    attachments: list[Attachment],
+    *,
+    include_thread_files: bool = True,
+    dataset_attachment: Attachment | None = None,
+    allow_archives: bool = False,
+    role_hints: dict[str, str] | None = None,
+) -> list[Attachment]:
+    dataset_path = str(getattr(dataset_attachment, "path", "") or "")
+    hints = role_hints or {}
+    hinted_image1 = _attachment_for_role(attachments, "image1", hints)
+    hinted_image2 = _attachment_for_role(attachments, "image2", hints)
+    if hinted_image1 is not None or hinted_image2 is not None:
+        return [item for item in (hinted_image1, hinted_image2) if item is not None and _is_composite_input_attachment(item, allow_archives=True)]
+
+    image1_candidates: list[Attachment] = []
+    image2_candidates: list[Attachment] = []
+    fallback_candidates: list[Attachment] = []
+    seen_paths: set[str] = set()
+    for item in attachments:
+        if dataset_path and str(item.path or "") == dataset_path:
+            continue
+        if not include_thread_files and bool(item.metadata.get("thread_file")):
+            continue
+        path_key = str(item.path or "").strip().lower()
+        if path_key and path_key in seen_paths:
+            continue
+        if _is_composite_input_attachment(item, allow_archives=allow_archives):
+            seen_paths.add(path_key)
+            name = item.name.lower()
+            path = (item.path or "").lower()
+            if _looks_like_image1_name(name, path):
+                image1_candidates.append(item)
+            elif _looks_like_image2_name(name, path):
+                image2_candidates.append(item)
+            else:
+                fallback_candidates.append(item)
+
+    result: list[Attachment] = []
+    if image1_candidates:
+        result.append(image1_candidates[0])
+    if image2_candidates and (not result or str(image2_candidates[0].path or "") != str(result[0].path or "")):
+        result.append(image2_candidates[0])
+    for item in fallback_candidates:
+        if len(result) >= 2:
+            break
+        if all(str(item.path or "") != str(existing.path or "") for existing in result):
+            result.append(item)
+    return result[:2]
+
+
+def _is_composite_input_attachment(item: Attachment, *, allow_archives: bool = False) -> bool:
+    mime = (item.mime_type or "").lower()
+    name = item.name.lower()
+    path_text = (item.path or "").lower()
+    if mime.startswith("image/") or any(name.endswith(ext) or path_text.endswith(ext) for ext in _IMAGE_EXTS):
+        return True
+    if any(name.endswith(ext) or path_text.endswith(ext) for ext in _DATASET_PACKAGE_EXTS):
+        return allow_archives
+    raw_path = str(item.path or "").strip()
+    if not raw_path:
+        return False
+    try:
+        path = Path(raw_path)
+        return path.exists() and path.is_dir()
+    except Exception:
+        return False
+
+
+def _parse_attachment_role_hints(user_text: str) -> dict[str, str]:
+    text = user_text or ""
+    hints: dict[str, str] = {}
+    patterns = {
+        "dataset": r"(?:dataset|数据集)\s*[:=：]\s*([^\s,，;；]+)",
+        "image1": r"(?:image1|图1|图片1|合成图1|背景图|背景)\s*[:=：]\s*([^\s,，;；]+)",
+        "image2": r"(?:image2|图2|图片2|合成图2|前景图|目标图|目标)\s*[:=：]\s*([^\s,，;；]+)",
+    }
+    for role, pattern in patterns.items():
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            hints[role] = match.group(1).strip().strip('"\'')
+    return hints
+
+
+def _attachment_for_role(attachments: list[Attachment], role: str, role_hints: dict[str, str]) -> Attachment | None:
+    hint = (role_hints.get(role) or "").lower()
+    for item in attachments:
+        name = item.name.lower()
+        path = (item.path or "").lower()
+        if hint and (hint in name or hint in path):
+            return item
+    if role == "dataset":
+        for item in attachments:
+            if _looks_like_dataset_name(item.name.lower(), (item.path or "").lower()):
+                return item
+    if role == "image1":
+        for item in attachments:
+            if _looks_like_image1_name(item.name.lower(), (item.path or "").lower()):
+                return item
+    if role == "image2":
+        for item in attachments:
+            if _looks_like_image2_name(item.name.lower(), (item.path or "").lower()):
+                return item
+    return None
+
+
+def _looks_like_dataset_name(name: str, path: str) -> bool:
+    text = f"{name} {path}".lower()
+    return any(token in text for token in ("dataset", "datasets", "train_dataset", "数据集", "训练集"))
+
+
+def _looks_like_image1_name(name: str, path: str) -> bool:
+    text = f"{name} {path}".lower()
+    return any(token in text for token in ("image1", "img1", "background", "bg", "scene", "reference", "ref", "背景", "场景", "参考"))
+
+
+def _looks_like_image2_name(name: str, path: str) -> bool:
+    text = f"{name} {path}".lower()
+    return any(token in text for token in ("image2", "img2", "foreground", "fg", "target", "object", "generated", "目标", "前景", "主体"))
+
+
+def _looks_like_composite_role_name(name: str, path: str) -> bool:
+    return _looks_like_image1_name(name, path) or _looks_like_image2_name(name, path)
+
+
+def _generate_model_controlled_reply(
+    *,
+    agent_config: Any,
+    runtime_options: RuntimeOptions,
+    recorder: EventRecorder,
+    user_text: str,
+    workflow: str,
+    labels: list[str],
+    summary: dict[str, Any],
+    best_pt: str,
+    merged_dataset_root: str,
+    merged_coco: str,
+    generation_result: dict[str, Any],
+    annotation_result: dict[str, Any],
+    training_result: dict[str, Any],
+    fallback_reply: str,
+) -> str:
+    llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    recorder.emit(
+        "llm.started",
+        {
+            "model": llm.model,
+            "temperature": llm.temperature,
+            "top_p": llm.top_p,
+            "max_tokens": llm.max_tokens,
+            "request_timeout_seconds": llm.request_timeout_seconds,
+            "configured": llm.configured,
+            "purpose": "workflow_final_reply",
+        },
+    )
+    if not llm.configured:
+        recorder.emit("llm.completed", {"purpose": "workflow_final_reply", "used_fallback": True, "reason": "not_configured"})
+        return _human_fallback_reply(fallback_reply, summary, best_pt)
+
+    evaluation = _extract_evaluation_facts(summary)
+    facts = {
+        "workflow": workflow,
+        "user_request": user_text,
+        "requested_labels": labels,
+        "dataset": {
+            "merged_dataset_root": merged_dataset_root,
+            "merged_coco_json": merged_coco,
+            "num_images": summary.get("num_images"),
+            "num_categories": summary.get("num_categories"),
+            "class_names": summary.get("class_names"),
+            "split_counts": summary.get("split_counts"),
+        },
+        "training": {
+            "status": "completed" if best_pt else "unknown",
+            "conda_env_name": summary.get("conda_env_name"),
+            "task": summary.get("task"),
+            "model": summary.get("model"),
+            "run_root": summary.get("run_root"),
+            "train_save_dir": summary.get("train_save_dir"),
+            "best_pt": best_pt,
+            "eval_error": summary.get("eval_error"),
+        },
+        "evaluation": evaluation,
+        "skill_results": {
+            "image_dataset_generation": _small_dict(generation_result),
+            "data_auto_annotation": _small_dict(annotation_result),
+            "gpu_training_orchestrator": _small_dict(training_result),
+        },
+        "raw_training_reply_for_reference": fallback_reply,
+    }
+    system_prompt = (
+        "你是算法工程师 Agent 的最终回复生成器。"
+        "上游工作流已经完成技能调用，你只负责基于事实组织输出样式和表达。"
+        "要求：使用中文；不要编造事实；保留关键路径、best.pt、数据划分、类别和评估指标；"
+        "如果 evaluation.metrics 中存在 precision、recall、mAP50、mAP50_95、fitness，必须在回复中明确列出；"
+        "如果某个类别指标很差或为 0，要温和指出可能是样本/标注不足；"
+        "输出应像专业算法训练报告，但不要机械复述 JSON。"
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "请根据以下工作流事实生成最终 Agent 回复。"
+                "不要说“我是模型”；不要说无法访问文件；不要输出调试 JSON。\n\n"
+                + json.dumps(facts, ensure_ascii=False, indent=2, default=str)
+            ),
+        }
+    ]
+    try:
+        reply = llm.complete_sync(system_prompt, messages).strip()
+    except Exception as exc:
+        recorder.emit(
+            "llm.completed",
+            {"purpose": "workflow_final_reply", "used_fallback": True, "error": str(exc)[:1000]},
+        )
+        return _human_fallback_reply(fallback_reply, summary, best_pt)
+    recorder.emit(
+        "llm.completed",
+        {
+            "purpose": "workflow_final_reply",
+            "used_fallback": not bool(reply),
+            "reply_chars": len(reply),
+        },
+    )
+    return reply or _human_fallback_reply(fallback_reply, summary, best_pt)
+
+
+def _is_yolo_training_intent(
+    user_text: str,
+    attachments: list[Attachment],
+    *,
+    agent_config: Any,
+    runtime_options: RuntimeOptions,
+    recorder: EventRecorder,
+    has_active_training_state: bool = False,
+) -> bool:
+    if _has_dataset_attachment(attachments):
+        return True
+    if has_active_training_state and _find_composite_input_attachments(attachments, include_thread_files=False, allow_archives=True):
+        return True
+    if _looks_like_yolo_training_request(user_text):
+        return True
+    if not user_text.strip():
+        return False
+
+    llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_intent_router"})
+    if not llm.configured:
+        recorder.emit("llm.completed", {"purpose": "workflow_intent_router", "used_fallback": True, "reason": "not_configured"})
+        return False
+
+    system_prompt = (
+        "你是应用内的意图路由器。判断用户是否明确想启动 YOLO/目标检测模型训练、数据集自动标注、"
+        "数据集划分、合成数据生成、训练流程，或是否在继续补充上一次训练流程所需参数。"
+        "普通问候、闲聊、能力询问、说明性问题都不是训练意图，即使当前线程之前训练过也不是。"
+        "只返回 JSON：{\"is_training_intent\": true/false, \"reason\": \"...\"}。"
+    )
+    messages = [
+        Message(
+            role="user",
+            content=(
+                f"用户消息：{user_text}\n"
+                f"附件数量：{len(attachments)}\n"
+                f"线程是否存在未清理的训练状态：{has_active_training_state}\n"
+                "如果用户只是聊天，请返回 false；如果用户在补 labels、conda_env_name、epochs、数据集、"
+                "生图提示词或明确说继续训练，请返回 true。"
+            ),
+        )
+    ]
+    try:
+        raw = llm.complete_sync(system_prompt, messages)
+        payload = _parse_json_object(raw)
+        decision = bool(payload.get("is_training_intent"))
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_intent_router",
+                "is_training_intent": decision,
+                "reason": str(payload.get("reason") or ""),
+            },
+        )
+        return decision
+    except Exception as exc:
+        recorder.emit("llm.completed", {"purpose": "workflow_intent_router", "used_fallback": True, "error": str(exc)[:1000]})
+        return False
+
+
+def _chat_reply_for_non_training_intent(
+    user_text: str,
+    *,
+    agent_config: Any,
+    runtime_options: RuntimeOptions,
+    recorder: EventRecorder,
+) -> str:
+    llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_chat_reply"})
+    if llm.configured:
+        try:
+            system_prompt = (
+                "你是算法工程师全流程应用里的助手。当前用户没有明确请求 YOLO 训练流程，"
+                "请按普通聊天自然回复。不要要求上传数据集，除非用户明确提出训练、标注或数据处理。"
+            )
+            reply = llm.complete_sync(system_prompt, [Message(role="user", content=user_text)]).strip()
+            if reply:
+                recorder.emit("llm.completed", {"purpose": "workflow_chat_reply", "used_fallback": False})
+                return reply
+        except Exception as exc:
+            recorder.emit("llm.completed", {"purpose": "workflow_chat_reply", "used_fallback": True, "error": str(exc)[:1000]})
+    else:
+        recorder.emit("llm.completed", {"purpose": "workflow_chat_reply", "used_fallback": True, "reason": "not_configured"})
+    return "你好，我在。你可以直接和我聊天；如果需要训练 YOLO 检测模型，再告诉我任务并上传数据集。"
+
+
+def _has_dataset_attachment(attachments: list[Attachment]) -> bool:
+    return _find_dataset_package_attachment(attachments) is not None
+
+
+def _looks_like_yolo_training_request(user_text: str) -> bool:
+    text = (user_text or "").lower()
+    positive_markers = (
+        "yolo",
+        "训练",
+        "模型训练",
+        "目标检测",
+        "检测模型",
+        "自动标注",
+        "数据集",
+        "dataset",
+        "labels=",
+        "label=",
+        "classes=",
+        "conda_env_name",
+        "epochs",
+        "batch",
+        "imgsz",
+        "data.yaml",
+        "best.pt",
+        "生图",
+        "合成数据",
+        "划分",
+    )
+    return any(marker in text for marker in positive_markers)
+
+
+def _parse_json_object(raw: str) -> dict[str, Any]:
+    text = (raw or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("LLM did not return a JSON object")
+    payload = json.loads(text[start : end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("LLM JSON was not an object")
+    return payload
+
+
+def _human_fallback_reply(fallback_reply: str, summary: dict[str, Any], best_pt: str) -> str:
+    facts: dict[str, Any] = {}
+    try:
+        parsed = json.loads(fallback_reply) if fallback_reply.strip().startswith("{") else {}
+        if isinstance(parsed, dict):
+            facts = parsed
+    except Exception:
+        facts = {}
+    if not facts:
+        facts = {
+            "model": summary.get("model"),
+            "task": summary.get("task"),
+            "num_images": summary.get("num_images"),
+            "num_categories": summary.get("num_categories"),
+            "split": summary.get("split_counts"),
+            "train_dir": summary.get("train_save_dir"),
+            "best_pt": best_pt,
+            "metrics": _extract_metric_summary(summary),
+            "results_dict": _extract_results_dict(summary),
+            "eval_error": summary.get("eval_error"),
+        }
+
+    split = facts.get("split")
+    if isinstance(split, dict):
+        split_text = f"训练 {split.get('train', '-')} / 验证 {split.get('val', '-')} / 测试 {split.get('test', '-')}"
+    else:
+        split_text = str(split or "-")
+
+    lines = [
+        "训练流程已完成，但模型总结暂时未返回内容，以下是工作流结果摘要：",
+        "",
+        f"- 模型：`{facts.get('model') or '-'}`",
+        f"- 任务：`{facts.get('task') or '-'}`",
+        f"- 数据规模：images={facts.get('num_images') or '-'} classes={facts.get('num_categories') or '-'}",
+        f"- 数据划分：{split_text}",
+        f"- 训练目录：`{facts.get('train_dir') or '-'}`",
+        f"- best.pt：`{facts.get('best_pt') or best_pt or '-'}`",
+    ]
+    metrics = facts.get("metrics")
+    if not isinstance(metrics, dict) or not metrics:
+        metrics = _extract_metric_summary(summary)
+    if isinstance(metrics, dict) and metrics:
+        lines.extend(["", "关键评估指标："])
+        for key in ("precision", "recall", "mAP50", "mAP50_95", "fitness"):
+            if key in metrics:
+                lines.append(f"- {key}: {_format_metric(metrics.get(key))}")
+    eval_block = str(facts.get("eval_block") or "").strip()
+    if eval_block:
+        lines.extend(["", "评估指标：", "```text", eval_block, "```"])
+    eval_error = str(facts.get("eval_error") or "").strip()
+    if eval_error:
+        lines.extend(["", f"评估提示：{eval_error}"])
+    return "\n".join(lines).strip()
+
+
+def _extract_evaluation_facts(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "metrics": _extract_metric_summary(summary),
+        "results_dict": _extract_results_dict(summary),
+        "class_names": summary.get("class_names"),
+        "eval_error": summary.get("eval_error"),
+        "eval_results_text": str(summary.get("eval_results") or "")[:2000],
+    }
+
+
+def _extract_metric_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    results = _extract_results_dict(summary)
+    mapping = {
+        "precision": "metrics/precision(B)",
+        "recall": "metrics/recall(B)",
+        "mAP50": "metrics/mAP50(B)",
+        "mAP50_95": "metrics/mAP50-95(B)",
+        "fitness": "fitness",
+    }
+    metrics: dict[str, Any] = {}
+    for out_key, source_key in mapping.items():
+        if source_key in results:
+            metrics[out_key] = results[source_key]
+    return metrics
+
+
+def _extract_results_dict(summary: dict[str, Any]) -> dict[str, Any]:
+    existing = summary.get("results_dict")
+    if isinstance(existing, dict):
+        return dict(existing)
+    eval_results = str(summary.get("eval_results") or "")
+    if not eval_results:
+        return {}
+    match = re.search(r"results_dict:\s*(\{[^\r\n]+\})", eval_results)
+    if not match:
+        return {}
+    try:
+        import ast
+
+        parsed = ast.literal_eval(match.group(1))
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _format_metric(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{number:.4f}"
+
+
+def _small_dict(value: dict[str, Any], *, max_value_chars: int = 1200) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"stdout", "stderr"}:
+            text = str(item)
+            out[key] = text[-max_value_chars:]
+        elif key == "final_reply":
+            out[key] = str(item)[:max_value_chars]
+        elif isinstance(item, (str, int, float, bool)) or item is None:
+            out[key] = item
+        elif isinstance(item, (list, dict)):
+            raw = json.dumps(item, ensure_ascii=False, default=str)
+            out[key] = raw[:max_value_chars]
+        else:
+            out[key] = str(item)[:max_value_chars]
+    return out
+
+
+def _last_user_text(messages: list[Message]) -> str:
+    for message in reversed(messages):
+        if message.role == "user":
+            return message.content.strip()
+    return ""
+
+
+def _selected_skills(runtime_options: RuntimeOptions) -> list[str]:
+    selected = getattr(runtime_options, "selected_skills", None) or []
+    return [str(item).strip() for item in selected if str(item).strip()] or [*DEFAULT_SELECTED_SKILLS]
+
+
+def _has_runtime_selected_skills(runtime_options: RuntimeOptions) -> bool:
+    selected = getattr(runtime_options, "selected_skills", None) or []
+    return any(str(item).strip() for item in selected)
+
+
+def _skill_enabled(selected_skills: list[str], skill_name: str) -> bool:
+    return skill_name in set(selected_skills)
+
+
+def _capability_enabled(selected_skills: list[str], capability: str) -> bool:
+    selected = {str(item).strip() for item in selected_skills if str(item).strip()}
+    if not selected:
+        return False
+    for skill_name in selected:
+        if capability in _workflow_capabilities_for_skill(skill_name):
+            return True
+    return False
+
+
+@lru_cache(maxsize=256)
+def _workflow_capabilities_for_skill(skill_name: str) -> frozenset[str]:
+    capabilities: set[str] = set()
+    for path in _skill_metadata_paths(skill_name):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        raw = payload.get("workflow_capabilities")
+        if isinstance(raw, list):
+            capabilities.update(str(item).strip() for item in raw if str(item).strip())
+        raw_meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        raw_meta_caps = raw_meta.get("workflow_capabilities")
+        if isinstance(raw_meta_caps, list):
+            capabilities.update(str(item).strip() for item in raw_meta_caps if str(item).strip())
+    if not capabilities:
+        capabilities.update(_fallback_workflow_capabilities(skill_name))
+    return frozenset(capabilities)
+
+
+def _skill_metadata_paths(skill_name: str) -> list[Path]:
+    workflow_dir = Path(__file__).resolve().parent
+    project_root = workflow_dir.parents[2]
+    return [
+        project_root / "plugins" / "skills" / skill_name / "plugin.json",
+        project_root / "config" / "skills" / f"{skill_name}.json",
+    ]
+
+
+def _fallback_workflow_capabilities(skill_name: str) -> set[str]:
+    fallback = {
+        "data-auto-annotation": {"data_preparation", "auto_annotation"},
+        "image-dataset-generation": {"image_generation"},
+        "gpu-training-orchestrator": {"training"},
+    }
+    return set(fallback.get(skill_name, set()))
+
+
+def _has_explicit_training_config(user_text: str) -> bool:
+    text = (user_text or "").lower()
+    required = ("conda_env_name", "model", "epochs", "imgsz", "batch", "device", "workers", "patience")
+    return all(k in text for k in required)
+
+
+def _extract_training_config(user_text: str) -> dict[str, Any]:
+    return {
+        "split": {
+            "train": _float_param(user_text, "dataset.split.train", 0.7),
+            "val": _float_param(user_text, "dataset.split.val", 0.2),
+            "test": _float_param(user_text, "dataset.split.test", 0.1),
+        },
+        "training": {
+            "task": _string_param(user_text, "training_task", "detect"),
+            "model": _string_param(user_text, "model", "yolo11n.pt"),
+            "epochs": _int_param(user_text, "epochs", 50),
+            "imgsz": _int_param(user_text, "imgsz", 640),
+            "batch": _int_param(user_text, "batch", 16),
+            "device": _string_param(user_text, "device", "0"),
+            "workers": _int_param(user_text, "workers", 4),
+            "patience": _int_param(user_text, "patience", 8),
+        },
+        "runtime": {
+            "conda_env_name": _string_param(user_text, "conda_env_name", "yolo"),
+            "enforce_conda_env": _bool_param(user_text, "enforce_conda_env", False),
+        },
+    }
+
+
+def _extract_detection_task_description(user_text: str, prompt_text: str, labels: list[str]) -> str:
+    text = user_text or ""
+    for key in ("task_description", "detection_task", "detect_task", "任务描述", "检测任务", "任务"):
+        value = _string_param(text, key, "")
+        if value and value.lower() not in {"detect", "segment", "train"}:
+            return value
+
+    match = re.search(
+        r"训练(?:一个|一個)?\s*(.{1,80}?)(?:YOLO|yolo).{0,40}?(?:检测|detect)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        value = match.group(1).strip().strip(":：,，。；; ")
+        if value:
+            return value
+
+    if labels:
+        return f"{', '.join(labels)} detection"
+
+    cleaned_prompt = _strip_config_lines_from_prompt(prompt_text).strip()
+    if cleaned_prompt:
+        return cleaned_prompt[:120]
+    return "generic object detection"
+
+
+def _planner_llm_config(agent_config: Any, runtime_options: RuntimeOptions) -> dict[str, Any]:
+    model_config = getattr(agent_config, "model", None)
+    base_url = getattr(runtime_options, "base_url", None) or getattr(model_config, "base_url", "")
+    api_key = getattr(runtime_options, "api_key", None) or getattr(model_config, "api_key", "")
+    model = (
+        getattr(runtime_options, "model_name", None)
+        or getattr(model_config, "model", "")
+        or getattr(model_config, "default_model", "")
+    )
+    temperature = getattr(runtime_options, "temperature", None)
+    if temperature is None:
+        temperature = getattr(model_config, "temperature", 0.2)
+    max_tokens = getattr(runtime_options, "max_tokens", None)
+    if max_tokens is None:
+        max_tokens = min(int(getattr(model_config, "max_tokens", 2048) or 2048), 2048)
+    timeout = getattr(runtime_options, "request_timeout_seconds", None)
+    if timeout is None:
+        timeout = getattr(model_config, "request_timeout_seconds", 120)
+    return {
+        "base_url": str(base_url or "").rstrip("/"),
+        "api_key": str(api_key or ""),
+        "model": str(model or ""),
+        "temperature": float(temperature if temperature is not None else 0.2),
+        "max_tokens": int(max_tokens or 2048),
+        "timeout": int(timeout or 120),
+    }
+
+
+def _string_param(text: str, key: str, default: str) -> str:
+    match = re.search(rf"(?<![\w.]){re.escape(key)}\s*[:=]\s*([^\s,，;；\r\n]+)", text or "", flags=re.IGNORECASE)
+    return match.group(1).strip().strip("\"'`") if match else default
+
+
+def _int_param(text: str, key: str, default: int) -> int:
+    value = _string_param(text, key, "")
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _float_param(text: str, key: str, default: float) -> float:
+    value = _string_param(text, key, "")
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _bool_param(text: str, key: str, default: bool) -> bool:
+    value = _string_param(text, key, "")
+    if not value:
+        return default
+    return value.lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _extract_annotation_labels(user_text: str) -> list[str]:
+    text = (user_text or "").strip()
+    if not text:
+        return []
+    match = re.search(
+        r"(?:labels?|lables?|lable|classes?|class|标注类别|类别|标签|标注标签)\s*[:=：]\s*([^\r\n]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return []
+    raw = match.group(1)
+    raw = re.split(
+        r"\s+(?:conda_env_name|model|epochs|imgsz|batch|device|workers|patience|dataset\.split\.)\s*[:=]",
+        raw,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    parts = [item.strip().strip("\"'`，,;；。") for item in re.split(r"[,，;；\s]+", raw)]
+    labels: list[str] = []
+    seen: set[str] = set()
+    for item in parts:
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(item)
+    return labels
+
+
+def _extract_generation_prompt(user_text: str, *, allow_free_text: bool = False) -> str:
+    text = (user_text or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"(?:prompt|提示词)\s*[:：]\s*(.+)", text, flags=re.IGNORECASE | re.DOTALL)
+    if match:
+        return _strip_config_lines_from_prompt(match.group(1).strip())
+    if not allow_free_text:
+        return ""
+    lowered = text.lower()
+    generic_cmds = {"继续", "继续处理", "继续处理刚上传的文件", "开始", "继续训练", "下一步"}
+    if text in generic_cmds or lowered in {"continue", "go on", "next"}:
+        return ""
+    if _looks_like_config_only_text(text):
+        return ""
+    return text if len(text) >= 12 else ""
+
+
+def _strip_config_lines_from_prompt(value: str) -> str:
+    lines: list[str] = []
+    for line in value.splitlines():
+        stripped = line.strip()
+        if _looks_like_config_only_text(stripped):
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _looks_like_config_only_text(text: str) -> bool:
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return False
+    config_prefixes = (
+        "labels", "label", "lable", "lables", "classes", "class",
+        "conda_env_name", "model", "epochs", "imgsz", "batch", "device", "workers", "patience",
+        "dataset.split.", "标注类别", "类别", "标签", "标注标签",
+    )
+    return any(lowered.startswith(prefix) for prefix in config_prefixes)
+
+
+def _resolve_coco_output(paths: ThreadPaths, outputs: list[Any]) -> Path:
+    for artifact in outputs:
+        artifact_path = getattr(artifact, "path", "") or ""
+        if not isinstance(artifact_path, str):
+            continue
+        try:
+            local = ArtifactStore().resolve_virtual_path(paths.thread_id, artifact_path)
+        except Exception:
+            continue
+        if local.suffix.lower() == ".json" and local.is_file() and _looks_like_coco_json(local):
+            return local
+    # Fallback 1: outputs json candidates
+    json_candidates = sorted([p for p in paths.outputs.rglob("*.json") if p.is_file()])
+    for p in reversed(json_candidates):
+        n = p.name.lower()
+        if (n == "coco.json" or n.endswith(".coco.json")) and _looks_like_coco_json(p):
+            return p
+
+    # Fallback 2: scan workspace for common coco filenames
+    ws_candidates = sorted([p for p in paths.workspace.rglob("*.json") if p.is_file()])
+    for p in reversed(ws_candidates):
+        n = p.name.lower()
+        if (n == "coco.json" or n.endswith(".coco.json") or "annotation" in n) and _looks_like_coco_json(p):
+            return p
+
+    raise FileNotFoundError("未找到可用的 coco.json")
+
+
+def _looks_like_coco_json(path: Path) -> bool:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return all(key in payload for key in ("images", "annotations", "categories"))
+
+
+def _run_annotation_fallback(image_dir: Path, paths: ThreadPaths, labels: list[str]) -> Path:
+    script = Path(
+        "plugins/skills/data-auto-annotation/skills/data-auto-annotation/scripts/sam3-predict.py"
+    ).resolve()
+    if not script.exists():
+        raise FileNotFoundError(f"fallback 标注脚本不存在: {script}")
+    out = (paths.outputs / "annotations.coco.json").resolve()
+    target_dir = image_dir / "images" if (image_dir / "images").exists() else image_dir
+    cmd = [
+        "python",
+        str(script),
+        "--input-dir",
+        str(target_dir.resolve()),
+        "--text-prompts",
+        *labels,
+        "--output",
+        str(out),
+    ]
+    env = os.environ.copy()
+    completed = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    if completed.returncode != 0 or not out.exists():
+        raise RuntimeError(
+            "data-auto-annotation 未产出 coco.json，且 fallback 标注失败。"
+            f"\nstdout:\n{completed.stdout[-1200:]}\nstderr:\n{completed.stderr[-1200:]}"
+        )
+    return out
+
+
+def _read_run_summary(paths: ThreadPaths) -> dict[str, Any]:
+    preferred = paths.outputs / WORKFLOW_OUTPUT_DIR / "training_run" / "run_summary.json"
+    if preferred.is_file():
+        candidates = [preferred]
+    else:
+        candidates = list(paths.outputs.rglob("run_summary.json"))
+    if not candidates:
+        return {}
+    latest = sorted(candidates)[-1]
+    try:
+        payload = json.loads(latest.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    prep = _read_data_preparation_summary(paths)
+    if prep:
+        payload.setdefault("num_images", prep.get("num_images"))
+        payload.setdefault("num_categories", prep.get("num_categories"))
+        payload.setdefault("class_names", prep.get("class_names"))
+        payload.setdefault("split_counts", prep.get("split_counts"))
+        payload.setdefault("source_counts", prep.get("source_counts"))
+        payload.setdefault("prepared_dataset", prep.get("prepared_dataset"))
+    return payload
+
+
+def _read_data_preparation_summary(paths: ThreadPaths) -> dict[str, Any]:
+    preferred = paths.outputs / WORKFLOW_OUTPUT_DIR / "prepared_data" / "data_preparation_summary.json"
+    candidates = [preferred] if preferred.is_file() else sorted(paths.outputs.rglob("data_preparation_summary.json"))
+    if not candidates:
+        return {}
+    try:
+        payload = json.loads(candidates[-1].read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_pipeline_paths(paths: ThreadPaths) -> dict[str, str]:
+    result: dict[str, str] = {}
+    prep_summary = _read_data_preparation_summary(paths)
+    if prep_summary:
+        if prep_summary.get("prepared_dataset"):
+            result["dataset_root"] = str(prep_summary.get("prepared_dataset"))
+        if prep_summary.get("training_coco"):
+            result["coco_json"] = str(prep_summary.get("training_coco"))
+        if prep_summary.get("dataset_yaml"):
+            result["dataset_yaml"] = str(prep_summary.get("dataset_yaml"))
+        if prep_summary.get("synthetic_plan"):
+            result["synthetic_plan"] = str(prep_summary.get("synthetic_plan"))
+
+    preferred_training_input = paths.workspace / "gpu-training-orchestrator-training-input.json"
+    if preferred_training_input.is_file():
+        training_input = preferred_training_input
+    else:
+        legacy_training_input = paths.outputs / WORKFLOW_OUTPUT_DIR / PIPELINE_WORK_DIR / "training_input.json"
+        candidates = ([legacy_training_input] if legacy_training_input.is_file() else [])
+        candidates += sorted(paths.workspace.rglob("*training-input.json")) + sorted(paths.outputs.rglob("training_input.json"))
+        training_input = candidates[-1] if candidates else None
+    if training_input and training_input.exists():
+        result["training_input"] = str(training_input)
+        try:
+            payload = json.loads(training_input.read_text(encoding="utf-8"))
+        except Exception:
+            payload = {}
+        dataset = payload.get("dataset") if isinstance(payload.get("dataset"), dict) else {}
+        if dataset.get("data_yaml"):
+            result["dataset_yaml"] = str(dataset.get("data_yaml"))
+    preferred_plan = paths.outputs / WORKFLOW_OUTPUT_DIR / PIPELINE_WORK_DIR / "synthetic_plan.json"
+    if "synthetic_plan" not in result and preferred_plan.is_file():
+        result["synthetic_plan"] = str(preferred_plan)
+    elif "synthetic_plan" not in result:
+        legacy_plan = paths.outputs / WORKFLOW_OUTPUT_DIR / "smoking_pipeline" / "synthetic_plan.json"
+        plan_candidates = ([legacy_plan] if legacy_plan.is_file() else [])
+        plan_candidates += sorted(paths.workspace.rglob("synthetic_plan.json")) + sorted(paths.outputs.rglob("synthetic_plan.json"))
+        if plan_candidates:
+            result["synthetic_plan"] = str(plan_candidates[-1])
+    return result
+
+
+def _find_best_pt(paths: ThreadPaths) -> str:
+    preferred = paths.outputs / WORKFLOW_OUTPUT_DIR / "training_run" / "train" / "weights" / "best.pt"
+    if preferred.is_file():
+        return str(preferred)
+    candidates = sorted(paths.outputs.rglob("best.pt"))
+    return str(candidates[-1]) if candidates else ""
+
+
+def _input_label(value: object) -> str:
+    return {"dataset": "数据集", "image": "图片", "model_config": "模型配置"}.get(str(value), "输入")
+
+
+def _reference_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "reference_image_path.txt"
+
+
+def _composite_image1_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "composite_image1_path.txt"
+
+
+def _composite_image2_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "composite_image2_path.txt"
+
+
+def _prompt_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "generation_prompt.txt"
+
+
+def _save_generation_prompt(paths: ThreadPaths, prompt: str) -> None:
+    if prompt:
+        _prompt_marker_path(paths).write_text(prompt.strip(), encoding="utf-8")
+
+
+def _load_generation_prompt(paths: ThreadPaths) -> str:
+    marker = _prompt_marker_path(paths)
+    return marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+
+
+def _selected_skills_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "selected_skills.json"
+
+
+def _save_selected_skills(paths: ThreadPaths, selected_skills: list[str]) -> None:
+    if selected_skills:
+        _selected_skills_marker_path(paths).write_text(json.dumps(selected_skills, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_selected_skills(paths: ThreadPaths) -> list[str]:
+    marker = _selected_skills_marker_path(paths)
+    if not marker.exists():
+        return []
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [str(item).strip() for item in payload if str(item).strip()]
+
+
+def _labels_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "annotation_labels.json"
+
+
+def _save_annotation_labels(paths: ThreadPaths, labels: list[str]) -> None:
+    if labels:
+        _labels_marker_path(paths).write_text(json.dumps(labels, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_annotation_labels(paths: ThreadPaths) -> list[str]:
+    marker = _labels_marker_path(paths)
+    if not marker.exists():
+        return []
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return [str(item).strip() for item in payload if str(item).strip()] if isinstance(payload, list) else []
+
+
+def _save_reference_image_path(paths: ThreadPaths, path: str) -> None:
+    if path:
+        _reference_marker_path(paths).write_text(path.strip(), encoding="utf-8")
+
+
+def _load_reference_image_path(paths: ThreadPaths) -> str:
+    marker = _reference_marker_path(paths)
+    return marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+
+
+def _save_composite_input_paths(paths: ThreadPaths, paths_to_save: list[Path]) -> None:
+    values = [str(path.resolve()) for path in paths_to_save if str(path).strip()]
+    if not values:
+        return
+    if len(values) >= 2:
+        _composite_image1_marker_path(paths).write_text(values[0], encoding="utf-8")
+        _composite_image2_marker_path(paths).write_text(values[1], encoding="utf-8")
+        return
+    if not _load_composite_image1_path(paths):
+        _composite_image1_marker_path(paths).write_text(values[0], encoding="utf-8")
+    else:
+        _composite_image2_marker_path(paths).write_text(values[0], encoding="utf-8")
+
+
+def _prepare_composite_input_path(paths: ThreadPaths, raw_path: str, index: int) -> Path:
+    source = _resolve_uploaded_local_path(paths.workspace.parent, raw_path)
+    if source.is_file() and _is_archive_path(source):
+        target_dir = paths.outputs / WORKFLOW_OUTPUT_DIR / "composite_inputs" / f"image{index}"
+        return _unpack_archive_to_dir(source, target_dir)
+    return source
+
+
+def _prepare_composite_input_paths(paths: ThreadPaths, attachments: list[Attachment], role_hints: dict[str, str]) -> list[Path]:
+    if not attachments:
+        return []
+    role_by_path: dict[str, int] = {}
+    for role, index in (("image1", 1), ("image2", 2)):
+        hinted = _attachment_for_role(attachments, role, role_hints)
+        if hinted is not None and hinted.path:
+            role_by_path[str(hinted.path)] = index
+
+    prepared: list[Path | None] = [None, None]
+    next_index = 1
+    for item in attachments:
+        if not item.path:
+            continue
+        index = role_by_path.get(str(item.path))
+        if index is None:
+            while next_index <= 2 and prepared[next_index - 1] is not None:
+                next_index += 1
+            if next_index > 2:
+                break
+            index = next_index
+        prepared[index - 1] = _prepare_composite_input_path(paths, item.path, index)
+    return [path for path in prepared if path is not None]
+
+
+def _clear_composite_input_paths(paths: ThreadPaths) -> None:
+    for marker in (_composite_image1_marker_path(paths), _composite_image2_marker_path(paths), _reference_marker_path(paths)):
+        if marker.exists():
+            marker.unlink()
+
+
+def _load_composite_image1_path(paths: ThreadPaths) -> str:
+    marker = _composite_image1_marker_path(paths)
+    if marker.exists():
+        return marker.read_text(encoding="utf-8").strip()
+    return _load_reference_image_path(paths)
+
+
+def _load_composite_image2_path(paths: ThreadPaths) -> str:
+    marker = _composite_image2_marker_path(paths)
+    return marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+
+
+def _waiting_prompt_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "awaiting_prompt.flag"
+
+
+def _workflow_completed_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "workflow_completed.flag"
+
+
+def _set_workflow_completed(paths: ThreadPaths, completed: bool) -> None:
+    flag = _workflow_completed_path(paths)
+    if completed:
+        flag.write_text("1", encoding="utf-8")
+    elif flag.exists():
+        flag.unlink()
+
+
+def _is_workflow_completed(paths: ThreadPaths) -> bool:
+    if _workflow_completed_path(paths).exists():
+        return True
+    output_root = paths.outputs / WORKFLOW_OUTPUT_DIR
+    completion_markers = (
+        output_root / "training_run" / "run_summary.json",
+        output_root / "training_run" / "train" / "weights" / "best.pt",
+        output_root / "prepared_data" / "data_preparation_summary.json",
+    )
+    return any(marker.exists() for marker in completion_markers)
+
+
+def _set_waiting_prompt(paths: ThreadPaths, waiting: bool) -> None:
+    flag = _waiting_prompt_path(paths)
+    if waiting:
+        flag.write_text("1", encoding="utf-8")
+    elif flag.exists():
+        flag.unlink()
+
+
+def _is_waiting_prompt(paths: ThreadPaths) -> bool:
+    return _waiting_prompt_path(paths).exists()
+
+
+def _dataset_package_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "dataset_package_path.txt"
+
+
+def _save_dataset_package_path(paths: ThreadPaths, path: str) -> None:
+    if path:
+        _dataset_package_marker_path(paths).write_text(path.strip(), encoding="utf-8")
+
+
+def _load_dataset_package_path(paths: ThreadPaths) -> str:
+    marker = _dataset_package_marker_path(paths)
+    return marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+
+
+def _reset_generated_dir(generated_dir: Path) -> None:
+    if generated_dir.exists():
+        for p in generated_dir.iterdir():
+            if p.is_file():
+                p.unlink()
+            elif p.is_dir():
+                shutil.rmtree(p)
+    generated_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _resolve_uploaded_local_path(thread_root: Path, raw_path: str) -> Path:
+    value = (raw_path or "").strip()
+    direct = Path(value).expanduser()
+    if direct.exists():
+        return direct.resolve()
+    normalized = value.replace("\\", "/")
+    uploads_dir = thread_root / "uploads"
+    outputs_dir = thread_root / "outputs"
+    for prefix, base in (("/mnt/user-data/uploads/", uploads_dir), ("d:/mnt/user-data/uploads/", uploads_dir), ("/mnt/user-data/outputs/", outputs_dir), ("d:/mnt/user-data/outputs/", outputs_dir)):
+        if normalized.lower().startswith(prefix):
+            rel = normalized[len(prefix):]
+            candidate = (base / rel).resolve()
+            if candidate.exists():
+                return candidate
+    basename = Path(normalized).name
+    for base in (uploads_dir, outputs_dir):
+        candidate = (base / basename).resolve()
+        if basename and candidate.exists():
+            return candidate
+    return direct.resolve()
+
+
+def _unpack_dataset_archive(archive_path: str, target_dir: Path, thread_root: Path) -> Path:
+    source = _resolve_uploaded_local_path(thread_root, archive_path)
+    if not source.exists():
+        raise FileNotFoundError(f"找不到上传的文件: {source}")
+    return _unpack_archive_to_dir(source, target_dir)
+
+
+def _is_archive_path(path: Path) -> bool:
+    lower_name = path.name.lower()
+    return lower_name.endswith(".tar.gz") or lower_name.endswith(".tar") or lower_name.endswith(".zip")
+
+
+def _unpack_archive_to_dir(source: Path, target_dir: Path) -> Path:
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    lower_name = source.name.lower()
+    if lower_name.endswith(".tar.gz"):
+        shutil.unpack_archive(str(source), str(target_dir), format="gztar")
+    elif lower_name.endswith(".tar"):
+        shutil.unpack_archive(str(source), str(target_dir), format="tar")
+    elif lower_name.endswith(".zip"):
+        shutil.unpack_archive(str(source), str(target_dir), format="zip")
+    else:
+        shutil.unpack_archive(str(source), str(target_dir))
+    child_dirs = [p for p in target_dir.iterdir() if p.is_dir()]
+    return child_dirs[0] if len(child_dirs) == 1 else target_dir
+
+
+def _collect_images(root: Path, *, excluded_names: set[str] | None = None) -> list[Path]:
+    excluded = {n.lower() for n in (excluded_names or set()) if n}
+    files = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in _IMAGE_EXTS]
+    if not excluded:
+        return files
+    return [p for p in files if p.name.lower() not in excluded]
+
+
+def _find_existing_coco_json(dataset_root: Path) -> Path | None:
+    candidates = [p for p in dataset_root.rglob("*.json") if p.is_file()]
+    for p in candidates:
+        n = p.name.lower()
+        if n == "coco.json" or n.endswith(".coco.json"):
+            return p
+    return candidates[0] if candidates else None
+
+
+def _merge_coco_payloads(base: dict[str, Any], gen: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {"info": base.get("info") or gen.get("info") or {}, "licenses": base.get("licenses") or gen.get("licenses") or [], "images": [], "annotations": [], "categories": []}
+    cat_name_to_newid: dict[str, int] = {}
+    for cat in (base.get("categories") or []) + (gen.get("categories") or []):
+        name = str(cat.get("name") or "").strip()
+        if name and name not in cat_name_to_newid:
+            cat_name_to_newid[name] = len(cat_name_to_newid) + 1
+            merged["categories"].append({"id": cat_name_to_newid[name], "name": name, "supercategory": cat.get("supercategory", "")})
+
+    def append_ds(payload: dict[str, Any]) -> None:
+        id_map: dict[int, int] = {}
+        existing = {str(i.get("file_name", "")): int(i.get("id", 0)) for i in merged["images"]}
+        for img in payload.get("images") or []:
+            old_id = int(img.get("id", 0))
+            file_name = Path(str(img.get("file_name", ""))).name
+            if file_name in existing:
+                new_id = existing[file_name]
+            else:
+                new_id = len(merged["images"]) + 1
+                existing[file_name] = new_id
+                new_img = dict(img)
+                new_img["id"] = new_id
+                new_img["file_name"] = file_name
+                merged["images"].append(new_img)
+            id_map[old_id] = new_id
+        for ann in payload.get("annotations") or []:
+            old_img_id = int(ann.get("image_id", 0))
+            new_img_id = id_map.get(old_img_id)
+            if not new_img_id:
+                continue
+            old_cat_id = int(ann.get("category_id", 0))
+            cat_name = ""
+            for c in payload.get("categories") or []:
+                if int(c.get("id", 0)) == old_cat_id:
+                    cat_name = str(c.get("name") or "")
+                    break
+            new_cat_id = cat_name_to_newid.get(cat_name)
+            if not new_cat_id:
+                continue
+            new_ann = dict(ann)
+            new_ann["id"] = len(merged["annotations"]) + 1
+            new_ann["image_id"] = new_img_id
+            new_ann["category_id"] = new_cat_id
+            merged["annotations"].append(new_ann)
+
+    append_ds(base)
+    append_ds(gen)
+    return merged
+
+
+def _merge_images_only(
+    dataset_root: Path,
+    generated_dir: Path,
+    out_root: Path,
+    *,
+    excluded_image_names: set[str] | None = None,
+) -> Path:
+    if out_root.exists():
+        shutil.rmtree(out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
+    merged_images = out_root / "images"
+    merged_images.mkdir(parents=True, exist_ok=True)
+    for img in _collect_images(dataset_root):
+        target = merged_images / img.name
+        if not target.exists():
+            shutil.copy2(img, target)
+    for img in _collect_images(generated_dir, excluded_names=excluded_image_names):
+        target = merged_images / img.name
+        if not target.exists():
+            shutil.copy2(img, target)
+    return out_root
+
+
+def _prune_coco_by_existing_images(coco: dict[str, Any], images_dir: Path) -> dict[str, Any]:
+    existing_names = {p.name for p in images_dir.glob("*") if p.is_file()}
+    kept_images: list[dict[str, Any]] = []
+    kept_ids: set[int] = set()
+    for img in coco.get("images") or []:
+        img_name = Path(str(img.get("file_name", ""))).name
+        if img_name in existing_names:
+            new_img = dict(img)
+            new_img["file_name"] = img_name
+            kept_images.append(new_img)
+            try:
+                kept_ids.add(int(new_img.get("id", 0)))
+            except Exception:
+                continue
+
+    kept_annotations: list[dict[str, Any]] = []
+    used_cat_ids: set[int] = set()
+    for ann in coco.get("annotations") or []:
+        try:
+            image_id = int(ann.get("image_id", 0))
+            cat_id = int(ann.get("category_id", 0))
+        except Exception:
+            continue
+        if image_id in kept_ids:
+            kept_annotations.append(dict(ann))
+            used_cat_ids.add(cat_id)
+
+    kept_categories: list[dict[str, Any]] = []
+    for cat in coco.get("categories") or []:
+        try:
+            cat_id = int(cat.get("id", 0))
+        except Exception:
+            continue
+        if cat_id in used_cat_ids:
+            kept_categories.append(dict(cat))
+
+    pruned = dict(coco)
+    pruned["images"] = kept_images
+    pruned["annotations"] = kept_annotations
+    pruned["categories"] = kept_categories if kept_categories else (coco.get("categories") or [])
+    return pruned

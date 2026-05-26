@@ -1,0 +1,84 @@
+{
+  "name": "algorithm-research-scout",
+  "description": "Research and shortlist candidate object detection algorithms, implementations, weights, license risks, and deployment fit.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "Use for comparing YOLO, RT-DETR, DEIM/D-FINE, RF-DETR, DAMO-YOLO and deciding which algorithms deserve benchmark.",
+    "keywords": [
+      "论文",
+      "调研",
+      "算法对比",
+      "RT-DETR",
+      "DEIM",
+      "D-FINE",
+      "RF-DETR",
+      "DAMO-YOLO",
+      "比 YOLO 更好"
+    ],
+    "examples": [
+      "调研比 YOLO 更适合棕榈果密集检测的算法",
+      "列一张候选检测算法表"
+    ]
+  },
+  "quality_template": [
+    "algorithm_table",
+    "weights",
+    "license",
+    "training_support",
+    "deployment_support",
+    "risk"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "algorithm-research-scout"
+      },
+      "task_type": {
+        "type": "string"
+      },
+      "constraints": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "baseline": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "execution": {
+    "type": "template",
+    "filename": "algorithm-research-scout.md",
+    "template": "# 检测算法调研清单\n\n## 任务\n\n- 类型：${task_type}\n- 目标：${objective}\n- baseline：${baseline}\n- 约束：${constraints}\n\n## 候选方向\n\n- YOLO baseline：先建立可复现训练与评估基线。\n- RT-DETR：适合检测质量优先的候选，需 benchmark 端侧延迟。\n- DEIM / D-FINE：作为高精度检测候选，重点检查训练脚本成熟度。\n- RF-DETR：作为 DETR 系候选，重点检查许可证、权重来源和导出链路。\n- DAMO-YOLO：作为 YOLO 族外候选，重点检查部署复杂度。\n\n## 下一步\n\n1. 用真实 data.yaml 或数据集压缩包跑 baseline。\n2. 对候选模型做 1 epoch / fraction benchmark。\n3. 记录 mAP、recall、计数误差、显存峰值和单 epoch 耗时。\n"
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "rerank"
+  ]
+}

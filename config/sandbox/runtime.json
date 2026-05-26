@@ -1,0 +1,21 @@
+{
+  "provider": "local",
+  "opensandbox_domain": "127.0.0.1:8080",
+  "opensandbox_protocol": "http",
+  "opensandbox_timeout_seconds": 1800,
+  "opensandbox_image": "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2",
+  "status_timeout_seconds": 2.0,
+  "routing_mode": "selective",
+  "sandboxed_skills": null,
+  "fallback_to_local": true,
+  "profile_config_path": "config/sandbox/profiles.json",
+  "executor_enabled": false,
+  "skill_env_cache": {
+    "enabled": false,
+    "image_prefix": "jetlinks-python-skill-deps",
+    "max_images": 20,
+    "max_bytes": 21474836480,
+    "build_timeout_seconds": 1800,
+    "torch_base_image": ""
+  }
+}

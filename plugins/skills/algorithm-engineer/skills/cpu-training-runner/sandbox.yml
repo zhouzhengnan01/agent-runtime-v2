@@ -1,0 +1,24 @@
+version: 1
+runtime:
+  type: python
+  python: "3.12"
+  requirements: requirements.txt
+  entrypoint: scripts/cpu_training_runner.py
+sandbox:
+  enabled: true
+  profile: python-skill
+  network: true
+  timeout_sec: 7200
+  memory_mb: 8192
+mounts:
+  skill_dir: readonly
+  workspace: readwrite
+outputs:
+  file_globs:
+    - "best.pt"
+    - "last.pt"
+    - "results.csv"
+    - "args.yaml"
+    - "training-summary.json"
+    - "training-summary.md"
+    - "train.log"

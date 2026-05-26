@@ -1,0 +1,12 @@
+{
+  "id": "excel-generation",
+  "name": "excel-generation",
+  "version": "0.1.0",
+  "description": "Generate Excel workbooks.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/excel-generation/manifest.json"
+  ],
+  "source_suite": "builtin-artifact-skills"
+}

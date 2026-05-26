@@ -1,0 +1,12 @@
+{
+  "id": "drawio-generation",
+  "name": "drawio-generation",
+  "version": "0.1.0",
+  "description": "Generate Draw.io architecture diagrams and PNG previews.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/drawio-generation/manifest.json"
+  ],
+  "source_suite": "builtin-artifact-skills"
+}

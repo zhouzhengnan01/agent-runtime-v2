@@ -1,0 +1,53 @@
+{
+  "name": "algorithm-research-benchmark",
+  "title": "算法调研与候选筛选",
+  "description": "围绕 YOLO、RT-DETR、DEIM/D-FINE、RF-DETR、DAMO-YOLO 生成候选表、训练成本、部署风险和 benchmark 推荐。",
+  "category": "algorithm-training",
+  "icon": "mindmap",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [
+    "algorithm-research-scout",
+    "model-candidate-selector"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "找几个比 YOLO 更适合棕榈果密集检测和计数的候选算法，重点比较 RT-DETR、DEIM/D-FINE、RF-DETR 和 DAMO-YOLO。",
+    "根据 AGX 部署、5090 训练、小目标遮挡和计数误差约束，筛选 2-3 个值得 benchmark 的候选模型。"
+  ],
+  "tags": [
+    "算法调研",
+    "候选模型",
+    "RT-DETR",
+    "RF-DETR"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call",
+    "rerank"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

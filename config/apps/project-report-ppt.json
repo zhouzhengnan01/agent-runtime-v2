@@ -1,0 +1,49 @@
+{
+  "name": "project-report-ppt",
+  "title": "项目汇报 PPT 助手",
+  "description": "预置 PPT 生成能力，适合方案汇报、项目周报、里程碑总结。",
+  "category": "generation",
+  "icon": "slides",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [
+    "pptx-generation"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "生成一份 JetLinks 项目汇报 PPT，包含封面、目录、架构、流程、计划、风险和总结",
+    "做一份边缘网关项目阶段汇报 PPT"
+  ],
+  "tags": [
+    "PPT",
+    "汇报",
+    "方案"
+  ],
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

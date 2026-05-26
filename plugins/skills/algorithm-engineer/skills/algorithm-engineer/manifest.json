@@ -1,0 +1,91 @@
+{
+  "name": "algorithm-engineer",
+  "description": "End-to-end CV algorithm iteration planner covering objective, dataset, candidate models, GPU training, evaluation, deployment review, and experiment ledger.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "Use for full-cycle algorithm engineering tasks such as training detection models, improving YOLO baselines, planning GPU experiments, and deciding deployment readiness.",
+    "keywords": [
+      "算法工程师",
+      "算法迭代",
+      "全流程",
+      "训练模型",
+      "检测模型",
+      "模型上线",
+      "benchmark",
+      "评估",
+      "数据治理"
+    ],
+    "examples": [
+      "把棕榈果检测算法工程师全流程跑起来",
+      "帮我从数据治理到训练评估上线做一轮算法迭代"
+    ]
+  },
+  "quality_template": [
+    "objective",
+    "dataset_audit",
+    "candidate_models",
+    "benchmark",
+    "training",
+    "business_evaluation",
+    "deployment_review",
+    "experiment_ledger"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "algorithm-engineer"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "dataset_path": {
+        "type": "string"
+      },
+      "baseline": {
+        "type": "string"
+      },
+      "machines": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "candidate_algorithms": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ]
+}

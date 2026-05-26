@@ -1,0 +1,6 @@
+{
+  "id": "public-skill-demo-plugin",
+  "name": "Public Skill Demo Plugin",
+  "version": "0.1.0",
+  "skills": ["skills/*/manifest.json"]
+}

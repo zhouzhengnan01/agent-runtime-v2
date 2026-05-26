@@ -1,0 +1,131 @@
+{
+  "name": "data-auto-annotation",
+  "description": "Use SAM3 to auto-annotate uploaded images and export a standard COCO JSON dataset artifact.",
+  "output_kind": "json",
+  "generation": true,
+  "quality_template": [
+    "coco_schema",
+    "image_dimensions",
+    "bbox_xywh",
+    "category_mapping"
+  ],
+  "routing": {
+    "summary": "Use for automatic image annotation, object detection pre-labeling, and COCO JSON export from uploaded images.",
+    "keywords": [
+      "自动标注",
+      "数据标注",
+      "COCO",
+      "目标检测",
+      "sam3",
+      "annotation",
+      "labeling",
+      "dataset"
+    ],
+    "examples": [
+      "把这张图片自动标注成 COCO",
+      "用 person car 标注图片并导出 coco.json",
+      "生成目标检测预标注数据"
+    ]
+  },
+  "execution": {
+    "type": "python_script",
+    "runtime": "in_process",
+    "script": "scripts/sam3-predict.py",
+    "input_mode": "json_file",
+    "args": [
+      "--url",
+      "$SAM3_PREDICT_URL",
+      "--input-json",
+      "{workspace}/data-auto-annotation-input.json",
+      "--connect-timeout",
+      "20",
+      "--timeout",
+      "120",
+      "--output",
+      "{outputs}/annotations.coco.json"
+    ],
+    "timeout_seconds": 300,
+    "collect_outputs": true,
+    "outputs": [
+      {
+        "path": "annotations.coco.json"
+      }
+    ],
+    "stderr_filename": "data-auto-annotation-stderr.txt"
+  },
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "labels"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "data-auto-annotation"
+      },
+      "image_path": {
+        "type": "string",
+        "description": "Local image file path or directory path containing images. Prefer the real uploaded attachment path."
+      },
+      "labels": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "description": "Required class labels to detect, e.g. person, cigarette. Only these labels will be exported."
+      },
+      "format": {
+        "type": "string",
+        "const": "coco",
+        "default": "coco"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "name",
+            "mime_type",
+            "kind"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "mime_type": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "json",
+                "text"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": true,
+    "profile": "python-skill",
+    "request_schema_version": "skill-run.v1",
+    "adapter_command": "python {package_dir}/scripts/sam3-predict.py --input-json {request_path} --output {outputs_dir}/annotations.coco.json",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "vision_segmentation"
+  ]
+}

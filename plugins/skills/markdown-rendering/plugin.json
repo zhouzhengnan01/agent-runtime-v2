@@ -1,0 +1,12 @@
+{
+  "id": "markdown-rendering",
+  "name": "markdown-rendering",
+  "version": "0.1.0",
+  "description": "Generate rich Markdown artifacts.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/markdown-rendering/manifest.json"
+  ],
+  "source_suite": "builtin-artifact-skills"
+}

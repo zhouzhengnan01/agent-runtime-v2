@@ -1,0 +1,128 @@
+{
+  "name": "drawio-generation",
+  "description": "Generate Draw.io architecture diagrams and PNG previews.",
+  "output_kind": "drawio",
+  "generation": true,
+  "routing": {
+    "summary": "Use for architecture diagrams, topology diagrams, flowcharts, prototype wireframes, and Draw.io source plus PNG preview generation.",
+    "keywords": [
+      "drawio",
+      "draw.io",
+      "架构图",
+      "拓扑",
+      "流程图",
+      "原型图",
+      "线框图",
+      "diagram",
+      "prototype",
+      "wireframe"
+    ],
+    "examples": [
+      "生成一份 JetLinks IoT 平台架构 Draw.io 图",
+      "画一个原型图",
+      "生成系统拓扑图"
+    ]
+  },
+  "quality_template": [
+    "nodes",
+    "edges",
+    "swimlanes",
+    "layering",
+    "semantic_colors"
+  ],
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "diagram_type": {
+        "type": "string",
+        "enum": [
+          "product_architecture",
+          "system_architecture",
+          "flowchart",
+          "mindmap"
+        ],
+        "default": "system_architecture"
+      },
+      "diagramType": {
+        "type": "string",
+        "enum": [
+          "product_architecture",
+          "system_architecture",
+          "flowchart",
+          "mindmap"
+        ]
+      },
+      "title": {
+        "type": "string"
+      },
+      "data": {
+        "type": "object"
+      },
+      "style": {
+        "type": "string",
+        "enum": [
+          "default",
+          "modern",
+          "colorful",
+          "minimal"
+        ],
+        "default": "modern"
+      },
+      "message": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "success": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": "string"
+      },
+      "outputs": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string"
+          },
+          "diagram_type": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "web_url": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "required": [
+      "success",
+      "message",
+      "outputs",
+      "result"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "profile": "drawio",
+    "request_schema_version": "skill-run.v1",
+    "adapter_command": "python /opt/jetlinks/skills/run_skill.py --request {request_path} --outputs {outputs_dir}",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat"
+  ]
+}

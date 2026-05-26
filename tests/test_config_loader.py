@@ -1,0 +1,261 @@
+import json
+import shutil
+from pathlib import Path
+
+from app.cli import app_model_api_key_purpose, encrypt_app_model_api_key, set_encrypted_api_key
+from app.core.config import AgentConfig, AgentConfigLoader
+from app.core.config.agent_config import BillingConfig
+from app.core.config.secrets import SecretCodec
+from app.core.tools import ToolInvocationService
+
+
+def test_load_builtin_agent(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    shutil.copyfile(Path("config/agents/default.json"), config_dir / "default.json")
+
+    agent = AgentConfigLoader(tmp_path).load("default")
+    assert agent.name == "default"
+    assert agent.runtime.stateless is True
+    assert agent.tools == []
+    assert agent.skills == []
+    assert agent.model.model is None
+    assert agent.model.base_url is None
+    assert agent.routing.llm_workflow_router is False
+    assert agent.routing.llm_workflow_router_env == "LLM_WORKFLOW_ROUTER"
+
+
+def test_builtin_agent_config_does_not_define_app_model_defaults() -> None:
+    data = json.loads(Path("config/agents/default.json").read_text(encoding="utf-8"))
+
+    assert "model" not in data
+
+
+def test_list_agents() -> None:
+    names = {agent.name for agent in AgentConfigLoader().list_agents()}
+    assert names == {"default"}
+
+
+def test_builtin_agent_tool_names_resolve_to_registered_tools() -> None:
+    service = ToolInvocationService()
+    registered_tools = {tool.name for tool in service.list_tools(include_disabled=True)}
+    for agent in AgentConfigLoader().list_agents():
+        missing = set(agent.tools) - registered_tools
+        # Bare shell: agent declares no tools; all tools come from app templates.
+        assert agent.tools == [], f"{agent.name} should be a bare shell with no tools"
+
+
+def test_default_agent_declares_markdown_memory_tools() -> None:
+    agent = AgentConfigLoader().load("default")
+    # Bare shell agent: tools come from app templates, not from agent config.
+    assert agent.tools == []
+
+
+def test_agent_config_accepts_billing_metadata() -> None:
+    agent = AgentConfig(
+        name="billing-agent",
+        display_name="Billing Agent",
+        billing=BillingConfig(enabled=True, prompt_token_rate=0.001, completion_token_rate=0.002, currency="CNY"),
+    )
+    payload = AgentConfigLoader.public_payload(agent)
+
+    assert agent.billing.enabled is True
+    assert agent.billing.prompt_token_rate == 0.001
+    assert agent.billing.completion_token_rate == 0.002
+    assert agent.billing.currency == "CNY"
+    assert payload["billing"]["currency"] == "CNY"
+
+
+def test_local_agent_config_overrides_base_config(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    base_config = {
+        "name": "default",
+        "display_name": "Default",
+        "model": {
+            "model": "json-model",
+            "base_url": "http://base.local/v1",
+            "temperature": 0.4,
+            "max_tokens": 2048,
+        },
+        "runtime": {"max_tool_rounds": 6},
+        "skills": ["markdown-rendering"],
+    }
+    local_config = {
+        "model": {
+            "api_key": "local-key",
+            "temperature": 0.1,
+        },
+        "runtime": {"max_tool_rounds": 2},
+    }
+    (config_dir / "default.json").write_text(json.dumps(base_config), encoding="utf-8")
+    (config_dir / "default.local.json").write_text(json.dumps(local_config), encoding="utf-8")
+
+    agent = AgentConfigLoader(root_dir=tmp_path).load("default")
+
+    assert agent.name == "default"
+    assert agent.model.model == "json-model"
+    assert agent.model.base_url == "http://base.local/v1"
+    assert agent.model.api_key == "local-key"
+    assert agent.model.temperature == 0.1
+    assert agent.model.max_tokens == 2048
+    assert agent.runtime.max_tool_rounds == 2
+    assert agent.skills == ["markdown-rendering"]
+
+
+def test_list_agents_ignores_local_override_files(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    base_config = {
+        "name": "default",
+        "display_name": "Default",
+        "model": {"model": "json-model", "base_url": "http://base.local/v1"},
+    }
+    (config_dir / "default.json").write_text(json.dumps(base_config), encoding="utf-8")
+    (config_dir / "default.local.json").write_text(
+        json.dumps({"model": {"api_key": "local-key"}}),
+        encoding="utf-8",
+    )
+
+    agents = AgentConfigLoader(root_dir=tmp_path).list_agents()
+
+    assert [agent.name for agent in agents] == ["default"]
+    assert agents[0].model.api_key == "local-key"
+
+
+def test_public_agent_payload_redacts_api_key(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    base_config = {
+        "name": "default",
+        "display_name": "Default",
+        "model": {"model": "json-model", "base_url": "http://base.local/v1"},
+    }
+    (config_dir / "default.json").write_text(json.dumps(base_config), encoding="utf-8")
+    (config_dir / "default.local.json").write_text(
+        json.dumps({"model": {"api_key": "local-key"}}),
+        encoding="utf-8",
+    )
+    loader = AgentConfigLoader(root_dir=tmp_path)
+    agent = loader.load("default")
+
+    payload = loader.public_payload(agent)
+
+    assert agent.model.api_key == "local-key"
+    assert payload["model"]["api_key"] == "********"
+
+
+def test_load_agent_decrypts_encrypted_api_key_from_local_config(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    base_config = {
+        "name": "default",
+        "display_name": "Default",
+        "model": {"model": "json-model", "base_url": "http://base.local/v1"},
+    }
+    loader = AgentConfigLoader(root_dir=tmp_path)
+    encrypted = SecretCodec(tmp_path).encrypt(
+        "encrypted-local-key",
+        purpose=loader._secret_purpose("default", "api_key"),
+    )
+    (config_dir / "default.json").write_text(json.dumps(base_config), encoding="utf-8")
+    (config_dir / "default.local.json").write_text(
+        json.dumps({"model": {"api_key_enc": encrypted}}),
+        encoding="utf-8",
+    )
+
+    agent = loader.load("default")
+    payload = loader.public_payload(agent)
+
+    assert agent.model.api_key == "encrypted-local-key"
+    assert payload["model"]["api_key"] == "********"
+    assert payload["model"]["api_key_enc"] == "********"
+
+
+def test_plain_api_key_takes_precedence_over_encrypted_api_key(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    base_config = {
+        "name": "default",
+        "display_name": "Default",
+        "model": {"model": "json-model", "base_url": "http://base.local/v1"},
+    }
+    loader = AgentConfigLoader(root_dir=tmp_path)
+    encrypted = SecretCodec(tmp_path).encrypt("encrypted-key", purpose=loader._secret_purpose("default", "api_key"))
+    (config_dir / "default.json").write_text(json.dumps(base_config), encoding="utf-8")
+    (config_dir / "default.local.json").write_text(
+        json.dumps({"model": {"api_key": "plain-key", "api_key_enc": encrypted}}),
+        encoding="utf-8",
+    )
+
+    agent = loader.load("default")
+
+    assert agent.model.api_key == "plain-key"
+
+
+def test_plain_local_api_key_is_auto_encrypted_on_load(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    base_config = {
+        "name": "default",
+        "display_name": "Default",
+        "model": {"model": "json-model", "base_url": "http://base.local/v1"},
+    }
+    local_path = config_dir / "default.local.json"
+    (config_dir / "default.json").write_text(json.dumps(base_config), encoding="utf-8")
+    local_path.write_text(
+        json.dumps(
+            {
+                "model": {
+                    "model": "local-model",
+                    "base_url": "http://local.local/v1",
+                    "api_key": "plain-local-key",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loader = AgentConfigLoader(root_dir=tmp_path)
+    agent = loader.load("default")
+    saved = json.loads(local_path.read_text(encoding="utf-8"))
+
+    assert agent.model.model == "local-model"
+    assert agent.model.base_url == "http://local.local/v1"
+    assert agent.model.api_key == "plain-local-key"
+    assert "api_key" not in saved["model"]
+    assert saved["model"]["api_key_enc"].startswith("enc.fernet.v1.")
+    assert loader.load("default").model.api_key == "plain-local-key"
+
+
+def test_set_encrypted_api_key_writes_local_override_and_master_key(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config" / "agents"
+    config_dir.mkdir(parents=True)
+    base_config = {
+        "name": "default",
+        "display_name": "Default",
+        "model": {"model": "json-model", "base_url": "http://base.local/v1", "temperature": 0.4},
+    }
+    (config_dir / "default.json").write_text(json.dumps(base_config), encoding="utf-8")
+    loader = AgentConfigLoader(root_dir=tmp_path)
+
+    local_path = set_encrypted_api_key(loader, "default", "cli-secret-key")
+
+    local_data = json.loads(local_path.read_text(encoding="utf-8"))
+    assert local_data["model"]["api_key_enc"].startswith("enc.fernet.v1.")
+    assert "api_key" not in local_data["model"]
+    assert (tmp_path / ".runtime" / "secrets" / "master.key").is_file()
+    assert loader.load("default").model.api_key == "cli-secret-key"
+
+
+def test_encrypt_app_model_api_key_uses_app_model_purpose(tmp_path: Path) -> None:
+    loader = AgentConfigLoader(root_dir=tmp_path)
+
+    encrypted = encrypt_app_model_api_key(loader, "_debug-app", "gpt-5.5", "app-secret-key")
+
+    codec = SecretCodec(tmp_path)
+    assert encrypted.startswith("enc.fernet.v1.")
+    assert (
+        codec.decrypt(encrypted, purpose=app_model_api_key_purpose("_debug-app", "gpt-5.5"))
+        == "app-secret-key"
+    )

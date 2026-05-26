@@ -1,0 +1,13 @@
+{
+  "id": "gpu-training-orchestrator",
+  "name": "gpu-training-orchestrator",
+  "version": "0.2.0",
+  "description": "Run the chat-driven dataset inspection, optional synthetic generation, real-only validation split, and YOLO training pipeline.",
+  "workflow_capabilities": [
+    "training"
+  ],
+  "runner": "runner.py",
+  "skills": [
+    "SKILL.md"
+  ]
+}
