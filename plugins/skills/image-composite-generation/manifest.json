@@ -1,0 +1,156 @@
+{
+  "name": "image-composite-generation",
+  "description": "Composite two image sources into realistic synthetic training images through the TokenCloud/Bailian image generation API.",
+  "output_kind": "image",
+  "generation": true,
+  "workflow_capabilities": [
+    "image_generation"
+  ],
+  "routing": {
+    "summary": "Use when the user wants to composite two images or image folders into synthetic training images, especially background plus foreground/object data augmentation.",
+    "keywords": [
+      "图片合成",
+      "图像合成",
+      "合成图片",
+      "合成图像",
+      "二图合成",
+      "背景图",
+      "前景图",
+      "数据增强",
+      "扩充数据集",
+      "训练数据生成",
+      "image composite",
+      "image composition",
+      "synthetic dataset",
+      "augmentation"
+    ],
+    "examples": [
+      "用这两张图合成训练图片，prompt: 把目标自然放到监控画面里",
+      "把背景目录和目标图片合成 20 张检测训练增强图"
+    ]
+  },
+  "quality_template": [
+    "image1",
+    "image2",
+    "prompt",
+    "output_dir",
+    "result_image_path",
+    "composite_summary"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "image1",
+      "image2",
+      "prompt"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "image-composite-generation"
+      },
+      "image1": {
+        "type": "string",
+        "description": "First image source. Supports absolute file path, absolute folder path, URL, or data URL.",
+        "x_param_kind": "image"
+      },
+      "image2": {
+        "type": "string",
+        "description": "Second image source. Supports absolute file path, absolute folder path, URL, or data URL.",
+        "x_param_kind": "image"
+      },
+      "prompt": {
+        "type": "string",
+        "description": "Image composition prompt."
+      },
+      "output_dir": {
+        "type": "string",
+        "description": "Absolute output directory. Defaults to the current thread outputs directory.",
+        "x_param_kind": "path"
+      },
+      "api_url": {
+        "type": "string",
+        "default": "https://www.tokencloud.yun/v1/images/generations"
+      },
+      "token": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string",
+        "default": "wan2.7-image-pro"
+      },
+      "count": {
+        "type": "integer",
+        "default": 1
+      },
+      "size": {
+        "type": "string",
+        "default": "768*768"
+      },
+      "negative_prompt": {
+        "type": "string"
+      },
+      "timeout": {
+        "type": "integer",
+        "default": 180
+      },
+      "sleep": {
+        "type": "number",
+        "default": 1.0
+      },
+      "prompt_extend": {
+        "type": "boolean",
+        "default": false
+      },
+      "watermark": {
+        "type": "boolean",
+        "default": false
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "result_image_path": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "execution": {
+    "type": "python_script",
+    "runtime": "local_subprocess",
+    "script": "scripts/run_composite.py",
+    "input_mode": "json_file",
+    "args": [
+      "--input",
+      "{workspace}/image-composite-generation-input.json"
+    ],
+    "timeout_seconds": 360,
+    "install_timeout_seconds": 1800,
+    "collect_outputs": true,
+    "stdout_filename": "image-composite-generation-stdout.txt",
+    "stderr_filename": "image-composite-generation-stderr.txt"
+  },
+  "sandbox": {
+    "enabled": true,
+    "profile": "python-skill",
+    "request_schema_version": "skill-run.v1",
+    "adapter_command": "python {package_dir}/scripts/run_composite.py --input {request_path}",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "image_generation",
+    "vision_segmentation"
+  ]
+}

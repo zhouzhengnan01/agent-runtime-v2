@@ -549,14 +549,58 @@ def test_skill_registry_exposes_model_tags_as_metadata() -> None:
     data_auto = registry.get("data-auto-annotation")
     algorithm_research = registry.get("algorithm-research-scout")
     image_dataset_generation = registry.get("image-dataset-generation")
+    image_composite_generation = registry.get("image-composite-generation")
     payload = data_auto.to_event_payload()
 
     assert data_auto.model_tags == ("vision_segmentation",)
     assert algorithm_research.model_tags == ("chat", "reasoning", "rerank")
     assert image_dataset_generation.executable is True
     assert image_dataset_generation.model_tags == ("image_generation", "vision_segmentation")
+    assert image_composite_generation.executable is True
+    assert image_composite_generation.model_tags == ("image_generation", "vision_segmentation")
     assert payload["model_tags"] == ["vision_segmentation"]
     assert "model_tags" not in (data_auto.input_schema or {}).get("properties", {})
+
+
+def test_image_composite_spec_builder_uses_two_image_attachments() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "skills"
+        / "image-composite-generation"
+        / "spec_builder.py"
+    )
+    spec = importlib.util.spec_from_file_location("image_composite_spec_builder_for_test", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    attachments = [
+        {"name": "background.jpg", "path": "/tmp/background.jpg", "mime_type": "image/jpeg"},
+        {"name": "object.png", "path": "/tmp/object.png", "mime_type": "image/png"},
+    ]
+
+    score = module.score_skill(
+        "image-composite-generation",
+        "请做图片合成 prompt: 目标自然出现在监控画面中",
+        attachments,
+        ["image-composite-generation"],
+    )
+    built = module.build_spec(
+        "image-composite-generation",
+        "请做图片合成 prompt: 目标自然出现在监控画面中",
+        "",
+        attachments,
+        {},
+    )
+
+    assert score >= 120
+    assert built["image1"] == "/tmp/background.jpg"
+    assert built["image2"] == "/tmp/object.png"
+    assert built["prompt"] == "目标自然出现在监控画面中"
+    assert built["api_url"] == "https://www.tokencloud.yun/v1/images/generations"
+    assert built["token"].startswith("sk-")
+    assert built["model"] == "wan2.7-image-pro"
 
 
 def test_behavior_review_outputs_second_pass_logic_and_continuous_state(tmp_path: Path) -> None:
@@ -1246,6 +1290,78 @@ print(json.dumps({"image_path": str(image_path)}, ensure_ascii=False))
     assert str(paths.uploads / "input.txt") in result.data["image_path"]
     assert str(paths.uploads / "input.txt") in output
     assert "uploaded content" in output
+
+
+def test_image_composite_runner_normalizes_runtime_payload_and_collects_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "skills"
+        / "image-composite-generation"
+        / "scripts"
+        / "run_composite.py"
+    )
+    image1 = tmp_path / "background.jpg"
+    image2 = tmp_path / "object.png"
+    output_dir = tmp_path / "outputs"
+    child = tmp_path / "fake_child.py"
+    image1.write_bytes(b"image1")
+    image2.write_bytes(b"image2")
+    child.write_text(
+        """
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--url")
+parser.add_argument("--token")
+parser.add_argument("--model")
+parser.add_argument("--image1")
+parser.add_argument("--image2")
+parser.add_argument("--prompt")
+parser.add_argument("--output-dir")
+parser.add_argument("--size")
+parser.add_argument("--count")
+parser.add_argument("--timeout")
+parser.add_argument("--sleep")
+args = parser.parse_args()
+target = Path(args.output_dir) / "composite_001.png"
+target.write_bytes(b"png")
+print(f"Composite success. saved: {target}")
+""",
+        encoding="utf-8",
+    )
+    payload = {
+        "spec": {
+            "attachments": [
+                {"name": "background.jpg", "path": str(image1), "mime_type": "image/jpeg"},
+                {"name": "object.png", "path": str(image2), "mime_type": "image/png"},
+            ],
+            "prompt": "自然合成到监控画面",
+            "count": 1,
+            "timeout": 1,
+        },
+        "outputs_dir": str(output_dir),
+    }
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("IMAGE_COMPOSITE_SCRIPT", str(child))
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--input", str(input_path)],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (output_dir / "composite_001.png").read_bytes() == b"png"
+    assert "result_image_path:" in completed.stdout
+    assert "status: success" in completed.stdout
 
 
 def test_python_script_manifest_rejects_missing_script_file(

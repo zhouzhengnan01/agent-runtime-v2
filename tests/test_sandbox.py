@@ -45,6 +45,7 @@ def test_sandbox_status_defaults_to_lightweight_local(monkeypatch: pytest.Monkey
         "data-auto-annotation",
         "drawio-generation",
         "excel-generation",
+        "image-composite-generation",
         "image-dataset-generation",
         "pptx-generation",
     ]
@@ -392,6 +393,7 @@ def test_sandbox_status_api_defaults_to_lightweight_local(monkeypatch: pytest.Mo
         "data-auto-annotation",
         "drawio-generation",
         "excel-generation",
+        "image-composite-generation",
         "image-dataset-generation",
         "pptx-generation",
     ]

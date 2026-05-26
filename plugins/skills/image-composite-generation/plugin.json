@@ -1,0 +1,12 @@
+{
+  "id": "image-composite-generation",
+  "name": "image-composite-generation",
+  "version": "0.1.0",
+  "description": "Composite two image sources into synthetic training images through a TokenCloud/Bailian image generation API.",
+  "workflow_capabilities": [
+    "image_generation"
+  ],
+  "skills": [
+    "manifest.json"
+  ]
+}
