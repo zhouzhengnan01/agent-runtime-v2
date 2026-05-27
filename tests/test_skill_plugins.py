@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from app.api import skills as skills_api
 from app.core.artifacts import ArtifactStore
+from app.core.skills.aliases import expand_skill_aliases, invalidate_skill_alias_cache
 from app.core.skills import SkillRegistry, SkillRunner
 from app.core.skills.plugins import SkillPluginManager
 from app.main import create_app
@@ -1602,6 +1603,32 @@ def test_single_skill_markdown_package_upload_registers_skill(
     assert skills["markdown-skill"]["executable"] is True
 
 
+def test_skill_plugin_upload_ignores_macos_metadata_and_maps_plugin_id_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidate_skill_alias_cache()
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/plugins",
+        files={"file": ("1779867237931mnv6gtbj.zip", _macos_plugin_zip_without_runner(), "application/zip")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["plugin"]["id"] == "1779867237931mnv6gtbj"
+    assert response.json()["plugin"]["skills"] == ["emoji生成选择"]
+    assert expand_skill_aliases(["1779867237931mnv6gtbj"], tmp_path) == ["emoji生成选择"]
+
+    listed = client.get("/api/skills")
+    assert listed.status_code == 200
+    skills = {skill["name"]: skill for skill in listed.json()["skills"]}
+    assert skills["emoji生成选择"]["source"]["plugin_id"] == "1779867237931mnv6gtbj"
+    assert skills["emoji生成选择"]["executable"] is False
+
+
 def _plugin_zip() -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -1690,4 +1717,47 @@ def run(skill_name, spec, paths, artifact_store):
     }
 """,
         )
+    return buffer.getvalue()
+
+
+def _macos_plugin_zip_without_runner() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("__MACOSX/._1779867237931mnv6gtbj", b"metadata")
+        archive.writestr(
+            "1779867237931mnv6gtbj/plugin.json",
+            json.dumps(
+                {
+                    "id": "1779867237931mnv6gtbj",
+                    "name": "emoji技能",
+                    "skills": ["manifest.json"],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        archive.writestr("1779867237931mnv6gtbj/._plugin.json", b"metadata")
+        archive.writestr("1779867237931mnv6gtbj/SKILL.md", "# Emoji\n")
+        archive.writestr(
+            "1779867237931mnv6gtbj/manifest.json",
+            json.dumps(
+                {
+                    "name": "emoji生成选择",
+                    "description": "用户提及emoji相关内容的时候触发",
+                    "generation": True,
+                    "output_kind": "markdown",
+                    "input_schema": {
+                        "type": "object",
+                        "required": ["skill_name", "objective"],
+                        "properties": {
+                            "skill_name": {"const": "emoji"},
+                            "objective": {"type": "string"},
+                        },
+                    },
+                    "output_schema": {"type": "object"},
+                    "sandbox": {"enabled": False, "request_schema_version": "skill-run.v1"},
+                },
+                ensure_ascii=False,
+            ),
+        )
+        archive.writestr("__MACOSX/1779867237931mnv6gtbj/._manifest.json", b"metadata")
     return buffer.getvalue()

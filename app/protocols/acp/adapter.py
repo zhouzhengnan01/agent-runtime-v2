@@ -14,6 +14,7 @@ from app.core.apps import AppTemplate, AppTemplateRegistry
 from app.core.artifacts import ThreadPaths
 from app.core.config import AgentConfigLoader
 from app.core.runtime import ModelManager
+from app.core.skills.aliases import expand_skill_aliases
 from app.protocols.acp.content import prompt_parts_from_dict_blocks
 from app.protocols.acp.external_backend import ExternalAcpSession, prompt_blocks_from_params, prompt_response_payload
 from app.protocols.acp.input_required import stop_reason_for_result
@@ -905,7 +906,10 @@ def _merge_runtime_options(base: dict[str, Any], override: dict[str, Any]) -> di
     merged = {**base, **override}
     if not merged:
         return {}
-    return RuntimeOptions.model_validate(merged).model_dump(mode="python", exclude_none=True)
+    normalized = RuntimeOptions.model_validate(merged).model_dump(mode="python", exclude_none=True)
+    if "selected_skills" in normalized:
+        normalized["selected_skills"] = expand_skill_aliases(normalized["selected_skills"])
+    return normalized
 
 
 def _without_thread_id(runtime_options: dict[str, Any]) -> dict[str, Any]:

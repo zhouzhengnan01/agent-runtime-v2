@@ -5,6 +5,7 @@ import json
 import os
 import re
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from app.core.llm import OpenAICompatibleClient
 from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.agent.input_required import required_inputs_for_request, required_inputs_for_result
 from app.core.skills import SkillDefinition, SkillRegistry
+from app.core.skills.aliases import expand_skill_aliases
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
 from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, Role, RuntimeOptions
@@ -68,6 +70,7 @@ class AgentRuntime:
         self.skills = self._normalize_skills(skills)
         self.agent_loop = ToolCallingAgentLoop(
             ToolInvocationService(
+                root_dir=self.app_template_registry.root_dir,
                 artifact_store=self.artifact_store,
                 memory_store=self.memory_store,
                 markdown_memory_store=self.markdown_memory_store,
@@ -569,7 +572,10 @@ class AgentRuntime:
         updates: dict[str, object] = {}
         if self.skills is not None:
             updates["skills"] = list(self.skills)
-        selected_skills = self._normalize_skills(request.runtime_options.selected_skills)
+        selected_skills = self._normalize_skills(
+            request.runtime_options.selected_skills,
+            root_dir=self.app_template_registry.root_dir,
+        )
         if selected_skills:
             raw_skills = updates.get("skills")
             base_skills = list(raw_skills) if isinstance(raw_skills, list) else list(agent_config.skills)
@@ -618,7 +624,11 @@ class AgentRuntime:
         return runtime_options.model_copy(update={"selected_skills": selected_skills}, deep=True)
 
     def _runtime_options_with_composite_skills(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
-        selected_skills = self._normalize_skills(runtime_options.selected_skills) or []
+        raw_selected_skills = self._normalize_skills(runtime_options.selected_skills) or []
+        selected_skills = self._normalize_skills(
+            runtime_options.selected_skills,
+            root_dir=self.app_template_registry.root_dir,
+        ) or []
         if not selected_skills:
             return runtime_options
         skill_registry = SkillRegistry(self.app_template_registry.root_dir)
@@ -638,7 +648,7 @@ class AgentRuntime:
             composite_contexts.append(self._composite_skill_context(skill))
             for child_skill in skill.child_skills:
                 self._append_unique(expanded_skills, seen, child_skill)
-        if expanded_skills == selected_skills and not composite_contexts:
+        if expanded_skills == raw_selected_skills and not composite_contexts:
             return runtime_options
         config_options = dict(runtime_options.config_options)
         if composite_contexts:
@@ -905,12 +915,12 @@ class AgentRuntime:
         return value.strip() if isinstance(value, str) else ""
 
     @staticmethod
-    def _normalize_skills(skills: list[str] | None) -> list[str] | None:
+    def _normalize_skills(skills: list[str] | None, *, root_dir: str | os.PathLike[str] | None = None) -> list[str] | None:
         if skills is None:
             return None
         normalized = []
         seen = set()
-        for skill in skills:
+        for skill in expand_skill_aliases(skills, Path(root_dir) if root_dir is not None else None):
             name = skill.strip()
             if not name or name in seen:
                 continue

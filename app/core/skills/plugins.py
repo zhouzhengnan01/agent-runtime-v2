@@ -18,6 +18,7 @@ from app.core.skills.plugin_execution import (
 )
 from app.core.skills.generic_runner import can_run_generic as _can_run_generic
 from app.core.skills.generic_runner import run_generic_skill as _run_generic_skill
+from app.core.skills.aliases import invalidate_skill_alias_cache
 from app.core.skills.plugin_manifest import (
     json_object_from_text as _json_object_from_text,
     plugin_metadata_from_skill_md as _plugin_metadata_from_skill_md,
@@ -297,6 +298,7 @@ class SkillPluginManager:
         temp_root.replace(target_root)
         plugin = self._load_plugin(target_root)
         self._materialize_plugin_entities(plugin)
+        invalidate_skill_alias_cache()
         return plugin
 
     def _materialize_plugin_entities(self, plugin: SkillPlugin) -> None:

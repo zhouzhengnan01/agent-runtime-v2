@@ -252,6 +252,8 @@ def safe_zip_members(archive: zipfile.ZipFile) -> list[str]:
         name = info.filename.replace("\\", "/")
         if name.startswith("/") or ".." in Path(name).parts:
             raise ValueError(f"Invalid plugin archive path: {info.filename}")
+        if _macos_metadata_member(name):
+            continue
         if name and not name.endswith("/"):
             members.append(name)
     return members
@@ -263,3 +265,8 @@ def single_root_prefix(members: list[str]) -> str:
     if len(roots) == 1 and not top_level_files:
         return f"{next(iter(roots))}/"
     return ""
+
+
+def _macos_metadata_member(name: str) -> bool:
+    parts = Path(name).parts
+    return "__MACOSX" in parts or any(part.startswith("._") for part in parts)

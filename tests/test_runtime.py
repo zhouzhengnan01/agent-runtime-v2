@@ -1,6 +1,7 @@
 import asyncio
-from pathlib import Path
 from collections.abc import AsyncIterator
+import json
+from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -10,11 +11,14 @@ from app.core.agent import AgentRuntime
 from app.core.apps import AppTemplateRegistry
 from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfig, AgentConfigLoader
+from app.core.config.agent_config import ModelConfig
 from app.core.config.secrets import SecretCodec
 from app.core.agent.turn_verifier import verify_turn_completion
 from app.core.llm import LlmChatResponse, OpenAICompatibleClient
 from app.core.routing import WorkflowRouter
+from app.core.skills.aliases import invalidate_skill_alias_cache
 from app.core.skills import SkillRegistry
+from app.core.skills.plugins import SkillPluginManager
 from app.core.workflow import WorkflowRegistry
 from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, RuntimeOptions
 
@@ -596,6 +600,77 @@ def test_message_selected_skills_do_not_block_app_template_model_injection(
     assert seen["base_url"] == "http://124.132.152.75:62092/v1"
     assert seen["api_key"] == "abc@123"
     assert seen["tool_count"] >= 1
+
+
+def test_runtime_expands_uploaded_plugin_id_selected_skill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalidate_skill_alias_cache()
+    plugin_root = tmp_path / "plugins" / "skills" / "1779867237931mnv6gtbj"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "1779867237931mnv6gtbj",
+                "name": "emoji技能",
+                "skills": ["manifest.json"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "emoji生成选择",
+                "description": "用户提及emoji相关内容的时候触发",
+                "output_kind": "markdown",
+                "input_schema": {"type": "object"},
+                "output_schema": {"type": "object"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    SkillPluginManager(tmp_path)._materialize_plugin_entities(SkillPluginManager(tmp_path)._load_plugin(plugin_root))
+    seen: dict[str, object] = {}
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del self, messages
+        seen["system_prompt"] = system_prompt
+        return "ok"
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        app_template_registry=AppTemplateRegistry(tmp_path),
+    )
+    agent = AgentConfig(
+        name="default",
+        display_name="Default",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="chat-model"),
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="当前技能有哪些")],
+                runtime_options=RuntimeOptions(
+                    thread_id="uploaded-plugin-id-skill",
+                    selected_skills=["1779867237931mnv6gtbj"],
+                ),
+            ),
+        )
+    )
+
+    assert result.reply == "ok"
+    assert "Primary skill: emoji生成选择" in str(seen["system_prompt"])
 
 
 def test_artifact_suite_verifier_passes_when_required_deliverables_exist() -> None:

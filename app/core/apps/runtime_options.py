@@ -3,25 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.apps.models import AppTemplate
+from app.core.skills.aliases import expand_skill_aliases
 from app.schemas import RuntimeOptions
-
-
-PLATFORM_SKILL_ALIASES: dict[str, list[str]] = {
-    "1778483741456a5glxkmk": [
-        "algorithm-engineer",
-        "dataset-curator",
-        "data-auto-annotation",
-        "image-dataset-generation",
-        "algorithm-research-scout",
-        "model-candidate-selector",
-        "remote-gpu-ops",
-        "gpu-training-orchestrator",
-        "cpu-training-runner",
-        "detector-evaluator",
-        "deployment-candidate-reviewer",
-        "experiment-ledger",
-    ],
-}
 
 
 def merge_runtime_options_with_template(
@@ -56,9 +39,7 @@ def merge_runtime_options_with_template(
 
     merged["app_template_name"] = template.name
     merged["workflow"] = merged.get("workflow") or template.workflow
-    merged["selected_skills"] = expand_skill_aliases(
-        _merge_string_lists(template.selected_skills, merged.get("selected_skills"))
-    )
+    merged["selected_skills"] = expand_skill_aliases(_merge_string_lists(template.selected_skills, merged.get("selected_skills")))
     merged["selected_mcp_tools"] = _merge_string_lists(template.selected_mcp_tools, merged.get("selected_mcp_tools"))
     merged["skill_parameters"] = _merge_skill_parameters(template_options.get("skill_parameters"), merged.get("skill_parameters"))
     return RuntimeOptions.model_validate(merged)
@@ -72,19 +53,6 @@ def _merge_string_lists(template_value: Any, request_value: Any, *, request_expl
     if isinstance(template_value, list):
         return [str(item).strip() for item in template_value if str(item).strip()]
     return []
-
-
-def expand_skill_aliases(values: list[str]) -> list[str]:
-    expanded: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        names = PLATFORM_SKILL_ALIASES.get(value, [value])
-        for name in names:
-            clean = str(name).strip()
-            if clean and clean not in seen:
-                expanded.append(clean)
-                seen.add(clean)
-    return expanded
 
 
 def _merge_skill_parameters(

@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 
 from app.core.apps.models import AppTemplate
-from app.core.apps.runtime_options import expand_skill_aliases
 from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfigLoader
 from app.core.mcp import McpToolRegistry
+from app.core.skills.aliases import expand_skill_aliases
 from app.core.skills import SkillRegistry
 from app.core.workflow import WorkflowRegistry
 
