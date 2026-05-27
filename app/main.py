@@ -62,17 +62,11 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
     app.include_router(mcp.router)
 
     static_dir = Path(__file__).resolve().parents[1] / "static"
-    workbench_path = static_dir / "workbench.html"
-    if workbench_path.is_file():
-        @app.get("/workbench", include_in_schema=False)
-        async def workbench_app() -> FileResponse:
-            response = FileResponse(workbench_path)
-            response.headers["Cache-Control"] = "no-store, max-age=0"
-            return response
-
+    static_workbench_path = static_dir / "workbench.html"
+    if static_workbench_path.is_file():
         @app.get("/static/workbench.html", include_in_schema=False)
         async def workbench_html() -> FileResponse:
-            response = FileResponse(workbench_path)
+            response = FileResponse(static_workbench_path)
             response.headers["Cache-Control"] = "no-store, max-age=0"
             return response
 
@@ -81,6 +75,23 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
         @app.get("/static/api-docs.html", include_in_schema=False)
         async def api_docs_html() -> FileResponse:
             response = FileResponse(api_docs_path)
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
+
+    workbench_dist = Path(__file__).resolve().parents[1] / "frontend" / "workbench" / "dist"
+    workbench_index = workbench_dist / "index.html"
+    if workbench_index.is_file():
+        @app.get("/workbench", include_in_schema=False)
+        async def workbench_app() -> FileResponse:
+            response = FileResponse(workbench_index)
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            return response
+
+        app.mount("/workbench", StaticFiles(directory=workbench_dist, html=True), name="workbench")
+    elif static_workbench_path.is_file():
+        @app.get("/workbench", include_in_schema=False)
+        async def legacy_workbench_app() -> FileResponse:
+            response = FileResponse(static_workbench_path)
             response.headers["Cache-Control"] = "no-store, max-age=0"
             return response
 
