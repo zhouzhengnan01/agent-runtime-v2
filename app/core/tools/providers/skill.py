@@ -6,6 +6,7 @@ from typing import Any
 from app.core.artifacts import ArtifactStore
 from app.core.skills import SkillDefinition, SkillRegistry, SkillRunner
 from app.core.tools.schemas import ToolDefinition, ToolInvocationResult
+from app.schemas import ArtifactRef, artifact_content_block
 
 
 class SkillToolProvider:
@@ -33,17 +34,23 @@ class SkillToolProvider:
         paths = self.artifact_store.prepare_thread(thread_id)
         result = self.skill_runner.run(skill_name, spec, paths)
         artifacts = [artifact.model_dump() for artifact in result.outputs]
-        artifact_text = "\n".join(f"- {artifact['name']} ({artifact['path']})" for artifact in artifacts) or "- no artifacts"
+        artifact_text = "\n".join(
+            f"- {artifact['name']} ({artifact_content_block(ArtifactRef.model_validate(artifact))['path']})"
+            for artifact in artifacts
+        ) or "- no artifacts"
         requires_input = result.data.get("requires_input") is True
         raw_required_inputs = result.data.get("required_inputs")
         required_inputs: list[object] = raw_required_inputs if isinstance(raw_required_inputs, list) else []
+        content = [
+            {
+                "type": "text",
+                "text": _input_required_text(required_inputs) if requires_input else f"Executed {skill_name}.\n{artifact_text}",
+            }
+        ]
+        if not requires_input:
+            content.extend(artifact_content_block(artifact) for artifact in result.outputs)
         return ToolInvocationResult(
-            content=[
-                {
-                    "type": "text",
-                    "text": _input_required_text(required_inputs) if requires_input else f"Executed {skill_name}.\n{artifact_text}",
-                }
-            ],
+            content=content,
             structured_content={
                 "skill_name": skill_name,
                 "thread_id": thread_id,

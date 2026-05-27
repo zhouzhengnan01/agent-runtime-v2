@@ -16,7 +16,7 @@ from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfigLoader
 from app.core.llm.openai_compatible import LlmChatResponse, OpenAICompatibleClient
 from app.core.runtime import ModelManager
-from app.schemas import AgentRunResult, ChatEvent, ChatRequest
+from app.schemas import AgentRunResult, ArtifactRef, ChatEvent, ChatRequest
 from app.schemas import Message
 from app.main import create_app
 
@@ -37,6 +37,31 @@ class CapturingAcpRuntime(AgentRuntime):
             agent=agent_config.name,
             thread_id=request.runtime_options.thread_id or "acp-test-thread",
             reply="ok",
+        )
+        yield ChatEvent(type="run.completed", data={"result": result.model_dump()})
+
+
+class ArtifactAcpRuntime(AgentRuntime):
+    def __init__(self, artifact_store: ArtifactStore) -> None:
+        self.artifact_store = artifact_store
+
+    async def iter_events(self, agent_config: Any, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        result = AgentRunResult(
+            agent=agent_config.name,
+            thread_id=request.runtime_options.thread_id or "acp-artifact-thread",
+            reply="生成完成。",
+            artifacts=[
+                ArtifactRef(
+                    thread_id=request.runtime_options.thread_id or "acp-artifact-thread",
+                    path="/mnt/user-data/outputs/reports/result.md",
+                    name="result.md",
+                    mime_type="text/markdown",
+                    kind="markdown",
+                    size=12,
+                    preview_url="/api/artifacts/acp-artifact-thread/mnt/user-data/outputs/reports/result.md",
+                    download_url="/api/artifacts/acp-artifact-thread/mnt/user-data/outputs/reports/result.md?download=true",
+                )
+            ],
         )
         yield ChatEvent(type="run.completed", data={"result": result.model_dump()})
 
@@ -201,6 +226,48 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
         assert "agent_thought_chunk" in session_update_types
         assert "runtime_event" not in session_update_types
         assert "agent_message" not in session_update_types
+
+
+def test_acp_websocket_prompt_returns_content_resource_links(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = ArtifactAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "new_session",
+                "params": _acp_params(thread_id="acp-artifact-thread"),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "生成报告"}],
+                },
+            }
+        )
+        final = _receive_final_packet(websocket, 3)
+
+    content = final["result"]["content"]
+    assert content == final["result"]["result"]["content"]
+    assert content[0] == {"type": "text", "text": "生成完成。"}
+    assert content[1]["type"] == "resource_link"
+    assert content[1]["uri"] == "outputs/reports/result.md"
+    assert content[1]["path"] == "outputs/reports/result.md"
+    assert content[1]["name"] == "result.md"
+    assert content[1]["mimeType"] == "text/markdown"
 
 
 def test_acp_websocket_prompt_returns_input_required_from_result_metadata(

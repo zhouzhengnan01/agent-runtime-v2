@@ -56,6 +56,9 @@ def test_tool_invocation_service_keeps_manual_tools_and_skills_as_providers(tmp_
     assert skill.structured_content["skill_name"] == "markdown-rendering"
     assert skill.structured_content["thread_id"] == "tool-skill-test"
     assert skill.structured_content["artifacts"][0]["name"] == "result.md"
+    assert skill.content[1]["type"] == "resource_link"
+    assert skill.content[1]["path"] == "outputs/result.md"
+    assert skill.content[1]["uri"] == "outputs/result.md"
 
 
 def test_local_patch_file_replaces_unique_text_in_session_cwd(tmp_path: Path) -> None:

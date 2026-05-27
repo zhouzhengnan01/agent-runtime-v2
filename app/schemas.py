@@ -73,15 +73,55 @@ class ArtifactRef(BaseModel):
     download_url: str
 
 
+def artifact_relative_path(path: str) -> str:
+    normalized = path.replace("\\", "/").lstrip()
+    outputs_prefix = "/mnt/user-data/outputs/"
+    if normalized.startswith(outputs_prefix):
+        return f"outputs/{normalized[len(outputs_prefix):].lstrip('/')}"
+    if normalized == "/mnt/user-data/outputs":
+        return "outputs"
+    if normalized.startswith("mnt/user-data/outputs/"):
+        return f"outputs/{normalized[len('mnt/user-data/outputs/'):].lstrip('/')}"
+    if normalized.startswith("outputs/") or normalized == "outputs":
+        return normalized
+    return normalized.lstrip("/")
+
+
+def artifact_content_block(artifact: ArtifactRef) -> dict[str, Any]:
+    relative_path = artifact_relative_path(artifact.path)
+    return {
+        "type": "resource_link",
+        "uri": relative_path,
+        "path": relative_path,
+        "name": artifact.name,
+        "mimeType": artifact.mime_type,
+        "size": artifact.size,
+        "title": artifact.name,
+    }
+
+
+def agent_result_content(reply: str, artifacts: list[ArtifactRef]) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = []
+    if reply.strip():
+        content.append({"type": "text", "text": reply})
+    content.extend(artifact_content_block(artifact) for artifact in artifacts)
+    return content
+
+
 class AgentRunResult(BaseModel):
     agent: str
     thread_id: str
     status: Literal["completed", "failed"] = "completed"
     reply: str
+    content: list[dict[str, Any]] = Field(default_factory=list)
     artifacts: list[ArtifactRef] = Field(default_factory=list)
     verification: VerificationResult | None = None
     spec: dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.content:
+            self.content = agent_result_content(self.reply, self.artifacts)
 
 
 class ChatEvent(BaseModel):

@@ -314,6 +314,7 @@ class AcpRuntimeAdapter:
             "stopReason": stop_reason,
             "threadId": result.thread_id,
             "agentName": result.agent,
+            "content": result.content,
             "result": result.model_dump(),
         }
         if result.metadata.get("requires_input") is True:
