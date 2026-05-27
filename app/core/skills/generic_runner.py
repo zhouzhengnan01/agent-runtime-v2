@@ -298,7 +298,12 @@ def _declared_result_outputs(stdout: str, paths: ThreadPaths, artifact_store: Ar
 
 def _python_script_data(stdout: str) -> dict[str, Any]:
     data = _json_object(stdout)
-    return data if data else {"stdout": stdout}
+    if not data:
+        return {"stdout": stdout}
+    nested_data = data.get("data")
+    if isinstance(nested_data, dict):
+        return {**nested_data, **{key: value for key, value in data.items() if key not in {"data", "outputs", "artifacts"}}}
+    return data
 
 
 def _json_object(text: str) -> dict[str, Any]:

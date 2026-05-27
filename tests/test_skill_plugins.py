@@ -1293,6 +1293,99 @@ print(json.dumps({"image_path": str(image_path)}, ensure_ascii=False))
     assert "uploaded content" in output
 
 
+def test_skill_md_entrypoint_discovers_deep_python_script_and_collects_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/plugins",
+        files={"file": ("auto-script-skill.zip", _single_skill_script_entrypoint_zip(), "application/zip")},
+    )
+
+    assert response.status_code == 200
+    manifest_path = tmp_path / "config" / "skills" / "auto-script-skill.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["execution"]["type"] == "python_script"
+    assert manifest["execution"]["script"] == "scripts/deep/worker.py"
+    assert manifest["execution"]["input_mode"] == "stdin_json"
+
+    listed = client.get("/api/skills")
+    assert listed.status_code == 200
+    skills = {skill["name"]: skill for skill in listed.json()["skills"]}
+    assert skills["auto-script-skill"]["executable"] is True
+
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("auto-script-skill")
+    result = SkillRunner(store, root_dir=tmp_path).run("auto-script-skill", {"title": "Auto Script"}, paths)
+
+    assert result.data["title"] == "Auto Script"
+    assert [artifact.name for artifact in result.outputs] == ["auto-script.md"]
+    assert (paths.outputs / "auto-script.md").read_text(encoding="utf-8") == "# Auto Script\n"
+
+
+def test_arbitrary_python_function_entrypoint_is_imported_and_executed(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugins" / "skills" / "auto-function-plugin"
+    skill_root = plugin_root / "skills" / "auto-function-skill"
+    script_root = skill_root / "scripts" / "nested"
+    script_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "auto-function-plugin",
+  "name": "Auto Function Plugin",
+  "version": "1.0.0",
+  "skills": ["skills/*/manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (skill_root / "manifest.json").write_text(
+        """
+{
+  "name": "auto-function-skill",
+  "description": "Auto function skill",
+  "output_kind": "markdown",
+  "generation": true,
+  "quality_template": [],
+  "input_schema": {"type": "object"},
+  "output_schema": {"type": "object"},
+  "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
+}
+""",
+        encoding="utf-8",
+    )
+    (script_root / "emoji_engine.py").write_text(
+        """
+def run_skill(skill_name, spec, paths, artifact_store):
+    title = spec.get("title", "Untitled")
+    artifact = artifact_store.write_text_artifact(paths, "function-entry.md", f"# {title}\\n")
+    return {
+        "skill_name": skill_name,
+        "outputs": [artifact.model_dump()],
+        "data": {"entrypoint": "scripts/nested/emoji_engine.py"}
+    }
+""",
+        encoding="utf-8",
+    )
+
+    manager = SkillPluginManager(tmp_path)
+    loaded = manager.get_loaded_skill("auto-function-skill")
+    assert loaded.executable is True
+    assert loaded.runner_path == (script_root / "emoji_engine.py").resolve()
+
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("auto-function-skill")
+    result = SkillRunner(store, root_dir=tmp_path).run("auto-function-skill", {"title": "Function Entry"}, paths)
+
+    assert result.data["entrypoint"] == "scripts/nested/emoji_engine.py"
+    assert result.outputs[0].name == "function-entry.md"
+    assert (paths.outputs / "function-entry.md").read_text(encoding="utf-8") == "# Function Entry\n"
+
+
 def test_image_composite_runner_normalizes_runtime_payload_and_collects_outputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1760,4 +1853,47 @@ def _macos_plugin_zip_without_runner() -> bytes:
             ),
         )
         archive.writestr("__MACOSX/1779867237931mnv6gtbj/._manifest.json", b"metadata")
+    return buffer.getvalue()
+
+
+def _single_skill_script_entrypoint_zip() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "SKILL.md",
+            """
+---
+name: auto-script-skill
+description: Uploaded SKILL.md package with an explicit deep script entrypoint.
+entrypoint: scripts/deep/worker.py
+runtime: python
+tags:
+  - markdown
+---
+
+# Auto Script Skill
+
+执行脚本：`scripts/deep/worker.py`
+""",
+        )
+        archive.writestr(
+            "scripts/deep/worker.py",
+            """
+import json
+import sys
+from pathlib import Path
+
+
+def main():
+    payload = json.load(sys.stdin)
+    title = payload["spec"]["title"]
+    outputs = Path(payload["outputs_dir"])
+    (outputs / "auto-script.md").write_text(f"# {title}\\n", encoding="utf-8")
+    print(json.dumps({"data": {"title": title}}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
+""",
+        )
     return buffer.getvalue()

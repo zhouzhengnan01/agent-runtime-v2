@@ -4,7 +4,7 @@ import json
 import shutil
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
@@ -19,6 +19,8 @@ from app.core.skills.plugin_execution import (
 from app.core.skills.generic_runner import can_run_generic as _can_run_generic
 from app.core.skills.generic_runner import run_generic_skill as _run_generic_skill
 from app.core.skills.aliases import invalidate_skill_alias_cache
+from app.core.skills.entrypoint_discovery import discover_skill_entrypoint as _discover_skill_entrypoint
+from app.core.skills.entrypoint_discovery import manifest_with_discovered_execution as _manifest_with_discovered_execution
 from app.core.skills.plugin_manifest import (
     json_object_from_text as _json_object_from_text,
     plugin_metadata_from_skill_md as _plugin_metadata_from_skill_md,
@@ -133,6 +135,8 @@ class SkillPluginManager:
             if implementation is None:
                 loaded[definition.name] = LoadedSkill(definition=definition, manifest_path=entity_path, plugin=None)
                 continue
+            if definition.execution is None and implementation.definition.execution is not None:
+                definition = replace(definition, execution=implementation.definition.execution)
             loaded[definition.name] = LoadedSkill(
                 definition=_with_plugin_metadata(
                     definition,
@@ -172,7 +176,18 @@ class SkillPluginManager:
 
     def read_manifest(self, skill_name: str) -> dict[str, Any]:
         loaded = self.get_loaded_skill(skill_name)
-        return _read_manifest_source(loaded.manifest_path)
+        manifest = _read_manifest_with_discovery(loaded.manifest_path)
+        if isinstance(manifest.get("execution"), dict) or loaded.plugin is None:
+            return manifest
+        plugin_manifest_path = loaded.plugin.manifest_paths.get(skill_name)
+        if plugin_manifest_path is None or plugin_manifest_path.resolve() == loaded.manifest_path.resolve():
+            return manifest
+        plugin_manifest = _read_manifest_with_discovery(plugin_manifest_path)
+        execution = plugin_manifest.get("execution")
+        if isinstance(execution, dict):
+            manifest = dict(manifest)
+            manifest["execution"] = execution
+        return manifest
 
     def list_package_files(self, skill_name: str) -> list[SkillPackageFile]:
         loaded = self.get_loaded_skill(skill_name)
@@ -308,7 +323,7 @@ class SkillPluginManager:
             if target.is_file():
                 continue
             try:
-                manifest = _read_manifest_source(manifest_path)
+                manifest = _read_manifest_with_discovery(manifest_path)
                 manifest["name"] = skill_name
                 manifest = _normalize_skill_manifest(manifest)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -320,7 +335,7 @@ class SkillPluginManager:
         for plugin in self.list_plugins():
             for skill_name, manifest_path in plugin.manifest_paths.items():
                 try:
-                    definition = definition_from_manifest(_read_manifest_source(manifest_path), manifest_path)
+                    definition = definition_from_manifest(_read_manifest_with_discovery(manifest_path), manifest_path)
                 except (OSError, ValueError, TypeError, json.JSONDecodeError):
                     continue
                 runner_path = self._skill_runner_path(plugin, manifest_path)
@@ -527,7 +542,7 @@ class SkillPluginManager:
             if path.suffix.lower() != ".json" and path.name != "SKILL.md":
                 continue
             try:
-                manifest = _read_manifest_source(path)
+                manifest = _read_manifest_with_discovery(path)
                 definition = definition_from_manifest(manifest, path)
                 _validate_manifest_execution(manifest, path)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -540,7 +555,12 @@ class SkillPluginManager:
         local = manifest_path.parent / "runner.py"
         if local.is_file():
             return local.resolve()
-        return plugin.runner_path
+        if plugin.runner_path is not None:
+            return plugin.runner_path
+        entrypoint = _discover_skill_entrypoint(manifest_path, _read_manifest_source(manifest_path))
+        if entrypoint is not None and entrypoint.kind == "function":
+            return entrypoint.path
+        return None
 
     @staticmethod
     def _skill_spec_builder_path(plugin: SkillPlugin, manifest_path: Path) -> Path | None:
@@ -677,7 +697,7 @@ class SkillPluginManager:
         for manifest_path in plugin.manifest_paths.values():
             if manifest_path.suffix.lower() != ".json":
                 continue
-            manifest = _read_manifest_source(manifest_path)
+            manifest = _read_manifest_with_discovery(manifest_path)
             manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     @staticmethod
@@ -811,7 +831,7 @@ def _manifest_keyword_score(plugin: SkillPlugin, skill_name: str, routing_text: 
     if manifest_path is None:
         return 0
     try:
-        manifest = _read_manifest_source(manifest_path)
+        manifest = _read_manifest_with_discovery(manifest_path)
     except (OSError, ValueError, json.JSONDecodeError):
         return 0
     routing = manifest.get("routing")
@@ -820,3 +840,8 @@ def _manifest_keyword_score(plugin: SkillPlugin, skill_name: str, routing_text: 
         keywords = [str(item).lower() for item in routing["keywords"] if isinstance(item, str)]
     text = routing_text.lower()
     return 50 if any(keyword in text for keyword in keywords) else 0
+
+
+def _read_manifest_with_discovery(path: Path) -> dict[str, Any]:
+    manifest = _read_manifest_source(path)
+    return _manifest_with_discovered_execution(path, manifest)

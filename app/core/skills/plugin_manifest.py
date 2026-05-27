@@ -43,7 +43,7 @@ def manifest_from_skill_md(text: str, package_root: Path) -> dict[str, Any]:
     name = string_metadata(metadata.get("name")) or package_root.name
     description = string_metadata(metadata.get("description")) or name
     tags = string_list_metadata(metadata.get("tags"))
-    return {
+    manifest: dict[str, Any] = {
         "name": name,
         "description": description,
         "output_kind": infer_output_kind(name, tags),
@@ -53,6 +53,13 @@ def manifest_from_skill_md(text: str, package_root: Path) -> dict[str, Any]:
         "output_schema": {"type": "object", "additionalProperties": True},
         "sandbox": sandbox_from_package(package_root),
     }
+    entrypoint = string_metadata(metadata.get("entrypoint") or metadata.get("entry_point"))
+    runtime = string_metadata(metadata.get("runtime"))
+    if entrypoint:
+        manifest["entrypoint"] = entrypoint
+    if runtime:
+        manifest["runtime"] = runtime
+    return manifest
 
 
 def plugin_metadata_from_skill_md(text: str, package_root: Path) -> dict[str, Any]:
