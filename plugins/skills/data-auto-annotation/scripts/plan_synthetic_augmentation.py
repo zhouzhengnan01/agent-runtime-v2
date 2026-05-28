@@ -119,8 +119,9 @@ def _build_prompt_plan(
     negative_ratio: float,
     generation_prompt: str = "",
 ) -> List[Dict]:
-    positive_count = max(0, int(round(synthetic_count * (1.0 - negative_ratio))))
-    negative_count = max(0, synthetic_count - positive_count)
+    synthetic_count = max(0, int(synthetic_count))
+    negative_count = min(synthetic_count, max(0, int(round(synthetic_count * negative_ratio))))
+    positive_count = max(0, synthetic_count - negative_count)
     labels = ", ".join(class_names) if class_names else "target classes"
     scenes = [
         "realistic photo, target objects clearly visible, natural background, complete target visible",
@@ -318,6 +319,7 @@ def build_plan(
     min_real_images_for_skip: int,
     generation_prompt: str = "",
     planner: str = "llm",
+    fixed_synthetic_count: int = 20,
     llm_config: Dict[str, Any] | None = None,
 ) -> Dict:
     coco = _load_json(coco_path)
@@ -338,7 +340,13 @@ def build_plan(
     should_generate = real_image_count < min_real_images_for_skip
     recommended = 0
 
-    if planner == "llm":
+    if planner == "fixed":
+        recommended = max(0, int(fixed_synthetic_count))
+        if max_synthetic > 0:
+            recommended = min(recommended, max_synthetic)
+        should_generate = recommended > 0
+        planner_type = "fixed_count"
+    elif planner == "llm":
         try:
             llm_raw = _llm_recommendation(
                 llm_config=llm_config or {},
@@ -359,7 +367,7 @@ def build_plan(
             planner_error = str(exc)
             planner_type = "heuristic_rules_fallback"
 
-    if planner_type != "llm_dynamic":
+    if planner_type not in {"llm_dynamic", "fixed_count"}:
         if should_generate:
             recommended = int(heuristic["recommended_synthetic_count"])
             if max_synthetic > 0:
@@ -413,7 +421,8 @@ def main() -> None:
     parser.add_argument("--task", required=True, help="Task description, e.g. bottle detection, helmet detection, smoking detection")
     parser.add_argument("--split-train", type=float, default=0.7, help="Train ratio for real dataset")
     parser.add_argument("--max-synthetic", type=int, default=2000, help="Hard cap for synthetic image count; <=0 disables cap")
-    parser.add_argument("--planner", choices=["llm", "heuristic"], default="llm", help="Planner used for synthetic image count")
+    parser.add_argument("--planner", choices=["llm", "heuristic", "fixed"], default="llm", help="Planner used for synthetic image count")
+    parser.add_argument("--fixed-synthetic-count", type=int, default=20, help="Synthetic image count used when --planner=fixed")
     parser.add_argument("--llm-config", default="", help="JSON file with base_url, api_key, model, temperature, max_tokens, timeout")
     parser.add_argument("--negative-ratio", type=float, default=0.08, help="Recommended hard-negative synthetic sample ratio")
     parser.add_argument("--generation-prompt", default="", help="User-provided prompt used as the base positive generation prompt")
@@ -436,6 +445,7 @@ def main() -> None:
         min_real_images_for_skip=max(1, args.min_real_images_for_skip),
         generation_prompt=args.generation_prompt,
         planner=args.planner,
+        fixed_synthetic_count=args.fixed_synthetic_count,
         llm_config=llm_config,
     )
     payload = json.dumps(plan, ensure_ascii=False, indent=2)

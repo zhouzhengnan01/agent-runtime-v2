@@ -1,0 +1,45 @@
+{
+  "name" : "emoji生成选择",
+  "description" : "用户提及emoji相关内容的时候触发",
+  "generation" : true,
+  "output_kind" : "markdown",
+  "routing" : {
+    "summary" : "",
+    "keywords" : [ ],
+    "examples" : [ ]
+  },
+  "quality_template" : [ ],
+  "input_schema" : {
+    "type" : "object",
+    "required" : [ "skill_name", "objective" ],
+    "properties" : {
+      "skill_name" : {
+        "const" : "emoji"
+      },
+      "objective" : {
+        "type" : "string"
+      }
+    },
+    "additionalProperties" : true
+  },
+  "output_schema" : {
+    "type" : "object",
+    "required" : [ "artifacts" ],
+    "properties" : {
+      "artifacts" : {
+        "type" : "array"
+      }
+    },
+    "additionalProperties" : true
+  },
+  "sandbox" : {
+    "enabled" : false,
+    "request_schema_version" : "skill-run.v1",
+    "fallback_to_local" : true
+  },
+  "metadata" : {
+    "developerCenter" : {
+      "domain" : "general"
+    }
+  }
+}

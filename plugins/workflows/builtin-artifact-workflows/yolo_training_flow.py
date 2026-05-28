@@ -22,6 +22,13 @@ WORKFLOW_OUTPUT_DIR = "yolo_training_flow"
 PIPELINE_WORK_DIR = "pipeline_work"
 DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "data-auto-annotation", "gpu-training-orchestrator"]
 
+# Synthetic image count switch for the algorithm-engineer-full-cycle-test app.
+# button=True: use the LLM planner to decide how many images to synthesize.
+# button=False: use FIXED_SYNTHETIC_COUNT instead.
+button = False
+FIXED_SYNTHETIC_COUNT = 10
+AUTO_GENERATE_MISSING_SPEC = True
+
 
 class YoloTrainingWorkflow:
     """General YOLO training flow with optional synthetic data generation."""
@@ -62,7 +69,7 @@ class YoloTrainingWorkflow:
         existing_composite_image2 = _load_composite_image2_path(paths)
         explicit_attachment_roles = _parse_attachment_role_hints(user_text)
 
-        dataset_attachment = _find_dataset_package_attachment(attachments, role_hints=explicit_attachment_roles) if not existing_dataset_pkg else None
+        dataset_attachment = _find_dataset_package_attachment(attachments, role_hints=explicit_attachment_roles, include_thread_files=False) if not existing_dataset_pkg else None
         composite_attachments = _find_composite_input_attachments(
             attachments,
             include_thread_files=False,
@@ -123,46 +130,84 @@ class YoloTrainingWorkflow:
             recorder.emit("run.completed", {"result": result.model_dump()})
             return result, recorder.events
 
-        request_spec = _extract_yolo_training_request_spec(
-            user_text,
-            agent_config=agent_config,
-            runtime_options=runtime_options,
-            recorder=recorder,
-        )
+        model_managed_spec = _auto_generate_missing_spec(runtime_options)
+        if model_managed_spec:
+            generation_enabled = True
+            training_enabled = True
+            selected_skills = _ensure_full_cycle_skills(selected_skills)
+            request_spec = _generate_model_managed_yolo_training_request_spec(
+                user_text=user_text,
+                agent_config=agent_config,
+                runtime_options=runtime_options,
+                recorder=recorder,
+            )
+            if _spec_string(request_spec, "generation_prompt"):
+                request_spec["use_synthetic_generation"] = True
+            _emit_model_generated_spec(recorder, request_spec)
+            _write_model_generated_spec_logs(workflow_output_root, request_spec)
+        else:
+            request_spec = _extract_yolo_training_request_spec(
+                user_text,
+                agent_config=agent_config,
+                runtime_options=runtime_options,
+                recorder=recorder,
+            )
         synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
         if synthetic_generation is not None:
             _save_synthetic_generation_enabled(paths, synthetic_generation)
         persisted_synthetic_generation = _load_synthetic_generation_enabled(paths)
-        if persisted_synthetic_generation is not None:
+        if model_managed_spec:
+            generation_enabled = True
+            _save_synthetic_generation_enabled(paths, True)
+        elif persisted_synthetic_generation is not None:
             generation_enabled = generation_enabled and persisted_synthetic_generation
 
-        prompt_text = _spec_string(request_spec, "generation_prompt") or _extract_generation_prompt(user_text, allow_free_text=waiting_prompt)
-        if prompt_text:
-            _save_generation_prompt(paths, prompt_text)
-        else:
-            prompt_text = _load_generation_prompt(paths)
-        labels = _spec_string_list(request_spec, "labels") or _extract_annotation_labels(user_text)
-        if labels:
-            _save_annotation_labels(paths, labels)
-        else:
-            labels = _load_annotation_labels(paths)
-        training_cfg = _spec_training_config(request_spec)
-        training_cfg_available = bool(training_cfg)
-        if training_cfg:
-            _save_training_config(paths, training_cfg)
-        else:
-            training_cfg = _load_training_config(paths)
+        if model_managed_spec:
+            prompt_text = _spec_string(request_spec, "generation_prompt")
+            labels = _spec_string_list(request_spec, "labels")
+            training_cfg = _spec_training_config(request_spec)
             training_cfg_available = bool(training_cfg)
-        if not training_cfg:
-            training_cfg = _extract_training_config(user_text)
-            training_cfg_available = _has_explicit_training_config(user_text)
-            if training_cfg_available:
+            task_description = _spec_string(request_spec, "task_description")
+            if prompt_text:
+                _save_generation_prompt(paths, prompt_text)
+            if labels:
+                _save_annotation_labels(paths, labels)
+            if training_cfg:
+                _force_current_runtime(training_cfg)
                 _save_training_config(paths, training_cfg)
-        task_description = _spec_string(request_spec, "task_description")
-        if task_description:
-            _save_detection_task_description(paths, task_description)
+            if task_description:
+                _save_detection_task_description(paths, task_description)
+            generation_enabled = bool(prompt_text)
+            if generation_enabled:
+                _save_synthetic_generation_enabled(paths, True)
         else:
-            task_description = _load_detection_task_description(paths)
+            prompt_text = _spec_string(request_spec, "generation_prompt") or _extract_generation_prompt(user_text, allow_free_text=waiting_prompt)
+            if prompt_text:
+                _save_generation_prompt(paths, prompt_text)
+            else:
+                prompt_text = _load_generation_prompt(paths)
+            labels = _spec_string_list(request_spec, "labels") or _extract_annotation_labels(user_text)
+            if labels:
+                _save_annotation_labels(paths, labels)
+            else:
+                labels = _load_annotation_labels(paths)
+            training_cfg = _spec_training_config(request_spec)
+            training_cfg_available = bool(training_cfg)
+            if training_cfg:
+                _save_training_config(paths, training_cfg)
+            else:
+                training_cfg = _load_training_config(paths)
+                training_cfg_available = bool(training_cfg)
+            if not training_cfg:
+                training_cfg = _extract_training_config(user_text)
+                training_cfg_available = _has_explicit_training_config(user_text)
+                if training_cfg_available:
+                    _save_training_config(paths, training_cfg)
+            task_description = _spec_string(request_spec, "task_description")
+            if task_description:
+                _save_detection_task_description(paths, task_description)
+            else:
+                task_description = _load_detection_task_description(paths)
 
         if not dataset_pkg or (generation_enabled and (not composite_image1 or not composite_image2)):
             required_inputs = []
@@ -183,53 +228,82 @@ class YoloTrainingWorkflow:
 
         if generation_enabled and not prompt_text:
             _set_waiting_prompt(paths, True)
-            reply = "请继续输入合成提示词，格式为 prompt: 你的描述"
+            if _auto_generate_missing_spec(runtime_options):
+                reply = "模型未能生成合成提示词，无法继续自动合成数据。请检查模型配置或重试。"
+                status = "failed"
+                event_type = "run.failed"
+                metadata_phase = "model_spec_completion_failed"
+            else:
+                reply = "请继续输入合成提示词，格式为 prompt: 你的描述"
+                status = "completed"
+                event_type = "run.completed"
+                metadata_phase = "await_prompt"
             result = AgentRunResult(
                 agent=agent_config.name,
                 thread_id=paths.thread_id,
-                status="completed",
+                status=status,
                 reply=reply,
-                metadata={"workflow": workflow, "phase": "await_prompt", "requires_prompt_text": True},
+                metadata={"workflow": workflow, "phase": metadata_phase, "requires_prompt_text": True},
             )
             recorder.emit("agent.message", {"text": reply})
-            recorder.emit("run.completed", {"result": result.model_dump()})
+            recorder.emit(event_type, {"result": result.model_dump()})
             return result, recorder.events
 
         if not labels:
             _set_waiting_prompt(paths, True)
-            reply = (
-                "请补充自动标注类别后继续，例如：\n"
-                "labels=person,cigarette\n"
-                "也支持 label=person cigarette、classes=person,cigarette、标注类别：person，cigarette"
-            )
+            if _auto_generate_missing_spec(runtime_options):
+                reply = "模型未能生成自动标注类别，无法继续自动标注和训练。请检查模型配置或重试。"
+                status = "failed"
+                event_type = "run.failed"
+                metadata_phase = "model_spec_completion_failed"
+            else:
+                reply = (
+                    "请补充自动标注类别后继续，例如：\n"
+                    "labels=person,cigarette\n"
+                    "也支持 label=person cigarette、classes=person,cigarette、标注类别：person，cigarette"
+                )
+                status = "completed"
+                event_type = "run.completed"
+                metadata_phase = "await_labels"
             result = AgentRunResult(
                 agent=agent_config.name,
                 thread_id=paths.thread_id,
-                status="completed",
+                status=status,
                 reply=reply,
-                metadata={"workflow": workflow, "phase": "await_labels", "requires_prompt_text": True, "requires_labels": True},
+                metadata={"workflow": workflow, "phase": metadata_phase, "requires_prompt_text": True, "requires_labels": True},
             )
             recorder.emit("agent.message", {"text": reply})
-            recorder.emit("run.completed", {"result": result.model_dump()})
+            recorder.emit(event_type, {"result": result.model_dump()})
             return result, recorder.events
 
         if training_enabled and not training_cfg_available:
             _set_waiting_prompt(paths, True)
-            reply = (
-                "为避免使用默认训练配置，请在同一条消息补充训练参数后继续，例如：\n"
-                "conda_env_name=yolo_jetson model=yolo11n.pt epochs=10 imgsz=640 batch=8 "
-                "device=0 workers=4 patience=20 dataset.split.train=0.7 dataset.split.val=0.2 dataset.split.test=0.1"
-            )
+            if _auto_generate_missing_spec(runtime_options):
+                reply = "模型未能生成完整训练参数，无法继续自动训练。请检查模型配置或重试。"
+                status = "failed"
+                event_type = "run.failed"
+                metadata_phase = "model_spec_completion_failed"
+            else:
+                reply = (
+                    "为避免使用默认训练配置，请在同一条消息补充训练参数后继续，例如：\n"
+                    "conda_env_name=yolo_jetson model=yolo11n.pt epochs=10 imgsz=640 batch=8 "
+                    "device=0 workers=4 patience=20 dataset.split.train=0.7 dataset.split.val=0.2 dataset.split.test=0.1"
+                )
+                status = "completed"
+                event_type = "run.completed"
+                metadata_phase = "await_prompt"
             result = AgentRunResult(
                 agent=agent_config.name,
                 thread_id=paths.thread_id,
-                status="completed",
+                status=status,
                 reply=reply,
-                metadata={"workflow": workflow, "phase": "await_prompt", "requires_prompt_text": True, "requires_training_config": True},
+                metadata={"workflow": workflow, "phase": metadata_phase, "requires_prompt_text": True, "requires_training_config": True},
             )
             recorder.emit("agent.message", {"text": reply})
-            recorder.emit("run.completed", {"result": result.model_dump()})
+            recorder.emit(event_type, {"result": result.model_dump()})
             return result, recorder.events
+
+        _force_current_runtime(training_cfg)
 
         _reset_generated_dir(workflow_output_root / PIPELINE_WORK_DIR)
         _reset_generated_dir(workflow_output_root / "training_run")
@@ -258,6 +332,8 @@ class YoloTrainingWorkflow:
             "work_dir": pipeline_work_dir,
             "output_dir": data_prep_output_dir,
             "skip_generation": not generation_enabled,
+            "synthetic_count_button": _synthetic_count_button(runtime_options),
+            "fixed_synthetic_count": _fixed_synthetic_count(runtime_options),
             "split_requested": training_enabled,
             "split": training_cfg["split"],
             "training": training_cfg["training"],
@@ -276,6 +352,8 @@ class YoloTrainingWorkflow:
                 "output_dir": data_prep_output_dir,
                 "run_name": run_name,
                 "phase": "data_preparation",
+                "synthetic_count_button": _synthetic_count_button(runtime_options),
+                "fixed_synthetic_count": _fixed_synthetic_count(runtime_options),
             },
         }
 
@@ -361,7 +439,7 @@ class YoloTrainingWorkflow:
             "project_dir": project_dir,
             "run_name": run_name,
             "training": training_cfg["training"],
-            "runtime": training_cfg["runtime"],
+            "runtime": _current_runtime_config(training_cfg.get("runtime", {})),
             "workflow_context": {
                 "dataset_yaml": dataset_yaml,
                 "project_dir": project_dir,
@@ -424,6 +502,7 @@ class YoloTrainingWorkflow:
                 "data_preparation_spec": data_prep_spec,
                 "training_summary": summary,
                 "best_pt": best_pt,
+                "model_generated_spec": _model_generated_spec_payload(request_spec),
                 "merged_dataset_root": pipeline_paths.get("dataset_root") or str(dataset_root),
                 "merged_coco_json": pipeline_paths.get("coco_json") or "",
                 "synthetic_plan": pipeline_paths.get("synthetic_plan") or "",
@@ -460,13 +539,19 @@ class YoloTrainingWorkflow:
 SmokingDetectionTrainingWorkflow = YoloTrainingWorkflow
 
 
-def _find_dataset_package_attachment(attachments: list[Attachment], role_hints: dict[str, str] | None = None) -> Attachment | None:
-    hinted = _attachment_for_role(attachments, "dataset", role_hints or {})
+def _find_dataset_package_attachment(
+    attachments: list[Attachment],
+    role_hints: dict[str, str] | None = None,
+    *,
+    include_thread_files: bool = True,
+) -> Attachment | None:
+    candidates = [item for item in attachments if include_thread_files or not _is_thread_file_attachment(item)]
+    hinted = _attachment_for_role(candidates, "dataset", role_hints or {})
     if hinted is not None:
         return hinted
     named_candidates: list[Attachment] = []
     fallback_candidates: list[Attachment] = []
-    for item in attachments:
+    for item in candidates:
         name = item.name.lower()
         path = (item.path or "").lower()
         if any(name.endswith(ext) or path.endswith(ext) for ext in _DATASET_PACKAGE_EXTS):
@@ -489,7 +574,7 @@ def _attachment_payload(attachment: Any) -> dict[str, Any]:
 
 def _find_image_attachment(attachments: list[Attachment], *, include_thread_files: bool = True) -> Attachment | None:
     for item in attachments:
-        if not include_thread_files and bool(item.metadata.get("thread_file")):
+        if not include_thread_files and _is_thread_file_attachment(item):
             continue
         mime = (item.mime_type or "").lower()
         name = item.name.lower()
@@ -509,8 +594,9 @@ def _find_composite_input_attachments(
 ) -> list[Attachment]:
     dataset_path = str(getattr(dataset_attachment, "path", "") or "")
     hints = role_hints or {}
-    hinted_image1 = _attachment_for_role(attachments, "image1", hints)
-    hinted_image2 = _attachment_for_role(attachments, "image2", hints)
+    candidates = [item for item in attachments if include_thread_files or not _is_thread_file_attachment(item)]
+    hinted_image1 = _attachment_for_role(candidates, "image1", hints)
+    hinted_image2 = _attachment_for_role(candidates, "image2", hints)
     if hinted_image1 is not None or hinted_image2 is not None:
         return [item for item in (hinted_image1, hinted_image2) if item is not None and _is_composite_input_attachment(item, allow_archives=True)]
 
@@ -518,10 +604,8 @@ def _find_composite_input_attachments(
     image2_candidates: list[Attachment] = []
     fallback_candidates: list[Attachment] = []
     seen_paths: set[str] = set()
-    for item in attachments:
+    for item in candidates:
         if dataset_path and str(item.path or "") == dataset_path:
-            continue
-        if not include_thread_files and bool(item.metadata.get("thread_file")):
             continue
         path_key = str(item.path or "").strip().lower()
         if path_key and path_key in seen_paths:
@@ -566,6 +650,11 @@ def _is_composite_input_attachment(item: Attachment, *, allow_archives: bool = F
         return path.exists() and path.is_dir()
     except Exception:
         return False
+
+
+def _is_thread_file_attachment(item: Attachment) -> bool:
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    return bool(metadata.get("thread_file"))
 
 
 def _parse_attachment_role_hints(user_text: str) -> dict[str, str]:
@@ -735,12 +824,14 @@ def _is_yolo_training_intent(
     recorder: EventRecorder,
     has_active_training_state: bool = False,
 ) -> bool:
-    if _has_dataset_attachment(attachments):
+    if _has_dataset_attachment(attachments, include_thread_files=False):
         return True
     if has_active_training_state and _find_composite_input_attachments(attachments, include_thread_files=False, allow_archives=True):
         return True
     if _looks_like_yolo_training_request(user_text):
         return True
+    if _looks_like_plain_chat(user_text):
+        return False
     if not user_text.strip():
         return False
 
@@ -812,8 +903,8 @@ def _chat_reply_for_non_training_intent(
     return "你好，我在。你可以直接和我聊天；如果需要训练 YOLO 检测模型，再告诉我任务并上传数据集。"
 
 
-def _has_dataset_attachment(attachments: list[Attachment]) -> bool:
-    return _find_dataset_package_attachment(attachments) is not None
+def _has_dataset_attachment(attachments: list[Attachment], *, include_thread_files: bool = True) -> bool:
+    return _find_dataset_package_attachment(attachments, include_thread_files=include_thread_files) is not None
 
 
 def _looks_like_yolo_training_request(user_text: str) -> bool:
@@ -841,6 +932,25 @@ def _looks_like_yolo_training_request(user_text: str) -> bool:
         "划分",
     )
     return any(marker in text for marker in positive_markers)
+
+
+def _looks_like_plain_chat(user_text: str) -> bool:
+    text = re.sub(r"\s+", " ", (user_text or "").strip().lower())
+    if not text:
+        return False
+    greetings = {
+        "hi",
+        "hello",
+        "hey",
+        "你好",
+        "您好",
+        "嗨",
+        "在吗",
+        "在么",
+        "hello!",
+        "hi!",
+    }
+    return text in greetings
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:
@@ -906,6 +1016,222 @@ def _extract_yolo_training_request_spec(
         return {}
 
 
+def _generate_model_managed_yolo_training_request_spec(
+    *,
+    user_text: str,
+    agent_config: Any,
+    runtime_options: RuntimeOptions,
+    recorder: EventRecorder,
+) -> dict[str, Any]:
+    llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_model_managed_spec"})
+    if not llm.configured:
+        recorder.emit("llm.completed", {"purpose": "workflow_model_managed_spec", "used_fallback": True, "reason": "not_configured"})
+        return {}
+    system_prompt = (
+        "你是资深计算机视觉算法工程师，要根据用户一句业务目标完整托管 YOLO/CV 检测训练流程参数规划。"
+        "用户不会再提供合成提示词、标注类别或训练参数，你必须自己思考并输出完整可执行规格。"
+        "必须只返回 JSON 对象，不要解释。JSON 字段必须包含："
+        "task_description 字符串；"
+        "use_synthetic_generation 布尔值，必须为 true；"
+        "generation_prompt 字符串；"
+        "labels 字符串数组；"
+        "training 对象，必须含 task, model, epochs, imgsz, batch, device, workers, patience；"
+        "runtime 对象，必须含 enforce_conda_env；不要输出 conda_env_name，或将 conda_env_name 置为空字符串；"
+        "split 对象，必须含 train, val, test。"
+        "合成设定：用户会上传 dataset.zip、image1.zip、image2.zip；"
+        "image1.zip 固定是场景/背景文件夹，image2.zip 固定是目标物文件夹；"
+        "合成目的必须是把 image2 中目标自然合成到 image1 场景中，形成真实、可标注的训练图片。"
+        "generation_prompt 必须包含上述 image1/image2 角色、自然融合、光照/尺度/遮挡一致、适合检测标注等要求。"
+        "labels 必须围绕用户要训练的检测目标，不要固定套用示例类别；"
+        "只有抽烟检测通常应包含 person 和 cigarette；车辆检测应输出车辆相关类别；"
+        "训练参数必须由你根据任务、数据合成/自动标注/YOLO 训练常识合理选择，不能引用用户未提供的固定模板；"
+        "训练必须使用当前运行环境，不要推理或指定 Conda 环境；runtime.enforce_conda_env 必须为 false；"
+        "参数要偏向快速验证且可训练，split 三项相加必须约等于 1。"
+    )
+    messages = [
+        Message(
+            role="user",
+            content=(
+                f"用户业务目标：{user_text}\n"
+                "请输出完整 YOLO 训练托管规格。"
+            ),
+        )
+    ]
+    try:
+        raw = llm.complete_sync(system_prompt, messages)
+        payload = _parse_json_object(raw)
+        spec = payload if isinstance(payload, dict) else {}
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_model_managed_spec",
+                "used_fallback": False,
+                "generated_keys": sorted(str(key) for key in spec.keys()),
+            },
+        )
+        return spec
+    except Exception as exc:
+        recorder.emit("llm.completed", {"purpose": "workflow_model_managed_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        return {}
+
+
+def _complete_yolo_training_request_spec(
+    spec: dict[str, Any],
+    *,
+    user_text: str,
+    agent_config: Any,
+    runtime_options: RuntimeOptions,
+    recorder: EventRecorder,
+) -> dict[str, Any]:
+    if _request_spec_complete(spec):
+        return spec
+    llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_request_spec_completion"})
+    if not llm.configured:
+        recorder.emit("llm.completed", {"purpose": "workflow_request_spec_completion", "used_fallback": True, "reason": "not_configured"})
+        return spec
+    system_prompt = (
+        "你是资深计算机视觉算法工程师，负责为 YOLO 目标检测训练工作流补全缺失参数。"
+        "用户可能只给一句业务目标，你需要给出合理、可执行、保守的默认规格。"
+        "只返回 JSON 对象，不要解释。字段："
+        "task_description 字符串；use_synthetic_generation 布尔值；generation_prompt 字符串；"
+        "labels 字符串数组；training 对象，含 task, model, epochs, imgsz, batch, device, workers, patience；"
+        "runtime 对象，含 enforce_conda_env；不要输出 conda_env_name，或将 conda_env_name 置为空字符串；"
+        "split 对象，含 train, val, test。"
+        "原则：不要覆盖 existing_spec 里已经有的非空值；labels 必须跟随用户目标变化，不要固定套用示例类别；"
+        "只有任务是抽烟检测时 labels 才优先包含 person 和 cigarette；车辆检测应输出车辆相关类别；"
+        "合成提示词要适合 image2 目标自然合成到 image1 场景，并强调真实监控画面、可标注；"
+        "训练参数必须由你根据任务目标、YOLO 训练常识和快速验证需求自行选择，不要照抄用户未提供的固定模板；"
+        "训练必须使用当前运行环境，不要推理或指定 Conda 环境；runtime.enforce_conda_env 必须为 false；"
+        "split 比例、模型大小、epochs、batch、patience 也必须由你合理选择。"
+        "如果用户提供了 image1/image2 或上下文暗示需要合成数据，use_synthetic_generation 必须为 true。"
+    )
+    messages = [
+        Message(
+            role="user",
+            content=(
+                "请补全这个 YOLO 训练请求。\n"
+                f"用户原文：{user_text}\n"
+                f"existing_spec：{json.dumps(spec, ensure_ascii=False, default=str)}"
+            ),
+        )
+    ]
+    try:
+        raw = llm.complete_sync(system_prompt, messages)
+        payload = _parse_json_object(raw)
+        completed = payload if isinstance(payload, dict) else {}
+        merged = _merge_request_specs(spec, completed)
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_request_spec_completion",
+                "used_fallback": False,
+                "completed_keys": sorted(str(key) for key in completed.keys()),
+            },
+        )
+        return merged
+    except Exception as exc:
+        recorder.emit("llm.completed", {"purpose": "workflow_request_spec_completion", "used_fallback": True, "error": str(exc)[:1000]})
+        return spec
+
+
+def _request_spec_complete(spec: dict[str, Any]) -> bool:
+    return bool(
+        _spec_string(spec, "generation_prompt")
+        and _spec_string_list(spec, "labels")
+        and _spec_training_config(spec)
+        and _spec_optional_bool(spec, "use_synthetic_generation") is not None
+    )
+
+
+def _merge_request_specs(base: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key in ("task_description", "generation_prompt"):
+        if not _spec_string(merged, key) and _spec_string(generated, key):
+            merged[key] = _spec_string(generated, key)
+    if _spec_optional_bool(merged, "use_synthetic_generation") is None:
+        generated_bool = _spec_optional_bool(generated, "use_synthetic_generation")
+        if generated_bool is not None:
+            merged["use_synthetic_generation"] = generated_bool
+    if not _spec_string_list(merged, "labels"):
+        labels = _spec_string_list(generated, "labels")
+        if labels:
+            merged["labels"] = labels
+    if not _spec_training_config(merged):
+        for key in ("training", "runtime", "split"):
+            value = generated.get(key)
+            if isinstance(value, dict):
+                merged[key] = dict(value)
+    return merged
+
+
+def _emit_model_generated_spec(recorder: EventRecorder, spec: dict[str, Any]) -> None:
+    payload = _model_generated_spec_payload(spec)
+    recorder.emit("workflow.generated_spec", payload)
+    recorder.emit(
+        "agent.log",
+        {
+            "message": (
+                "模型思考生成参数："
+                f"合成提示词={payload['generation_prompt']}; "
+                f"labels={payload['labels']}; "
+                f"training={payload['training']}; "
+                f"runtime={payload['runtime']}; "
+                f"split={payload['split']}"
+            )
+        },
+    )
+
+
+def _write_model_generated_spec_logs(workflow_output_root: Path, spec: dict[str, Any]) -> None:
+    payload = _model_generated_spec_payload(spec)
+    log_dir = workflow_output_root / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "model-generated-spec.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    lines = [
+        "模型思考生成的 YOLO 训练参数",
+        "",
+        f"task_description: {payload.get('task_description') or ''}",
+        f"use_synthetic_generation: {payload.get('use_synthetic_generation')}",
+        "",
+        "generation_prompt:",
+        str(payload.get("generation_prompt") or ""),
+        "",
+        "labels:",
+        ", ".join(str(item) for item in payload.get("labels", [])) if isinstance(payload.get("labels"), list) else str(payload.get("labels") or ""),
+        "",
+        "training:",
+        json.dumps(payload.get("training") or {}, ensure_ascii=False, indent=2),
+        "",
+        "runtime:",
+        json.dumps(payload.get("runtime") or {}, ensure_ascii=False, indent=2),
+        "",
+        "split:",
+        json.dumps(payload.get("split") or {}, ensure_ascii=False, indent=2),
+        "",
+    ]
+    (log_dir / "model-generated-spec.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _model_generated_spec_payload(spec: dict[str, Any]) -> dict[str, Any]:
+    training_cfg = _spec_training_config(spec)
+    _force_current_runtime(training_cfg)
+    return {
+        "title": "模型思考生成的 YOLO 训练参数",
+        "task_description": _spec_string(spec, "task_description"),
+        "use_synthetic_generation": _spec_optional_bool(spec, "use_synthetic_generation"),
+        "generation_prompt": _spec_string(spec, "generation_prompt"),
+        "labels": _spec_string_list(spec, "labels"),
+        "training": training_cfg.get("training", {}),
+        "runtime": training_cfg.get("runtime", {}),
+        "split": training_cfg.get("split", {}),
+    }
+
+
 def _spec_string(spec: dict[str, Any], key: str) -> str:
     value = spec.get(key)
     return str(value).strip() if isinstance(value, str) else ""
@@ -922,6 +1248,68 @@ def _spec_optional_bool(spec: dict[str, Any], key: str) -> bool | None:
         if lowered in {"false", "0", "no", "n", "off", "不需要", "否", "禁用"}:
             return False
     return None
+
+
+def _bool_from_any(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on", "需要", "是", "启用"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off", "不需要", "否", "禁用"}:
+            return False
+    return None
+
+
+def _int_from_any(value: Any, default: int) -> int:
+    try:
+        parsed = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return default
+    return max(0, parsed)
+
+
+def _workflow_skill_parameters(runtime_options: RuntimeOptions) -> dict[str, Any]:
+    params = getattr(runtime_options, "skill_parameters", None)
+    if not isinstance(params, dict):
+        return {}
+    workflow_params = params.get(WORKFLOW_NAME)
+    if isinstance(workflow_params, dict):
+        return workflow_params
+    app_params = params.get("algorithm-engineer-full-cycle-test")
+    return app_params if isinstance(app_params, dict) else {}
+
+
+def _synthetic_count_button(runtime_options: RuntimeOptions) -> bool:
+    params = _workflow_skill_parameters(runtime_options)
+    value = _bool_from_any(params.get("button"))
+    return button if value is None else value
+
+
+def _fixed_synthetic_count(runtime_options: RuntimeOptions) -> int:
+    params = _workflow_skill_parameters(runtime_options)
+    return _int_from_any(params.get("fixed_synthetic_count"), FIXED_SYNTHETIC_COUNT)
+
+
+def _auto_generate_missing_spec(runtime_options: RuntimeOptions) -> bool:
+    params = _workflow_skill_parameters(runtime_options)
+    value = _bool_from_any(params.get("auto_generate_missing_spec"))
+    return AUTO_GENERATE_MISSING_SPEC if value is None else value
+
+
+def _current_runtime_config(runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(runtime or {})
+    payload["conda_env_name"] = ""
+    payload["enforce_conda_env"] = False
+    return payload
+
+
+def _force_current_runtime(training_cfg: dict[str, Any]) -> None:
+    if not isinstance(training_cfg, dict):
+        return
+    runtime = training_cfg.get("runtime") if isinstance(training_cfg.get("runtime"), dict) else {}
+    training_cfg["runtime"] = _current_runtime_config(runtime)
 
 
 def _spec_string_list(spec: dict[str, Any], key: str) -> list[str]:
@@ -972,8 +1360,9 @@ def _spec_training_config(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _training_config_has_required_fields(raw_training: dict[str, Any], raw_runtime: dict[str, Any]) -> bool:
+    del raw_runtime
     required_training = ("model", "epochs", "imgsz", "batch", "device", "workers", "patience")
-    return bool(raw_runtime.get("conda_env_name")) and all(raw_training.get(key) not in (None, "") for key in required_training)
+    return all(raw_training.get(key) not in (None, "") for key in required_training)
 
 
 def _normalize_yolo_task(value: Any) -> str:
@@ -1142,13 +1531,27 @@ def _small_dict(value: dict[str, Any], *, max_value_chars: int = 1200) -> dict[s
 def _last_user_text(messages: list[Message]) -> str:
     for message in reversed(messages):
         if message.role == "user":
-            return message.content.strip()
+            return _strip_uploaded_files_context(message.content)
     return ""
+
+
+def _strip_uploaded_files_context(text: str) -> str:
+    return re.split(r"\n\nUploaded files available to tools:\n", text or "", maxsplit=1)[0].strip()
 
 
 def _selected_skills(runtime_options: RuntimeOptions) -> list[str]:
     selected = getattr(runtime_options, "selected_skills", None) or []
     return [str(item).strip() for item in selected if str(item).strip()] or [*DEFAULT_SELECTED_SKILLS]
+
+
+def _ensure_full_cycle_skills(selected_skills: list[str]) -> list[str]:
+    merged = [str(item).strip() for item in selected_skills if str(item).strip()]
+    seen = set(merged)
+    for skill_name in DEFAULT_SELECTED_SKILLS:
+        if skill_name not in seen:
+            merged.append(skill_name)
+            seen.add(skill_name)
+    return merged
 
 
 def _has_runtime_selected_skills(runtime_options: RuntimeOptions) -> bool:

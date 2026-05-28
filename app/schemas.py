@@ -40,6 +40,7 @@ class RuntimeOptions(BaseModel):
     response_format: Literal["text", "json"] = "text"
     mode: Literal["plan", "edit", "autonomous", "safe", "yolo"] | None = None
     config_options: dict[str, Any] = Field(default_factory=dict)
+    skill_parameters: dict[str, dict[str, Any]] = Field(default_factory=dict)
     sandbox_profile: str | None = None
 
 

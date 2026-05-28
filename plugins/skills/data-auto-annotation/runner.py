@@ -18,6 +18,8 @@ LOG_FILENAMES = {
     "synthetic-planner-stderr.txt",
     "dataset-preparation-stdout.txt",
     "dataset-preparation-stderr.txt",
+    "model-generated-spec.json",
+    "model-generated-spec.txt",
 }
 
 

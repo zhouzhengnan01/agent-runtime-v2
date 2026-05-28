@@ -199,9 +199,12 @@ def _plan_synthetic(
     work_dir: Path,
     max_synthetic: int,
     planner_llm: Dict[str, Any],
+    synthetic_count_button: bool,
+    fixed_synthetic_count: int,
     dry_run: bool,
 ) -> Path:
     plan_path = work_dir / "synthetic_plan.json"
+    planner = "llm" if synthetic_count_button else "fixed"
     cmd = [
         sys.executable,
         str(SCRIPT_DIR / "plan_synthetic_augmentation.py"),
@@ -216,7 +219,9 @@ def _plan_synthetic(
         "--generation-prompt",
         generation_prompt,
         "--planner",
-        "llm",
+        planner,
+        "--fixed-synthetic-count",
+        str(max(0, fixed_synthetic_count)),
         "--output",
         str(plan_path),
     ]
@@ -491,6 +496,8 @@ def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     args.skip_generation = args.skip_generation or _bool_value(spec.get("skip_generation"), False)
     args.dry_run = args.dry_run or _bool_value(spec.get("dry_run"), False)
     args.max_synthetic = int(_coalesce(spec.get("max_synthetic"), args.max_synthetic, default=args.max_synthetic))
+    args.synthetic_count_button = _bool_value(_coalesce(spec.get("synthetic_count_button"), args.synthetic_count_button, default=True), True)
+    args.fixed_synthetic_count = int(_coalesce(spec.get("fixed_synthetic_count"), args.fixed_synthetic_count, default=args.fixed_synthetic_count))
     args.split_requested = args.split_requested or _bool_value(spec.get("split_requested"), False)
     args.planner_llm = spec.get("planner_llm") if isinstance(spec.get("planner_llm"), dict) else {}
     args.split_train = float(_coalesce(split.get("train"), dataset.get("split_train"), args.split_train, default=args.split_train))
@@ -517,6 +524,8 @@ def main() -> None:
     parser.add_argument("--skip-generation", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-synthetic", type=int, default=2000)
+    parser.add_argument("--synthetic-count-button", default=True)
+    parser.add_argument("--fixed-synthetic-count", type=int, default=20)
     parser.add_argument("--split-requested", action="store_true")
     parser.set_defaults(planner_llm={})
     parser.add_argument("--split-train", type=float, default=0.7)
@@ -566,6 +575,8 @@ def main() -> None:
             work_dir,
             args.max_synthetic,
             args.planner_llm,
+            args.synthetic_count_button,
+            args.fixed_synthetic_count,
             args.dry_run,
         )
         plan_path = str(plan)

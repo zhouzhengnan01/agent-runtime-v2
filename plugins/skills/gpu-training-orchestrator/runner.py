@@ -82,8 +82,8 @@ def _normalize_training_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]
 
     return {
         "runtime": {
-            "conda_env_name": runtime.get("conda_env_name") or payload.get("conda_env_name") or "yolo",
-            "enforce_conda_env": bool(runtime.get("enforce_conda_env", True)),
+            "conda_env_name": runtime.get("conda_env_name") if runtime.get("conda_env_name") is not None else payload.get("conda_env_name", ""),
+            "enforce_conda_env": bool(runtime.get("enforce_conda_env", False)),
         },
         "dataset": {"data_yaml": str(data_yaml)},
         "training": {

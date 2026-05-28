@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 
 def _load_yolo_training_flow_module():
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
     path = Path("plugins/workflows/builtin-artifact-workflows/yolo_training_flow.py").resolve()
     spec = importlib.util.spec_from_file_location("yolo_training_flow", path)
     assert spec is not None and spec.loader is not None
@@ -59,3 +63,35 @@ def test_yolo_training_flow_normalizes_llm_extracted_spec() -> None:
     assert training_cfg["training"]["task"] == "detect"
     assert training_cfg["training"]["batch"] == 8
     assert training_cfg["split"]["test"] == 0.1
+
+
+def test_yolo_training_flow_strips_runtime_attachment_context_from_user_text() -> None:
+    module = _load_yolo_training_flow_module()
+    messages = [
+        module.Message(
+            role="user",
+            content=(
+                "hello\n\n"
+                "Uploaded files available to tools:\n"
+                "1. name=best.pt, path=/mnt/user-data/outputs/yolo_training_flow/training_run/train/weights/best.pt\n"
+                "2. name=dataset.yaml, path=/mnt/user-data/outputs/yolo_training_flow/prepared_data/dataset.yaml"
+            ),
+        )
+    ]
+
+    assert module._last_user_text(messages) == "hello"
+    assert module._looks_like_yolo_training_request(module._last_user_text(messages)) is False
+
+
+def test_yolo_training_flow_ignores_thread_file_dataset_as_new_upload() -> None:
+    module = _load_yolo_training_flow_module()
+    attachments = [
+        module.Attachment(
+            name="dataset.zip",
+            path="/mnt/user-data/uploads/dataset.zip",
+            metadata={"thread_file": True},
+        )
+    ]
+
+    assert module._has_dataset_attachment(attachments, include_thread_files=False) is False
+    assert module._find_dataset_package_attachment(attachments, include_thread_files=False) is None

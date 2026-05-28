@@ -694,6 +694,10 @@ class AgentRuntime:
             value = template_options.get(option_name)
             if value is not None:
                 updates[option_name] = value
+        if "skill_parameters" not in explicit and not runtime_options.skill_parameters:
+            skill_parameters = template_options.get("skill_parameters")
+            if isinstance(skill_parameters, dict):
+                updates["skill_parameters"] = skill_parameters
         encrypted = self._clean_string(template_options.get("api_key_enc"))
         if not encrypted or "api_key" in explicit or runtime_options.api_key or "api_key" in updates:
             return updates

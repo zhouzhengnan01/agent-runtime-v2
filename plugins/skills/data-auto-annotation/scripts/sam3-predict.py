@@ -21,7 +21,7 @@ from typing import Any
 import requests
 from PIL import Image
 
-DEFAULT_URL = "http://218.67.242.10:58800/sam3/predict"
+DEFAULT_URL = "http://192.168.33.25:8800/sam3/predict"
 URL_ENV_NAMES = ("SAM3_PREDICT_URL", "SAM3_URL")
 DEFAULT_TOKEN = "abc@123"
 DEFAULT_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}

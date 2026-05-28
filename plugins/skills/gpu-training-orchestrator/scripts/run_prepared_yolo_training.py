@@ -108,7 +108,7 @@ def _check_conda_runtime(cfg: Dict) -> str:
     conda_env_name = str(runtime_cfg.get("conda_env_name", "")).strip()
     enforce = bool(runtime_cfg.get("enforce_conda_env", True))
     if not conda_env_name:
-        raise ValueError("input.json missing runtime.conda_env_name")
+        return "current"
     current_env = str(os.environ.get("CONDA_DEFAULT_ENV", "")).strip()
     if current_env != conda_env_name:
         msg = f"Current conda env is '{current_env or 'N/A'}', but input requires '{conda_env_name}'."
@@ -144,7 +144,7 @@ def run(config_path: Path) -> None:
     try:
         from ultralytics import YOLO
     except ImportError as exc:
-        raise ImportError("Please install ultralytics in the requested conda environment") from exc
+        raise ImportError("Please install ultralytics in the current runtime environment") from exc
 
     model_name = str(training_cfg.get("model", "yolo11n.pt"))
     epochs = int(training_cfg.get("epochs", 100))
@@ -176,7 +176,7 @@ def run(config_path: Path) -> None:
         train_overrides.update({"amp": False, "cache": False, "deterministic": False, "plots": True})
         val_overrides.update({"plots": True})
 
-    log_info(f"Training conda_env={conda_env_name}, data={dataset_yaml}, device={device}, CUDA={_has_cuda}")
+    log_info(f"Training runtime={conda_env_name}, data={dataset_yaml}, device={device}, CUDA={_has_cuda}")
     model, model_name = _load_yolo_model(YOLO, model_name, task)
     train_results = model.train(
         data=str(dataset_yaml),
