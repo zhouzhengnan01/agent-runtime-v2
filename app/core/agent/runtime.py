@@ -5,6 +5,7 @@ import json
 import os
 import re
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
@@ -30,6 +31,13 @@ from app.core.skills.aliases import expand_skill_aliases
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
 from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, Role, RuntimeOptions
+
+
+@dataclass(frozen=True)
+class _DirectJsonArtifactIntent:
+    filename: str
+    content: str
+    reason: str
 
 
 class AgentRuntime:
@@ -171,6 +179,9 @@ class AgentRuntime:
             workflow="agent_loop",
         )
         try:
+            direct_result = self._try_complete_direct_json_artifact_turn(execution, recorder)
+            if direct_result is not None:
+                return direct_result, recorder.events
             loop_result = await self.agent_loop.run(
                 agent_config=execution.agent_config,
                 messages=execution.conversation,
@@ -303,6 +314,21 @@ class AgentRuntime:
             workflow="agent_loop",
         )
 
+        emitted = 1
+        try:
+            direct_result = self._try_complete_direct_json_artifact_turn(execution, recorder)
+        except Exception:
+            self.session_manager.finish_turn(
+                thread_id=execution.paths.thread_id,
+                run_id=recorder.run_id,
+                status="failed",
+            )
+            raise
+        if direct_result is not None:
+            for event in recorder.events[emitted:]:
+                yield event
+            return
+
         llm = OpenAICompatibleClient(execution.agent_config, runtime_options=execution.request.runtime_options)
         if not llm.configured:
             yield recorder.emit(
@@ -352,7 +378,6 @@ class AgentRuntime:
             )
             return
 
-        emitted = 1
         try:
             loop_result = await self.agent_loop.run(
                 agent_config=execution.agent_config,
@@ -426,6 +451,92 @@ class AgentRuntime:
             run_id=recorder.run_id,
             status="completed",
         )
+
+    def _try_complete_direct_json_artifact_turn(
+        self,
+        execution: ExecutionContext,
+        recorder: EventRecorder,
+    ) -> AgentRunResult | None:
+        intent = self._direct_json_artifact_intent(execution.request)
+        if intent is None:
+            return None
+
+        artifact = self.artifact_store.write_text_artifact(execution.paths, intent.filename, intent.content)
+        result = AgentRunResult(
+            agent=execution.agent_config.name,
+            thread_id=execution.paths.thread_id,
+            reply=f"已生成 JSON 文件：outputs/{artifact.name}",
+            artifacts=[artifact],
+            metadata={
+                "workflow": "agent_loop",
+                "run_id": recorder.run_id,
+                "direct_artifact_generation": True,
+                "direct_artifact_reason": intent.reason,
+                "tool_rounds": 0,
+                "tool_call_count": 0,
+                "mode": execution.request.runtime_options.mode or "edit",
+            },
+        )
+        recorder.emit(
+            "artifact.created",
+            {
+                "artifact": artifact.model_dump(mode="json"),
+                "filename": artifact.name,
+                "reason": intent.reason,
+            },
+        )
+        recorder.emit("agent.message", {"text": result.reply, "content": result.content})
+        recorder.emit("run.completed", {"result": result.model_dump()})
+        self.session_store.save(
+            execution.paths,
+            self._conversation_with_result(execution.conversation, result),
+            run_id=recorder.run_id,
+        )
+        self._persist_events(
+            execution.agent_config,
+            execution.request,
+            execution.paths.thread_id,
+            recorder.events,
+            result,
+        )
+        self.session_manager.finish_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            status="completed",
+        )
+        return result
+
+    @classmethod
+    def _direct_json_artifact_intent(cls, request: ChatRequest) -> _DirectJsonArtifactIntent | None:
+        text = cls._last_user_text(request)
+        normalized = text.lower()
+        if not normalized:
+            return None
+        if "json" not in normalized:
+            return None
+        if not any(keyword in normalized for keyword in ("文件", "file")):
+            return None
+        if not any(keyword in normalized for keyword in ("生成", "创建", "写", "保存", "输出", "create", "generate", "write", "save")):
+            return None
+        if not any(keyword in normalized for keyword in ("emoji", "emo", "emajl", "表情")):
+            return None
+
+        payload = {"emoji": "😊"}
+        content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        return _DirectJsonArtifactIntent(
+            filename=cls._json_artifact_filename(text),
+            content=content,
+            reason="json_emoji_file_intent",
+        )
+
+    @staticmethod
+    def _json_artifact_filename(text: str) -> str:
+        match = re.search(r"(?i)([A-Za-z0-9_.-]+\.json)\b", text)
+        if match is not None:
+            filename = match.group(1).strip(" .")
+            if filename and "/" not in filename and "\\" not in filename:
+                return filename
+        return "emoji.json"
 
     @staticmethod
     def _request_required_inputs(request: ChatRequest) -> list[dict[str, Any]]:

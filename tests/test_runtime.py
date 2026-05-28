@@ -117,6 +117,86 @@ def test_default_agent_stream_emits_text_delta(tmp_path: Path, monkeypatch: pyte
     assert events[-1].type == "run.completed"
 
 
+def test_runtime_direct_json_emoji_generation_returns_resource_link_without_llm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        *,
+        tool_choice: str = "auto",
+        response_format: str = "text",
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools, tool_choice, response_format
+        raise AssertionError("LLM should not be called for direct JSON emoji artifact generation")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(name="direct-json", display_name="Direct JSON", tools=[], skills=[])
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成一个json文件，填充一个emo")],
+        runtime_options=RuntimeOptions(thread_id="direct-json-emoji"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.status == "completed"
+    assert result.metadata["direct_artifact_generation"] is True
+    assert result.metadata["tool_rounds"] == 0
+    assert [artifact.name for artifact in result.artifacts] == ["emoji.json"]
+    assert json.loads((tmp_path / "direct-json-emoji" / "outputs" / "emoji.json").read_text(encoding="utf-8")) == {
+        "emoji": "😊"
+    }
+    assert result.content[-1] == {
+        "type": "resource_link",
+        "uri": "outputs/emoji.json",
+        "path": "outputs/emoji.json",
+        "name": "emoji.json",
+        "mimeType": "application/json",
+        "size": result.artifacts[0].size,
+        "title": "emoji.json",
+    }
+    event_types = [event.type for event in events]
+    assert event_types == ["run.started", "artifact.created", "agent.message", "run.completed"]
+    assert events[-1].data["result"]["content"][-1]["type"] == "resource_link"
+
+
+def test_runtime_streams_direct_json_emoji_generation_resource_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+        *,
+        tool_choice: str = "auto",
+        response_format: str = "text",
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools, tool_choice, response_format
+        raise AssertionError("LLM should not be called for direct JSON emoji artifact generation")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(name="direct-json", display_name="Direct JSON", tools=[], skills=[])
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成一个json文件，填充一个emajl")],
+        runtime_options=RuntimeOptions(thread_id="stream-direct-json-emoji"),
+    )
+
+    events = asyncio.run(_collect_events(runtime.iter_events(agent, request)))
+
+    assert [event.type for event in events] == ["run.started", "artifact.created", "agent.message", "run.completed"]
+    result = events[-1].data["result"]
+    assert result["metadata"]["direct_artifact_generation"] is True
+    assert result["content"][-1]["type"] == "resource_link"
+    assert result["content"][-1]["path"] == "outputs/emoji.json"
+
+
 def test_runtime_init_model_config_overrides_env_and_agent_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
