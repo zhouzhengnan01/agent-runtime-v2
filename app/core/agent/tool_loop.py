@@ -336,6 +336,29 @@ class ToolCallingAgentLoop:
                     "usage": final_response.usage,
                 },
             )
+            if self._is_empty_final_response(final_response):
+                retrying = state.rounds < max_rounds
+                recorder.emit(
+                    "llm.empty_response",
+                    {
+                        "round": state.rounds,
+                        "finish_reason": final_response.finish_reason or "",
+                        "retrying": retrying,
+                        "tool_count": len(state.tools),
+                        "tools": self._openai_tool_names(state.tools),
+                    },
+                )
+                if retrying:
+                    state.conversation.append(self._empty_response_retry_message(state))
+                    continue
+                return self._finalize_empty_response_turn(
+                    state,
+                    agent_config,
+                    thread_id,
+                    recorder,
+                    runtime_options,
+                    emit_message_delta=emit_message_delta,
+                )
             assistant_message = self._assistant_message(final_response)
             state.conversation.append(assistant_message)
             if not final_response.tool_calls:
@@ -733,6 +756,45 @@ class ToolCallingAgentLoop:
             artifacts=state.artifacts,
         )
 
+    def _finalize_empty_response_turn(
+        self,
+        state: ToolLoopState,
+        agent_config: AgentConfig,
+        thread_id: str,
+        recorder: EventRecorder,
+        runtime_options: RuntimeOptions | None,
+        *,
+        emit_message_delta: bool,
+    ) -> ToolLoopResult:
+        reply = "模型返回了空响应：没有生成内容，也没有调用任何工具。请重试，或检查当前模型的工具调用配置。"
+        return self._result(
+            agent_config,
+            thread_id,
+            reply,
+            state.rounds,
+            state.tool_call_count,
+            state.llm_metadata,
+            recorder,
+            state.conversation,
+            status="failed",
+            completed_event=False,
+            context_compactions=state.context_compactions,
+            last_context_event=state.last_context_event,
+            emit_message_delta=emit_message_delta,
+            run_id=recorder.run_id,
+            mode=runtime_mode(runtime_options),
+            extra_metadata={
+                "turn_phase": state.turn_phase,
+                "turn_policy_reason": state.turn_policy_reason,
+                "verification_verdict": state.verification_verdict,
+                "verification_reason": state.verification_reason,
+                "empty_llm_response": True,
+                **(state.primary_skill_context.to_metadata() if state.primary_skill_context is not None else {}),
+            },
+            required_inputs=state.required_inputs,
+            artifacts=state.artifacts,
+        )
+
     @staticmethod
     def _compact_context(agent_config: AgentConfig, conversation: list[dict[str, Any]]) -> ContextCompactionResult:
         if not agent_config.runtime.context_compression_enabled:
@@ -1105,6 +1167,26 @@ class ToolCallingAgentLoop:
             if isinstance(function, dict) and isinstance(function.get("name"), str):
                 names.append(function["name"])
         return names
+
+    @staticmethod
+    def _is_empty_final_response(response: LlmChatResponse) -> bool:
+        return not response.tool_calls and not (response.content or "").strip()
+
+    def _empty_response_retry_message(self, state: ToolLoopState) -> dict[str, Any]:
+        tool_names = self._openai_tool_names(state.tools)
+        tool_text = ", ".join(tool_names) if tool_names else "无"
+        return {
+            "role": "user",
+            "content": "\n".join(
+                [
+                    "上一轮模型返回了空响应：没有生成内容，也没有调用工具。",
+                    "请继续完成用户的原始请求。",
+                    "如果需要生成文件、修改会话内容或返回结构化结果，请调用合适的可用工具。",
+                    "如果无法完成，请直接输出明确的失败原因，不要再次返回空内容。",
+                    f"当前可用工具：{tool_text}",
+                ]
+            ),
+        }
 
     @staticmethod
     def _assistant_message(response: LlmChatResponse) -> dict[str, Any]:

@@ -83,6 +83,98 @@ def test_agent_loop_executes_llm_tool_calls_through_unified_tool_service(
     assert events[-1].type == "run.completed"
 
 
+def test_agent_loop_retries_empty_tool_calling_llm_response(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[list[dict[str, Any]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, tools
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return LlmChatResponse(content="", finish_reason="stop")
+        assert "上一轮模型返回了空响应" in calls[-1][-1]["content"]
+        assert "jetlinks_runtime_status" in calls[-1][-1]["content"]
+        return LlmChatResponse(content="已恢复输出。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="empty-retry-agent",
+        display_name="Empty Retry Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["jetlinks_runtime_status"],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    result, events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="生成结果")],
+                runtime_options=RuntimeOptions(thread_id="empty-retry"),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.reply == "已恢复输出。"
+    assert len(calls) == 2
+    empty_event = next(event for event in events if event.type == "llm.empty_response")
+    assert empty_event.data["retrying"] is True
+    assert events[-1].type == "run.completed"
+
+
+def test_agent_loop_fails_after_repeated_empty_tool_calling_llm_response(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(content="", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="empty-fail-agent",
+        display_name="Empty Fail Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        runtime=RuntimeConfig(max_tool_rounds=1),
+        tools=["jetlinks_runtime_status"],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    result, events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="生成结果")],
+                runtime_options=RuntimeOptions(thread_id="empty-fail"),
+            ),
+        )
+    )
+
+    assert result.status == "failed"
+    assert "模型返回了空响应" in result.reply
+    assert result.metadata["empty_llm_response"] is True
+    empty_event = next(event for event in events if event.type == "llm.empty_response")
+    assert empty_event.data["retrying"] is False
+    assert events[-1].type == "run.failed"
+
+
 def test_agent_loop_exposes_only_agent_declared_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
