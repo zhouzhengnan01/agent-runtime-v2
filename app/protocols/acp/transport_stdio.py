@@ -445,6 +445,8 @@ def _event_to_sdk_updates(event: ChatEvent, message_id: str | None, *, suppress_
     data = event.data
     if event.type == "agent.message.delta":
         text = _string(data.get("text")) or _string(data.get("message")) or ""
+        if not text:
+            return []
         update = acp_helpers.update_agent_message_text(text)
         update.field_meta = _event_meta(event)
         return [update]
@@ -452,6 +454,8 @@ def _event_to_sdk_updates(event: ChatEvent, message_id: str | None, *, suppress_
         if suppress_agent_message:
             return []
         text = _string(data.get("text")) or _string(data.get("message")) or ""
+        if not text:
+            return []
         update = acp_helpers.update_agent_message_text(text)
         update.message_id = message_id
         update.field_meta = _event_meta(event)

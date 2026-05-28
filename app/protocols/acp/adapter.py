@@ -1178,6 +1178,8 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
     }
     if event.type == "agent.message.delta":
         text = _string(data.get("text")) or _string(data.get("message")) or ""
+        if not text:
+            return None
         return {
             **base,
             "sessionUpdate": "agent_message_chunk",
@@ -1187,6 +1189,8 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
         if suppress_agent_message:
             return None
         text = _string(data.get("text")) or _string(data.get("message")) or ""
+        if not text:
+            return None
         return {
             **base,
             "sessionUpdate": "agent_message_chunk",

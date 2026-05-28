@@ -78,6 +78,11 @@ def test_acp_stdio_maps_tool_events_to_sdk_updates() -> None:
     assert delta[0].field_meta["jetlinksRuntimeEvent"]["type"] == "agent.message.delta"
 
 
+def test_acp_stdio_skips_empty_agent_message_updates() -> None:
+    assert _event_to_sdk_updates(ChatEvent(type="agent.message", data={"text": ""}), "message-1") == []
+    assert _event_to_sdk_updates(ChatEvent(type="agent.message.delta", data={"text": ""}), "message-1") == []
+
+
 async def _run_acp_stdio_flow() -> None:
     project_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()

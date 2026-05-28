@@ -19,6 +19,7 @@ from app.core.runtime import ModelManager
 from app.schemas import AgentRunResult, ArtifactRef, ChatEvent, ChatRequest
 from app.schemas import Message
 from app.main import create_app
+from app.protocols.acp.adapter import _event_to_update
 
 
 class CapturingAcpRuntime(AgentRuntime):
@@ -268,6 +269,14 @@ def test_acp_websocket_prompt_returns_content_resource_links(
     assert content[1]["path"] == "outputs/reports/result.md"
     assert content[1]["name"] == "result.md"
     assert content[1]["mimeType"] == "text/markdown"
+
+
+def test_acp_websocket_skips_empty_agent_message_updates() -> None:
+    assert _event_to_update(ChatEvent(type="agent.message", data={"text": ""})) is None
+    assert _event_to_update(ChatEvent(type="agent.message.delta", data={"text": ""})) is None
+    completed = _event_to_update(ChatEvent(type="run.completed", data={"result": {"status": "completed"}}))
+    assert completed is not None
+    assert completed["sessionUpdate"] == "agent_thought_chunk"
 
 
 def test_acp_websocket_prompt_returns_input_required_from_result_metadata(
