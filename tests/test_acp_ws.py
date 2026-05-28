@@ -259,8 +259,18 @@ def test_acp_websocket_prompt_returns_content_resource_links(
                 },
             }
         )
-        final = _receive_final_packet(websocket, 3)
+        updates: list[dict[str, Any]] = []
+        final: dict[str, Any] | None = None
+        for _ in range(10):
+            packet = websocket.receive_json()
+            if packet.get("method") == "session/update":
+                updates.append(packet["params"]["update"])
+                continue
+            if packet.get("id") == 3:
+                final = packet
+                break
 
+    assert final is not None
     content = final["result"]["content"]
     assert content == final["result"]["result"]["content"]
     assert content[0] == {"type": "text", "text": "生成完成。"}
@@ -269,6 +279,13 @@ def test_acp_websocket_prompt_returns_content_resource_links(
     assert content[1]["path"] == "outputs/reports/result.md"
     assert content[1]["name"] == "result.md"
     assert content[1]["mimeType"] == "text/markdown"
+    resource_update = next(
+        update
+        for update in updates
+        if update.get("sessionUpdate") == "agent_message_chunk"
+        and update.get("content", {}).get("type") == "resource_link"
+    )
+    assert resource_update["content"] == content[1]
 
 
 def test_acp_websocket_skips_empty_agent_message_updates() -> None:

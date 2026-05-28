@@ -299,6 +299,8 @@ class AcpRuntimeAdapter:
                 raw_result = event.data.get("result")
                 if isinstance(raw_result, dict):
                     result = AgentRunResult.model_validate(raw_result)
+                    for resource_update in _resource_content_updates(event, result.content):
+                        await send_update(session_id, resource_update)
                 last_error = _string(event.data.get("error")) or last_error
 
         if result is None:
@@ -1262,6 +1264,28 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
         "sessionUpdate": "agent_thought_chunk",
         "content": {"type": "text", "text": _runtime_event_summary(event)},
     }
+
+
+def _resource_content_updates(event: ChatEvent, content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    updates: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = _string(block.get("type"))
+        if block_type not in {"resource_link", "resource"}:
+            continue
+        updates.append(
+            {
+                "_meta": {
+                    "jetlinksRuntimeEvent": event.model_dump(),
+                    "jetlinksPlan": _plan_update(event),
+                    "jetlinksDiff": _diff_update(event),
+                },
+                "sessionUpdate": "agent_message_chunk",
+                "content": dict(block),
+            }
+        )
+    return updates
 
 
 def _runtime_event_summary(event: ChatEvent) -> str:
