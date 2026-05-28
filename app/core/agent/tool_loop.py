@@ -1300,12 +1300,9 @@ class ToolCallingAgentLoop:
         *,
         seen: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        raw_artifacts = result.structured_content.get("artifacts")
-        if not isinstance(raw_artifacts, list):
-            return []
         seen_paths = {str(item.get("path") or "") for item in seen if isinstance(item, dict)}
         artifacts: list[dict[str, Any]] = []
-        for item in raw_artifacts:
+        for item in ToolCallingAgentLoop._artifact_items_from_structured_content(result.structured_content):
             if not isinstance(item, dict):
                 continue
             path = str(item.get("path") or "")
@@ -1315,6 +1312,16 @@ class ToolCallingAgentLoop:
             if path:
                 seen_paths.add(path)
         return artifacts
+
+    @staticmethod
+    def _artifact_items_from_structured_content(structured_content: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_artifacts = structured_content.get("artifacts")
+        if isinstance(raw_artifacts, list):
+            return [dict(item) for item in raw_artifacts if isinstance(item, dict)]
+        raw_artifact = structured_content.get("artifact")
+        if isinstance(raw_artifact, dict):
+            return [dict(raw_artifact)]
+        return []
 
     @staticmethod
     def _tool_arguments(raw_arguments: str) -> dict[str, Any]:

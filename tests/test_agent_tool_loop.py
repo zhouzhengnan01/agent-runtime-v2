@@ -175,6 +175,77 @@ def test_agent_loop_fails_after_repeated_empty_tool_calling_llm_response(
     assert events[-1].type == "run.failed"
 
 
+def test_agent_loop_returns_artifact_write_as_resource_link_content(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[list[dict[str, Any]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, tools
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_write",
+                        name="artifact_write",
+                        arguments=json.dumps(
+                            {
+                                "path": "emoji.json",
+                                "title": "emoji.json",
+                                "content": '{\n  "emoji": "😊"\n}\n',
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="已生成 JSON 文件。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="artifact-link-agent",
+        display_name="Artifact Link Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["artifact_write"],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="生成一个 json 文件")],
+                runtime_options=RuntimeOptions(thread_id="artifact-resource-link"),
+            ),
+        )
+    )
+
+    assert result.status == "completed"
+    assert [artifact.name for artifact in result.artifacts] == ["emoji.json"]
+    assert result.content == [
+        {"type": "text", "text": "已生成 JSON 文件。"},
+        {
+            "type": "resource_link",
+            "uri": "outputs/emoji.json",
+            "path": "outputs/emoji.json",
+            "name": "emoji.json",
+            "mimeType": "application/json",
+            "size": 22,
+            "title": "emoji.json",
+        },
+    ]
+
+
 def test_agent_loop_exposes_only_agent_declared_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
