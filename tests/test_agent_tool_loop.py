@@ -246,6 +246,74 @@ def test_agent_loop_returns_artifact_write_as_resource_link_content(
     ]
 
 
+def test_agent_loop_resource_link_content_only_includes_current_turn_artifacts(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("artifact-current-turn-only")
+    historical_ref = store.write_text_artifact(paths, "old.json", '{"old": true}\n')
+    store.upsert_artifact(paths, store.output_path(paths, "old.json"), title="old.json")
+
+    calls: list[list[dict[str, Any]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, tools
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_write",
+                        name="artifact_write",
+                        arguments=json.dumps(
+                            {
+                                "path": "new.json",
+                                "title": "new.json",
+                                "content": '{\n  "new": true\n}\n',
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="已生成新文件。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="artifact-current-turn-agent",
+        display_name="Artifact Current Turn Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["artifact_write"],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=store)
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="生成一个新 json 文件")],
+                runtime_options=RuntimeOptions(thread_id=paths.thread_id),
+            ),
+        )
+    )
+
+    resource_links = [block for block in result.content if block.get("type") == "resource_link"]
+
+    assert historical_ref.name == "old.json"
+    assert [artifact.name for artifact in result.artifacts] == ["new.json"]
+    assert [block["path"] for block in resource_links] == ["outputs/new.json"]
+    assert "outputs/old.json" not in json.dumps(result.content, ensure_ascii=False)
+
+
 def test_agent_loop_exposes_only_agent_declared_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
