@@ -175,6 +175,53 @@ def test_agent_loop_fails_after_repeated_empty_tool_calling_llm_response(
     assert events[-1].type == "run.failed"
 
 
+def test_agent_loop_caps_empty_response_retries_before_max_tool_rounds(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[list[dict[str, Any]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, tools
+        calls.append(list(messages))
+        return LlmChatResponse(content="", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="empty-cap-agent",
+        display_name="Empty Cap Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        runtime=RuntimeConfig(max_tool_rounds=20),
+        tools=["jetlinks_runtime_status"],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    result, events = asyncio.run(
+        runtime.run_with_events(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="生成结果")],
+                runtime_options=RuntimeOptions(thread_id="empty-cap"),
+            ),
+        )
+    )
+
+    empty_events = [event for event in events if event.type == "llm.empty_response"]
+
+    assert result.status == "failed"
+    assert len(calls) == 3
+    assert [event.data["empty_response_count"] for event in empty_events] == [1, 2, 3]
+    assert [event.data["retrying"] for event in empty_events] == [True, True, False]
+    assert all(event.data["empty_response_retry_limit"] == 2 for event in empty_events)
+
+
 def test_agent_loop_returns_artifact_write_as_resource_link_content(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

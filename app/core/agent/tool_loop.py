@@ -32,6 +32,7 @@ from app.schemas import AgentRunResult, ArtifactRef, Message, RuntimeOptions
 
 
 MAX_TOOL_ROUNDS_LIMIT = 1000
+DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT = 2
 
 
 @dataclass
@@ -295,6 +296,8 @@ class ToolCallingAgentLoop:
         # 结构化结果塞回 conversation，再进入下一轮，直到模型停止调用。
         final_response = LlmChatResponse()
         max_rounds = self._max_tool_rounds(agent_config, runtime_options)
+        empty_response_count = 0
+        empty_response_retry_limit = self._empty_response_retry_limit(runtime_options)
         run_final_pass_after_conditional_repeat = False
         while state.rounds < max_rounds or run_final_pass_after_conditional_repeat:
             run_final_pass_after_conditional_repeat = False
@@ -337,13 +340,16 @@ class ToolCallingAgentLoop:
                 },
             )
             if self._is_empty_final_response(final_response):
-                retrying = state.rounds < max_rounds
+                empty_response_count += 1
+                retrying = state.rounds < max_rounds and empty_response_count <= empty_response_retry_limit
                 recorder.emit(
                     "llm.empty_response",
                     {
                         "round": state.rounds,
                         "finish_reason": final_response.finish_reason or "",
                         "retrying": retrying,
+                        "empty_response_count": empty_response_count,
+                        "empty_response_retry_limit": empty_response_retry_limit,
                         "tool_count": len(state.tools),
                         "tools": self._openai_tool_names(state.tools),
                     },
@@ -1119,6 +1125,21 @@ class ToolCallingAgentLoop:
         except (TypeError, ValueError):
             return configured
         return min(max(1, requested), MAX_TOOL_ROUNDS_LIMIT)
+
+    @staticmethod
+    def _empty_response_retry_limit(runtime_options: RuntimeOptions | None) -> int:
+        if runtime_options is None:
+            return DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT
+        raw_value = runtime_options.config_options.get("max_empty_response_retries")
+        if raw_value is None:
+            raw_value = runtime_options.config_options.get("maxEmptyResponseRetries")
+        if not isinstance(raw_value, str | int | float):
+            return DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT
+        try:
+            requested = int(raw_value)
+        except (TypeError, ValueError):
+            return DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT
+        return min(max(0, requested), 10)
 
     @staticmethod
     def _runtime_mode(runtime_options: RuntimeOptions | None) -> str:
