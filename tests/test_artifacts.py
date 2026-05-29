@@ -16,6 +16,16 @@ def test_artifact_store_blocks_traversal(tmp_path: Path) -> None:
         store.resolve_virtual_path("t1", "/mnt/user-data/outputs/../../secret.txt")
 
 
+def test_artifact_store_resolves_relative_output_resource_links(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("t1")
+    store.write_text_artifact(paths, "reports/result.md", "# hi")
+
+    assert store.resolve_virtual_path("t1", "outputs/reports/result.md") == (
+        paths.outputs / "reports" / "result.md"
+    ).resolve()
+
+
 def test_artifact_list(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path)
     paths = store.prepare_thread("t1")

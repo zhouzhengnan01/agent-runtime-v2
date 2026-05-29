@@ -174,9 +174,12 @@ class ArtifactStore:
     def resolve_virtual_path(self, thread_id: str, virtual_path: str) -> Path:
         paths = self.prepare_thread(thread_id)
         normalized = "/" + virtual_path.lstrip("/")
-        if not normalized.startswith(VIRTUAL_OUTPUTS_PREFIX + "/"):
+        if normalized == "/outputs" or normalized.startswith("/outputs/"):
+            rel = normalized[len("/outputs") :].lstrip("/")
+        elif normalized.startswith(VIRTUAL_OUTPUTS_PREFIX + "/"):
+            rel = normalized[len(VIRTUAL_OUTPUTS_PREFIX) + 1 :]
+        else:
             raise ValueError(f"Only output artifacts can be served: {virtual_path}")
-        rel = normalized[len(VIRTUAL_OUTPUTS_PREFIX) + 1 :]
         candidate = (paths.outputs / rel).resolve()
         outputs = paths.outputs.resolve()
         try:
