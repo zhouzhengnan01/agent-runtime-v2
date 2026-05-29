@@ -21,7 +21,7 @@ from typing import Any
 import requests
 from PIL import Image
 
-DEFAULT_URL = "http://192.168.33.25:8800/sam3/predict"
+DEFAULT_URL = "http://218.67.242.10:58800/sam3/predict"
 URL_ENV_NAMES = ("SAM3_PREDICT_URL", "SAM3_URL")
 DEFAULT_TOKEN = "abc@123"
 DEFAULT_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -64,6 +64,16 @@ def build_args() -> argparse.Namespace:
         "--output",
         default=None,
         help="Path to save COCO JSON output. If omitted, prints COCO JSON to stdout.",
+    )
+    parser.add_argument(
+        "--per-image-output-dir",
+        default=None,
+        help="Optional directory for streaming one COCO JSON sidecar per annotated image.",
+    )
+    parser.add_argument(
+        "--per-image-base-dir",
+        default=None,
+        help="Optional image root used to mirror relative paths under --per-image-output-dir.",
     )
     parser.add_argument(
         "--source",
@@ -321,6 +331,49 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _single_image_coco(image_info: dict[str, Any], annotations: list[dict[str, Any]], categories: list[dict[str, Any]]) -> dict[str, Any]:
+    local_image = dict(image_info)
+    original_image_id = int(local_image.get("id", 1) or 1)
+    local_image["id"] = 1
+    local_annotations: list[dict[str, Any]] = []
+    for annotation_id, annotation in enumerate(annotations, start=1):
+        local_annotation = dict(annotation)
+        local_annotation["id"] = annotation_id
+        local_annotation["image_id"] = 1
+        local_annotations.append(local_annotation)
+    return {
+        "images": [local_image],
+        "annotations": local_annotations,
+        "categories": [dict(category) for category in categories],
+        "licenses": [],
+        "info": {
+            "description": "SAM3 per-image auto-annotation export",
+            "original_image_id": original_image_id,
+        },
+    }
+
+
+def save_per_image_coco(
+    output_dir: str | None,
+    base_dir: str | None,
+    image_path: Path,
+    image_info: dict[str, Any],
+    annotations: list[dict[str, Any]],
+    categories: list[dict[str, Any]],
+) -> Path | None:
+    if not output_dir:
+        return None
+    root = Path(output_dir).resolve()
+    try:
+        relative_image = image_path.resolve().relative_to(Path(base_dir).resolve()) if base_dir else Path(image_path.name)
+    except ValueError:
+        relative_image = Path(image_path.name)
+    sidecar = (root / relative_image).with_suffix(f"{image_path.suffix}.coco.json")
+    save_json(sidecar, _single_image_coco(image_info, annotations, categories))
+    print(f"per_image_coco_path: {sidecar}", flush=True)
+    return sidecar
+
+
 def post_image(args: argparse.Namespace, headers: dict[str, str], data: dict[str, str], image_path: Path) -> Any:
     content_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
     attempts = max(1, int(args.retries) + 1)
@@ -447,6 +500,14 @@ def main() -> int:
             images.append(image_info)
             annotations.extend(image_annotations)
             next_annotation_id += len(image_annotations)
+            save_per_image_coco(
+                args.per_image_output_dir,
+                args.per_image_base_dir or args.input_dir,
+                image_path,
+                image_info,
+                image_annotations,
+                categories,
+            )
     except requests.exceptions.ConnectTimeout as exc:
         _print_request_error("sam3_connect_timeout", exc, args, locals().get("image_path"))
         return 2

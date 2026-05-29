@@ -149,8 +149,12 @@ def _inspect(dataset_root: Path, work_dir: Path, dry_run: bool) -> Dict:
 
 def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str], dry_run: bool) -> Path:
     fmt = inspection.get("format")
+    images_dir = Path(str(inspection.get("images_dir") or "")).resolve()
     if fmt == "coco":
-        return Path(str(inspection["coco_json"])).resolve()
+        coco_path = Path(str(inspection["coco_json"])).resolve()
+        if not dry_run:
+            _write_per_image_coco_sidecars(coco_path, images_dir)
+        return coco_path
 
     real_coco = work_dir / "real_coco.json"
     if fmt == "yolo":
@@ -161,7 +165,7 @@ def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str],
             sys.executable,
             str(SCRIPT_DIR / "convert_yolo_to_coco.py"),
             "--images-dir",
-            str(inspection["images_dir"]),
+            str(images_dir),
             "--labels-dir",
             str(inspection["labels_dir"]),
             "--output",
@@ -169,6 +173,8 @@ def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str],
             "--class-names",
             class_arg,
         ], dry_run)
+        if not dry_run:
+            _write_per_image_coco_sidecars(real_coco, images_dir)
         return real_coco
 
     if fmt == "unlabeled":
@@ -178,17 +184,108 @@ def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str],
             sys.executable,
             str(AUTO_ANNOTATION_SCRIPT),
             "--input-dir",
-            str(inspection["images_dir"]),
+            str(images_dir),
             "--text-prompts",
             *task_labels,
             "--source",
             "real",
+            "--per-image-output-dir",
+            str(images_dir),
+            "--per-image-base-dir",
+            str(images_dir),
             "--output",
             str(real_coco),
         ], dry_run)
         return real_coco
 
     raise ValueError(f"Unsupported dataset format: {fmt}. Convert labels to COCO or YOLO first.")
+
+
+def _write_per_image_coco_sidecars(coco_path: Path, images_dir: Path) -> None:
+    if not coco_path.is_file() or not images_dir.is_dir():
+        return
+    coco = _load_json(coco_path)
+    categories = [dict(item) for item in coco.get("categories", []) if isinstance(item, dict)]
+    images_by_id: dict[int, dict[str, Any]] = {}
+    for image in coco.get("images", []):
+        if not isinstance(image, dict):
+            continue
+        try:
+            image_id = int(image.get("id"))
+        except (TypeError, ValueError):
+            continue
+        images_by_id[image_id] = image
+    annotations_by_image_id: dict[int, list[dict[str, Any]]] = {image_id: [] for image_id in images_by_id}
+    for annotation in coco.get("annotations", []):
+        if not isinstance(annotation, dict):
+            continue
+        try:
+            image_id = int(annotation.get("image_id"))
+        except (TypeError, ValueError):
+            continue
+        if image_id in annotations_by_image_id:
+            annotations_by_image_id[image_id].append(annotation)
+    for image_id, image in images_by_id.items():
+        file_name = str(image.get("file_name") or "").replace("\\", "/").strip()
+        if not file_name:
+            continue
+        image_path = _resolve_image_path_for_sidecar(images_dir, file_name)
+        if image_path is None:
+            continue
+        _write_single_image_coco_sidecar(
+            image_path,
+            images_dir,
+            image,
+            annotations_by_image_id.get(image_id, []),
+            categories,
+        )
+
+
+def _resolve_image_path_for_sidecar(images_dir: Path, file_name: str) -> Path | None:
+    candidate = (images_dir / file_name).resolve()
+    try:
+        candidate.relative_to(images_dir.resolve())
+    except ValueError:
+        return None
+    if candidate.is_file():
+        return candidate
+    fallback = images_dir / Path(file_name).name
+    return fallback.resolve() if fallback.is_file() else None
+
+
+def _write_single_image_coco_sidecar(
+    image_path: Path,
+    images_dir: Path,
+    image: dict[str, Any],
+    annotations: list[dict[str, Any]],
+    categories: list[dict[str, Any]],
+) -> Path:
+    relative_image = image_path.resolve().relative_to(images_dir.resolve())
+    sidecar = (images_dir / relative_image).with_suffix(f"{image_path.suffix}.coco.json")
+    local_image = dict(image)
+    original_image_id = int(local_image.get("id", 1) or 1)
+    local_image["id"] = 1
+    local_annotations: list[dict[str, Any]] = []
+    for annotation_id, annotation in enumerate(annotations, start=1):
+        local_annotation = dict(annotation)
+        local_annotation["id"] = annotation_id
+        local_annotation["image_id"] = 1
+        local_annotations.append(local_annotation)
+    _write_json(
+        sidecar,
+        {
+            "images": [local_image],
+            "annotations": local_annotations,
+            "categories": categories,
+            "licenses": [],
+            "info": {
+                "description": "per-image real dataset COCO annotation",
+                "original_image_id": original_image_id,
+            },
+        },
+    )
+    print(f"[data-prep] per-image real coco written: {sidecar}", flush=True)
+    return sidecar
 
 
 def _plan_synthetic(
@@ -378,6 +475,23 @@ def _generate_and_annotate_synthetic(plan_path: Path, image1: Path, image2: Path
     return synthetic_images_root, synthetic_coco
 
 
+def _synthetic_generation_failure_payload(exc: Exception) -> Dict[str, Any]:
+    stdout_tail = ""
+    stderr_tail = ""
+    if isinstance(exc, subprocess.CalledProcessError):
+        stdout_tail = _decode_bytes(exc.output)[-2000:]
+        stderr_tail = _decode_bytes(exc.stderr)[-2000:]
+    detail = stderr_tail or stdout_tail or str(exc)
+    return {
+        "synthetic_generation_status": "failed",
+        "synthetic_generation_error": detail[-2000:],
+        "synthetic_generation_error_type": exc.__class__.__name__,
+        "synthetic_generation_fallback": "real_dataset_only",
+        "synthetic_generation_stdout_tail": stdout_tail,
+        "synthetic_generation_stderr_tail": stderr_tail,
+    }
+
+
 def _merge(real_coco: Path, synthetic_coco: Path, real_root: Path, synthetic_root: Path, output_dir: Path, dry_run: bool) -> Path:
     merged_coco = output_dir / "merged_coco.json"
     merged_images = output_dir / "merged_images"
@@ -565,6 +679,12 @@ def main() -> None:
     training_root = Path(inspection["images_dir"]).resolve()
     synthetic_policy_enabled = False
     plan_path = ""
+    synthetic_status: Dict[str, Any] = {
+        "synthetic_generation_status": "not_requested" if args.skip_generation else "not_planned",
+        "synthetic_generation_error": "",
+        "synthetic_generation_fallback": "",
+        "synthetic_pending_inputs": False,
+    }
 
     if not args.skip_generation:
         plan = _plan_synthetic(
@@ -585,13 +705,28 @@ def main() -> None:
         if recommended_count > 0:
             if not args.image1 or not args.image2:
                 print("[data-prep] Synthetic generation is pending because image1/image2 inputs were not provided.")
+                synthetic_status.update({
+                    "synthetic_generation_status": "pending_inputs",
+                    "synthetic_pending_inputs": True,
+                })
             else:
-                synthetic_root, synthetic_coco = _generate_and_annotate_synthetic(plan, Path(args.image1).resolve(), Path(args.image2).resolve(), args.labels, work_dir, args.dry_run)
-                training_coco = _merge(real_coco, synthetic_coco, Path(inspection["images_dir"]).resolve(), synthetic_root, work_dir, args.dry_run)
-                training_root = work_dir / "merged_images"
-                synthetic_policy_enabled = True
+                try:
+                    synthetic_root, synthetic_coco = _generate_and_annotate_synthetic(plan, Path(args.image1).resolve(), Path(args.image2).resolve(), args.labels, work_dir, args.dry_run)
+                    training_coco = _merge(real_coco, synthetic_coco, Path(inspection["images_dir"]).resolve(), synthetic_root, work_dir, args.dry_run)
+                    training_root = work_dir / "merged_images"
+                    synthetic_policy_enabled = True
+                    synthetic_status.update({
+                        "synthetic_generation_status": "merged",
+                        "synthetic_images": str(synthetic_root),
+                        "synthetic_coco": str(synthetic_coco),
+                    })
+                except Exception as exc:
+                    synthetic_status.update(_synthetic_generation_failure_payload(exc))
+                    message = synthetic_status.get("synthetic_generation_error") or str(exc)
+                    print(f"[data-prep] Synthetic generation failed; continuing with real dataset only: {message}", file=sys.stderr)
         else:
             print("[data-prep] Synthetic generation skipped because planner recommended 0 images.")
+            synthetic_status.update({"synthetic_generation_status": "skipped_zero_recommendation"})
 
     if not args.split_requested:
         combined_dir = _export_combined_dataset(training_coco, training_root, output_dir, args.dry_run)
@@ -602,9 +737,9 @@ def main() -> None:
             "training_root": str(training_root),
             "combined_dataset": str(combined_dir),
             "synthetic_plan": plan_path,
-            "synthetic_pending_inputs": bool(plan_path and _read_recommended_synthetic_count(Path(plan_path)) > 0 and (not args.image1 or not args.image2)),
             "work_dir": str(work_dir),
             "output_dir": str(output_dir),
+            **synthetic_status,
         }
         summary_path = output_dir / "data_preparation_summary.json"
         _write_json(summary_path, summary)
@@ -645,6 +780,7 @@ def main() -> None:
         "synthetic_plan": plan_path,
         "work_dir": str(work_dir),
         "output_dir": str(output_dir),
+        **synthetic_status,
     })
     _write_json(summary_path, summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))

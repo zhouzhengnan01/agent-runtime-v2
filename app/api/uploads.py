@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import uuid
 from pathlib import Path
@@ -16,7 +17,8 @@ router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 store = ArtifactStore()
 
 VIRTUAL_UPLOADS_PREFIX = "/mnt/user-data/uploads"
-MAX_UPLOAD_BYTES = 128 * 1024 * 1024
+DEFAULT_MAX_UPLOAD_BYTES = 4096 * 1024 * 1024
+MAX_UPLOAD_BYTES = None
 _SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9_. -]+")
 
 
@@ -32,16 +34,17 @@ async def upload_thread_file(
     target_dir = paths.uploads.joinpath(*relative_parts[:-1]) if relative_parts else paths.uploads
     target = _unique_upload_path(target_dir, filename)
     size = 0
+    max_upload_bytes = _max_upload_bytes()
 
     try:
         with target.open("wb") as handle:
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
+                if size > max_upload_bytes:
                     target.unlink(missing_ok=True)
                     raise HTTPException(
                         status_code=413,
-                        detail=f"File is too large. Max upload size is {MAX_UPLOAD_BYTES // 1024 // 1024} MB.",
+                        detail=f"File is too large. Max upload size is {max_upload_bytes // 1024 // 1024} MB.",
                     )
                 await asyncio.to_thread(handle.write, chunk)
     finally:
@@ -74,6 +77,42 @@ def _safe_relative_parts(value: str | None) -> list[str]:
             continue
         parts.append(cleaned)
     return parts[:12]
+
+
+def _max_upload_bytes() -> int:
+    if isinstance(MAX_UPLOAD_BYTES, int) and MAX_UPLOAD_BYTES > 0:
+        return MAX_UPLOAD_BYTES
+    return _configured_max_upload_bytes()
+
+
+def _configured_max_upload_bytes() -> int:
+    raw_bytes = str(os.environ.get("JETLINKS_MAX_UPLOAD_BYTES") or "").strip()
+    if raw_bytes:
+        value = _positive_int(raw_bytes)
+        if value is not None:
+            return value
+    raw_mb = str(os.environ.get("JETLINKS_MAX_UPLOAD_MB") or "").strip()
+    if raw_mb:
+        value = _positive_float(raw_mb)
+        if value is not None:
+            return max(1, int(value * 1024 * 1024))
+    return DEFAULT_MAX_UPLOAD_BYTES
+
+
+def _positive_int(value: str) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _positive_float(value: str) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _unique_upload_path(root: Path, filename: str) -> Path:

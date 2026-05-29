@@ -12,6 +12,8 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 LOG_FILENAMES = {
     "data-auto-annotation-stdout.txt",
     "data-auto-annotation-stderr.txt",
+    "data-auto-annotation-pipeline-stdout.txt",
+    "data-auto-annotation-pipeline-stderr.txt",
     "image-dataset-generation-stdout.txt",
     "image-dataset-generation-stderr.txt",
     "synthetic-planner-stdout.txt",
@@ -20,6 +22,17 @@ LOG_FILENAMES = {
     "dataset-preparation-stderr.txt",
     "model-generated-spec.json",
     "model-generated-spec.txt",
+}
+KEY_PREPARED_ARTIFACT_NAMES = {
+    "dataset.yaml",
+    "data_preparation_summary.json",
+}
+KEY_WORK_ARTIFACT_NAMES = {
+    "real_coco.json",
+    "synthetic_coco.json",
+    "merged_coco.json",
+    "synthetic_plan.json",
+    "dataset_inspection.json",
 }
 
 
@@ -169,30 +182,53 @@ def _synthetic_plan_path(spec: dict[str, Any]) -> str:
 
 def _collect_outputs(spec: dict[str, Any], paths: Any, artifact_store: Any) -> list[Any]:
     outputs: list[Any] = []
-    prepared_images = _prepared_root(spec) / "prepared_dataset" / "images"
-    for split in ("train", "val", "test"):
-        split_dir = prepared_images / split
-        if not split_dir.is_dir():
-            continue
-        for file_path in sorted(split_dir.rglob("*")):
-            if not file_path.is_file() or file_path.suffix.lower() not in IMAGE_EXTENSIONS:
-                continue
-            try:
-                artifact_store.upsert_artifact(paths, file_path)
-                outputs.append(artifact_store.to_artifact_ref(paths.thread_id, file_path))
-            except Exception:
-                continue
+    seen: set[str] = set()
+    for file_path in _key_data_prep_artifacts(spec):
+        _append_artifact(outputs, seen, paths, artifact_store, file_path)
     log_dir = _log_dir(spec)
     if log_dir.is_dir():
         for file_path in sorted(log_dir.iterdir()):
             if not file_path.is_file() or file_path.name not in LOG_FILENAMES:
                 continue
-            try:
-                artifact_store.upsert_artifact(paths, file_path)
-                outputs.append(artifact_store.to_artifact_ref(paths.thread_id, file_path))
-            except Exception:
-                continue
+            _append_artifact(outputs, seen, paths, artifact_store, file_path)
     return outputs
+
+
+def _key_data_prep_artifacts(spec: dict[str, Any]) -> list[Path]:
+    prepared_root = _prepared_root(spec)
+    work_dir = Path(str(spec.get("work_dir") or "")).resolve()
+    candidates: list[Path] = []
+    for name in KEY_PREPARED_ARTIFACT_NAMES:
+        candidates.append(prepared_root / name)
+    for name in KEY_WORK_ARTIFACT_NAMES:
+        candidates.append(work_dir / name)
+    return _dedupe_paths([path for path in candidates if path.is_file()])
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for file_path in paths:
+        key = str(file_path.resolve()).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(file_path)
+    return unique
+
+
+def _append_artifact(outputs: list[Any], seen: set[str], paths: Any, artifact_store: Any, file_path: Path) -> None:
+    if not file_path.is_file():
+        return
+    key = str(file_path.resolve()).casefold()
+    if key in seen:
+        return
+    try:
+        artifact_store.upsert_artifact(paths, file_path)
+        outputs.append(artifact_store.to_artifact_ref(paths.thread_id, file_path))
+        seen.add(key)
+    except Exception:
+        return
 
 
 def _decode_bytes(value: bytes | str | None) -> str:

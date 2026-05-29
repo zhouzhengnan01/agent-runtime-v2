@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from app.core.artifacts.preview import artifact_kind, guess_mime_type
 from app.schemas import ArtifactRef
@@ -157,7 +158,7 @@ class ArtifactStore:
         except ValueError as exc:
             raise ValueError(f"Artifact path is outside outputs: {file_path}") from exc
         virtual_path = f"{VIRTUAL_OUTPUTS_PREFIX}/{relative.as_posix()}"
-        api_path = virtual_path.lstrip("/")
+        api_path = _quote_api_path(virtual_path.lstrip("/"))
         mime_type = guess_mime_type(resolved)
         return ArtifactRef(
             thread_id=thread_id,
@@ -166,8 +167,8 @@ class ArtifactStore:
             mime_type=mime_type,
             kind=artifact_kind(resolved, mime_type),
             size=resolved.stat().st_size,
-            preview_url=f"/api/artifacts/{thread_id}/{api_path}",
-            download_url=f"/api/artifacts/{thread_id}/{api_path}?download=true",
+            preview_url=f"/api/artifacts/{quote(thread_id, safe='')}/{api_path}",
+            download_url=f"/api/artifacts/{quote(thread_id, safe='')}/{api_path}?download=true",
         )
 
     def resolve_virtual_path(self, thread_id: str, virtual_path: str) -> Path:
@@ -193,7 +194,7 @@ class ArtifactStore:
 
     @staticmethod
     def _safe_output_path(paths: ThreadPaths, filename: str) -> Path:
-        name = filename.replace("\\", "/").lstrip("/")
+        name = ArtifactStore._normalize_output_name(filename)
         if name.startswith("outputs/"):
             name = name[len("outputs/") :]
         candidate = (paths.outputs / name).resolve()
@@ -203,6 +204,16 @@ class ArtifactStore:
         except ValueError as exc:
             raise ValueError("Output path traversal blocked") from exc
         return candidate
+
+    @staticmethod
+    def _normalize_output_name(filename: str) -> str:
+        name = filename.replace("\\", "/").strip()
+        if name == VIRTUAL_OUTPUTS_PREFIX or name == VIRTUAL_OUTPUTS_PREFIX.lstrip("/"):
+            return ""
+        for prefix in (VIRTUAL_OUTPUTS_PREFIX + "/", VIRTUAL_OUTPUTS_PREFIX.lstrip("/") + "/"):
+            if name.startswith(prefix):
+                return name[len(prefix) :]
+        return name.lstrip("/")
 
     def _ensure_manifest(self, paths: ThreadPaths) -> None:
         if paths.manifest.exists():
@@ -258,3 +269,7 @@ class ArtifactStore:
     @staticmethod
     def _now() -> str:
         return datetime.now(tz=UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _quote_api_path(path: str) -> str:
+    return "/".join(quote(part, safe="") for part in path.split("/"))

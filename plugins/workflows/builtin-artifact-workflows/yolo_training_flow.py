@@ -25,8 +25,9 @@ DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "data-auto-annotation", "
 # Synthetic image count switch for the algorithm-engineer-full-cycle-test app.
 # button=True: use the LLM planner to decide how many images to synthesize.
 # button=False: use FIXED_SYNTHETIC_COUNT instead.
+#模型思考开关控制：button=True时由LLM决定合成数量，button=False时使用固定数量。
 button = False
-FIXED_SYNTHETIC_COUNT = 10
+FIXED_SYNTHETIC_COUNT = 5
 AUTO_GENERATE_MISSING_SPEC = True
 
 
@@ -67,6 +68,12 @@ class YoloTrainingWorkflow:
         existing_dataset_pkg = _load_dataset_package_path(paths)
         existing_composite_image1 = _load_composite_image1_path(paths)
         existing_composite_image2 = _load_composite_image2_path(paths)
+        current_objective = _training_objective_from_user_text(user_text)
+        if current_objective:
+            _save_training_objective(paths, current_objective)
+        stored_objective = _load_training_objective(paths)
+        objective_text = current_objective or (stored_objective if not workflow_completed or waiting_prompt else "")
+        spec_user_text = _combine_spec_user_text(objective_text, user_text)
         explicit_attachment_roles = _parse_attachment_role_hints(user_text)
 
         dataset_attachment = _find_dataset_package_attachment(attachments, role_hints=explicit_attachment_roles, include_thread_files=False) if not existing_dataset_pkg else None
@@ -136,22 +143,24 @@ class YoloTrainingWorkflow:
             training_enabled = True
             selected_skills = _ensure_full_cycle_skills(selected_skills)
             request_spec = _generate_model_managed_yolo_training_request_spec(
-                user_text=user_text,
+                user_text=spec_user_text,
                 agent_config=agent_config,
                 runtime_options=runtime_options,
                 recorder=recorder,
             )
+            request_spec = _ensure_intent_labels(request_spec, spec_user_text)
             if _spec_string(request_spec, "generation_prompt"):
                 request_spec["use_synthetic_generation"] = True
             _emit_model_generated_spec(recorder, request_spec)
             _write_model_generated_spec_logs(workflow_output_root, request_spec)
         else:
             request_spec = _extract_yolo_training_request_spec(
-                user_text,
+                spec_user_text,
                 agent_config=agent_config,
                 runtime_options=runtime_options,
                 recorder=recorder,
             )
+            request_spec = _ensure_intent_labels(request_spec, spec_user_text)
         synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
         if synthetic_generation is not None:
             _save_synthetic_generation_enabled(paths, synthetic_generation)
@@ -164,7 +173,7 @@ class YoloTrainingWorkflow:
 
         if model_managed_spec:
             prompt_text = _spec_string(request_spec, "generation_prompt")
-            labels = _spec_string_list(request_spec, "labels")
+            labels = _normalize_detection_labels(_spec_string_list(request_spec, "labels"))
             training_cfg = _spec_training_config(request_spec)
             training_cfg_available = bool(training_cfg)
             task_description = _spec_string(request_spec, "task_description")
@@ -181,12 +190,12 @@ class YoloTrainingWorkflow:
             if generation_enabled:
                 _save_synthetic_generation_enabled(paths, True)
         else:
-            prompt_text = _spec_string(request_spec, "generation_prompt") or _extract_generation_prompt(user_text, allow_free_text=waiting_prompt)
+            prompt_text = _spec_string(request_spec, "generation_prompt") or _extract_generation_prompt(spec_user_text, allow_free_text=waiting_prompt)
             if prompt_text:
                 _save_generation_prompt(paths, prompt_text)
             else:
                 prompt_text = _load_generation_prompt(paths)
-            labels = _spec_string_list(request_spec, "labels") or _extract_annotation_labels(user_text)
+            labels = _normalize_detection_labels(_spec_string_list(request_spec, "labels") or _extract_annotation_labels(spec_user_text))
             if labels:
                 _save_annotation_labels(paths, labels)
             else:
@@ -199,8 +208,8 @@ class YoloTrainingWorkflow:
                 training_cfg = _load_training_config(paths)
                 training_cfg_available = bool(training_cfg)
             if not training_cfg:
-                training_cfg = _extract_training_config(user_text)
-                training_cfg_available = _has_explicit_training_config(user_text)
+                training_cfg = _extract_training_config(spec_user_text)
+                training_cfg_available = _has_explicit_training_config(spec_user_text)
                 if training_cfg_available:
                     _save_training_config(paths, training_cfg)
             task_description = _spec_string(request_spec, "task_description")
@@ -1044,6 +1053,10 @@ def _generate_model_managed_yolo_training_request_spec(
         "合成目的必须是把 image2 中目标自然合成到 image1 场景中，形成真实、可标注的训练图片。"
         "generation_prompt 必须包含上述 image1/image2 角色、自然融合、光照/尺度/遮挡一致、适合检测标注等要求。"
         "labels 必须围绕用户要训练的检测目标，不要固定套用示例类别；"
+        "labels 必须是 YOLO 训练可直接使用的英文 ASCII 类名，只能使用小写英文、数字和下划线，"
+        "禁止输出中文、空格或自然语言短语；例如人脸检测输出 face，不要输出 人脸；"
+        "严禁返回 object、target、thing、foreground、目标、物体、对象 等泛化类别；"
+        "必须从用户业务目标里解析具体对象作为 labels，例如：车辆检测输出 car，瓶子检测输出 bottle，钢材检测输出 steel；"
         "只有抽烟检测通常应包含 person 和 cigarette；车辆检测应输出车辆相关类别；"
         "训练参数必须由你根据任务、数据合成/自动标注/YOLO 训练常识合理选择，不能引用用户未提供的固定模板；"
         "训练必须使用当前运行环境，不要推理或指定 Conda 环境；runtime.enforce_conda_env 必须为 false；"
@@ -1100,6 +1113,10 @@ def _complete_yolo_training_request_spec(
         "runtime 对象，含 enforce_conda_env；不要输出 conda_env_name，或将 conda_env_name 置为空字符串；"
         "split 对象，含 train, val, test。"
         "原则：不要覆盖 existing_spec 里已经有的非空值；labels 必须跟随用户目标变化，不要固定套用示例类别；"
+        "labels 必须是 YOLO 训练可直接使用的英文 ASCII 类名，只能使用小写英文、数字和下划线，"
+        "禁止输出中文、空格或自然语言短语；例如人脸检测输出 face，不要输出 人脸；"
+        "严禁返回 object、target、thing、foreground、目标、物体、对象 等泛化类别；"
+        "必须从用户业务目标里解析具体对象作为 labels，例如：车辆检测输出 car，瓶子检测输出 bottle，钢材检测输出 steel；"
         "只有任务是抽烟检测时 labels 才优先包含 person 和 cigarette；车辆检测应输出车辆相关类别；"
         "合成提示词要适合 image2 目标自然合成到 image1 场景，并强调真实监控画面、可标注；"
         "训练参数必须由你根据任务目标、YOLO 训练常识和快速验证需求自行选择，不要照抄用户未提供的固定模板；"
@@ -1330,6 +1347,295 @@ def _spec_string_list(spec: dict[str, Any], key: str) -> list[str]:
     return labels
 
 
+_GENERIC_DETECTION_LABELS = {
+    "object",
+    "objects",
+    "target",
+    "targets",
+    "thing",
+    "things",
+    "foreground",
+    "foreground_object",
+    "item",
+    "items",
+    "class",
+    "classes",
+    "unknown",
+    "目标",
+    "物体",
+    "对象",
+    "前景",
+    "主体",
+    "类别",
+    "待检测目标",
+}
+
+
+_LABEL_ALIAS_TO_CANONICAL: dict[str, tuple[str, ...]] = {
+    "smoking": ("person", "cigarette"),
+    "抽烟": ("person", "cigarette"),
+    "吸烟": ("person", "cigarette"),
+    "cigarette": ("cigarette",),
+    "香烟": ("cigarette",),
+    "烟支": ("cigarette",),
+    "烟头": ("cigarette",),
+    "license_plate": ("license_plate",),
+    "license plate": ("license_plate",),
+    "车牌": ("license_plate",),
+    "牌照": ("license_plate",),
+    "forklift": ("forklift",),
+    "叉车": ("forklift",),
+    "electric_bicycle": ("electric_bicycle",),
+    "e_bike": ("electric_bicycle",),
+    "ebike": ("electric_bicycle",),
+    "电动车": ("electric_bicycle",),
+    "电瓶车": ("electric_bicycle",),
+    "motorcycle": ("motorcycle",),
+    "摩托车": ("motorcycle",),
+    "摩托": ("motorcycle",),
+    "bicycle": ("bicycle",),
+    "bike": ("bicycle",),
+    "自行车": ("bicycle",),
+    "单车": ("bicycle",),
+    "truck": ("truck",),
+    "货车": ("truck",),
+    "卡车": ("truck",),
+    "bus": ("bus",),
+    "公交车": ("bus",),
+    "公交": ("bus",),
+    "巴士": ("bus",),
+    "客车": ("bus",),
+    "car": ("car",),
+    "vehicle": ("car",),
+    "vehicles": ("car",),
+    "车辆": ("car",),
+    "汽车": ("car",),
+    "小汽车": ("car",),
+    "轿车": ("car",),
+    "机动车": ("car",),
+    "车": ("car",),
+    "person": ("person",),
+    "people": ("person",),
+    "pedestrian": ("person",),
+    "行人": ("person",),
+    "人员": ("person",),
+    "人": ("person",),
+    "bottle": ("bottle",),
+    "瓶子": ("bottle",),
+    "水瓶": ("bottle",),
+    "矿泉水瓶": ("bottle",),
+    "瓶": ("bottle",),
+    "steel": ("steel",),
+    "钢材": ("steel",),
+    "钢筋": ("steel",),
+    "钢板": ("steel",),
+    "rebar": ("steel",),
+    "hard_hat": ("hard_hat",),
+    "helmet": ("hard_hat",),
+    "安全帽": ("hard_hat",),
+    "mask": ("mask",),
+    "口罩": ("mask",),
+    "fire": ("fire",),
+    "火焰": ("fire",),
+    "flame": ("fire",),
+    "smoke": ("smoke",),
+    "烟雾": ("smoke",),
+    "face": ("face",),
+    "human_face": ("face",),
+    "人脸": ("face",),
+    "脸": ("face",),
+    "脸部": ("face",),
+    "面部": ("face",),
+    "人面部": ("face",),
+    "head": ("head",),
+    "头部": ("head",),
+    "hand": ("hand",),
+    "手": ("hand",),
+    "glove": ("glove",),
+    "手套": ("glove",),
+    "phone": ("phone",),
+    "mobile_phone": ("phone",),
+    "手机": ("phone",),
+    "cup": ("cup",),
+    "杯子": ("cup",),
+    "box": ("box",),
+    "纸箱": ("box",),
+    "箱子": ("box",),
+    "package": ("package",),
+    "包裹": ("package",),
+    "parcel": ("package",),
+    "bag": ("bag",),
+    "袋子": ("bag",),
+    "knife": ("knife",),
+    "刀": ("knife",),
+    "helmet": ("hard_hat",),
+    "vest": ("safety_vest",),
+    "safety_vest": ("safety_vest",),
+    "反光衣": ("safety_vest",),
+    "安全背心": ("safety_vest",),
+}
+
+
+_INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("抽烟", "吸烟", "smoking"), ("person", "cigarette")),
+    (("烟头", "香烟", "烟支", "cigarette"), ("cigarette",)),
+    (("车牌", "牌照", "license plate", "license_plate"), ("license_plate",)),
+    (("叉车", "forklift"), ("forklift",)),
+    (("电动车", "电瓶车", "electric bicycle", "e-bike", "ebike"), ("electric_bicycle",)),
+    (("摩托车", "摩托", "motorcycle"), ("motorcycle",)),
+    (("自行车", "单车", "bicycle", "bike"), ("bicycle",)),
+    (("货车", "卡车", "truck"), ("truck",)),
+    (("公交车", "公交", "巴士", "客车", "bus"), ("bus",)),
+    (("车辆", "汽车", "小汽车", "轿车", "机动车", "vehicle", "car"), ("car",)),
+    (("瓶子", "水瓶", "矿泉水瓶", "bottle"), ("bottle",)),
+    (("钢材", "钢筋", "钢板", "steel", "rebar"), ("steel",)),
+    (("安全帽", "helmet", "hard hat", "hard_hat"), ("hard_hat",)),
+    (("口罩", "mask"), ("mask",)),
+    (("火焰", "fire", "flame"), ("fire",)),
+    (("人脸", "脸部", "面部", "human face", "face"), ("face",)),
+    (("头部", "head"), ("head",)),
+    (("手套", "glove"), ("glove",)),
+    (("手机", "phone", "mobile phone"), ("phone",)),
+    (("杯子", "cup"), ("cup",)),
+    (("纸箱", "箱子", "box"), ("box",)),
+    (("包裹", "package", "parcel"), ("package",)),
+    (("袋子", "bag"), ("bag",)),
+    (("刀具", "刀", "knife"), ("knife",)),
+    (("反光衣", "安全背心", "safety vest", "safety_vest"), ("safety_vest",)),
+    (("烟雾", "smoke"), ("smoke",)),
+    (("行人", "人员", "person", "pedestrian"), ("person",)),
+)
+
+
+def _ensure_intent_labels(spec: dict[str, Any], user_text: str) -> dict[str, Any]:
+    merged = dict(spec or {})
+    explicit_labels = _normalize_detection_labels(_extract_annotation_labels(user_text))
+    if explicit_labels:
+        merged["labels"] = explicit_labels
+        _align_spec_text_with_labels(merged, explicit_labels)
+        return merged
+
+    current_labels = _spec_string_list(merged, "labels")
+    normalized_current = _normalize_detection_labels(current_labels)
+    inferred_labels = _infer_labels_from_training_intent(user_text)
+    if inferred_labels and (not normalized_current or _labels_are_generic(current_labels) or normalized_current != inferred_labels):
+        merged["labels"] = inferred_labels
+    elif normalized_current:
+        merged["labels"] = normalized_current
+    elif inferred_labels:
+        merged["labels"] = inferred_labels
+    _align_spec_text_with_labels(merged, _spec_string_list(merged, "labels"))
+    return merged
+
+
+def _infer_labels_from_training_intent(user_text: str) -> list[str]:
+    text = (user_text or "").strip()
+    if not text:
+        return []
+    lowered = text.lower()
+    for aliases, labels in _INTENT_LABEL_RULES:
+        if any(alias.lower() in lowered for alias in aliases):
+            return _dedupe_detection_labels(labels)
+    for target in _extract_intent_target_terms(text):
+        labels = _normalize_detection_labels([target])
+        if labels:
+            return labels
+    return []
+
+
+def _extract_intent_target_terms(text: str) -> list[str]:
+    patterns = (
+        r"YOLO\s*([^，,。；;\n]{1,32}?)(?:目标检测|检测|识别|分割)?模型",
+        r"(?:训练|构建|开发|做|生成)(?:一个|一套|一种)?\s*([^，,。；;\n]{1,32}?)(?:YOLO|yolo)(?:目标检测|检测|识别|分割)?模型",
+        r"([^，,。；;\n]{1,32}?)(?:目标检测|检测|识别|分割)模型",
+    )
+    terms: list[str] = []
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        term = _clean_intent_target_term(match.group(1))
+        if term:
+            terms.append(term)
+    return _dedupe_detection_labels(terms)
+
+
+def _clean_intent_target_term(value: str) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"(?i)yolo\d*[a-z]*|cv|目标检测|检测|识别|分割|模型|算法|训练|帮我|请|一个|一套|一种|的|用于", "", text)
+    return re.sub(r"[\s:：，,。；;]+", "", text).strip()
+
+
+def _normalize_detection_labels(labels: list[str] | tuple[str, ...]) -> list[str]:
+    normalized: list[str] = []
+    for raw in labels:
+        label = str(raw or "").strip().strip("\"'`，,;；。")
+        if not label or _is_generic_detection_label(label):
+            continue
+        canonical = _LABEL_ALIAS_TO_CANONICAL.get(_label_lookup_key(label))
+        if canonical:
+            normalized.extend(canonical)
+            continue
+        clean_label = _clean_detection_label(label)
+        if clean_label and not _is_generic_detection_label(clean_label):
+            normalized.append(clean_label)
+    return _dedupe_detection_labels([label for label in normalized if _is_yolo_safe_label(label)])
+
+
+def _labels_are_generic(labels: list[str]) -> bool:
+    return bool(labels) and all(_is_generic_detection_label(label) for label in labels)
+
+
+def _is_generic_detection_label(label: str) -> bool:
+    key = _label_lookup_key(label)
+    raw = str(label or "").strip()
+    return key in _GENERIC_DETECTION_LABELS or raw in _GENERIC_DETECTION_LABELS
+
+
+def _label_lookup_key(label: str) -> str:
+    text = str(label or "").strip().strip("\"'`，,;；。").lower()
+    return re.sub(r"[\s\-]+", "_", text).strip("_")
+
+
+def _clean_detection_label(label: str) -> str:
+    text = str(label or "").strip().strip("\"'`，,;；。")
+    if re.search(r"[A-Za-z0-9]", text):
+        return re.sub(r"[^0-9A-Za-z_]+", "_", text.lower()).strip("_")
+    return ""
+
+
+def _is_yolo_safe_label(label: str) -> bool:
+    return bool(re.fullmatch(r"[a-z][a-z0-9_]*", str(label or "").strip()))
+
+
+def _dedupe_detection_labels(labels: list[str] | tuple[str, ...]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in labels:
+        label = str(item or "").strip()
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(label)
+    return result
+
+
+def _align_spec_text_with_labels(spec: dict[str, Any], labels: list[str]) -> None:
+    if not labels:
+        return
+    label_text = ", ".join(labels)
+    for key in ("task_description", "generation_prompt"):
+        value = _spec_string(spec, key)
+        if not value:
+            continue
+        if re.search(r"\bdefect\b|缺陷|异物", value, flags=re.IGNORECASE):
+            spec[key] = re.sub(r"\bdefect\b", label_text, value, flags=re.IGNORECASE)
+            spec[key] = str(spec[key]).replace("缺陷/异物", label_text).replace("缺陷", label_text).replace("异物", label_text)
+
+
 def _spec_training_config(spec: dict[str, Any]) -> dict[str, Any]:
     raw_training = spec.get("training") if isinstance(spec.get("training"), dict) else {}
     raw_runtime = spec.get("runtime") if isinstance(spec.get("runtime"), dict) else {}
@@ -1531,12 +1837,54 @@ def _small_dict(value: dict[str, Any], *, max_value_chars: int = 1200) -> dict[s
 def _last_user_text(messages: list[Message]) -> str:
     for message in reversed(messages):
         if message.role == "user":
-            return _strip_uploaded_files_context(message.content)
+            return _clean_user_visible_text(message.content)
     return ""
+
+
+def _clean_user_visible_text(text: str) -> str:
+    cleaned = _strip_uploaded_files_context(text)
+    cleaned = re.split(r"\n+\[Workbench selected capabilities\]\n", cleaned, maxsplit=1)[0]
+    return cleaned.strip()
 
 
 def _strip_uploaded_files_context(text: str) -> str:
     return re.split(r"\n\nUploaded files available to tools:\n", text or "", maxsplit=1)[0].strip()
+
+
+def _training_objective_from_user_text(user_text: str) -> str:
+    text = _clean_user_visible_text(user_text)
+    if not text or _is_generic_continue_text(text):
+        return ""
+    if _looks_like_yolo_training_request(text):
+        return text
+    return ""
+
+
+def _combine_spec_user_text(objective_text: str, user_text: str) -> str:
+    current = _clean_user_visible_text(user_text)
+    objective = _clean_user_visible_text(objective_text)
+    if not objective:
+        return current
+    if not current or current == objective or _is_generic_continue_text(current):
+        return objective
+    return f"{objective}\n\n当前补充信息：{current}"
+
+
+def _is_generic_continue_text(text: str) -> bool:
+    normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", (text or "").strip().lower())
+    return normalized in {
+        "继续",
+        "继续处理",
+        "继续处理刚上传的文件",
+        "继续处理刚上传文件",
+        "开始",
+        "开始训练",
+        "继续训练",
+        "下一步",
+        "continue",
+        "goon",
+        "next",
+    }
 
 
 def _selected_skills(runtime_options: RuntimeOptions) -> list[str]:
@@ -1901,6 +2249,10 @@ def _run_annotation_fallback(image_dir: Path, paths: ThreadPaths, labels: list[s
         str(target_dir.resolve()),
         "--text-prompts",
         *labels,
+        "--per-image-output-dir",
+        str(target_dir.resolve()),
+        "--per-image-base-dir",
+        str(target_dir.resolve()),
         "--output",
         str(out),
     ]
@@ -2048,6 +2400,47 @@ def _prompt_marker_path(paths: ThreadPaths) -> Path:
     return paths.workspace / "generation_prompt.txt"
 
 
+def _training_objective_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "training_objective.txt"
+
+
+def _save_training_objective(paths: ThreadPaths, objective: str) -> None:
+    if objective:
+        _training_objective_marker_path(paths).write_text(objective.strip(), encoding="utf-8")
+
+
+def _load_training_objective(paths: ThreadPaths) -> str:
+    marker = _training_objective_marker_path(paths)
+    if marker.exists():
+        return marker.read_text(encoding="utf-8").strip()
+    objective = _load_training_objective_from_memory(paths)
+    if objective:
+        _save_training_objective(paths, objective)
+    return objective
+
+
+def _load_training_objective_from_memory(paths: ThreadPaths) -> str:
+    memory_file = paths.root / "memory" / "conversation.jsonl"
+    if not memory_file.exists():
+        return ""
+    try:
+        lines = memory_file.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return ""
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        message = payload.get("message") if isinstance(payload, dict) else {}
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        objective = _training_objective_from_user_text(str(message.get("content") or ""))
+        if objective:
+            return objective
+    return ""
+
+
 def _save_generation_prompt(paths: ThreadPaths, prompt: str) -> None:
     if prompt:
         _prompt_marker_path(paths).write_text(prompt.strip(), encoding="utf-8")
@@ -2085,8 +2478,9 @@ def _labels_marker_path(paths: ThreadPaths) -> Path:
 
 
 def _save_annotation_labels(paths: ThreadPaths, labels: list[str]) -> None:
-    if labels:
-        _labels_marker_path(paths).write_text(json.dumps(labels, ensure_ascii=False, indent=2), encoding="utf-8")
+    normalized = _normalize_detection_labels(labels)
+    if normalized:
+        _labels_marker_path(paths).write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _load_annotation_labels(paths: ThreadPaths) -> list[str]:
@@ -2097,7 +2491,7 @@ def _load_annotation_labels(paths: ThreadPaths) -> list[str]:
         payload = json.loads(marker.read_text(encoding="utf-8"))
     except Exception:
         return []
-    return [str(item).strip() for item in payload if str(item).strip()] if isinstance(payload, list) else []
+    return _normalize_detection_labels([str(item).strip() for item in payload if str(item).strip()]) if isinstance(payload, list) else []
 
 
 def _training_config_marker_path(paths: ThreadPaths) -> Path:

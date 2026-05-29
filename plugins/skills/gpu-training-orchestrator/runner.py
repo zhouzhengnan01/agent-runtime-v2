@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,23 @@ LOG_FILENAMES = {
     "yolo-training-stderr.txt",
     "yolo-training-epochs.txt",
 }
+KEY_RUN_ARTIFACT_NAMES = {
+    "args.yaml",
+    "run_summary.json",
+    "results.csv",
+    "results.png",
+    "confusion_matrix.png",
+    "confusion_matrix_normalized.png",
+    "PR_curve.png",
+    "P_curve.png",
+    "R_curve.png",
+    "F1_curve.png",
+    "labels.jpg",
+    "labels_correlogram.jpg",
+}
+KEY_WEIGHT_NAMES = {"best.pt", "last.pt"}
+MAX_BATCH_VISUALS = 8
+BATCH_VISUAL_RE = re.compile(r"^(?:train_batch|val_batch|predictions).*\.(?:png|jpg|jpeg)$", re.IGNORECASE)
 
 
 def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) -> dict[str, Any]:
@@ -39,12 +57,13 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
     env["ULTRALYTICS_SETTINGS"] = str(settings_file.resolve())
     env["ULTRALYTICS_HOME"] = str(config_dir.resolve())
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUNBUFFERED", "1")
     env.setdefault("OMP_NUM_THREADS", "1")
     env.setdefault("MKL_NUM_THREADS", "1")
     env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
     cmd = _training_command(normalized, script_path, request_path)
-    completed = subprocess.run(cmd, cwd=str(package_root), capture_output=True, env=env, check=False)
+    completed = _run_command_with_live_logs(cmd, package_root, env, normalized)
     stdout_text = _decode_bytes(completed.stdout)
     stderr_text = _decode_bytes(completed.stderr)
     _write_skill_logs(normalized, stdout_text, stderr_text)
@@ -111,6 +130,78 @@ def _training_command(spec: dict[str, Any], script_path: Path, request_path: Pat
     return [conda_exe, "run", "--no-capture-output", "-n", conda_env_name, "python", str(script_path), "--input", str(request_path)]
 
 
+def _run_command_with_live_logs(
+    cmd: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    spec: dict[str, Any],
+) -> subprocess.CompletedProcess[str]:
+    log_dir = _resolve_log_dir(spec)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stdout_targets = [
+        log_dir / "gpu-training-orchestrator-stdout.txt",
+        log_dir / "yolo-training-stdout.txt",
+    ]
+    stderr_targets = [
+        log_dir / "gpu-training-orchestrator-stderr.txt",
+        log_dir / "yolo-training-stderr.txt",
+    ]
+    for target in [*stdout_targets, *stderr_targets]:
+        target.write_text("", encoding="utf-8")
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=0,
+    )
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    stdout_thread = threading.Thread(
+        target=_pump_stream_to_logs,
+        args=(process.stdout, stdout_targets, stdout_chunks),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_pump_stream_to_logs,
+        args=(process.stderr, stderr_targets, stderr_chunks),
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    returncode = process.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+    return subprocess.CompletedProcess(cmd, returncode, "".join(stdout_chunks), "".join(stderr_chunks))
+
+
+def _pump_stream_to_logs(stream: Any, targets: list[Path], chunks: list[str]) -> None:
+    if stream is None:
+        return
+    handles = [target.open("a", encoding="utf-8", newline="") for target in targets]
+    try:
+        while True:
+            chunk = stream.read(1)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            for handle in handles:
+                handle.write(chunk)
+                handle.flush()
+    finally:
+        for handle in handles:
+            handle.close()
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
 def _write_skill_logs(spec: dict[str, Any], stdout_text: str, stderr_text: str) -> None:
     log_dir = _resolve_log_dir(spec)
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -154,25 +245,62 @@ def _collect_user_visible_outputs(spec: dict[str, Any], paths: Any, artifact_sto
     run_name = str(spec.get("output", {}).get("run_name") or ".")
     run_root = (project_dir / run_name).resolve()
     outputs: list[Any] = []
-    for file_path in sorted(run_root.rglob("*")):
-        if not file_path.is_file():
-            continue
-        if file_path.name in {"best.pt", "last.pt", "results.csv", "args.yaml"} or file_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".json", ".yaml", ".txt", ".csv"}:
-            try:
-                artifact_store.upsert_artifact(paths, file_path)
-                outputs.append(artifact_store.to_artifact_ref(paths.thread_id, file_path))
-            except Exception:
-                continue
+    seen: set[str] = set()
+    for file_path in _key_training_artifacts(run_root):
+        _append_artifact(outputs, seen, paths, artifact_store, file_path)
     log_dir = _resolve_log_dir(spec)
     if log_dir.is_dir():
         for file_path in sorted(log_dir.iterdir()):
             if file_path.is_file() and file_path.name in LOG_FILENAMES:
-                try:
-                    artifact_store.upsert_artifact(paths, file_path)
-                    outputs.append(artifact_store.to_artifact_ref(paths.thread_id, file_path))
-                except Exception:
-                    continue
+                _append_artifact(outputs, seen, paths, artifact_store, file_path)
     return outputs
+
+
+def _key_training_artifacts(run_root: Path) -> list[Path]:
+    if not run_root.is_dir():
+        return []
+    candidates: list[Path] = []
+    batch_visuals: list[Path] = []
+    for file_path in sorted(run_root.rglob("*")):
+        if not file_path.is_file():
+            continue
+        name = file_path.name
+        if name in KEY_WEIGHT_NAMES and file_path.parent.name == "weights":
+            candidates.append(file_path)
+            continue
+        if name in KEY_RUN_ARTIFACT_NAMES:
+            candidates.append(file_path)
+            continue
+        if BATCH_VISUAL_RE.match(name):
+            batch_visuals.append(file_path)
+    candidates.extend(batch_visuals[:MAX_BATCH_VISUALS])
+    return _dedupe_paths(candidates)
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for file_path in paths:
+        key = str(file_path.resolve()).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(file_path)
+    return unique
+
+
+def _append_artifact(outputs: list[Any], seen: set[str], paths: Any, artifact_store: Any, file_path: Path) -> None:
+    if not file_path.is_file():
+        return
+    key = str(file_path.resolve()).casefold()
+    if key in seen:
+        return
+    try:
+        artifact_store.upsert_artifact(paths, file_path)
+        outputs.append(artifact_store.to_artifact_ref(paths.thread_id, file_path))
+        seen.add(key)
+    except Exception:
+        return
 
 
 def _decode_bytes(value: bytes | str | None) -> str:

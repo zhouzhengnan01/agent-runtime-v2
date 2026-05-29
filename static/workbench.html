@@ -3080,9 +3080,9 @@
     const THREAD_STORAGE_KEY = 'jetlinks.runtime.threadId';
     const DEFAULT_APP_TEMPLATE_NAME = 'algorithm-cpu-training-sandbox';
     const MAX_TIMELINE_ITEMS = 120;
-    const MAX_CHAT_UPLOAD_BYTES = 128 * 1024 * 1024;
+    const MAX_CHAT_UPLOAD_BYTES = 4096 * 1024 * 1024;
     const CHAT_UPLOAD_CONCURRENCY = 3;
-    const CHAT_UPLOAD_TIMEOUT_MS = 120000;
+    const CHAT_UPLOAD_TIMEOUT_MS = 30 * 60 * 1000;
 
     const state = {
       messages: [],
