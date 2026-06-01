@@ -66,6 +66,38 @@ def test_yolo_training_flow_normalizes_llm_extracted_spec() -> None:
     assert training_cfg["split"]["test"] == 0.1
 
 
+def test_yolo_training_flow_falls_back_to_three_package_contract() -> None:
+    module = _load_yolo_training_flow_module()
+
+    spec = module._fallback_model_managed_yolo_training_request_spec(
+        {},
+        "\u5e2e\u6211\u8bad\u7ec3\u4e00\u4e2aYOLO\u4eba\u8138\u68c0\u6d4b\u6a21\u578b",
+    )
+
+    assert spec["use_synthetic_generation"] is True
+    assert "image1.zip" in spec["generation_prompt"]
+    assert "image2.zip" in spec["generation_prompt"]
+    assert spec["labels"] == ["face"]
+    assert module._spec_training_config(spec)
+
+
+def test_yolo_training_flow_filters_final_artifacts_to_training_run() -> None:
+    module = _load_yolo_training_flow_module()
+    outputs = [
+        SimpleNamespace(path="/mnt/user-data/outputs/yolo_training_flow/prepared_data/dataset.yaml"),
+        SimpleNamespace(path="/mnt/user-data/outputs/yolo_training_flow/training_run/run_summary.json"),
+        SimpleNamespace(path="/mnt/user-data/outputs/yolo_training_flow/training_run/train/weights/best.pt"),
+        SimpleNamespace(path="/mnt/user-data/outputs/yolo_training_flow/logs/yolo-training-stdout.txt"),
+    ]
+
+    filtered = module._filter_training_run_artifacts(outputs)
+
+    assert [item.path for item in filtered] == [
+        "/mnt/user-data/outputs/yolo_training_flow/training_run/run_summary.json",
+        "/mnt/user-data/outputs/yolo_training_flow/training_run/train/weights/best.pt",
+    ]
+
+
 def test_yolo_training_flow_strips_runtime_attachment_context_from_user_text() -> None:
     module = _load_yolo_training_flow_module()
     messages = [

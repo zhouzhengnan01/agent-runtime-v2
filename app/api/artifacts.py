@@ -16,8 +16,12 @@ ACTIVE_CONTENT_TYPES = {"text/html", "application/xhtml+xml", "image/svg+xml"}
 
 
 @router.get("/{thread_id}")
-async def list_artifacts(thread_id: str) -> dict[str, object]:
-    return {"thread_id": thread_id, "artifacts": [artifact.model_dump() for artifact in store.list_artifacts(thread_id)]}
+async def list_artifacts(thread_id: str, prefix: str | None = None) -> dict[str, object]:
+    try:
+        artifacts = store.list_artifacts(thread_id, prefix=prefix)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"thread_id": thread_id, "artifacts": [artifact.model_dump() for artifact in artifacts]}
 
 
 @router.get("/{thread_id}/{path:path}")

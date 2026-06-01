@@ -30,9 +30,9 @@
   ],
   "models": [],
   "runtime_options": {
-    "model_name": "Qwen3.6-27B",
+    "model_name": "Qwen3.6-35B-A3B",
     "model_env": "LLM_MODEL",
-    "base_url": "http://218.67.242.10:59201/v1",
+    "base_url": "http://218.67.242.10:59202/v1",
     "base_url_env": "LLM_BASE_URL",
     "api_key_env": "LLM_API_KEY",
     "api_key": "abc@123",

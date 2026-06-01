@@ -138,6 +138,11 @@ function uploadRequiredFiles(event: Event) {
         <div>
           <strong>需要上传{{ store.requiredInputLabel }}</strong>
           <span>{{ store.requiredInputAccept }}</span>
+          <ul class="required-input-list">
+            <li v-for="(item, index) in store.requiredInputs" :key="`${item.type || 'file'}-${index}`">
+              {{ item.reason || item.description || item.name || item.type || "file" }}
+            </li>
+          </ul>
         </div>
         <div class="required-actions">
           <button type="button" @click="store.clearRequiredInputs()">稍后</button>
