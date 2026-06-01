@@ -289,7 +289,8 @@ export const useWorkbenchStore = defineStore("workbench", {
         const session = await this.acpClient.newSession({
           cwd: "/",
           agentName: this.selectedAgent,
-          threadId: this.threadId
+          threadId: this.threadId,
+          runtimeOptions: this.acpRuntimeOptions
         });
         this.acpSessionId = String(session.sessionId || "");
       }

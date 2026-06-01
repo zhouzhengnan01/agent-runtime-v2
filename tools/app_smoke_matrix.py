@@ -39,6 +39,7 @@ SKILL_ARTIFACT_PATTERNS = {
     "deliverables-export": ["*.txt", "*.docx"],
     "drawio-generation": ["*.drawio", "*.png"],
     "excel-generation": ["*.xlsx"],
+    "generate-screen-skill": ["generate-screen-skill-prompt.md"],
     "markdown-rendering": ["*.md"],
     "pptx-generation": ["*.pptx"],
     "reference-image-yolo-trainer": [

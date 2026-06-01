@@ -101,7 +101,7 @@ class LoadedSkill:
 
     @property
     def executable(self) -> bool:
-        return self.runner_path is not None or _can_run_generic(self.definition.to_event_payload())
+        return self.plugin is not None or self.runner_path is not None or _can_run_generic(self.definition.to_event_payload())
 
 
 class SkillPluginManager:
@@ -125,7 +125,7 @@ class SkillPluginManager:
     def load_skills(self) -> dict[str, LoadedSkill]:
         plugin_skills = self._load_plugin_skills()
 
-        loaded: dict[str, LoadedSkill] = {}
+        loaded: dict[str, LoadedSkill] = dict(plugin_skills)
         for entity_path in self._config_entity_paths():
             try:
                 definition = definition_from_manifest(_read_json(entity_path), entity_path)
@@ -390,7 +390,7 @@ class SkillPluginManager:
                 package_root=self._execution_package_root(loaded),
             )
         if loaded.runner_path is None:
-            raise KeyError(f"Skill is not backed by an installed runner: {skill_name}")
+            return self._run_prompt_only_skill(skill_name, manifest, spec, paths, artifact_store, loaded)
         if loaded.runner_path.resolve() == loaded.manifest_path.resolve() and _can_run_generic(manifest):
             return _run_generic_skill(
                 skill_name,
@@ -460,6 +460,31 @@ class SkillPluginManager:
             },
         )
         return result if isinstance(result, str) else None
+
+    def _run_prompt_only_skill(
+        self,
+        skill_name: str,
+        manifest: dict[str, Any],
+        spec: dict[str, Any],
+        paths: ThreadPaths,
+        artifact_store: ArtifactStore,
+        loaded: LoadedSkill,
+    ) -> SkillRunResult:
+        content = _prompt_only_markdown(skill_name, manifest, spec, loaded)
+        filename = f"{_safe_artifact_stem(skill_name)}-prompt.md"
+        artifact = artifact_store.write_text_artifact(paths, filename, content)
+        return SkillRunResult(
+            skill_name=skill_name,
+            outputs=[artifact],
+            data={
+                "execution_type": "prompt_only",
+                "message": "Skill has no local runner or execution block; generated a prompt-only skill task package.",
+                "skill_name": skill_name,
+                "objective": spec.get("objective") or spec.get("message") or spec.get("prompt") or "",
+                "manifest_path": str(loaded.manifest_path),
+                "plugin_id": loaded.plugin.plugin_id if loaded.plugin is not None else None,
+            },
+        )
 
     def _plugin_roots(self) -> list[Path]:
         roots: list[Path] = []
@@ -754,6 +779,98 @@ def _with_plugin_metadata(
         runner_path=runner_path,
         spec_builder_path=spec_builder_path,
     )
+
+
+def _prompt_only_markdown(skill_name: str, manifest: dict[str, Any], spec: dict[str, Any], loaded: LoadedSkill) -> str:
+    description = str(manifest.get("description") or skill_name).strip()
+    objective = str(spec.get("objective") or spec.get("message") or spec.get("prompt") or "").strip()
+    skill_md = _prompt_only_skill_md(loaded)
+    references = _prompt_only_reference_paths(loaded)
+    lines = [
+        f"# {skill_name}",
+        "",
+        "This is a prompt-only skill package. The skill is installed and selected, but it does not define a local runner or manifest.execution block.",
+        "Use the instructions below as the active skill contract for the current request.",
+        "",
+        "## Objective",
+        "",
+        objective or "(not provided)",
+        "",
+        "## Manifest Summary",
+        "",
+        f"- Description: {description}",
+        f"- Output kind: {manifest.get('output_kind') or 'json'}",
+    ]
+    routing = manifest.get("routing")
+    if isinstance(routing, dict):
+        keywords = [str(item) for item in routing.get("keywords", []) if isinstance(item, str)]
+        if keywords:
+            lines.append(f"- Keywords: {', '.join(keywords[:30])}")
+    lines.extend(["", "## Input Spec", "", "```json", json.dumps(spec, ensure_ascii=False, indent=2), "```"])
+    if skill_md:
+        lines.extend(["", "## SKILL.md", "", skill_md[:20_000]])
+    if references:
+        lines.extend(["", "## Reference Files", ""])
+        lines.extend(f"- `{path}`" for path in references[:80])
+    lines.extend(
+        [
+            "",
+            "## Expected Result",
+            "",
+            "Generate the requested deliverable according to the manifest, SKILL.md, and references. If files are required, create them as artifacts in the thread outputs.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _prompt_only_skill_md(loaded: LoadedSkill) -> str:
+    candidates = []
+    if loaded.manifest_path.name == "SKILL.md":
+        candidates.append(loaded.manifest_path)
+    candidates.append(loaded.manifest_path.parent / "SKILL.md")
+    if loaded.plugin is not None:
+        candidates.append(loaded.plugin.root / "SKILL.md")
+    seen: set[Path] = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if path.is_file():
+            try:
+                return path.read_text(encoding="utf-8")
+            except OSError:
+                return ""
+    return ""
+
+
+def _prompt_only_reference_paths(loaded: LoadedSkill) -> list[str]:
+    if loaded.plugin is None:
+        return []
+    roots = [loaded.manifest_path.parent / "references", loaded.plugin.root / "references"]
+    paths: list[str] = []
+    seen: set[Path] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            try:
+                paths.append(path.relative_to(loaded.plugin.root).as_posix())
+            except ValueError:
+                paths.append(path.as_posix())
+    return paths
+
+
+def _safe_artifact_stem(value: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in "._-" else "-" for char in value.strip())
+    return cleaned.strip(".-") or "skill"
 
 def _validate_manifest_execution(manifest: dict[str, Any], manifest_path: Path) -> None:
     execution = manifest.get("execution")

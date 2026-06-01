@@ -72,6 +72,7 @@ def _run_python_script(
     args = _python_script_args(execution, spec, paths)
     stdin = _python_script_stdin(input_mode, skill_name, spec, paths)
     env = os.environ.copy()
+    env.update(_python_script_env(skill_name, spec, paths))
     env.update(_render_mapping(execution.get("env"), spec))
     completed = subprocess.run(
         [python, str(script_path), *args],
@@ -243,6 +244,18 @@ def _python_script_stdin(input_mode: str, skill_name: str, spec: dict[str, Any],
             )
         return None
     raise ValueError(f"Unsupported python_script input_mode: {input_mode}")
+
+
+def _python_script_env(skill_name: str, spec: dict[str, Any], paths: ThreadPaths) -> dict[str, str]:
+    public_spec = _expand_runtime_tokens(_public_spec(spec), paths)
+    return {
+        "SKILL_NAME": skill_name,
+        "THREAD_ID": paths.thread_id,
+        "WORKSPACE_DIR": str(paths.workspace.resolve()),
+        "UPLOADS_DIR": str(paths.uploads.resolve()),
+        "OUTPUTS_DIR": str(paths.outputs.resolve()),
+        "SPEC_JSON": json.dumps(public_spec, ensure_ascii=False),
+    }
 
 
 def _python_script_outputs(

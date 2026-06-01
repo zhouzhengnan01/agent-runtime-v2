@@ -68,6 +68,13 @@ def discover_skill_entrypoint(manifest_path: Path, manifest: dict[str, Any] | No
         for path in mentioned
         if (analysis := analyses.get(path.resolve())) is not None
     ]
+    if len(mentioned_candidates) == 1:
+        return _entrypoint_from_analysis(
+            mentioned_candidates[0],
+            "skill_md_python_reference",
+            score=2_500,
+            force_kind="script",
+        )
     selected = _select_best(
         mentioned_candidates,
         skill_md_text,
@@ -247,8 +254,14 @@ def _select_best(
     return scored[0]
 
 
-def _entrypoint_from_analysis(analysis: PythonFileAnalysis, reason: str, *, score: int) -> DiscoveredEntrypoint:
-    kind: EntrypointKind = "function" if analysis.function_entry else "script"
+def _entrypoint_from_analysis(
+    analysis: PythonFileAnalysis,
+    reason: str,
+    *,
+    score: int,
+    force_kind: EntrypointKind | None = None,
+) -> DiscoveredEntrypoint:
+    kind: EntrypointKind = force_kind or ("function" if analysis.function_entry else "script")
     return DiscoveredEntrypoint(
         path=analysis.path,
         relative_path=analysis.relative_path,

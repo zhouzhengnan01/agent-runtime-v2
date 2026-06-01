@@ -57,7 +57,7 @@ class SkillDefinition:
 
     @property
     def executable(self) -> bool:
-        return self.runner_path is not None or _has_generic_execution(self.execution)
+        return self.source_type == "plugin" or self.runner_path is not None or _has_generic_execution(self.execution)
 
     @property
     def composite(self) -> bool:

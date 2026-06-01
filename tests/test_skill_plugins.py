@@ -1140,15 +1140,66 @@ def test_generic_template_skill_executes_without_runner(tmp_path: Path) -> None:
     assert result.outputs[0].name == "daily-report.md"
     assert (paths.outputs / "daily-report.md").read_text(encoding="utf-8") == "# daily-report\n\ndone"
     executable_names = {skill.name for skill in SkillRegistry(tmp_path).list(executable_only=True)}
-    assert "generic-template" not in executable_names
+    assert "generic-template" in executable_names
+
+
+def test_prompt_only_plugin_skill_is_registered_and_callable_without_runner_or_execution(tmp_path: Path) -> None:
+    plugin_root = tmp_path / "plugins" / "skills" / "prompt-only-plugin"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "prompt-only-plugin",
+  "name": "Prompt Only Plugin",
+  "version": "1.0.0",
+  "skills": ["manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "manifest.json").write_text(
+        """
+{
+  "name": "prompt-only-skill",
+  "description": "Generate prompt-only deliverables.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {"keywords": ["大屏"]},
+  "input_schema": {"type": "object", "properties": {"objective": {"type": "string"}}},
+  "output_schema": {"type": "object"},
+  "sandbox": {"enabled": false, "profile": null, "request_schema_version": "skill-run.v1"}
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "SKILL.md").write_text("# Prompt Only Skill\n\nFollow these instructions.\n", encoding="utf-8")
+
+    registry = SkillRegistry(tmp_path)
+    skill = registry.get("prompt-only-skill")
+    assert skill.executable is True
+    assert skill.plugin_id == "prompt-only-plugin"
+    assert "prompt-only-skill" in {item.name for item in registry.list(executable_only=True)}
+
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("prompt-only-skill")
+    result = SkillRunner(store, root_dir=tmp_path).run(
+        "prompt-only-skill",
+        {"objective": "给我生成一个智慧大屏"},
+        paths,
+    )
+
+    assert result.data["execution_type"] == "prompt_only"
+    assert result.outputs[0].name == "prompt-only-skill-prompt.md"
+    content = (paths.outputs / "prompt-only-skill-prompt.md").read_text(encoding="utf-8")
+    assert "给我生成一个智慧大屏" in content
+    assert "Follow these instructions." in content
 
 
 def test_public_template_skill_is_discoverable_and_executes(tmp_path: Path) -> None:
     registry = SkillRegistry()
 
-    with pytest.raises(KeyError):
-        registry.get("public-skill-demo")
-    assert "public-skill-demo" not in {item.name for item in registry.list(executable_only=True)}
+    assert registry.get("public-skill-demo").executable is True
+    assert "public-skill-demo" in {item.name for item in registry.list(executable_only=True)}
 
     store = ArtifactStore(root_dir=tmp_path / "runtime")
     paths = store.prepare_thread("public-skill-demo")
@@ -1384,6 +1435,60 @@ def run_skill(skill_name, spec, paths, artifact_store):
     assert result.data["entrypoint"] == "scripts/nested/emoji_engine.py"
     assert result.outputs[0].name == "function-entry.md"
     assert (paths.outputs / "function-entry.md").read_text(encoding="utf-8") == "# Function Entry\n"
+
+
+def test_skill_md_referenced_python_script_is_executed_even_without_standard_entrypoint(tmp_path: Path) -> None:
+    monkeypatch_root = tmp_path
+    plugin_root = monkeypatch_root / "plugins" / "skills" / "mentioned-script-plugin"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "mentioned-script-plugin",
+  "name": "Mentioned Script Plugin",
+  "version": "1.0.0",
+  "skills": ["SKILL.md"]
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "SKILL.md").write_text(
+        """
+---
+name: mentioned-script-skill
+description: Runs the Python file mentioned in SKILL.md.
+---
+
+# Mentioned Script Skill
+
+Run `scripts/build_report.py` for this skill.
+""",
+        encoding="utf-8",
+    )
+    script_dir = plugin_root / "scripts"
+    script_dir.mkdir()
+    (script_dir / "build_report.py").write_text(
+        """
+import os
+from pathlib import Path
+
+Path(os.environ['OUTPUTS_DIR'], 'mentioned-script.md').write_text('# Mentioned Script\\n', encoding='utf-8')
+""",
+        encoding="utf-8",
+    )
+
+    manager = SkillPluginManager(tmp_path)
+    loaded = manager.get_loaded_skill("mentioned-script-skill")
+    assert loaded.executable is True
+    assert loaded.definition.execution is not None
+    assert loaded.definition.execution["script"] == "scripts/build_report.py"
+
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("mentioned-script-skill")
+    result = SkillRunner(store, root_dir=tmp_path).run("mentioned-script-skill", {}, paths)
+
+    assert result.outputs[0].name == "mentioned-script.md"
+    assert (paths.outputs / "mentioned-script.md").read_text(encoding="utf-8") == "# Mentioned Script\n"
 
 
 def test_image_composite_runner_normalizes_runtime_payload_and_collects_outputs(
