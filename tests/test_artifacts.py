@@ -27,6 +27,20 @@ def test_artifact_list(tmp_path: Path) -> None:
     assert manifest["artifacts"][0]["path"] == "outputs/a/result.md"
 
 
+def test_artifact_list_can_be_limited_by_output_prefix(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("t1")
+    store.write_text_artifact(paths, "yolo_training_flow/training_run/run_summary.json", "{}")
+    store.write_text_artifact(paths, "yolo_training_flow/uploaded_dataset/1.png", "image")
+    store.write_text_artifact(paths, "yolo_training_flow/prepared_data/dataset.yaml", "path: .")
+
+    refs = store.list_artifacts("t1", prefix="yolo_training_flow/training_run")
+
+    assert [ref.path for ref in refs] == [
+        "/mnt/user-data/outputs/yolo_training_flow/training_run/run_summary.json",
+    ]
+
+
 def test_artifact_store_prepares_thread_workspace_dirs(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path)
     paths = store.prepare_thread("thread/one")

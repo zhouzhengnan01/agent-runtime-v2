@@ -148,6 +148,7 @@ class YoloTrainingWorkflow:
                 runtime_options=runtime_options,
                 recorder=recorder,
             )
+            request_spec = _fallback_model_managed_yolo_training_request_spec(request_spec, spec_user_text)
             request_spec = _ensure_intent_labels(request_spec, spec_user_text)
             if _spec_string(request_spec, "generation_prompt"):
                 request_spec["use_synthetic_generation"] = True
@@ -461,7 +462,7 @@ class YoloTrainingWorkflow:
         training_result = self.skill_runner.run("gpu-training-orchestrator", training_spec, paths)
         recorder.emit("skill.completed", {"skill_name": "gpu-training-orchestrator", "output_count": len(training_result.outputs)})
 
-        outputs = [*annotation_result.outputs, *training_result.outputs]
+        outputs = _filter_training_run_artifacts(training_result.outputs)
         for artifact in outputs:
             recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
             recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
@@ -1087,6 +1088,39 @@ def _generate_model_managed_yolo_training_request_spec(
     except Exception as exc:
         recorder.emit("llm.completed", {"purpose": "workflow_model_managed_spec", "used_fallback": True, "error": str(exc)[:1000]})
         return {}
+
+
+def _fallback_model_managed_yolo_training_request_spec(spec: dict[str, Any], user_text: str) -> dict[str, Any]:
+    """Keep the upload contract deterministic when model-managed planning fails."""
+    if _request_spec_complete(spec):
+        return spec
+    labels = _spec_string_list(spec, "labels") or _infer_labels_from_training_intent(user_text) or ["object"]
+    labels = _normalize_detection_labels(labels) or ["object"]
+    label_text = ", ".join(labels)
+    fallback = {
+        "task_description": _spec_string(spec, "task_description") or f"{label_text} detection",
+        "use_synthetic_generation": True,
+        "generation_prompt": _spec_string(spec, "generation_prompt")
+        or (
+            f"Use image1.zip as background/scene images and image2.zip as foreground target images for {label_text}. "
+            "Naturally composite the targets from image2 into image1 scenes with consistent lighting, scale, perspective, "
+            "occlusion, and realistic camera appearance, producing images suitable for object-detection annotation."
+        ),
+        "labels": labels,
+        "training": {
+            "task": "detect",
+            "model": "yolo11n.pt",
+            "epochs": 10,
+            "imgsz": 640,
+            "batch": 8,
+            "device": "0",
+            "workers": 4,
+            "patience": 20,
+        },
+        "runtime": {"conda_env_name": "", "enforce_conda_env": False},
+        "split": {"train": 0.7, "val": 0.2, "test": 0.1},
+    }
+    return _merge_request_specs(fallback, spec)
 
 
 def _complete_yolo_training_request_spec(
@@ -2382,6 +2416,16 @@ def _find_best_pt(paths: ThreadPaths) -> str:
 
 def _input_label(value: object) -> str:
     return {"dataset": "数据集", "image": "图片", "model_config": "模型配置"}.get(str(value), "输入")
+
+
+def _filter_training_run_artifacts(outputs: list[Any]) -> list[Any]:
+    result: list[Any] = []
+    marker = f"/{WORKFLOW_OUTPUT_DIR}/training_run/"
+    for artifact in outputs:
+        path = str(getattr(artifact, "path", "") or "").replace("\\", "/")
+        if marker in path:
+            result.append(artifact)
+    return result
 
 
 def _reference_marker_path(paths: ThreadPaths) -> Path:

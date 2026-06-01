@@ -3137,6 +3137,7 @@
       activeAssistantIndex: null,
       nextAgentOverride: null,
       nextWorkflowOverride: null,
+      lastRunWorkflow: null,
       finalResultApplied: false,
       messageSeq: 0,
       messageUpdateFrame: 0,
@@ -6470,6 +6471,7 @@
       }
       const requestAgent = state.nextAgentOverride || agentFromSelectedCapabilities() || els.agent.value;
       const requestWorkflow = state.nextWorkflowOverride || state.selectedChatWorkflow;
+      state.lastRunWorkflow = requestWorkflow || null;
       state.timeline = [];
       state.artifacts = [];
       state.verification = null;
@@ -6778,6 +6780,7 @@
       const data = event.data || {};
       switch (event.type) {
         case 'run.started':
+          if (data.workflow) state.lastRunWorkflow = data.workflow;
           setAssistantProgress('任务已启动，正在准备上下文…');
           addTimeline('启动', `${data.workflow || 'workflow'} · ${data.thread_id || ''}`);
           break;
@@ -7084,7 +7087,11 @@
 
     async function refreshArtifacts() {
       const threadId = ensureThread();
-      const res = await fetch(`/api/artifacts/${encodeURIComponent(threadId)}`, fetchOptions({ cache: 'no-store' }));
+      const workflow = state.lastRunWorkflow || state.nextWorkflowOverride || state.selectedChatWorkflow;
+      const params = new URLSearchParams();
+      if (workflow === 'yolo_training_flow') params.set('prefix', 'yolo_training_flow/training_run');
+      const query = params.toString();
+      const res = await fetch(`/api/artifacts/${encodeURIComponent(threadId)}${query ? `?${query}` : ''}`, fetchOptions({ cache: 'no-store' }));
       const data = await res.json();
       if (ensureThread() !== threadId) return;
       state.artifacts = data.artifacts || [];

@@ -252,7 +252,8 @@ export const useWorkbenchStore = defineStore("workbench", {
     async refreshArtifacts() {
       this.loadingArtifacts = true;
       try {
-        this.artifacts = await listArtifacts(this.threadId);
+        const prefix = this.selectedWorkflow === "yolo_training_flow" ? "yolo_training_flow/training_run" : undefined;
+        this.artifacts = await listArtifacts(this.threadId, prefix);
       } finally {
         this.loadingArtifacts = false;
       }

@@ -70,10 +70,14 @@ class ArtifactStore:
         self.upsert_artifact(paths, target)
         return self.to_artifact_ref(paths.thread_id, target)
 
-    def list_artifacts(self, thread_id: str) -> list[ArtifactRef]:
+    def list_artifacts(self, thread_id: str, prefix: str | None = None) -> list[ArtifactRef]:
         paths = self.prepare_thread(thread_id)
+        search_root = self._safe_output_prefix(paths, prefix) if prefix else paths.outputs.resolve()
+        if not search_root.exists():
+            return []
         refs: list[ArtifactRef] = []
-        for file_path in sorted(paths.outputs.rglob("*")):
+        candidates = search_root.rglob("*") if search_root.is_dir() else [search_root]
+        for file_path in sorted(candidates):
             if file_path.is_file():
                 refs.append(self.to_artifact_ref(paths.thread_id, file_path))
         return refs
@@ -203,6 +207,19 @@ class ArtifactStore:
             candidate.relative_to(outputs)
         except ValueError as exc:
             raise ValueError("Output path traversal blocked") from exc
+        return candidate
+
+    @staticmethod
+    def _safe_output_prefix(paths: ThreadPaths, prefix: str | None) -> Path:
+        name = ArtifactStore._normalize_output_name(str(prefix or ""))
+        if name.startswith("outputs/"):
+            name = name[len("outputs/") :]
+        candidate = (paths.outputs / name).resolve()
+        outputs = paths.outputs.resolve()
+        try:
+            candidate.relative_to(outputs)
+        except ValueError as exc:
+            raise ValueError("Artifact prefix traversal blocked") from exc
         return candidate
 
     @staticmethod
