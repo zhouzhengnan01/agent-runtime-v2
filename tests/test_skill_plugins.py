@@ -127,12 +127,15 @@ def test_skill_registry_exposes_model_tags_as_metadata() -> None:
     data_auto = registry.get("data-auto-annotation")
     algorithm_research = registry.get("algorithm-research-scout")
     image_dataset_generation = registry.get("image-dataset-generation")
+    image_dataset_produce = registry.get("image-dataset-produce")
     payload = data_auto.to_event_payload()
 
     assert data_auto.model_tags == ("vision_segmentation",)
     assert algorithm_research.model_tags == ("chat", "reasoning", "rerank")
     assert image_dataset_generation.executable is True
     assert image_dataset_generation.model_tags == ("image_generation", "vision_segmentation")
+    assert image_dataset_produce.executable is True
+    assert image_dataset_produce.model_tags == ("image_generation", "vision_segmentation")
     assert payload["model_tags"] == ["vision_segmentation"]
     assert "model_tags" not in (data_auto.input_schema or {}).get("properties", {})
 

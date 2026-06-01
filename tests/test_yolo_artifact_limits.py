@@ -195,6 +195,20 @@ def test_gpu_training_runner_writes_logs_while_subprocess_is_running(tmp_path: P
     assert "live-error" in stderr_log.read_text(encoding="utf-8")
 
 
+def test_gpu_training_runner_prepares_ultralytics_font_assets(tmp_path: Path) -> None:
+    module = _load_runner("plugins/skills/gpu-training-orchestrator/runner.py", "gpu_training_runner_fonts_for_test")
+    source = tmp_path / "source-font.ttf"
+    source.write_bytes(b"fake-font")
+    module.ULTRALYTICS_FONT_CANDIDATES = [source]
+
+    config_dir = tmp_path / "ultralytics_config"
+    module._prepare_ultralytics_offline_assets(config_dir)
+
+    for base in (config_dir, config_dir / "Ultralytics"):
+        assert (base / "Arial.ttf").read_bytes() == b"fake-font"
+        assert (base / "Arial.Unicode.ttf").read_bytes() == b"fake-font"
+
+
 def _load_runner(relative_path: str, module_name: str) -> object:
     project_root = Path(__file__).resolve().parents[1]
     path = project_root / relative_path

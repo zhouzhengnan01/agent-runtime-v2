@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+MAX_LOG_ARTIFACTS = 8
 LOG_FILENAMES = {
     "data-auto-annotation-stdout.txt",
     "data-auto-annotation-stderr.txt",
@@ -16,6 +17,8 @@ LOG_FILENAMES = {
     "data-auto-annotation-pipeline-stderr.txt",
     "image-dataset-generation-stdout.txt",
     "image-dataset-generation-stderr.txt",
+    "image-dataset-produce-stdout.txt",
+    "image-dataset-produce-stderr.txt",
     "synthetic-planner-stdout.txt",
     "synthetic-planner-stderr.txt",
     "dataset-preparation-stdout.txt",
@@ -187,10 +190,16 @@ def _collect_outputs(spec: dict[str, Any], paths: Any, artifact_store: Any) -> l
         _append_artifact(outputs, seen, paths, artifact_store, file_path)
     log_dir = _log_dir(spec)
     if log_dir.is_dir():
+        log_count = 0
         for file_path in sorted(log_dir.iterdir()):
             if not file_path.is_file() or file_path.name not in LOG_FILENAMES:
                 continue
+            if file_path.stat().st_size <= 0:
+                continue
+            if log_count >= MAX_LOG_ARTIFACTS:
+                continue
             _append_artifact(outputs, seen, paths, artifact_store, file_path)
+            log_count += 1
     return outputs
 
 

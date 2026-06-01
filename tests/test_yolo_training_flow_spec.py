@@ -98,6 +98,61 @@ def test_yolo_training_flow_filters_final_artifacts_to_training_run() -> None:
     ]
 
 
+def test_yolo_training_flow_failed_reply_reports_produce_fallback_as_recovered(tmp_path: Path) -> None:
+    module = _load_yolo_training_flow_module()
+    prep = {
+        "prepared_dataset": str(tmp_path / "prepared_dataset"),
+        "dataset_yaml": str(tmp_path / "dataset.yaml"),
+        "synthetic_generation_status": "merged",
+        "synthetic_generation_fallback": "image-dataset-produce",
+        "synthetic_generation_primary_error": "insufficient_user_quota",
+        "source_counts": {
+            "train": {"real": 12, "synthetic": 8},
+            "val": {"real": 1, "synthetic": 0},
+            "test": {"real": 1, "synthetic": 0},
+        },
+        "split_counts": {"train": 20, "val": 1, "test": 1},
+    }
+    fallback_reply = '{"returncode": 1, "stderr_tail": "Download failure for https://ultralytics.com/assets/Arial.ttf"}'
+
+    reply = module._training_failed_reply(
+        summary={},
+        fallback_reply=fallback_reply,
+        best_pt="",
+        data_preparation_summary=prep,
+    )
+
+    assert "已切换到 `image-dataset-produce`" in reply
+    assert "成功合并 8 张合成图" in reply
+    assert "best.pt: `未生成`" in reply
+    assert "Download failure" in reply
+
+
+def test_yolo_training_flow_read_run_summary_includes_synthetic_fallback_facts(tmp_path: Path) -> None:
+    module = _load_yolo_training_flow_module()
+    paths = SimpleNamespace(outputs=tmp_path / "outputs")
+    run_dir = paths.outputs / "yolo_training_flow" / "training_run"
+    prep_dir = paths.outputs / "yolo_training_flow" / "prepared_data"
+    run_dir.mkdir(parents=True)
+    prep_dir.mkdir(parents=True)
+    (run_dir / "run_summary.json").write_text('{"model": "yolo11n.pt"}', encoding="utf-8")
+    (prep_dir / "data_preparation_summary.json").write_text(
+        (
+            '{"synthetic_generation_status": "merged", '
+            '"synthetic_generation_fallback": "image-dataset-produce", '
+            '"synthetic_generation_primary_error": "insufficient_user_quota", '
+            '"source_counts": {"train": {"real": 2, "synthetic": 3}}}'
+        ),
+        encoding="utf-8",
+    )
+
+    summary = module._read_run_summary(paths)
+
+    assert summary["synthetic_generation_status"] == "merged"
+    assert summary["synthetic_generation_fallback"] == "image-dataset-produce"
+    assert summary["synthetic_generation_primary_error"] == "insufficient_user_quota"
+
+
 def test_yolo_training_flow_strips_runtime_attachment_context_from_user_text() -> None:
     module = _load_yolo_training_flow_module()
     messages = [
@@ -124,7 +179,7 @@ def test_yolo_training_flow_strips_workbench_capability_context_from_user_text()
             content=(
                 "\u5e2e\u6211\u8bad\u7ec3\u4e00\u4e2aYOLO\u62bd\u70df\u68c0\u6d4b\u6a21\u578b\n\n"
                 "[Workbench selected capabilities]\n"
-                "Selected Skills: data-auto-annotation, image-dataset-generation, gpu-training-orchestrator"
+                "Selected Skills: data-auto-annotation, image-dataset-generation, image-dataset-produce, gpu-training-orchestrator"
             ),
         )
     ]

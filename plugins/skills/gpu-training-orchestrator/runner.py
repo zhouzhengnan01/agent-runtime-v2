@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -33,6 +34,13 @@ KEY_RUN_ARTIFACT_NAMES = {
 KEY_WEIGHT_NAMES = {"best.pt", "last.pt"}
 MAX_BATCH_VISUALS = 8
 BATCH_VISUAL_RE = re.compile(r"^(?:train_batch|val_batch|predictions).*\.(?:png|jpg|jpeg)$", re.IGNORECASE)
+ULTRALYTICS_FONT_NAMES = ("Arial.ttf", "Arial.Unicode.ttf")
+ULTRALYTICS_FONT_CANDIDATES = [
+    Path(os.environ["WINDIR"]) / "Fonts" / "arial.ttf" if os.environ.get("WINDIR") else Path("C:/Windows/Fonts/arial.ttf"),
+    Path(os.environ["WINDIR"]) / "Fonts" / "segoeui.ttf" if os.environ.get("WINDIR") else Path("C:/Windows/Fonts/segoeui.ttf"),
+    Path(os.environ["WINDIR"]) / "Fonts" / "calibri.ttf" if os.environ.get("WINDIR") else Path("C:/Windows/Fonts/calibri.ttf"),
+    Path(os.environ["WINDIR"]) / "Fonts" / "simhei.ttf" if os.environ.get("WINDIR") else Path("C:/Windows/Fonts/simhei.ttf"),
+]
 
 
 def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) -> dict[str, Any]:
@@ -50,6 +58,7 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
     env = os.environ.copy()
     config_dir = Path(paths.workspace) / "ultralytics_config"
     config_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_ultralytics_offline_assets(config_dir)
     settings_file = config_dir / "settings.json"
     if not settings_file.exists():
         settings_file.write_text("{}", encoding="utf-8")
@@ -128,6 +137,38 @@ def _training_command(spec: dict[str, Any], script_path: Path, request_path: Pat
         return [sys.executable, str(script_path), "--input", str(request_path)]
     conda_exe = str(os.environ.get("CONDA_EXE", "") or "").strip() or "conda"
     return [conda_exe, "run", "--no-capture-output", "-n", conda_env_name, "python", str(script_path), "--input", str(request_path)]
+
+
+def _prepare_ultralytics_offline_assets(config_dir: Path) -> None:
+    source = _find_local_font_source()
+    if source is None:
+        return
+    for target_dir in _ultralytics_config_dirs(config_dir):
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for font_name in ULTRALYTICS_FONT_NAMES:
+            target = target_dir / font_name
+            if target.is_file() and target.stat().st_size > 0:
+                continue
+            try:
+                shutil.copy2(source, target)
+            except OSError:
+                continue
+
+
+def _ultralytics_config_dirs(config_dir: Path) -> list[Path]:
+    resolved = config_dir.resolve()
+    # Newer Ultralytics versions append "Ultralytics" to YOLO_CONFIG_DIR.
+    return [resolved, resolved / "Ultralytics"]
+
+
+def _find_local_font_source() -> Path | None:
+    for candidate in ULTRALYTICS_FONT_CANDIDATES:
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return candidate.resolve()
+        except OSError:
+            continue
+    return None
 
 
 def _run_command_with_live_logs(

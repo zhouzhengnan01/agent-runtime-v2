@@ -20,7 +20,7 @@ _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 WORKFLOW_NAME = "yolo_training_flow"
 WORKFLOW_OUTPUT_DIR = "yolo_training_flow"
 PIPELINE_WORK_DIR = "pipeline_work"
-DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "data-auto-annotation", "gpu-training-orchestrator"]
+DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "image-dataset-produce", "data-auto-annotation", "gpu-training-orchestrator"]
 
 # Synthetic image count switch for the algorithm-engineer-full-cycle-test app.
 # button=True: use the LLM planner to decide how many images to synthesize.
@@ -28,6 +28,8 @@ DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "data-auto-annotation", "
 #模型思考开关控制：button=True时由LLM决定合成数量，button=False时使用固定数量。
 button = False
 FIXED_SYNTHETIC_COUNT = 5
+button_produce = True
+FIXED_PRODUCE_SYNTHETIC_COUNT = 5
 AUTO_GENERATE_MISSING_SPEC = True
 
 
@@ -344,6 +346,8 @@ class YoloTrainingWorkflow:
             "skip_generation": not generation_enabled,
             "synthetic_count_button": _synthetic_count_button(runtime_options),
             "fixed_synthetic_count": _fixed_synthetic_count(runtime_options),
+            "produce_count_button": _produce_count_button(runtime_options),
+            "fixed_produce_synthetic_count": _fixed_produce_synthetic_count(runtime_options),
             "split_requested": training_enabled,
             "split": training_cfg["split"],
             "training": training_cfg["training"],
@@ -364,6 +368,8 @@ class YoloTrainingWorkflow:
                 "phase": "data_preparation",
                 "synthetic_count_button": _synthetic_count_button(runtime_options),
                 "fixed_synthetic_count": _fixed_synthetic_count(runtime_options),
+                "produce_count_button": _produce_count_button(runtime_options),
+                "fixed_produce_synthetic_count": _fixed_produce_synthetic_count(runtime_options),
             },
         }
 
@@ -473,6 +479,47 @@ class YoloTrainingWorkflow:
         template_reply = ""
         if isinstance(training_result.data, dict):
             template_reply = str(training_result.data.get("final_reply") or "").strip()
+        training_returncode = 0
+        if isinstance(training_result.data, dict):
+            try:
+                training_returncode = int(training_result.data.get("returncode", 0) or 0)
+            except (TypeError, ValueError):
+                training_returncode = 1
+        if training_returncode != 0:
+            _set_waiting_prompt(paths, False)
+            _set_workflow_completed(paths, False)
+            reply = _training_failed_reply(
+                summary=summary,
+                fallback_reply=template_reply,
+                best_pt=best_pt,
+                data_preparation_summary=_read_data_preparation_summary(paths),
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=paths.thread_id,
+                status="failed",
+                reply=reply,
+                artifacts=outputs,
+                verification=VerificationResult(passed=False, retry_count=0, checks=[], failed_checks=["gpu-training-orchestrator failed"]),
+                metadata={
+                    "workflow": workflow,
+                    "phase": "training_failed",
+                    "training_spec": training_spec,
+                    "data_preparation_spec": data_prep_spec,
+                    "training_summary": summary,
+                    "training_result": training_result.data if isinstance(training_result.data, dict) else {},
+                    "best_pt": best_pt,
+                    "model_generated_spec": _model_generated_spec_payload(request_spec),
+                    "merged_dataset_root": pipeline_paths.get("dataset_root") or str(dataset_root),
+                    "merged_coco_json": pipeline_paths.get("coco_json") or "",
+                    "synthetic_plan": pipeline_paths.get("synthetic_plan") or "",
+                    "training_input": pipeline_paths.get("training_input") or "",
+                    "labels": labels,
+                },
+            )
+            recorder.emit("agent.message", {"text": reply})
+            recorder.emit("run.failed", {"result": result.model_dump(), "error": reply[:2000]})
+            return result, recorder.events
         reply = _generate_model_controlled_reply(
             agent_config=agent_config,
             runtime_options=runtime_options,
@@ -769,6 +816,8 @@ def _generate_model_controlled_reply(
             "num_categories": summary.get("num_categories"),
             "class_names": summary.get("class_names"),
             "split_counts": summary.get("split_counts"),
+            "source_counts": summary.get("source_counts"),
+            "synthetic_generation": _synthetic_generation_facts(summary),
         },
         "training": {
             "status": "completed" if best_pt else "unknown",
@@ -792,6 +841,8 @@ def _generate_model_controlled_reply(
         "你是算法工程师 Agent 的最终回复生成器。"
         "上游工作流已经完成技能调用，你只负责基于事实组织输出样式和表达。"
         "要求：使用中文；不要编造事实；保留关键路径、best.pt、数据划分、类别和评估指标；"
+        "合成数据状态必须以 dataset.synthetic_generation.status 为准；"
+        "如果 status=merged 且 fallback 存在，说明主合成接口失败但 fallback 已成功补救，不要写成数据合成失败；"
         "如果 evaluation.metrics 中存在 precision、recall、mAP50、mAP50_95、fitness，必须在回复中明确列出；"
         "如果某个类别指标很差或为 0，要温和指出可能是样本/标注不足；"
         "输出应像专业算法训练报告，但不要机械复述 JSON。"
@@ -1343,6 +1394,17 @@ def _fixed_synthetic_count(runtime_options: RuntimeOptions) -> int:
     return _int_from_any(params.get("fixed_synthetic_count"), FIXED_SYNTHETIC_COUNT)
 
 
+def _produce_count_button(runtime_options: RuntimeOptions) -> bool:
+    params = _workflow_skill_parameters(runtime_options)
+    value = _bool_from_any(params.get("button_produce"))
+    return button_produce if value is None else value
+
+
+def _fixed_produce_synthetic_count(runtime_options: RuntimeOptions) -> int:
+    params = _workflow_skill_parameters(runtime_options)
+    return _int_from_any(params.get("fixed_produce_synthetic_count"), FIXED_PRODUCE_SYNTHETIC_COUNT)
+
+
 def _auto_generate_missing_spec(runtime_options: RuntimeOptions) -> bool:
     params = _workflow_skill_parameters(runtime_options)
     value = _bool_from_any(params.get("auto_generate_missing_spec"))
@@ -1742,6 +1804,101 @@ def _coerce_bool(value: Any) -> bool | None:
     return None
 
 
+def _training_failed_reply(
+    *,
+    summary: dict[str, Any],
+    fallback_reply: str,
+    best_pt: str,
+    data_preparation_summary: dict[str, Any],
+) -> str:
+    parsed = _parse_json_object(fallback_reply)
+    stderr_tail = str(parsed.get("stderr_tail") or "").strip()
+    stdout_tail = str(parsed.get("stdout_tail") or "").strip()
+    error_tail = stderr_tail or stdout_tail
+    returncode = parsed.get("returncode")
+    prep = data_preparation_summary or summary
+    synthetic = _synthetic_generation_facts(prep)
+
+    lines = ["YOLO 训练流程执行失败。", ""]
+    if prep:
+        lines.extend(
+            [
+                "数据处理阶段已完成：",
+                f"- prepared_dataset: `{prep.get('prepared_dataset') or '-'}`",
+                f"- dataset.yaml: `{prep.get('dataset_yaml') or summary.get('dataset_yaml') or '-'}`",
+            ]
+        )
+        synthetic_line = _synthetic_generation_summary_line(synthetic)
+        if synthetic_line:
+            lines.append(f"- 合成数据：{synthetic_line}")
+        split_counts = prep.get("split_counts")
+        if isinstance(split_counts, dict):
+            lines.append(
+                "- 数据划分："
+                f"train={split_counts.get('train', '-')} "
+                f"val={split_counts.get('val', '-')} "
+                f"test={split_counts.get('test', '-')}"
+            )
+        lines.append("")
+
+    lines.extend(
+        [
+            "训练阶段失败：",
+            f"- returncode: `{returncode if returncode not in (None, '') else '-'}`",
+            f"- best.pt: `{best_pt or '未生成'}`",
+        ]
+    )
+    if error_tail:
+        lines.extend(["- 主要错误：", "```text", error_tail[-2000:], "```"])
+    return "\n".join(lines).strip()
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(text) if text.strip().startswith("{") else {}
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _synthetic_generation_facts(summary: dict[str, Any]) -> dict[str, Any]:
+    source_counts = summary.get("source_counts")
+    synthetic_count = 0
+    if isinstance(source_counts, dict):
+        for split_info in source_counts.values():
+            if isinstance(split_info, dict):
+                try:
+                    synthetic_count += int(split_info.get("synthetic", 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+    return {
+        "status": summary.get("synthetic_generation_status"),
+        "fallback": summary.get("synthetic_generation_fallback"),
+        "error": summary.get("synthetic_generation_error"),
+        "primary_error": summary.get("synthetic_generation_primary_error"),
+        "source_counts": source_counts,
+        "synthetic_count": synthetic_count,
+    }
+
+
+def _synthetic_generation_summary_line(facts: dict[str, Any]) -> str:
+    status = str(facts.get("status") or "").strip()
+    fallback = str(facts.get("fallback") or "").strip()
+    synthetic_count = facts.get("synthetic_count")
+    primary_error = str(facts.get("primary_error") or "").strip()
+    error = str(facts.get("error") or "").strip()
+    if status == "merged":
+        if fallback:
+            text = f"主合成接口不可用后已切换到 `{fallback}`，并成功合并 {synthetic_count or 0} 张合成图"
+            if primary_error:
+                text += f"（主接口错误：{primary_error[:180]}）"
+            return text
+        return f"已成功合并 {synthetic_count or 0} 张合成图"
+    if status:
+        return f"状态 `{status}`" + (f"，错误：{error[:240]}" if error else "")
+    return ""
+
+
 def _human_fallback_reply(fallback_reply: str, summary: dict[str, Any], best_pt: str) -> str:
     facts: dict[str, Any] = {}
     try:
@@ -1988,6 +2145,7 @@ def _fallback_workflow_capabilities(skill_name: str) -> set[str]:
     fallback = {
         "data-auto-annotation": {"data_preparation", "auto_annotation"},
         "image-dataset-generation": {"image_generation"},
+        "image-dataset-produce": {"image_generation"},
         "gpu-training-orchestrator": {"training"},
     }
     return set(fallback.get(skill_name, set()))
@@ -2323,6 +2481,10 @@ def _read_run_summary(paths: ThreadPaths) -> dict[str, Any]:
         payload.setdefault("split_counts", prep.get("split_counts"))
         payload.setdefault("source_counts", prep.get("source_counts"))
         payload.setdefault("prepared_dataset", prep.get("prepared_dataset"))
+        payload.setdefault("synthetic_generation_status", prep.get("synthetic_generation_status"))
+        payload.setdefault("synthetic_generation_fallback", prep.get("synthetic_generation_fallback"))
+        payload.setdefault("synthetic_generation_error", prep.get("synthetic_generation_error"))
+        payload.setdefault("synthetic_generation_primary_error", prep.get("synthetic_generation_primary_error"))
     return payload
 
 

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -8,12 +9,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib import request
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
 DATASET_PROCESS_ROOT = SKILL_ROOT.parent
 AUTO_ANNOTATION_SCRIPT = SCRIPT_DIR / "sam3-predict.py"
 GENERATION_SCRIPT = DATASET_PROCESS_ROOT / "image-dataset-generation" / "scripts" / "run_composite.py"
+PRODUCE_GENERATION_SCRIPT = DATASET_PROCESS_ROOT / "image-dataset-produce" / "scripts" / "run_generation.py"
 LOG_DIR: Path | None = None
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -52,7 +55,9 @@ def _command_log_stem(cmd: List[str]) -> str:
     joined = " ".join(str(item) for item in cmd).replace("\\", "/")
     if "sam3-predict.py" in joined:
         return "data-auto-annotation"
-    if "run_generation.py" in joined or "run_composite.py" in joined:
+    if "image-dataset-produce" in joined:
+        return "image-dataset-produce"
+    if "image-dataset-generation" in joined or "run_composite.py" in joined:
         return "image-dataset-generation"
     if "plan_synthetic_augmentation.py" in joined:
         return "synthetic-planner"
@@ -128,6 +133,8 @@ def _initialize_log_dir(output_dir: Path) -> None:
         "data-auto-annotation-stderr.txt",
         "image-dataset-generation-stdout.txt",
         "image-dataset-generation-stderr.txt",
+        "image-dataset-produce-stdout.txt",
+        "image-dataset-produce-stderr.txt",
         "synthetic-planner-stdout.txt",
         "synthetic-planner-stderr.txt",
         "dataset-preparation-stdout.txt",
@@ -475,6 +482,326 @@ def _generate_and_annotate_synthetic(plan_path: Path, image1: Path, image2: Path
     return synthetic_images_root, synthetic_coco
 
 
+def _collect_image1_reference_images(image1: Path) -> List[Path]:
+    if image1.is_file() and image1.suffix.lower() in IMAGE_EXTENSIONS:
+        return [image1.resolve()]
+    if not image1.is_dir():
+        return []
+    return sorted(
+        (path.resolve() for path in image1.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS),
+        key=lambda path: str(path).casefold(),
+    )
+
+
+def _fallback_total_synthetic_count(plan: Dict[str, Any], reference_count: int) -> int:
+    try:
+        recommended = int(plan.get("recommended_synthetic_count", 0) or 0)
+    except (TypeError, ValueError):
+        recommended = 0
+    planned_total = 0
+    for item in plan.get("generation_plan", []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            planned_total += max(0, int(item.get("count", 0) or 0))
+        except (TypeError, ValueError):
+            continue
+    return max(reference_count, recommended, planned_total)
+
+
+def _produce_synthetic_count(
+    plan: Dict[str, Any],
+    reference_count: int,
+    produce_count_button: bool,
+    fixed_produce_synthetic_count: int,
+) -> int:
+    if reference_count <= 0:
+        return 0
+    if produce_count_button:
+        return max(1, _fallback_total_synthetic_count(plan, reference_count))
+    return max(0, int(fixed_produce_synthetic_count))
+
+
+def _fallback_prompt_sequence(
+    plan: Dict[str, Any],
+    labels: List[str],
+    total_count: int,
+    planner_llm: Dict[str, Any] | None = None,
+) -> List[str]:
+    prompts = _llm_image_dataset_produce_prompts(plan, labels, total_count, planner_llm or {})
+    if prompts:
+        return prompts
+    return _heuristic_image_dataset_produce_prompts(plan, labels, total_count)
+
+
+def _llm_image_dataset_produce_prompts(
+    plan: Dict[str, Any],
+    labels: List[str],
+    total_count: int,
+    planner_llm: Dict[str, Any],
+) -> List[str]:
+    base_url = str(planner_llm.get("base_url") or "").rstrip("/")
+    model = str(planner_llm.get("model") or "").strip()
+    if not base_url or not model:
+        return []
+    count = max(1, min(12, int(total_count or 1)))
+    class_names = labels or [str(item).strip() for item in plan.get("class_names", []) if str(item).strip()]
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a senior computer vision synthetic-data prompt planner. "
+                    "Create prompts for the image-dataset-produce skill, which uses one image1 reference image as a visual reference. "
+                    "The prompt must be suitable for image-to-image generation with flux2. "
+                    "It must create a new realistic training image for object detection, not copy the input image. "
+                    "Do not mention image2.zip, compositing, pasted objects, cutouts, extraction, or overlaying one image onto another. "
+                    "Return JSON only: {\"prompts\":[\"...\"]}."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task_description": plan.get("task_description", ""),
+                        "labels": class_names,
+                        "image_size_summary": plan.get("image_size_summary", {}),
+                        "difficulty_signals": plan.get("difficulty_signals", []),
+                        "prompt_count": count,
+                        "requirements": [
+                            "Use the input image only as loose scene/camera/style reference.",
+                            "Generate a visibly new image with changed identities, positions, poses, lighting, and background details.",
+                            "Ensure target classes are clear and annotatable with bounding boxes.",
+                            "Avoid exact duplication of the reference image.",
+                            "Synthetic images are for training only.",
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        "temperature": float(planner_llm.get("temperature", 0.4)),
+        "max_tokens": int(planner_llm.get("max_tokens", 1024)),
+    }
+    headers = {"Content-Type": "application/json"}
+    api_key = str(planner_llm.get("api_key") or "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(f"{base_url}/chat/completions", data=data, headers=headers, method="POST")
+        timeout = int(planner_llm.get("timeout", 120) or 120)
+        with request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        parsed = json.loads(raw)
+        choices = parsed.get("choices") or []
+        content = str((choices[0].get("message") or {}).get("content") or "").strip() if choices else ""
+        prompt_payload = _parse_json_object_from_text(content)
+        prompts = prompt_payload.get("prompts") if isinstance(prompt_payload, dict) else []
+        return _validated_image_dataset_produce_prompts(prompts, plan, labels, total_count)
+    except Exception as exc:
+        print(f"[data-prep] image-dataset-produce prompt planner unavailable; using local prompt template: {exc}", file=sys.stderr)
+        return []
+
+
+def _parse_json_object_from_text(content: str) -> Dict[str, Any]:
+    cleaned = (content or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    if not cleaned.startswith("{"):
+        match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if not match:
+            return {}
+        cleaned = match.group(0)
+    parsed = json.loads(cleaned)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _validated_image_dataset_produce_prompts(
+    raw_prompts: Any,
+    plan: Dict[str, Any],
+    labels: List[str],
+    total_count: int,
+) -> List[str]:
+    if not isinstance(raw_prompts, list):
+        return []
+    prompts: List[str] = []
+    for item in raw_prompts:
+        prompt = str(item or "").strip()
+        if not prompt or _looks_like_composite_prompt(prompt):
+            continue
+        prompts.append(_ensure_image_dataset_produce_constraints(prompt, plan, labels))
+    if not prompts:
+        return []
+    count = max(1, int(total_count or len(prompts)))
+    while len(prompts) < min(count, 12):
+        prompts.append(prompts[len(prompts) % len(prompts)])
+    return prompts
+
+
+def _looks_like_composite_prompt(prompt: str) -> bool:
+    lowered = prompt.lower()
+    markers = (
+        "image2.zip",
+        "image2",
+        "composite",
+        "compositing",
+        "paste",
+        "pasted",
+        "cutout",
+        "extract",
+        "overlay",
+        "合成",
+        "贴到",
+        "抠图",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+def _ensure_image_dataset_produce_constraints(prompt: str, plan: Dict[str, Any], labels: List[str]) -> str:
+    label_text = ", ".join(labels or [str(item).strip() for item in plan.get("class_names", []) if str(item).strip()]) or "target objects"
+    return (
+        f"{prompt.strip()} "
+        f"Target classes for object detection: {label_text}. "
+        "Use the input image only as loose visual reference for camera angle, scene type, and lighting. "
+        "Generate a new realistic image, not an identical copy of the reference. "
+        "Change identities, positions, poses, scale, background details, and lighting while keeping targets clearly visible and annotatable. "
+        "No text, watermark, logo, collage, pasted object, or obvious image editing artifact."
+    )
+
+
+def _heuristic_image_dataset_produce_prompts(plan: Dict[str, Any], labels: List[str], total_count: int) -> List[str]:
+    class_names = labels or [str(item).strip() for item in plan.get("class_names", []) if str(item).strip()]
+    label_text = ", ".join(class_names) if class_names else "target objects"
+    task = str(plan.get("task_description") or "object detection training").strip()
+    base = (
+        f"Create a new realistic image for this YOLO object detection task: {task}. "
+        f"The image must contain clearly annotatable target classes: {label_text}. "
+        "Use the input image only as loose visual reference for scene type, camera angle, resolution, and lighting; "
+        "do not duplicate the input image. "
+    )
+    variations = [
+        "surveillance-style view with different people or objects, changed positions, natural scale variation, and clear bounding-box targets",
+        "indoor public scene with realistic lighting changes, different identities or instances, mild occlusion, and visible target objects",
+        "natural background with changed composition, varied distance from camera, target remains sharp and labelable",
+        "more complex scene with clutter and partial occlusion, but every requested target remains recognizable",
+        "different viewpoint or camera height, altered background details, realistic shadows, and non-identical target placement",
+        "hard training sample with motion blur or low light, still suitable for precise object-detection annotation",
+    ]
+    prompts = [
+        _ensure_image_dataset_produce_constraints(base + f"Scene variation: {variation}.", plan, class_names)
+        for variation in variations
+    ]
+    count = max(1, int(total_count or 1))
+    while len(prompts) < min(count, 12):
+        prompts.extend(prompts)
+    return prompts[: max(1, min(count, len(prompts)))]
+
+
+def _generate_and_annotate_synthetic_with_produce(
+    plan_path: Path,
+    image1: Path,
+    labels: List[str],
+    output_dir: Path,
+    dry_run: bool,
+    planner_llm: Dict[str, Any] | None = None,
+    produce_count_button: bool = True,
+    fixed_produce_synthetic_count: int = 5,
+    random_seed: int | None = None,
+) -> tuple[Path, Path]:
+    if not PRODUCE_GENERATION_SCRIPT.is_file():
+        raise FileNotFoundError(f"image-dataset-produce generation script not found: {PRODUCE_GENERATION_SCRIPT}")
+    plan = _load_json(plan_path)
+    reference_images = _collect_image1_reference_images(image1)
+    if not reference_images:
+        raise ValueError(f"No image1 reference images found for image-dataset-produce fallback: {image1}")
+
+    synthetic_images_root = output_dir / "synthetic_images"
+    synthetic_images_root.mkdir(parents=True, exist_ok=True)
+    annotation_root = output_dir / "synthetic_annotations"
+    annotation_root.mkdir(parents=True, exist_ok=True)
+    partial_coco_files: List[Path] = []
+    produce_total = _produce_synthetic_count(plan, len(reference_images), produce_count_button, fixed_produce_synthetic_count)
+    if produce_total <= 0:
+        raise ValueError("image-dataset-produce fallback requested 0 synthetic images")
+    prompts = _fallback_prompt_sequence(plan, labels, produce_total, planner_llm)
+    rng = random.Random(random_seed)
+
+    for generation_index in range(1, produce_total + 1):
+        reference_image = rng.choice(reference_images)
+        prompt = prompts[(generation_index - 1) % len(prompts)]
+        input_json = output_dir / "generation_inputs" / f"produce_{generation_index:05d}.json"
+        _write_json(input_json, {"task": {"input_image": str(reference_image), "prompt": prompt, "output_dir": str(synthetic_images_root)}})
+        before_files = {
+            str(path.resolve())
+            for path in synthetic_images_root.rglob("*")
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        }
+        stdout_text = _run([sys.executable, str(PRODUCE_GENERATION_SCRIPT), "--input", str(input_json)], dry_run, retries=3, retry_sleep=8.0)
+        if dry_run:
+            continue
+        generated_image = _extract_generated_image_path(stdout_text, synthetic_images_root, before_files)
+        if generated_image is None:
+            raise RuntimeError(f"image-dataset-produce completed but no generated image was found for {input_json}")
+        generated_image = _move_to_unique_synthetic_name(generated_image, synthetic_images_root, generation_index, 1)
+        print(f"[data-prep] annotating image-dataset-produce image immediately: {generated_image}")
+        partial_coco = annotation_root / f"{generated_image.stem}_coco.json"
+        _annotate_one_synthetic(generated_image, labels, partial_coco, dry_run)
+        partial_coco_files.append(partial_coco)
+
+    synthetic_coco = output_dir / "synthetic_coco.json"
+    if not dry_run:
+        _combine_coco_files(partial_coco_files, synthetic_coco)
+    return synthetic_images_root, synthetic_coco
+
+
+def _exception_text(exc: Exception) -> str:
+    parts = [str(exc)]
+    if isinstance(exc, subprocess.CalledProcessError):
+        parts.append(_decode_bytes(exc.output))
+        parts.append(_decode_bytes(exc.stderr))
+        parts.extend(str(item) for item in getattr(exc, "cmd", []) or [])
+    return "\n".join(part for part in parts if part)
+
+
+def _looks_like_generation_api_unavailable(exc: Exception) -> bool:
+    text = _exception_text(exc).lower()
+    markers = (
+        "quota",
+        "credit",
+        "credits",
+        "balance",
+        "insufficient",
+        "billing",
+        "payment",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "429",
+        "402",
+        "401",
+        "403",
+        "api-key is blocked",
+        "blocked",
+        "tokencloud",
+        "wan2.7",
+        "额度",
+        "配额",
+        "余额",
+        "欠费",
+        "限额",
+        "频率",
+        "账户",
+        "账号",
+        "不可用",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    return isinstance(exc, subprocess.CalledProcessError) and "run_composite.py" in text
+
+
 def _synthetic_generation_failure_payload(exc: Exception) -> Dict[str, Any]:
     stdout_tail = ""
     stderr_tail = ""
@@ -612,6 +939,8 @@ def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     args.max_synthetic = int(_coalesce(spec.get("max_synthetic"), args.max_synthetic, default=args.max_synthetic))
     args.synthetic_count_button = _bool_value(_coalesce(spec.get("synthetic_count_button"), args.synthetic_count_button, default=True), True)
     args.fixed_synthetic_count = int(_coalesce(spec.get("fixed_synthetic_count"), args.fixed_synthetic_count, default=args.fixed_synthetic_count))
+    args.produce_count_button = _bool_value(_coalesce(spec.get("produce_count_button"), ctx.get("produce_count_button"), args.produce_count_button, default=True), True)
+    args.fixed_produce_synthetic_count = int(_coalesce(spec.get("fixed_produce_synthetic_count"), ctx.get("fixed_produce_synthetic_count"), args.fixed_produce_synthetic_count, default=args.fixed_produce_synthetic_count))
     args.split_requested = args.split_requested or _bool_value(spec.get("split_requested"), False)
     args.planner_llm = spec.get("planner_llm") if isinstance(spec.get("planner_llm"), dict) else {}
     args.split_train = float(_coalesce(split.get("train"), dataset.get("split_train"), args.split_train, default=args.split_train))
@@ -640,6 +969,8 @@ def main() -> None:
     parser.add_argument("--max-synthetic", type=int, default=2000)
     parser.add_argument("--synthetic-count-button", default=True)
     parser.add_argument("--fixed-synthetic-count", type=int, default=20)
+    parser.add_argument("--produce-count-button", default=True)
+    parser.add_argument("--fixed-produce-synthetic-count", type=int, default=5)
     parser.add_argument("--split-requested", action="store_true")
     parser.set_defaults(planner_llm={})
     parser.add_argument("--split-train", type=float, default=0.7)
@@ -721,9 +1052,40 @@ def main() -> None:
                         "synthetic_coco": str(synthetic_coco),
                     })
                 except Exception as exc:
-                    synthetic_status.update(_synthetic_generation_failure_payload(exc))
-                    message = synthetic_status.get("synthetic_generation_error") or str(exc)
-                    print(f"[data-prep] Synthetic generation failed; continuing with real dataset only: {message}", file=sys.stderr)
+                    if _looks_like_generation_api_unavailable(exc):
+                        primary_payload = _synthetic_generation_failure_payload(exc)
+                        message = primary_payload.get("synthetic_generation_error") or str(exc)
+                        print(f"[data-prep] Composite generation unavailable; falling back to image-dataset-produce: {message}", file=sys.stderr)
+                        try:
+                            synthetic_root, synthetic_coco = _generate_and_annotate_synthetic_with_produce(
+                                plan,
+                                Path(args.image1).resolve(),
+                                args.labels,
+                                work_dir,
+                                args.dry_run,
+                                args.planner_llm,
+                                args.produce_count_button,
+                                args.fixed_produce_synthetic_count,
+                            )
+                            training_coco = _merge(real_coco, synthetic_coco, Path(inspection["images_dir"]).resolve(), synthetic_root, work_dir, args.dry_run)
+                            training_root = work_dir / "merged_images"
+                            synthetic_policy_enabled = True
+                            synthetic_status.update({
+                                "synthetic_generation_status": "merged",
+                                "synthetic_generation_fallback": "image-dataset-produce",
+                                "synthetic_generation_primary_error": primary_payload.get("synthetic_generation_error", ""),
+                                "synthetic_images": str(synthetic_root),
+                                "synthetic_coco": str(synthetic_coco),
+                            })
+                        except Exception as fallback_exc:
+                            synthetic_status.update(_synthetic_generation_failure_payload(fallback_exc))
+                            synthetic_status["synthetic_generation_primary_error"] = primary_payload.get("synthetic_generation_error", "")
+                            message = synthetic_status.get("synthetic_generation_error") or str(fallback_exc)
+                            print(f"[data-prep] image-dataset-produce fallback failed; continuing with real dataset only: {message}", file=sys.stderr)
+                    else:
+                        synthetic_status.update(_synthetic_generation_failure_payload(exc))
+                        message = synthetic_status.get("synthetic_generation_error") or str(exc)
+                        print(f"[data-prep] Synthetic generation failed; continuing with real dataset only: {message}", file=sys.stderr)
         else:
             print("[data-prep] Synthetic generation skipped because planner recommended 0 images.")
             synthetic_status.update({"synthetic_generation_status": "skipped_zero_recommendation"})

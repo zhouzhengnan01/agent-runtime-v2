@@ -12,6 +12,7 @@ PLATFORM_SKILL_ALIASES: dict[str, list[str]] = {
         "dataset-curator",
         "data-auto-annotation",
         "image-dataset-generation",
+        "image-dataset-produce",
         "algorithm-research-scout",
         "model-candidate-selector",
         "remote-gpu-ops",
@@ -41,7 +42,8 @@ def merge_runtime_options_with_template(
             merged[key] = _merge_skill_parameters(template_options.get(key), value, request_explicit=True)
             continue
         if key in {"selected_skills", "selected_mcp_tools"}:
-            merged[key] = _merge_string_lists(template_options.get(key), value, request_explicit=True)
+            template_list = template.selected_skills if key == "selected_skills" else template.selected_mcp_tools
+            merged[key] = _merge_string_lists(template_options.get(key, template_list), value, request_explicit=True)
             continue
         if key == "workflow":
             merged[key] = value
@@ -57,9 +59,12 @@ def merge_runtime_options_with_template(
     merged["app_template_name"] = template.name
     merged["workflow"] = merged.get("workflow")
     merged["selected_skills"] = expand_skill_aliases(
-        _merge_string_lists(template_options.get("selected_skills"), merged.get("selected_skills"))
+        _merge_string_lists(template_options.get("selected_skills", template.selected_skills), merged.get("selected_skills"))
     )
-    merged["selected_mcp_tools"] = _merge_string_lists(template_options.get("selected_mcp_tools"), merged.get("selected_mcp_tools"))
+    merged["selected_mcp_tools"] = _merge_string_lists(
+        template_options.get("selected_mcp_tools", template.selected_mcp_tools),
+        merged.get("selected_mcp_tools"),
+    )
     merged["skill_parameters"] = _merge_skill_parameters(template_options.get("skill_parameters"), merged.get("skill_parameters"))
     return RuntimeOptions.model_validate(merged)
 

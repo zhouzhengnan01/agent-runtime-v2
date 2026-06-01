@@ -9,7 +9,8 @@
   "selected_skills": [
     "dataset-curator",
     "data-auto-annotation",
-    "image-dataset-generation"
+    "image-dataset-generation",
+    "image-dataset-produce"
   ],
   "selected_mcp_tools": [],
   "prompt_examples": [

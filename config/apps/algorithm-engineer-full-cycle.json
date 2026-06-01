@@ -12,6 +12,7 @@
     "dataset-curator",
     "data-auto-annotation",
     "image-dataset-generation",
+    "image-dataset-produce",
     "model-candidate-selector",
     "remote-gpu-ops",
     "gpu-training-orchestrator",

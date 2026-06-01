@@ -156,7 +156,7 @@ def test_app_runtime_options_expand_platform_skill_aliases() -> None:
     template = AppTemplateRegistry().get("_debug-1c81a222b0fa9000")
 
     options = merge_runtime_options_with_template(
-        RuntimeOptions(app_template_name="_debug-1c81a222b0fa9000"),
+        RuntimeOptions.model_construct(app_template_name="_debug-1c81a222b0fa9000"),
         template,
     )
 
@@ -165,6 +165,7 @@ def test_app_runtime_options_expand_platform_skill_aliases() -> None:
         "dataset-curator",
         "data-auto-annotation",
         "image-dataset-generation",
+        "image-dataset-produce",
         "algorithm-research-scout",
         "model-candidate-selector",
         "remote-gpu-ops",
@@ -352,6 +353,7 @@ def test_algorithm_engineer_workbench_selects_full_stage_skill_chain() -> None:
         "dataset-curator",
         "data-auto-annotation",
         "image-dataset-generation",
+        "image-dataset-produce",
         "algorithm-research-scout",
         "model-candidate-selector",
         "remote-gpu-ops",
