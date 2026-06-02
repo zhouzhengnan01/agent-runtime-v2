@@ -358,6 +358,7 @@ class SkillPluginManager:
         spec: dict[str, Any],
         paths: ThreadPaths,
         artifact_store: ArtifactStore,
+        on_event: Callable[[str, dict[str, Any]], Any] | None = None,
     ) -> SkillRunResult:
         loaded = self.get_loaded_skill(skill_name)
         if loaded.plugin is None:
@@ -384,7 +385,7 @@ class SkillPluginManager:
                 package_root=self._execution_package_root(loaded),
             )
         module = _load_runner_module(loaded.runner_path)
-        result = _call_runner(module, skill_name, spec, paths, artifact_store)
+        result = _call_runner(module, skill_name, spec, paths, artifact_store, on_event=on_event)
         return _normalize_result(skill_name, result)
 
     def select_skill(self, routing_text: str, attachments: list[Any], allowed_skills: list[str]) -> str:

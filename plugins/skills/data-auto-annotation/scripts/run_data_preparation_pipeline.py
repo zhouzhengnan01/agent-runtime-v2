@@ -5,6 +5,7 @@ import random
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -82,29 +83,58 @@ def _run(cmd: List[str], dry_run: bool = False, *, retries: int = 1, retry_sleep
     if dry_run:
         return ""
     attempts = max(1, int(retries))
-    last_completed: subprocess.CompletedProcess[bytes] | None = None
+    last_returncode = 1
+    last_stdout = b""
+    last_stderr = b""
     for attempt in range(1, attempts + 1):
-        completed = subprocess.run(cmd, capture_output=True, check=False)
-        last_completed = completed
-        stdout_text = _decode_bytes(completed.stdout)
-        stderr_text = _decode_bytes(completed.stderr)
+        returncode, stdout_bytes, stderr_bytes = _run_streaming_once(cmd)
+        last_returncode = returncode
+        last_stdout = stdout_bytes
+        last_stderr = stderr_bytes
+        stdout_text = _decode_bytes(stdout_bytes)
+        stderr_text = _decode_bytes(stderr_bytes)
         _write_command_logs(cmd, stdout_text, stderr_text)
-        if stdout_text:
-            print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
-        if stderr_text:
-            print(stderr_text, end="" if stderr_text.endswith("\n") else "\n", file=sys.stderr)
-        if completed.returncode == 0:
+        if returncode == 0:
             return stdout_text
         combined = f"{stdout_text}\n{stderr_text}"
         if attempt >= attempts or not _looks_transient_subprocess_error(combined):
-            raise subprocess.CalledProcessError(completed.returncode, cmd, output=completed.stdout, stderr=completed.stderr)
+            raise subprocess.CalledProcessError(returncode, cmd, output=stdout_bytes, stderr=stderr_bytes)
         message = f"[data-prep] transient command failure; retrying {attempt + 1}/{attempts} after {retry_sleep}s"
         print(message)
         _write_command_logs(cmd, message + "\n", "")
         time.sleep(max(0.0, float(retry_sleep)))
-    if last_completed is None:
-        raise RuntimeError("Command did not run")
-    raise subprocess.CalledProcessError(last_completed.returncode, cmd, output=last_completed.stdout, stderr=last_completed.stderr)
+    raise subprocess.CalledProcessError(last_returncode, cmd, output=last_stdout, stderr=last_stderr)
+
+
+def _run_streaming_once(cmd: List[str]) -> tuple[int, bytes, bytes]:
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+
+    def pump(stream: Any, chunks: list[bytes], target: Any) -> None:
+        try:
+            while True:
+                chunk = stream.readline()
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                text = _decode_bytes(chunk)
+                print(text, end="" if text.endswith("\n") else "\n", file=target, flush=True)
+        finally:
+            stream.close()
+
+    threads = [
+        threading.Thread(target=pump, args=(proc.stdout, stdout_chunks, sys.stdout), daemon=True),
+        threading.Thread(target=pump, args=(proc.stderr, stderr_chunks, sys.stderr), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    returncode = proc.wait()
+    for thread in threads:
+        thread.join()
+    return returncode, b"".join(stdout_chunks), b"".join(stderr_chunks)
 
 
 def _looks_transient_subprocess_error(text: str) -> bool:
@@ -268,7 +298,7 @@ def _write_single_image_coco_sidecar(
     categories: list[dict[str, Any]],
 ) -> Path:
     relative_image = image_path.resolve().relative_to(images_dir.resolve())
-    sidecar = (images_dir / relative_image).with_suffix(f"{image_path.suffix}.coco.json")
+    sidecar = images_dir / relative_image.parent / f"{image_path.stem}_coco.json"
     local_image = dict(image)
     original_image_id = int(local_image.get("id", 1) or 1)
     local_image["id"] = 1
@@ -377,14 +407,11 @@ def _move_to_unique_synthetic_name(image_path: Path, scene_dir: Path, scene_inde
 def _annotate_one_synthetic(image_path: Path, labels: List[str], output_json: Path, dry_run: bool) -> Path:
     if not labels:
         raise ValueError("Synthetic auto-annotation requires labels")
-    stem = output_json.stem
-    request_json = output_json.with_name(f"{stem}_input.json")
-    _write_json(request_json, {"image_path": str(image_path)})
     _run([
         sys.executable,
         str(AUTO_ANNOTATION_SCRIPT),
         "--input-json",
-        str(request_json),
+        json.dumps({"image_path": str(image_path)}, ensure_ascii=False),
         "--text-prompts",
         *labels,
         "--source",
@@ -393,6 +420,8 @@ def _annotate_one_synthetic(image_path: Path, labels: List[str], output_json: Pa
         "--output",
         str(output_json),
     ], dry_run)
+    if not dry_run:
+        print(f"[data-prep] synthetic coco written: {output_json}", flush=True)
     return output_json
 
 

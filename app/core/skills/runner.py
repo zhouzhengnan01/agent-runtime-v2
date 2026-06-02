@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from app.core.artifacts.store import ArtifactStore, ThreadPaths
@@ -22,5 +23,11 @@ class SkillRunner:
         self.artifact_store = artifact_store
         self.plugin_manager = SkillPluginManager(root_dir)
 
-    def run(self, skill_name: str, spec: dict[str, Any], paths: ThreadPaths) -> SkillRunResult:
-        return self.plugin_manager.run_skill(skill_name, spec, paths, self.artifact_store)
+    def run(
+        self,
+        skill_name: str,
+        spec: dict[str, Any],
+        paths: ThreadPaths,
+        on_event: Callable[[str, dict[str, Any]], Any] | None = None,
+    ) -> SkillRunResult:
+        return self.plugin_manager.run_skill(skill_name, spec, paths, self.artifact_store, on_event=on_event)

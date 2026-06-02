@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
@@ -39,7 +42,13 @@ KEY_WORK_ARTIFACT_NAMES = {
 }
 
 
-def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) -> dict[str, Any]:
+def run(
+    skill_name: str,
+    spec: dict[str, Any],
+    paths: Any,
+    artifact_store: Any,
+    on_event: Callable[[str, dict[str, Any]], Any] | None = None,
+) -> dict[str, Any]:
     del skill_name
     package_root = Path(__file__).resolve().parent
     script_path = package_root / "scripts" / "run_data_preparation_pipeline.py"
@@ -53,23 +62,25 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
 
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
-    completed = subprocess.run(
+    returncode, stdout_bytes, stderr_bytes = _run_pipeline_streaming(
         [sys.executable, str(script_path), "--input-json", str(request_path)],
-        cwd=str(package_root),
-        capture_output=True,
-        env=env,
-        check=False,
+        package_root,
+        env,
+        paths,
+        artifact_store,
+        on_event,
     )
-    stdout_text = _decode_bytes(completed.stdout)
-    stderr_text = _decode_bytes(completed.stderr)
+    stdout_text = _decode_bytes(stdout_bytes)
+    stderr_text = _decode_bytes(stderr_bytes)
     _write_skill_logs(normalized, stdout_text, stderr_text)
     outputs = _collect_outputs(normalized, paths, artifact_store)
+    _emit_artifacts(outputs, on_event)
     return {
         "skill_name": "data-auto-annotation",
         "outputs": outputs,
         "data": {
             "execution_type": "data_preparation_pipeline",
-            "returncode": completed.returncode,
+            "returncode": returncode,
             "stdout": stdout_text[-4000:] if stdout_text else "",
             "stderr": stderr_text[-4000:] if stderr_text else "",
             "prepared_dataset": _prepared_dataset_path(normalized),
@@ -78,6 +89,125 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
             "synthetic_plan": _synthetic_plan_path(normalized),
         },
     }
+
+
+def _run_pipeline_streaming(
+    cmd: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    paths: Any,
+    artifact_store: Any,
+    on_event: Callable[[str, dict[str, Any]], Any] | None,
+) -> tuple[int, bytes, bytes]:
+    env = dict(env)
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    proc = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    emitted: set[str] = set()
+
+    def pump(stream: Any, chunks: list[bytes], is_stderr: bool) -> None:
+        try:
+            while True:
+                chunk = stream.readline()
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                text = _decode_bytes(chunk)
+                _handle_stream_line(text, paths, artifact_store, on_event, emitted)
+        finally:
+            stream.close()
+
+    threads = [
+        threading.Thread(target=pump, args=(proc.stdout, stdout_chunks, False), daemon=True),
+        threading.Thread(target=pump, args=(proc.stderr, stderr_chunks, True), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    returncode = proc.wait()
+    for thread in threads:
+        thread.join()
+    return returncode, b"".join(stdout_chunks), b"".join(stderr_chunks)
+
+
+def _handle_stream_line(
+    text: str,
+    paths: Any,
+    artifact_store: Any,
+    on_event: Callable[[str, dict[str, Any]], Any] | None,
+    emitted: set[str],
+) -> None:
+    clean = (text or "").strip()
+    if not clean:
+        return
+    generated_image = _generated_image_from_line(clean)
+    if generated_image is not None:
+        _emit_file_artifact(generated_image, paths, artifact_store, on_event, emitted, event_type="data_preparation.image_generated")
+    coco_path = _coco_path_from_line(clean)
+    if coco_path is not None:
+        _emit_file_artifact(coco_path, paths, artifact_store, on_event, emitted, event_type="data_preparation.image_annotated")
+
+
+def _generated_image_from_line(line: str) -> Path | None:
+    patterns = (
+        r"\[data-prep\] annotating composite image immediately:\s*(.+)",
+        r"\[data-prep\] annotating image-dataset-produce image immediately:\s*(.+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, line)
+        if match:
+            path = Path(match.group(1).strip().strip("\"'"))
+            return path.resolve() if path.is_file() else None
+    return None
+
+
+def _coco_path_from_line(line: str) -> Path | None:
+    patterns = (
+        r"per_image_coco_path:\s*(.+)",
+        r"\[data-prep\] per-image real coco written:\s*(.+)",
+        r"\[data-prep\] synthetic coco written:\s*(.+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, line)
+        if match:
+            path = Path(match.group(1).strip().strip("\"'"))
+            return path.resolve() if path.is_file() else None
+    return None
+
+
+def _emit_file_artifact(
+    file_path: Path,
+    paths: Any,
+    artifact_store: Any,
+    on_event: Callable[[str, dict[str, Any]], Any] | None,
+    emitted: set[str],
+    *,
+    event_type: str,
+) -> None:
+    if on_event is None or not file_path.is_file():
+        return
+    key = str(file_path.resolve()).casefold()
+    if key in emitted:
+        return
+    try:
+        artifact_store.upsert_artifact(paths, file_path)
+        artifact = artifact_store.to_artifact_ref(paths.thread_id, file_path)
+    except Exception:
+        return
+    emitted.add(key)
+    payload = {"artifact": artifact.model_dump()}
+    on_event(event_type, payload)
+    on_event("artifact.created", payload)
+    on_event("preview.ready", payload)
+
+
+def _emit_artifacts(outputs: list[Any], on_event: Callable[[str, dict[str, Any]], Any] | None) -> None:
+    if on_event is None:
+        return
+    for artifact in outputs:
+        payload = {"artifact": artifact.model_dump()}
+        on_event("artifact.created", payload)
+        on_event("preview.ready", payload)
 
 
 def _normalize_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]:

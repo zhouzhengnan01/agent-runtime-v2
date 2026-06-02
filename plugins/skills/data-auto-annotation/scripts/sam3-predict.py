@@ -368,7 +368,7 @@ def save_per_image_coco(
         relative_image = image_path.resolve().relative_to(Path(base_dir).resolve()) if base_dir else Path(image_path.name)
     except ValueError:
         relative_image = Path(image_path.name)
-    sidecar = (root / relative_image).with_suffix(f"{image_path.suffix}.coco.json")
+    sidecar = root / relative_image.parent / f"{image_path.stem}_coco.json"
     save_json(sidecar, _single_image_coco(image_info, annotations, categories))
     print(f"per_image_coco_path: {sidecar}", flush=True)
     return sidecar
