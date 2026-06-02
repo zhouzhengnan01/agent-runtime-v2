@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 from contextlib import suppress
@@ -24,6 +25,7 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 
 
 AcpUpdateSender = Callable[[str, dict[str, Any]], Awaitable[None]]
+logger = logging.getLogger("uvicorn.error")
 
 _RUNTIME_OPTION_ALIASES = {
     "threadId": "thread_id",
@@ -230,6 +232,19 @@ class AcpRuntimeAdapter:
         stored_runtime_options = self._resolve_model_runtime_options(stored_runtime_options)
         model_name = _string(stored_runtime_options.get("model_name"))
         mcp_servers = _mcp_servers_from_params(params)
+        logger.info(
+            "acp session new session_id=%s thread_id=%s agent=%s app_template=%s selected_skills=%s mode=%s config_option_keys=%s param_keys=%s meta_keys=%s bridge_container_keys=%s",
+            session_id,
+            thread_id,
+            agent_name,
+            app_template.name if app_template is not None else None,
+            stored_runtime_options.get("selected_skills") or [],
+            stored_runtime_options.get("mode"),
+            sorted(_params(stored_runtime_options.get("config_options")).keys()),
+            sorted(params.keys()),
+            sorted(_params(params.get("_meta")).keys()),
+            _bridge_container_key_summary(params),
+        )
         sessions[session_id] = AcpWebSocketSession(
             session_id=session_id,
             thread_id=thread_id,
@@ -276,8 +291,41 @@ class AcpRuntimeAdapter:
         session = sessions[session_id]
         agent_name = _agent_name_from_meta(params) or session.agent_name
         agent = self.loader.load(agent_name)
+        prompt_app_template = self._app_template_from_params(params)
+        if prompt_app_template is not None and prompt_app_template.name != session.app_template_name:
+            raw_options = _runtime_options_payload(params)
+            template_options = _template_runtime_options(prompt_app_template)
+            app_model_options = _app_model_runtime_options(prompt_app_template, template_options, raw_options)
+            session.runtime_options = self._merge_and_resolve_runtime_options(
+                _merge_runtime_options(session.runtime_options, {**template_options, **app_model_options}),
+                raw_options,
+            )
+            session.app_template_name = prompt_app_template.name
+            session.mode_id = _mode_from_options(session.runtime_options, fallback=session.mode_id)
+            session.config_options = _config_options_from_runtime_options(session.runtime_options)
+            session.agent_name = _agent_name_from_meta(params) or prompt_app_template.agent_name or session.agent_name
+            model_name = _string(session.runtime_options.get("model_name"))
+            if model_name is not None:
+                session.model_id = model_name
+                session.model_name = model_name
+            agent_name = session.agent_name
+            agent = self.loader.load(agent_name)
         thread_id = _resolve_thread_id(params, session)
         runtime_options = self._prompt_runtime_options(params, session, thread_id)
+        logger.info(
+            "acp prompt routing session_id=%s thread_id=%s agent=%s app_template=%s selected_skills=%s selected_mcp_tools=%s mode=%s config_option_keys=%s param_keys=%s meta_keys=%s bridge_container_keys=%s",
+            session_id,
+            thread_id,
+            agent_name,
+            session.app_template_name,
+            runtime_options.selected_skills,
+            runtime_options.selected_mcp_tools,
+            runtime_options.mode,
+            sorted(runtime_options.config_options.keys()),
+            sorted(params.keys()),
+            sorted(_params(params.get("_meta")).keys()),
+            _bridge_container_key_summary(params),
+        )
         if agent.backend.type == "acp_stdio":
             return await self._prompt_external(session, agent.backend, params, send_update, runtime_options.workflow)
 
@@ -992,6 +1040,13 @@ def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
         _params(params.get("runtimeOptions") or params.get("runtime_options")),
         _params(meta.get("runtimeOptions") or meta.get("runtime_options")),
     ]
+    for container in _bridge_payload_containers(params):
+        sources.extend(
+            [
+                container,
+                _params(container.get("runtimeOptions") or container.get("runtime_options")),
+            ]
+        )
     payload: dict[str, Any] = {}
     for source in sources:
         payload.update(_runtime_options_from_source(source))
@@ -1002,6 +1057,49 @@ def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
         config_options["session_init_tools"] = session_tools
         payload["config_options"] = config_options
     return payload
+
+
+def _bridge_payload_containers(params: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = _params(params.get("_meta"))
+    containers: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for source in (params, meta):
+        for key in (
+            "parameters",
+            "parameter",
+            "params",
+            "expands",
+            "expand",
+            "extensions",
+            "metadata",
+            "meta",
+            "arguments",
+            "argument",
+            "context",
+            "extra",
+        ):
+            container = _params(source.get(key))
+            if not container:
+                continue
+            identity = id(container)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            containers.append(container)
+            nested = _params(container.get("_meta"))
+            if nested:
+                nested_identity = id(nested)
+                if nested_identity not in seen:
+                    seen.add(nested_identity)
+                    containers.append(nested)
+    return containers
+
+
+def _bridge_container_key_summary(params: dict[str, Any]) -> list[str]:
+    summary: list[str] = []
+    for container in _bridge_payload_containers(params):
+        summary.append(",".join(sorted(container.keys())))
+    return summary
 
 
 def _runtime_options_from_source(source: dict[str, Any]) -> dict[str, Any]:
@@ -1015,7 +1113,11 @@ def _runtime_options_from_source(source: dict[str, Any]) -> dict[str, Any]:
 def _session_init_tools_payload(params: dict[str, Any]) -> object:
     meta = _params(params.get("_meta"))
     runtime_options = _params(meta.get("runtimeOptions") or meta.get("runtime_options"))
-    for source in (params, meta, runtime_options):
+    sources = [params, meta, runtime_options]
+    for container in _bridge_payload_containers(params):
+        sources.append(container)
+        sources.append(_params(container.get("runtimeOptions") or container.get("runtime_options")))
+    for source in sources:
         for key in (
             "sessionInitTools",
             "session_init_tools",
@@ -1031,13 +1133,22 @@ def _session_init_tools_payload(params: dict[str, Any]) -> object:
 
 
 def _has_mcp_servers(params: dict[str, Any]) -> bool:
-    return "mcpServers" in params or "mcp_servers" in params
+    if "mcpServers" in params or "mcp_servers" in params:
+        return True
+    return any("mcpServers" in container or "mcp_servers" in container for container in _bridge_payload_containers(params))
 
 
 def _mcp_servers_from_params(params: dict[str, Any]) -> list[dict[str, Any]]:
     raw_servers = params.get("mcpServers")
     if raw_servers is None:
         raw_servers = params.get("mcp_servers")
+    if raw_servers is None:
+        for container in _bridge_payload_containers(params):
+            raw_servers = container.get("mcpServers")
+            if raw_servers is None:
+                raw_servers = container.get("mcp_servers")
+            if raw_servers is not None:
+                break
     if not isinstance(raw_servers, list):
         return []
     servers: list[dict[str, Any]] = []
@@ -1138,23 +1249,46 @@ def _app_template_name(params: dict[str, Any]) -> str | None:
     meta = _params(params.get("_meta"))
     top_runtime_options = _params(params.get("runtimeOptions") or params.get("runtime_options"))
     runtime_options = _params(meta.get("runtimeOptions") or meta.get("runtime_options"))
+    bridge_sources: list[dict[str, Any]] = []
+    for container in _bridge_payload_containers(params):
+        bridge_sources.append(container)
+        nested_runtime_options = _params(container.get("runtimeOptions") or container.get("runtime_options"))
+        if nested_runtime_options:
+            bridge_sources.append(nested_runtime_options)
+    for source in (
+        meta,
+        params,
+        top_runtime_options,
+        runtime_options,
+        *bridge_sources,
+    ):
+        value = _template_name_from_source(source)
+        if value is not None:
+            return value
+    return None
+
+
+def _template_name_from_source(source: dict[str, Any]) -> str | None:
     return _string(
-        meta.get("appTemplateName")
-        or meta.get("app_template_name")
-        or meta.get("app")
-        or params.get("appTemplateName")
-        or params.get("app_template_name")
-        or params.get("app")
-        or top_runtime_options.get("appTemplateName")
-        or top_runtime_options.get("app_template_name")
-        or runtime_options.get("appTemplateName")
-        or runtime_options.get("app_template_name")
+        source.get("appTemplateName")
+        or source.get("app_template_name")
+        or source.get("app")
+        or source.get("templateName")
+        or source.get("template_name")
+        or source.get("templateId")
+        or source.get("template_id")
+        or source.get("appId")
+        or source.get("app_id")
     )
 
 
 def _agent_name_from_meta(params: dict[str, Any]) -> str | None:
     meta = _params(params.get("_meta"))
-    return _string(meta.get("agentName") or meta.get("agent_name") or meta.get("agent"))
+    for source in (meta, params, *_bridge_payload_containers(params)):
+        value = _string(source.get("agentName") or source.get("agent_name") or source.get("agent"))
+        if value is not None:
+            return value
+    return None
 
 
 def _messages_from_params(params: dict[str, Any]) -> list[Message]:

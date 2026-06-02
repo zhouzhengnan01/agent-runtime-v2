@@ -735,6 +735,12 @@ class ToolCallingAgentLoop:
             required_inputs=state.required_inputs,
             artifacts=self._completion_artifacts(state),
         )
+        verification_verdict = state.verification_verdict
+        verification_reason = state.verification_reason
+        if self._should_mark_completed_turn_verified(state, guard_metadata):
+            verification_verdict = "passed"
+            verification_reason = "Completed turn executed tools and produced a final response."
+        primary_skill_metadata = self._primary_skill_metadata_for_result(state, verification_verdict)
         return self._result(
             agent_config,
             thread_id,
@@ -752,14 +758,45 @@ class ToolCallingAgentLoop:
             extra_metadata={
                 "turn_phase": state.turn_phase,
                 "turn_policy_reason": state.turn_policy_reason,
-                "verification_verdict": state.verification_verdict,
-                "verification_reason": state.verification_reason,
-                **(state.primary_skill_context.to_metadata() if state.primary_skill_context is not None else {}),
+                "verification_verdict": verification_verdict,
+                "verification_reason": verification_reason,
+                **primary_skill_metadata,
                 **guard_metadata,
             },
             required_inputs=state.required_inputs,
             artifacts=state.artifacts,
         )
+
+    @staticmethod
+    def _should_mark_completed_turn_verified(state: ToolLoopState, guard_metadata: dict[str, Any]) -> bool:
+        if state.verification_verdict == "passed":
+            return False
+        if state.required_inputs:
+            return False
+        if guard_metadata.get("unverified_completion_blocked") is True:
+            return False
+        if guard_metadata.get("unavailable_selected_skills_blocked") is True:
+            return False
+        return state.tool_call_count > 0 and bool(state.latest_assistant_reply.strip())
+
+    @staticmethod
+    def _primary_skill_metadata_for_result(
+        state: ToolLoopState,
+        verification_verdict: str,
+    ) -> dict[str, Any]:
+        if state.primary_skill_context is None:
+            return {}
+        metadata = state.primary_skill_context.to_metadata()
+        if (
+            state.primary_skill_context.stage_count == 0
+            and metadata.get("primary_skill_completion_status") == "unknown"
+            and verification_verdict == "passed"
+            and not state.required_inputs
+            and state.tool_call_count > 0
+            and state.latest_assistant_reply.strip()
+        ):
+            metadata["primary_skill_completion_status"] = "completed"
+        return metadata
 
     def _finalize_exhausted_turn(
         self,

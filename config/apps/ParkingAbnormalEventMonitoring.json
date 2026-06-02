@@ -17,7 +17,7 @@
       "priority": 0,
       "provider": "builtin-openai-compatible",
       "model": "Qwen3.6-35B-A3B",
-      "base_url": "http://192.168.35.140:9100/api/llm/openai/v1/providers/builtin-openai-compatible/",
+      "base_url": "http://218.67.242.10:59202/v1",
       "default_model": "Qwen3.6-35B-A3B",
       "api_key": "abc@123",
       "tool_choice": "auto",

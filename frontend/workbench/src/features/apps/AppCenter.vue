@@ -100,7 +100,7 @@ function categoryLabel(category?: string) {
           class="template-card"
           :class="{ active: store.selectedAppTemplateName === template.name }"
         >
-          <button class="template-main" type="button" @click="store.selectedAppTemplateName = template.name">
+          <button class="template-main" type="button" @click="store.applyAppTemplate(template.name, { fillPrompt: false })">
             <span class="template-icon">{{ iconFor(template) }}</span>
             <span class="template-title">
               <strong>{{ template.title || template.name }}</strong>

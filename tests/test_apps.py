@@ -302,7 +302,11 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 16
         elif template.name == "reference-image-yolo-training":
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
-        elif template.name == "70aaee52-99c2-49f5-a9c7-fb746821d3df":
+        elif template.name in {
+            "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+            "0bb9536b-8a36-40fd-8c5b-ea22804b55ab",
+            "737d9452-99c6-470e-a77a-20f2f7d73eff",
+        }:
             assert template.runtime_options == {
                 "mode": "safe",
                 "config_options": {

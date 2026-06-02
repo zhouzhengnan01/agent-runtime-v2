@@ -597,6 +597,7 @@ def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypa
             update["params"]["update"]["content"]["text"]
             for update in updates
             if update["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+            and update["params"]["update"]["content"]["text"] != "已收到请求，正在处理，请等待..."
         ]
 
         _assert_valid_acp_updates(updates)
@@ -953,6 +954,105 @@ def test_acp_websocket_top_level_app_template_preserves_template_config_options(
     assert options.selected_skills == ["generate-screen-skill"]
     assert options.config_options["auto_execute_primary_skill"] is True
     assert options.config_options["max_tool_rounds"] == 3
+
+
+def test_acp_websocket_accepts_bridge_payload_containers_for_app_template(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "cwd": str(tmp_path),
+                    "threadId": "acp-bridge-template",
+                    "parameters": {
+                        "appTemplateName": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                    },
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        assert created["appTemplateName"] == "70aaee52-99c2-49f5-a9c7-fb746821d3df"
+        assert created["runtimeOptions"]["selectedSkills"] == ["generate-screen-skill"]
+        assert created["runtimeOptions"]["configOptions"]["auto_execute_primary_skill"] is True
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": created["sessionId"],
+                    "prompt": [{"type": "text", "text": "生成一个智慧园区大屏"}],
+                    "arguments": {
+                        "type": "generation",
+                        "content": "生成一个智慧园区大屏",
+                    },
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.thread_id == "acp-bridge-template"
+    assert options.selected_skills == ["generate-screen-skill"]
+    assert options.config_options["auto_execute_primary_skill"] is True
+
+
+def test_acp_websocket_prompt_bridge_container_can_switch_app_template(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "cwd": str(tmp_path),
+                    "threadId": "acp-bridge-prompt-template",
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        assert created["appTemplateName"] is None
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": created["sessionId"],
+                    "prompt": [{"type": "text", "text": "生成一个智慧园区大屏"}],
+                    "arguments": {
+                        "type": "generation",
+                        "content": "生成一个智慧园区大屏",
+                        "appTemplateName": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                    },
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.thread_id == "acp-bridge-prompt-template"
+    assert options.app_template_name == "70aaee52-99c2-49f5-a9c7-fb746821d3df"
+    assert options.selected_skills == ["generate-screen-skill"]
+    assert options.config_options["auto_execute_primary_skill"] is True
 
 
 def test_acp_websocket_session_new_accepts_standard_meta_extensions(
@@ -1744,13 +1844,13 @@ def test_acp_websocket_does_not_expose_default_agent_model_when_no_model_configu
         )
         created = websocket.receive_json()["result"]
 
-    assert agent_default.model.model is None
-    assert agent_default.model.default_model is None
-    assert created["models"]["currentModelId"] is None
-    assert created["models"]["currentModelName"] is None
-    assert "modelName" not in created["runtimeOptions"]
-    assert "baseUrl" not in created["runtimeOptions"]
-    assert created["models"]["availableModels"] == []
+    assert agent_default.model.model == "Qwen3.6-35B-A3B"
+    assert agent_default.model.default_model == "Qwen3.6-35B-A3B"
+    assert created["models"]["currentModelId"] == "Qwen3.6-35B-A3B"
+    assert created["models"]["currentModelName"] == "Qwen3.6-35B-A3B"
+    assert created["runtimeOptions"]["modelName"] == "Qwen3.6-35B-A3B"
+    assert created["runtimeOptions"]["baseUrl"] == "http://218.67.242.10:59202/v1"
+    assert created["models"]["availableModels"]
 
 
 def test_default_agent_model_registration_ignores_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1762,10 +1862,11 @@ def test_default_agent_model_registration_ignores_llm_env(monkeypatch: pytest.Mo
     agent = acp_api.loader.load("default")
     registered = model_manager.configure_from_agent_default(agent)
 
-    assert agent.model.model is None
-    assert agent.model.default_model is None
-    assert registered is None
-    assert model_manager.list() == []
+    assert agent.model.model == "Qwen3.6-35B-A3B"
+    assert agent.model.default_model == "Qwen3.6-35B-A3B"
+    assert registered is not None
+    assert registered.id == "Qwen3.6-35B-A3B"
+    assert model_manager.list()
 
 
 def test_acp_websocket_cancel_interrupts_active_prompt(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:

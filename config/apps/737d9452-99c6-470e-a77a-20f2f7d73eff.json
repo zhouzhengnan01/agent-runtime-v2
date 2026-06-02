@@ -10,6 +10,14 @@
   "selected_skills": [
     "generate-screen-skill"
   ],
+  "runtime_options": {
+    "mode": "safe",
+    "config_options": {
+      "max_tool_rounds": 3,
+      "max_empty_response_retries": 0,
+      "auto_execute_primary_skill": true
+    }
+  },
   "models": [
     {
       "name": "Qwen3.6-35B-A3B",
