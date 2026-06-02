@@ -914,6 +914,7 @@ class ToolCallingAgentLoop:
         names = {
             "present_files",
             "local_read_file",
+            "local_file_to_base64",
             "local_search_text",
             "local_patch_file",
             "local_write_file",

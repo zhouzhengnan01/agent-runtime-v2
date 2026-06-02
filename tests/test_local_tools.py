@@ -70,6 +70,44 @@ def test_present_files_lists_thread_outputs_and_optional_workspace(tmp_path: Pat
     assert with_workspace.is_error is False
 
 
+def test_local_file_to_base64_encodes_svg_from_outputs(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("base64-tools")
+    svg = "<svg viewBox=\"0 0 10 10\" xmlns=\"http://www.w3.org/2000/svg\"></svg>"
+    (paths.outputs / "generated-bigscreen").mkdir(parents=True)
+    (paths.outputs / "generated-bigscreen" / "background.svg").write_text(svg, encoding="utf-8")
+    service = ToolInvocationService(artifact_store=store)
+
+    result = service.call_tool(
+        "local_file_to_base64",
+        {
+            "_thread_id": "base64-tools",
+            "path": "/mnt/user-data/outputs/generated-bigscreen/background.svg",
+        },
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["path"] == "/mnt/user-data/outputs/generated-bigscreen/background.svg"
+    assert result.structured_content["mime_type"] == "image/svg+xml;charset=UTF-8"
+    assert result.structured_content["base64"].startswith("PHN2ZyB2aWV3Qm94")
+    assert result.structured_content["data_uri"].startswith("data:image/svg+xml;charset=UTF-8;base64,")
+
+
+def test_local_file_to_base64_rejects_oversized_files(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("base64-too-large")
+    (paths.workspace / "large.png").write_bytes(b"x" * 8)
+    service = ToolInvocationService(artifact_store=store)
+
+    result = service.call_tool(
+        "local_file_to_base64",
+        {"_thread_id": "base64-too-large", "path": "large.png", "max_bytes": 4},
+    )
+
+    assert result.is_error is True
+    assert "too large" in result.content[0]["text"]
+
+
 def test_extract_archive_and_validate_yolo_training_inputs(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path)
     paths = store.prepare_thread("yolo-tools")

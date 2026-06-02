@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import difflib
+import base64
 import json
+import mimetypes
 import os
 import subprocess
 import tarfile
@@ -17,6 +19,7 @@ LOCAL_TOOL_NAMES = {
     "local_read_file",
     "local_patch_file",
     "local_write_file",
+    "local_file_to_base64",
     "local_search_text",
     "local_todo",
     "local_shell_command",
@@ -43,6 +46,8 @@ class LocalToolProvider:
                 return self._read_file(paths, arguments)
             if operation == "write_file":
                 return self._write_file(paths, arguments)
+            if operation == "file_to_base64":
+                return self._file_to_base64(paths, arguments)
             if operation == "patch_file":
                 return self._patch_file(paths, arguments)
             if operation == "search_text":
@@ -98,6 +103,44 @@ class LocalToolProvider:
             structured_content={
                 "path": display_path,
                 "chars": len(content),
+            },
+            is_error=False,
+        )
+
+    def _file_to_base64(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
+        target = self._thread_scoped_path(
+            paths,
+            str(arguments.get("path") or ""),
+            arguments,
+            scopes={"uploads", "workspace", "outputs"},
+        )
+        if not target.is_file():
+            raise FileNotFoundError(f"File not found: {self._display_path(paths, target, arguments)}")
+        max_bytes = self._bounded_int(
+            arguments.get("max_bytes"),
+            default=2 * 1024 * 1024,
+            minimum=1,
+            maximum=10 * 1024 * 1024,
+        )
+        file_size = target.stat().st_size
+        if file_size > max_bytes:
+            raise ValueError(f"File is too large for base64 encoding: {file_size} bytes > {max_bytes} bytes")
+        raw = target.read_bytes()
+        encoded = base64.b64encode(raw).decode("ascii")
+        mime_type = str(arguments.get("mime_type") or "").strip() or self._guess_mime_type(target)
+        include_data_uri = bool(arguments.get("include_data_uri", True))
+        data_uri = f"data:{mime_type};base64,{encoded}" if include_data_uri else None
+        display_path = self._display_path(paths, target, arguments)
+        text = f"Encoded {display_path} to Base64 ({file_size} bytes, mime_type={mime_type})."
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": text}],
+            structured_content={
+                "path": display_path,
+                "bytes": file_size,
+                "mime_type": mime_type,
+                "encoding": "base64",
+                "base64": encoded,
+                "data_uri": data_uri,
             },
             is_error=False,
         )
@@ -509,7 +552,14 @@ class LocalToolProvider:
 
     @staticmethod
     def _is_image_file(path: Path) -> bool:
-        return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+        return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff", ".svg"}
+
+    @staticmethod
+    def _guess_mime_type(path: Path) -> str:
+        if path.suffix.lower() == ".svg":
+            return "image/svg+xml;charset=UTF-8"
+        guessed, _encoding = mimetypes.guess_type(path.name)
+        return guessed or "application/octet-stream"
 
     @classmethod
     def _file_kind(cls, path: Path) -> str:
@@ -783,6 +833,48 @@ def local_tool_definitions() -> list[ToolDefinition]:
                 "required": ["path", "content"],
             },
             source={"type": LocalToolProvider.source_type, "operation": "write_file"},
+            editable=False,
+        ),
+        ToolDefinition(
+            name="local_file_to_base64",
+            title="Encode Thread File As Base64",
+            description=(
+                "Read a file from uploads, workspace, or outputs and return Base64 plus an optional data URI. "
+                "Use this before UploadFile-style platform commands that require Base64 file content."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path under /mnt/user-data/uploads, /mnt/user-data/workspace, or /mnt/user-data/outputs.",
+                    },
+                    "mime_type": {
+                        "type": "string",
+                        "description": "Optional MIME type override. SVG defaults to image/svg+xml;charset=UTF-8.",
+                    },
+                    "include_data_uri": {"type": "boolean", "default": True},
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10485760,
+                        "default": 2097152,
+                    },
+                },
+                "required": ["path"],
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "bytes": {"type": "integer"},
+                    "mime_type": {"type": "string"},
+                    "encoding": {"type": "string"},
+                    "base64": {"type": "string"},
+                    "data_uri": {"type": ["string", "null"]},
+                },
+            },
+            source={"type": LocalToolProvider.source_type, "operation": "file_to_base64"},
             editable=False,
         ),
         ToolDefinition(
