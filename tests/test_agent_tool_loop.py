@@ -2366,20 +2366,20 @@ def test_agent_loop_modes_control_tool_exposure(tmp_path: Path, monkeypatch: Mon
                 runtime_options=RuntimeOptions(
                     thread_id="safe-mode",
                     mode="safe",
-                    selected_mcp_tools=["local_read_file", "local_write_file"],
+                    selected_mcp_tools=["local_read_file", "local_download_url", "local_write_file"],
                 ),
             ),
         )
     )
-    yolo_result, yolo_events = asyncio.run(
+    autonomous_result, autonomous_events = asyncio.run(
         runtime.run_with_events(
             agent,
             ChatRequest(
-                messages=[Message(role="user", content="yolo")],
+                messages=[Message(role="user", content="autonomous")],
                 runtime_options=RuntimeOptions(
-                    thread_id="yolo-mode",
-                    mode="yolo",
-                    selected_mcp_tools=["local_read_file", "local_write_file"],
+                    thread_id="autonomous-mode",
+                    mode="autonomous",
+                    selected_mcp_tools=["local_read_file", "local_download_url", "local_write_file"],
                 ),
             ),
         )
@@ -2388,13 +2388,15 @@ def test_agent_loop_modes_control_tool_exposure(tmp_path: Path, monkeypatch: Mon
     assert plan_result.metadata["mode"] == "plan"
     assert next(event for event in plan_events if event.type == "tools.available").data["tools"] == []
     assert safe_result.metadata["mode"] == "safe"
-    assert yolo_result.metadata["mode"] == "yolo"
-    assert seen_tools_by_call == [["local_read_file"], ["local_read_file", "local_write_file"]]
+    assert autonomous_result.metadata["mode"] == "autonomous"
+    assert seen_tools_by_call[0] == ["local_read_file"]
+    assert set(seen_tools_by_call[1]) == {"local_read_file", "local_download_url", "local_write_file"}
     assert next(event for event in safe_events if event.type == "tools.available").data["tools"] == ["local_read_file"]
-    assert next(event for event in yolo_events if event.type == "tools.available").data["tools"] == [
+    assert set(next(event for event in autonomous_events if event.type == "tools.available").data["tools"]) == {
         "local_read_file",
+        "local_download_url",
         "local_write_file",
-    ]
+    }
 
 
 def test_agent_loop_verify_phase_allows_shell_in_autonomous_mode(

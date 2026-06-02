@@ -914,6 +914,7 @@ class ToolCallingAgentLoop:
         names = {
             "present_files",
             "local_read_file",
+            "local_download_url",
             "local_file_to_base64",
             "local_search_text",
             "local_patch_file",
@@ -1163,7 +1164,13 @@ class ToolCallingAgentLoop:
         if mode == "safe":
             if source_type == "skill":
                 return False
-            if source_type == "local" and operation in {"write_file", "patch_file", "shell_command", "extract_archive"}:
+            if source_type == "local" and operation in {
+                "write_file",
+                "download_url",
+                "patch_file",
+                "shell_command",
+                "extract_archive",
+            }:
                 return False
             return True
         if mode == "edit":

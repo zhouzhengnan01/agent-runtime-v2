@@ -5,11 +5,15 @@ import base64
 import json
 import mimetypes
 import os
+import re
 import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
+
+import httpx
 
 from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.tools.schemas import ToolDefinition, ToolInvocationResult
@@ -19,6 +23,7 @@ LOCAL_TOOL_NAMES = {
     "local_read_file",
     "local_patch_file",
     "local_write_file",
+    "local_download_url",
     "local_file_to_base64",
     "local_search_text",
     "local_todo",
@@ -46,6 +51,8 @@ class LocalToolProvider:
                 return self._read_file(paths, arguments)
             if operation == "write_file":
                 return self._write_file(paths, arguments)
+            if operation == "download_url":
+                return self._download_url(paths, arguments)
             if operation == "file_to_base64":
                 return self._file_to_base64(paths, arguments)
             if operation == "patch_file":
@@ -103,6 +110,86 @@ class LocalToolProvider:
             structured_content={
                 "path": display_path,
                 "chars": len(content),
+            },
+            is_error=False,
+        )
+
+    def _download_url(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
+        url = str(arguments.get("url") or "").strip()
+        if not url:
+            raise ValueError("url is required")
+        parsed = urlparse(url)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            raise ValueError("Only http:// and https:// URLs are allowed")
+        if not parsed.netloc:
+            raise ValueError("URL host is required")
+
+        max_bytes = self._bounded_int(
+            arguments.get("max_bytes"),
+            default=50 * 1024 * 1024,
+            minimum=1,
+            maximum=500 * 1024 * 1024,
+        )
+        timeout_seconds = self._bounded_int(
+            arguments.get("timeout_seconds"),
+            default=30,
+            minimum=1,
+            maximum=120,
+        )
+        allowed_prefixes = self._mime_prefixes(
+            arguments.get("allowed_mime_prefixes"),
+            default=["image/", "video/"],
+        )
+        overwrite = bool(arguments.get("overwrite", True))
+
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
+            with client.stream("GET", url) as response:
+                response.raise_for_status()
+                content_length = self._content_length(response.headers.get("content-length"))
+                if content_length is not None and content_length > max_bytes:
+                    raise ValueError(f"Remote file is too large: {content_length} bytes > {max_bytes} bytes")
+
+                header_mime = self._header_mime_type(response.headers.get("content-type"))
+                filename = self._download_filename(url, str(arguments.get("filename") or ""), header_mime)
+                target = self._upload_target(paths, filename, overwrite=overwrite)
+                guessed_mime = self._guess_mime_type(target)
+                mime_type = self._download_mime_type(header_mime, guessed_mime)
+                if not self._mime_allowed(mime_type, allowed_prefixes):
+                    raise ValueError(
+                        f"Remote MIME type is not allowed: {mime_type}. "
+                        f"Allowed prefixes: {', '.join(allowed_prefixes)}"
+                    )
+
+                target.parent.mkdir(parents=True, exist_ok=True)
+                bytes_written = 0
+                try:
+                    with target.open("wb") as handle:
+                        for chunk in response.iter_bytes():
+                            if not chunk:
+                                continue
+                            bytes_written += len(chunk)
+                            if bytes_written > max_bytes:
+                                raise ValueError(
+                                    f"Remote file is too large: {bytes_written} bytes > {max_bytes} bytes"
+                                )
+                            handle.write(chunk)
+                except Exception:
+                    target.unlink(missing_ok=True)
+                    raise
+
+        display_path = self._display_path(paths, target, arguments)
+        kind = self._file_kind(target)
+        text = f"Downloaded {url} to {display_path} ({bytes_written} bytes, mime_type={mime_type})."
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": text}],
+            structured_content={
+                "url": url,
+                "path": display_path,
+                "filename": target.name,
+                "scope": "uploads",
+                "bytes": bytes_written,
+                "mime_type": mime_type,
+                "kind": kind,
             },
             is_error=False,
         )
@@ -555,6 +642,21 @@ class LocalToolProvider:
         return path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff", ".svg"}
 
     @staticmethod
+    def _is_video_file(path: Path) -> bool:
+        return path.suffix.lower() in {
+            ".mp4",
+            ".mov",
+            ".m4v",
+            ".avi",
+            ".mkv",
+            ".webm",
+            ".flv",
+            ".wmv",
+            ".mpeg",
+            ".mpg",
+        }
+
+    @staticmethod
     def _guess_mime_type(path: Path) -> str:
         if path.suffix.lower() == ".svg":
             return "image/svg+xml;charset=UTF-8"
@@ -567,9 +669,91 @@ class LocalToolProvider:
             return "archive"
         if cls._is_image_file(path):
             return "image"
+        if cls._is_video_file(path):
+            return "video"
         if path.suffix.lower() in {".yaml", ".yml", ".json", ".txt", ".md", ".csv"}:
             return "text"
         return "file"
+
+    @staticmethod
+    def _content_length(value: str | None) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _header_mime_type(value: str | None) -> str:
+        if not value:
+            return ""
+        return value.split(";", 1)[0].strip().lower()
+
+    @classmethod
+    def _download_mime_type(cls, header_mime: str, guessed_mime: str) -> str:
+        clean_guess = cls._header_mime_type(guessed_mime)
+        if header_mime and header_mime != "application/octet-stream":
+            return header_mime
+        return clean_guess or header_mime or "application/octet-stream"
+
+    @staticmethod
+    def _mime_prefixes(value: object, *, default: list[str]) -> list[str]:
+        raw_items: list[str]
+        if isinstance(value, str):
+            raw_items = value.replace("，", ",").split(",")
+        elif isinstance(value, list):
+            raw_items = [str(item) for item in value]
+        else:
+            raw_items = default
+        prefixes: list[str] = []
+        for item in raw_items:
+            clean = item.strip().lower()
+            if clean and clean not in prefixes:
+                prefixes.append(clean)
+        return prefixes or default
+
+    @staticmethod
+    def _mime_allowed(mime_type: str, allowed_prefixes: list[str]) -> bool:
+        clean = mime_type.strip().lower()
+        return any(clean.startswith(prefix) for prefix in allowed_prefixes)
+
+    @classmethod
+    def _download_filename(cls, url: str, requested: str, mime_type: str) -> str:
+        raw_name = requested.strip() or Path(unquote(urlparse(url).path)).name
+        if not raw_name:
+            raw_name = "downloaded"
+        name = Path(raw_name.replace("\\", "/")).name
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+        if not name:
+            name = "downloaded"
+        if "." not in name:
+            extension = mimetypes.guess_extension(mime_type) if mime_type else None
+            if extension:
+                name += extension
+        return name[:180]
+
+    @staticmethod
+    def _upload_target(paths: ThreadPaths, filename: str, *, overwrite: bool) -> Path:
+        uploads = paths.uploads.resolve()
+        target = (uploads / filename).resolve()
+        try:
+            target.relative_to(uploads)
+        except ValueError as exc:
+            raise ValueError("Upload path traversal blocked") from exc
+        if overwrite or not target.exists():
+            return target
+        stem = target.stem or "downloaded"
+        suffix = target.suffix
+        for index in range(1, 10_000):
+            candidate = (uploads / f"{stem}-{index}{suffix}").resolve()
+            try:
+                candidate.relative_to(uploads)
+            except ValueError as exc:
+                raise ValueError("Upload path traversal blocked") from exc
+            if not candidate.exists():
+                return candidate
+        raise FileExistsError(f"Could not choose a unique upload filename for {filename}")
 
     @classmethod
     def _extract_archive_to(cls, archive: Path, output_dir: Path, *, max_files: int, max_bytes: int) -> list[Path]:
@@ -833,6 +1017,54 @@ def local_tool_definitions() -> list[ToolDefinition]:
                 "required": ["path", "content"],
             },
             source={"type": LocalToolProvider.source_type, "operation": "write_file"},
+            editable=False,
+        ),
+        ToolDefinition(
+            name="local_download_url",
+            title="Download URL To Uploads",
+            description=(
+                "Download an http/https URL into the current thread uploads directory. "
+                "Use this when a user-provided resource_link points to an image or video URL that tools need "
+                "as a local /mnt/user-data/uploads file."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "http:// or https:// URL to download."},
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional output filename. Path components are stripped for safety.",
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 524288000,
+                        "default": 52428800,
+                    },
+                    "allowed_mime_prefixes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "default": ["image/", "video/"],
+                        "description": "Allowed MIME prefixes. Defaults to images and videos.",
+                    },
+                    "overwrite": {"type": "boolean", "default": True},
+                    "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 120, "default": 30},
+                },
+                "required": ["url"],
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "path": {"type": "string"},
+                    "filename": {"type": "string"},
+                    "scope": {"type": "string"},
+                    "bytes": {"type": "integer"},
+                    "mime_type": {"type": "string"},
+                    "kind": {"type": "string"},
+                },
+            },
+            source={"type": LocalToolProvider.source_type, "operation": "download_url"},
             editable=False,
         ),
         ToolDefinition(
