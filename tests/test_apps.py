@@ -297,8 +297,17 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         elif template.name == "behavior-review":
             assert template.runtime_options["mode"] == "yolo"
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
+        elif template.name == "algorithm-engineer-workbench":
+            assert template.runtime_options["mode"] == "yolo"
+            assert template.runtime_options["config_options"]["max_tool_rounds"] == 16
         elif template.name == "reference-image-yolo-training":
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
+        elif template.name == "algorithm-engineer-full-cycle-test":
+            assert template.runtime_options["model_env"] == "LLM_MODEL"
+            assert template.runtime_options["base_url_env"] == "LLM_BASE_URL"
+            assert template.runtime_options["api_key_env"] == "LLM_API_KEY"
+            assert template.models == []
+            continue
         elif template.name == "mcp-test-users-loop":
             assert template.runtime_options["mode"] == "safe"
             assert template.runtime_options["config_options"]["mcpServers"][0]["name"] == "db"
@@ -387,7 +396,7 @@ def test_preconfigured_app_templates_do_not_preselect_artifact_workflow() -> Non
 def test_behavior_review_template_enables_continuous_second_pass_policy() -> None:
     template = AppTemplateRegistry().get("behavior-review")
 
-    assert template.workflow == "agent_loop"
+    assert template.workflow is None
     assert template.title == "行为识别连续复判"
     assert template.runtime_options["mode"] == "yolo"
     assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
@@ -415,7 +424,7 @@ def test_behavior_review_template_enables_continuous_second_pass_policy() -> Non
 def test_algorithm_engineer_full_cycle_selects_full_stage_skill_chain() -> None:
     template = AppTemplateRegistry().get("algorithm-engineer-full-cycle")
 
-    assert template.workflow == "agent_loop"
+    assert template.workflow is None
     assert template.title == "算法工程师正式版"
     assert template.runtime_options["mode"] == "yolo"
     assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
@@ -442,7 +451,7 @@ def test_algorithm_engineer_full_cycle_selects_full_stage_skill_chain() -> None:
 def test_algorithm_cpu_training_sandbox_template_selects_training_runner() -> None:
     template = AppTemplateRegistry().get("algorithm-cpu-training-sandbox")
 
-    assert template.workflow == "agent_loop"
+    assert template.workflow is None
     assert template.category == "algorithm-training"
     assert template.selected_skills == ["cpu-training-runner"]
 
@@ -462,7 +471,7 @@ def test_algorithm_training_related_templates_use_dedicated_category() -> None:
     workflows = {name: registry.get(name).workflow for name in training_templates}
 
     assert categories == {name: "algorithm-training" for name in training_templates}
-    assert workflows == {name: "agent_loop" for name in training_templates}
+    assert workflows == {name: None for name in training_templates}
 
 
 def test_tianjin_park_templates_use_dedicated_category_and_real_skills() -> None:
@@ -487,7 +496,10 @@ def test_tianjin_park_templates_use_dedicated_category_and_real_skills() -> None
     configured_skills = {skill.name for skill in SkillRegistry(registry.root_dir).list(executable_only=True)}
 
     assert categories == {name: "park-operations" for name in park_templates}
-    assert workflows == {name: "agent_loop" for name in park_templates}
+    assert workflows["tianjin-business-docs"] is None
+    assert {name: workflow for name, workflow in workflows.items() if name != "tianjin-business-docs"} == {
+        name: "agent_loop" for name in park_templates if name != "tianjin-business-docs"
+    }
     assert {
         "tianjin-chatbi-analyst",
         "tianjin-document-generator",

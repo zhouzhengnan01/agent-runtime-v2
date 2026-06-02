@@ -3823,7 +3823,7 @@
       renderSelectedAgent();
     }
 
-    async function loadAppTemplates() {
+    async function loadAppTemplates(options = {}) {
       if (els.appSummary) els.appSummary.textContent = '加载智能体模板中';
       const res = await fetch('/api/apps/templates', { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
@@ -3845,10 +3845,26 @@
         state.appFilter = 'all';
       }
       state.appTemplatesLoaded = true;
+      if (options.selectDefault) selectDefaultAppTemplate();
       renderAppFilterRow();
       renderAppTemplateSummary();
       renderAppTemplateList();
       renderComposerCapabilities();
+    }
+
+    function selectDefaultAppTemplate() {
+      if (state.selectedAppTemplateName || !state.appTemplates.length) return;
+      const template = getAppTemplate('general-jetlinks-assistant') || state.appTemplates[0];
+      if (!template) return;
+      setAgent(template.agent_name || 'default');
+      state.selectedChatSkills = [...(template.selected_skills || [])];
+      state.selectedChatMcpTools = [...(template.selected_mcp_tools || [])];
+      state.selectedChatWorkflow = null;
+      state.nextAgentOverride = null;
+      state.nextWorkflowOverride = null;
+      state.selectedAppTemplateName = template.name;
+      renderComposerCapabilities();
+      renderAppTemplateSummary(`默认应用：${template.title || template.name}`);
     }
 
     function renderAppFilterRow() {
@@ -3964,7 +3980,7 @@
       setAgent(template.agent_name || 'default');
       state.selectedChatSkills = [...(template.selected_skills || [])];
       state.selectedChatMcpTools = [...(template.selected_mcp_tools || [])];
-      state.selectedChatWorkflow = template.workflow || null;
+      state.selectedChatWorkflow = null;
       state.nextAgentOverride = null;
       state.nextWorkflowOverride = null;
       state.selectedAppTemplateName = template.name;
@@ -3983,20 +3999,27 @@
 
     function runtimeOptionsFromAppTemplate(template, threadId = null) {
       const runtimeOptions = {
-        ...(template.runtime_options && typeof template.runtime_options === 'object' ? template.runtime_options : {}),
+        ...legacyRuntimeOptionsFromAppTemplate(template),
         app_template_name: template.name,
         model_type: 'chat',
         selected_skills: [...(template.selected_skills || [])],
         selected_mcp_tools: [...(template.selected_mcp_tools || [])]
       };
       if (threadId) runtimeOptions.thread_id = threadId;
-      if (template.workflow) runtimeOptions.workflow = template.workflow;
+      if (template?.name) runtimeOptions.app_template_name = template.name;
       return runtimeOptions;
     }
 
     function selectedAppTemplateRuntimeOptions() {
       const template = state.selectedAppTemplateName ? getAppTemplate(state.selectedAppTemplateName) : null;
-      return template?.runtime_options && typeof template.runtime_options === 'object' ? template.runtime_options : {};
+      const runtimeOptions = legacyRuntimeOptionsFromAppTemplate(template);
+      if (template?.name) runtimeOptions.app_template_name = template.name;
+      return runtimeOptions;
+    }
+
+    function legacyRuntimeOptionsFromAppTemplate(template) {
+      if (!template || (Array.isArray(template.models) && template.models.length)) return {};
+      return template.runtime_options && typeof template.runtime_options === 'object' ? { ...template.runtime_options } : {};
     }
 
     function createCronFromAppTemplate(name) {
@@ -6574,24 +6597,24 @@
       return runtimeOptions;
     }
 
-	    function buildAcpRuntimeOptions(threadId, workflow) {
-	      const runtimeOptions = {
-	        ...selectedAppTemplateRuntimeOptions(),
-	        threadId,
-	        selectedSkills: [...state.selectedChatSkills],
+    function buildAcpRuntimeOptions(threadId, workflow) {
+      const runtimeOptions = {
+        ...selectedAppTemplateRuntimeOptions(),
+        threadId,
+        selectedSkills: [...state.selectedChatSkills],
         selectedMcpTools: [...state.selectedChatMcpTools]
-	      };
-	      if (state.selectedAppTemplateName) {
-	        runtimeOptions.modelType = 'chat';
+      };
+      if (state.selectedAppTemplateName) {
+        runtimeOptions.modelType = 'chat';
       }
       if (state.yoloExecution) {
         runtimeOptions.mode = 'yolo';
       } else if (state.deepExecution) {
         runtimeOptions.mode = 'autonomous';
       }
-	      if (workflow) runtimeOptions.workflow = workflow;
-	      return runtimeOptions;
-	    }
+      if (workflow) runtimeOptions.workflow = workflow;
+      return runtimeOptions;
+    }
 
 	    function buildAcpMeta(agentName, runtimeOptions) {
 	      const meta = { agentName, runtimeOptions };
@@ -8052,8 +8075,8 @@
 
     loadAdminToken();
     loadAgents();
-    loadAppTemplates().catch((err) => console.debug('app template load skipped', err));
     loadSandboxStatus();
+    loadAppTemplates({ selectDefault: true }).catch((err) => console.debug('app template preload skipped', err));
     ensureThread();
     renderMessages();
     renderAttachments();

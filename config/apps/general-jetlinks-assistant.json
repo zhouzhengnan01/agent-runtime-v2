@@ -5,7 +5,7 @@
   "category": "general",
   "icon": "chat",
   "agent_name": "default",
-  "workflow": "agent_loop",
+  "workflow": null,
   "selected_skills": [],
   "selected_mcp_tools": [],
   "prompt_examples": [

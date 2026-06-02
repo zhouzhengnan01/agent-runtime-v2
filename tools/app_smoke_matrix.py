@@ -47,6 +47,7 @@ SKILL_ARTIFACT_PATTERNS = {
         "best.pt",
         "results.csv",
     ],
+    "tianjin-document-generator": ["tianjin-document-generator-*.md", "tianjin-document-generator-*.json"],
     "xmind-generation": ["*.xmind"],
 }
 

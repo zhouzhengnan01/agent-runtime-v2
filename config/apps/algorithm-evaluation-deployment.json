@@ -5,7 +5,7 @@
   "category": "algorithm-training",
   "icon": "shield",
   "agent_name": "default",
-  "workflow": "agent_loop",
+  "workflow": null,
   "selected_skills": [
     "detector-evaluator",
     "deployment-candidate-reviewer",

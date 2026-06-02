@@ -5,7 +5,7 @@
   "category": "algorithm-training",
   "icon": "table",
   "agent_name": "default",
-  "workflow": "agent_loop",
+  "workflow": null,
   "selected_skills": [
     "dataset-curator",
     "data-auto-annotation",
