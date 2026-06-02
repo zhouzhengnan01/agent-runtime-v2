@@ -2,8 +2,8 @@
 
 本项目支持两种模型密钥来源：
 
-- 推荐方式：通过环境变量注入，例如 `LLM_API_KEY`。
-- 本地兼容方式：把 agent local override 里的 `model.api_key` 自动加密成 `model.api_key_enc`。
+- 应用模板方式：把模型连接参数放在 `config/apps/*.json` 的 `models[]` 中，例如 `models[].api_key`。
+- 加密方式：需要隐藏明文时，把 `models[].api_key` 或 agent local override 里的 `model.api_key` 改成对应的 `api_key_enc`。
 
 不要把真实 API key、`JETLINKS_AGENT_SECRET_KEY` 或 `.runtime/secrets/master.key` 提交到 GitHub。
 
@@ -18,26 +18,25 @@ config/agents/*.local.json        # 本地 agent 覆盖配置，不提交
 `.runtime/`、`.env`、`config/agents/*.local.json` 都已经在 `.gitignore` 中忽略。GitHub 上看不到
 `.runtime/secrets/master.key` 是预期行为，因为它是真实主密钥。
 
-## 推荐：环境变量注入
+## 应用模板模型密钥
 
-应用模板里的模型配置通常使用：
+应用模板里的模型配置通常使用 `models[].api_key`：
 
 ```json
 {
-  "model": {
-    "api_key_env": "LLM_API_KEY"
-  }
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "api_key": "your-model-api-key"
+    }
+  ]
 }
 ```
 
-运行前设置：
-
-```bash
-export LLM_API_KEY="your-model-api-key"
-```
-
-Java 或进程管理器启动 Runtime 时，也可以把 `LLM_API_KEY` 放入子进程环境变量。这个方式最适合生产部署，
-因为仓库和配置文件里都不会出现密钥明文或密文。
+运行时会在服务端读取这个 key；应用模板列表接口返回给 Workbench 时会剥离 `api_key` 和 `api_key_enc`。
+如果同一份配置要发布到公开仓库或外部环境，改用下面的 `api_key_enc`。
 
 ## 本地加密：api_key_enc
 
@@ -180,7 +179,7 @@ uv run python -m app.cli secrets set-api-key --agent default --value "your-model
 
 ## 安全边界
 
-- 可以提交：`config/apps/*.json` 中的 `api_key_env`、`config/secrets/README.md`、文档说明。
+- 可以提交：`config/apps/*.json`、`config/secrets/README.md`、文档说明；公开交付或外部发布时把明文 `api_key` 改成 `api_key_enc`。
 - 不要提交：真实 API key、`.env`、`.runtime/secrets/master.key`、`JETLINKS_AGENT_SECRET_KEY`。
 - 谨慎提交：`api_key_enc`。只有在主密钥绝不泄漏的前提下才可以提交密文；密文和主密钥同时泄漏等同于明文泄漏。
 - 依赖要求：启用 `api_key_enc` 时，运行环境必须安装 `cryptography`。使用 `uv sync`、`.venv` 或项目启动脚本即可。

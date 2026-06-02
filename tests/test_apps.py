@@ -305,7 +305,7 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         elif template.name == "algorithm-engineer-full-cycle-test":
             assert template.runtime_options["model_env"] == "LLM_MODEL"
             assert template.runtime_options["base_url_env"] == "LLM_BASE_URL"
-            assert template.runtime_options["api_key_env"] == "LLM_API_KEY"
+            assert template.runtime_options["api_key"] == "abc@123"
             assert template.models == []
             continue
         elif template.name == "mcp-test-users-loop":
@@ -319,8 +319,8 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         assert model.model, template.name
         assert model.default_model, template.name
         assert model.base_url, template.name
-        assert model.api_key is None, template.name
-        assert model.api_key_env == "LLM_API_KEY", template.name
+        assert model.api_key == "abc@123", template.name
+        assert model.api_key_env is None, template.name
         assert model.api_key_enc is None, template.name
         assert model.temperature == 0.4, template.name
         assert model.max_tokens == 2048, template.name

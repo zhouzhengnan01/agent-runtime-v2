@@ -34,7 +34,7 @@
     "model_env": "LLM_MODEL",
     "base_url": "http://218.67.242.10:59201/v1",
     "base_url_env": "LLM_BASE_URL",
-    "api_key_env": "LLM_API_KEY",
+    "api_key": "abc@123",
     "temperature": 0.4,
     "max_tokens": 2048
   }
