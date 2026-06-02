@@ -38,6 +38,7 @@ SKILL_ARTIFACT_PATTERNS = {
     "data-auto-annotation": ["annotations.coco.json"],
     "deliverables-export": ["*.txt", "*.docx"],
     "drawio-generation": ["*.drawio", "*.png"],
+    "emoji": ["*.md"],
     "excel-generation": ["*.xlsx"],
     "generate-screen-skill": ["generate-screen-skill-prompt.md"],
     "markdown-rendering": ["*.md"],

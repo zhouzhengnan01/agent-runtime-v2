@@ -1,0 +1,9 @@
+{
+  "id": "image-dataset-produce",
+  "name": "image-dataset-produce",
+  "version": "0.1.0",
+  "description": "Generate synthetic training images from image1 reference images and prompts through the local flux2 image generation HTTP API.",
+  "skills": [
+    "SKILL.md"
+  ]
+}
