@@ -5,6 +5,7 @@ from typing import Any
 from app.core.config import AgentConfig
 from app.core.agent.primary_skill_context import PrimarySkillContext, primary_skill_stage_prompt
 from app.core.skills import SkillRegistry
+from app.core.skills.context_files import SkillMarkdownContext, load_skill_markdown_context
 from app.core.tools import ToolInvocationService
 from app.schemas import RuntimeOptions
 
@@ -163,7 +164,12 @@ def prompt_with_primary_skill(
     rendered = render_primary_skill_context(skill)
     if not rendered:
         return prompt
-    guidance = "\n\n".join([PRIMARY_SKILL_GUIDANCE, rendered])
+    sections = [PRIMARY_SKILL_GUIDANCE, rendered]
+    markdown_context = load_skill_markdown_context(skill)
+    rendered_markdown_context = render_skill_markdown_context(markdown_context)
+    if rendered_markdown_context:
+        sections.append(rendered_markdown_context)
+    guidance = "\n\n".join(sections)
     return f"{prompt}\n\n{guidance}"
 
 
@@ -306,6 +312,35 @@ def render_primary_skill_context(skill: Any) -> str:
     if quality_template:
         lines.append(f"Quality focus: {', '.join(quality_template)}")
     return "\n".join(lines)
+
+
+def render_skill_markdown_context(context: SkillMarkdownContext | None) -> str:
+    if context is None:
+        return ""
+    lines = [
+        "Primary skill package instructions:",
+        f"Source: {context.skill_md_path}",
+        "",
+        "## SKILL.md",
+        "",
+        context.skill_md,
+    ]
+    if context.skill_md_truncated:
+        lines.append("\n[SKILL.md truncated by runtime context limit]")
+    if context.references:
+        lines.extend(["", "## Declared Reference Files"])
+        for reference in context.references:
+            lines.extend(
+                [
+                    "",
+                    f"### {reference.path}",
+                    "",
+                    reference.content,
+                ]
+            )
+            if reference.truncated:
+                lines.append(f"\n[{reference.path} truncated by runtime context limit]")
+    return "\n".join(lines).strip()
 
 
 def string_list(value: object) -> list[str]:

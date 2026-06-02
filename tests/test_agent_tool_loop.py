@@ -18,7 +18,8 @@ from app.core.config import AgentConfig
 from app.core.config.agent_config import ModelConfig, RuntimeConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
-from app.core.skills import SkillRunner
+from app.core.skills import SkillRegistry, SkillRunner
+from app.core.skills.context_files import load_skill_markdown_context
 from app.core.tools import ToolInvocationService, ToolRegistry
 from app.schemas import ChatRequest, Message, RuntimeOptions
 
@@ -918,9 +919,89 @@ def test_agent_loop_injects_primary_skill_guidance_from_first_selected_skill(
     assert "Primary skill guidance is active." in seen_prompts[0]
     assert "Primary skill: data-auto-annotation" in seen_prompts[0]
     assert "When to use: Use for automatic image annotation" in seen_prompts[0]
-    assert "Required inputs: image_path" in seen_prompts[0]
+    assert "Required inputs:" not in seen_prompts[0]
     assert "Quality focus: coco_schema, image_dimensions, bbox_xywh, category_mapping" in seen_prompts[0]
+    assert "Primary skill package instructions:" in seen_prompts[0]
+    assert "# 何时使用" in seen_prompts[0]
+    assert "## Runtime Input Mapping (Updated)" in seen_prompts[0]
     assert "Primary skill: markdown-rendering" not in seen_prompts[0]
+
+
+def test_agent_loop_injects_primary_skill_markdown_declared_references(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_prompts: list[str] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, messages, tools
+        seen_prompts.append(system_prompt)
+        return LlmChatResponse(content="已读取大屏技能参考。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="screen-skill-agent",
+        display_name="Screen Skill Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    artifact_store = ArtifactStore(root_dir=tmp_path)
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=artifact_store))
+    recorder = EventRecorder(agent=agent.name, thread_id="screen-skill-references")
+
+    loop_result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="生成智慧园区运营可视化大屏")],
+            thread_id="screen-skill-references",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="screen-skill-references",
+                selected_skills=["generate-screen-skill"],
+            ),
+        )
+    )
+
+    assert loop_result.result.reply == "已读取大屏技能参考。"
+    assert len(seen_prompts) == 1
+    prompt = seen_prompts[0]
+    assert "Primary skill package instructions:" in prompt
+    assert "## SKILL.md" in prompt
+    assert "## 1. Always Read These References" in prompt
+    assert "### references/blueprint-standard.md" in prompt
+    assert "# Standard Bigscreen Blueprint" in prompt
+    assert "Canvas size must always be `1920 x 1080`." in prompt
+    assert "### references/component-registry.json" in prompt
+    assert '"bigscreen-platform-component-registry"' in prompt
+    assert "### references/command-standard.md" in prompt
+    assert "Service ID: fileService" in prompt
+    assert "### references/components/custom-chart.json" in prompt
+
+
+def test_skill_markdown_context_loads_declared_reference_files_only() -> None:
+    skill = SkillRegistry().get("generate-screen-skill")
+
+    context = load_skill_markdown_context(skill, skill_md_max_chars=5000, reference_max_chars=8000)
+
+    assert context is not None
+    assert "Always Read These References" in context.skill_md
+    reference_paths = [item.path for item in context.references]
+    assert reference_paths[:3] == [
+        "references/blueprint-standard.md",
+        "references/component-registry.json",
+        "references/echarts-script-standard.md",
+    ]
+    assert "references/command-standard.md" in reference_paths
+    assert all(path.startswith("references/") for path in reference_paths)
+    blueprint = next(item for item in context.references if item.path == "references/blueprint-standard.md")
+    assert "# Standard Bigscreen Blueprint" in blueprint.content
 
 
 def test_agent_loop_keeps_primary_skill_guidance_alongside_composite_guidance(
@@ -938,7 +1019,18 @@ def test_agent_loop_keeps_primary_skill_guidance_alongside_composite_guidance(
         seen_prompts.append(system_prompt)
         return "已注入主 Skill 和 composite 提示。"
 
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, messages, tools
+        seen_prompts.append(system_prompt)
+        return LlmChatResponse(content="已注入主 Skill 和 composite 提示。", finish_reason="stop")
+
     monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
     agent = AgentConfig(
         name="composite-primary-agent",
         display_name="Composite Primary Agent",

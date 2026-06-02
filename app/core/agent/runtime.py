@@ -18,6 +18,7 @@ from app.core.agent.session import SessionConversationStore
 from app.core.agent.session_kernel import AgentSessionManager
 from app.core.apps import AppTemplateRegistry
 from app.core.apps.models import AppModelOption
+from app.core.apps.runtime_options import merge_runtime_options_with_template
 from app.core.agent.tool_loop import ToolCallingAgentLoop
 from app.core.config import AgentConfig
 from app.core.config.agent_config import ModelConfig
@@ -705,6 +706,7 @@ class AgentRuntime:
         # paths observe the same derived runtime options, attachments, and
         # message context.
         runtime_options = self._runtime_options_with_message_capabilities(request.runtime_options, request.messages)
+        runtime_options = self._runtime_options_with_app_template_defaults(runtime_options)
         runtime_options = self._effective_runtime_options(runtime_options)
         runtime_options = self._runtime_options_with_composite_skills(runtime_options)
         attachments = request.attachments
@@ -717,6 +719,26 @@ class AgentRuntime:
             update={"runtime_options": runtime_options, "messages": messages, "attachments": attachments},
             deep=True,
         )
+
+    def _runtime_options_with_app_template_defaults(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
+        app_template_name = (runtime_options.app_template_name or "").strip()
+        if not app_template_name:
+            return runtime_options
+        try:
+            template = self.app_template_registry.get(app_template_name)
+        except (KeyError, ValueError):
+            return runtime_options
+        merged = merge_runtime_options_with_template(runtime_options, template)
+        updates: dict[str, object] = {}
+        # Some clients send selected_skills/selected_mcp_tools as explicit empty
+        # lists while relying on app_template_name for the actual defaults.
+        if not merged.selected_skills and template.selected_skills:
+            updates["selected_skills"] = list(template.selected_skills)
+        if not merged.selected_mcp_tools and template.selected_mcp_tools:
+            updates["selected_mcp_tools"] = list(template.selected_mcp_tools)
+        if updates:
+            merged = merged.model_copy(update=updates, deep=True)
+        return merged
 
     def _runtime_options_with_message_capabilities(
         self,

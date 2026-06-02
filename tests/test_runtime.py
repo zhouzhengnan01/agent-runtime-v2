@@ -682,6 +682,42 @@ def test_message_selected_skills_do_not_block_app_template_model_injection(
     assert seen["tool_count"] >= 1
 
 
+def test_app_template_name_applies_template_skills_for_sse_style_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages
+        seen["tools"] = [tool["function"]["name"] for tool in tools]
+        return LlmChatResponse(content="ok")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfigLoader().load("default")
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成一个智慧园区运营可视化大屏")],
+        runtime_options=RuntimeOptions(
+            thread_id="screen-app-template-sse",
+            app_template_name="70aaee52-99c2-49f5-a9c7-fb746821d3df",
+            model_type="chat",
+            mode="autonomous",
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.reply == "ok"
+    assert "generate-screen-skill" in seen["tools"]
+    assert "local_file_to_base64" in seen["tools"]
+
+
 def test_runtime_expands_uploaded_plugin_id_selected_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
