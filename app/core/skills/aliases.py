@@ -63,6 +63,9 @@ def _plugin_skill_aliases(root_dir: str) -> dict[str, list[str]]:
         if not names:
             continue
         aliases[plugin.plugin_id] = names
+        plugin_name = plugin.name.strip()
+        if plugin_name and plugin_name != plugin.plugin_id:
+            aliases[plugin_name] = names
     return aliases
 
 

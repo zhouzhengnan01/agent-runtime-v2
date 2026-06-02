@@ -207,6 +207,7 @@ export async function runAcpPrompt(
     await client.initialize();
     const session = await client.newSession({
       cwd: "/",
+      sessionId: options.threadId,
       agentName: options.agentName,
       threadId: options.threadId
     });

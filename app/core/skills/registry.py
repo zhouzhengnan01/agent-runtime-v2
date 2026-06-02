@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from app.core.skills.aliases import expand_skill_aliases
 from app.core.model_tags import normalize_model_tags
 
 if TYPE_CHECKING:
@@ -148,9 +149,12 @@ class SkillRegistry:
         return skills
 
     def get(self, name: str) -> SkillDefinition:
-        if name not in self._skills:
-            raise KeyError(f"Unknown skill: {name}")
-        return self._skills[name]
+        if name in self._skills:
+            return self._skills[name]
+        aliases = [alias for alias in expand_skill_aliases([name], self.root_dir) if alias in self._skills]
+        if len(aliases) == 1:
+            return self._skills[aliases[0]]
+        raise KeyError(f"Unknown skill: {name}")
 
     def read_manifest(self, name: str) -> dict[str, Any]:
         skill = self.get(name)

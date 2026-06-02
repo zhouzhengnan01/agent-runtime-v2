@@ -229,6 +229,25 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
         assert "agent_message" not in session_update_types
 
 
+def test_acp_websocket_new_session_defaults_session_id_to_thread_id() -> None:
+    client = TestClient(create_app())
+    thread_id = f"acp-same-id-{uuid.uuid4().hex}"
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "new_session",
+                "params": _acp_params(thread_id=thread_id, cwd="/tmp"),
+            }
+        )
+        created = websocket.receive_json()["result"]
+
+    assert created["threadId"] == thread_id
+    assert created["sessionId"] == thread_id
+
+
 def test_acp_websocket_prompt_returns_content_resource_links(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

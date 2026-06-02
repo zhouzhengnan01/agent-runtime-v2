@@ -221,7 +221,7 @@ class AcpRuntimeAdapter:
             _string(session_runtime_options.get("thread_id"))
             or f"acp-{uuid4().hex[:12]}"
         )
-        session_id = _string(params.get("sessionId") or params.get("session_id")) or f"acp-session-{uuid4().hex[:12]}"
+        session_id = _string(params.get("sessionId") or params.get("session_id")) or thread_id
         cwd = _string(params.get("cwd")) or str(Path.cwd())
         stored_runtime_options = _without_thread_id(session_runtime_options)
         model_id = _string(stored_runtime_options.get("model_name")) or self._current_model_id()
@@ -725,7 +725,7 @@ class AcpRuntimeAdapter:
                 session_id=session_id,
                 thread_id=(
                     _string(runtime_options.get("thread_id"))
-                    or f"acp-{uuid4().hex[:12]}"
+                    or session_id
                 ),
                 agent_name=agent_name,
                 cwd=cwd,

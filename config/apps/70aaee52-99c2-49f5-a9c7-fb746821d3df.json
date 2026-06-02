@@ -3,7 +3,8 @@
   "agent_name" : "default",
   "name" : "70aaee52-99c2-49f5-a9c7-fb746821d3df",
   "title" : "大屏生成助手",
-  "description" : "",
+  "description" : "根据自然语言需求生成智慧大屏、数据大屏、智慧园区和能耗大屏方案，并调用大屏平台工具创建项目、保存页面或输出 page.json 指导。",
+  "prompt_examples" : [ "生成一个智慧园区运营可视化大屏，包含园区概览、设备在线率、告警趋势、能耗统计、人员/车辆通行和重点事件列表，并尽量调用大屏平台工具创建项目和保存页面。" ],
   "selected_skills" : [ "generate-screen-skill" ],
   "models" : [ {
     "name" : "Qwen3.6-35B-A3B",
@@ -17,6 +18,7 @@
     "api_key" : "abc@123",
     "tool_choice" : "auto",
     "temperature" : 0.4,
-    "max_tokens" : 2048
+    "max_tokens" : 2048,
+    "request_timeout_seconds" : 45
   } ]
 }

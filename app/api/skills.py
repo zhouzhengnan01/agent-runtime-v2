@@ -387,7 +387,7 @@ def _skill_payload(skill: SkillDefinition, *, include_manifest: bool = False) ->
     payload = skill.to_event_payload()
     name = str(payload.get("name") or "")
     try:
-        source = registry.manifest_source(name)
+        source = skill.manifest_path if skill.manifest_path is not None else registry.manifest_source(name)
         payload["editable"] = True
         payload["source_path"] = str(source)
         payload["source_exists"] = source.is_file()

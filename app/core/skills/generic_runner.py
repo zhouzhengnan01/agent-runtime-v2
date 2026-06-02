@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -334,7 +335,7 @@ def _python_executable(skill_name: str, execution: dict[str, Any], package_root:
     runtime = _execution_runtime(execution)
     configured = _string(execution.get("python"))
     if runtime != "local_subprocess":
-        return configured or "python"
+        return configured or sys.executable
     environment = LocalSubprocessEnvironmentCache().prepare(
         skill_name=skill_name,
         package_root=package_root,
