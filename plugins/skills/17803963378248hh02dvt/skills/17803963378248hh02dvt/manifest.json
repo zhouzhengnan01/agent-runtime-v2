@@ -1,0 +1,77 @@
+{
+  "name": "17803963378248hh02dvt",
+  "description": "用于机器视觉复判杂物检测识别目标的情况。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于商场、车场、后场通道等监控画面的杂物堆积、散落、占道等异常事件复判。",
+    "keywords": [
+      "杂物检测",
+      "杂物",
+      "杂物堆积",
+      "占道",
+      "通道卫生",
+      "后场通道",
+      "异常事件监控",
+      "车场异常",
+      "ParkingAbnormalEventMonitoring"
+    ],
+    "examples": [
+      "复判这张图里是否存在杂物堆积",
+      "检查后场通道是否有垃圾袋、塑料筐或托盘占道",
+      "判断车场异常事件监控里的杂物检测是否命中"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "evidence_location",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "17803963378248hh02dvt"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "metadata": {
+    "developerCenter": {
+      "domain": "general"
+    }
+  }
+}

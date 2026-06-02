@@ -1,0 +1,28 @@
+{
+  "category": "general",
+  "agent_name": "default",
+  "name": "ParkingAbnormalEventMonitoring",
+  "title": "车场异常事件监控",
+  "description": "",
+  "selected_skills": [
+    "17803963378248hh02dvt"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "chat"
+      ],
+      "priority_features": [],
+      "priority": 0,
+      "provider": "builtin-openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://192.168.32.225:9100/api/llm/openai/v1/providers/builtin-openai-compatible/",
+      "default_model": "Qwen3.6-35B-A3B",
+      "api_key": "abc@123",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048
+    }
+  ]
+}
