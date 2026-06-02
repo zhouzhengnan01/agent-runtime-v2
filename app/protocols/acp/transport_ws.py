@@ -14,9 +14,10 @@ from app.protocols.acp.schemas import AcpWebSocketSession, JsonRpcId
 
 ACP_PROMPT_KEEPALIVE_SECONDS = max(
     1.0,
-    float(os.getenv("ACP_PROMPT_KEEPALIVE_SECONDS", "30") or "30"),
+    float(os.getenv("ACP_PROMPT_KEEPALIVE_SECONDS", "10") or "10"),
 )
 ACP_PROMPT_KEEPALIVE_TOOL_CALL_ID = "acp-prompt-keepalive"
+ACP_PROMPT_PROGRESS_TEXT = "processing"
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -50,6 +51,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
     async def run_prompt(request_id: JsonRpcId, params: dict[str, Any], task_session_id: str | None) -> None:
         keepalive_task: asyncio.Task[None] | None = None
         if task_session_id is not None:
+            await send_prompt_progress(task_session_id, sequence=0)
             keepalive_task = asyncio.create_task(send_prompt_keepalive(task_session_id))
         logger.info("acp prompt started session_id=%s request_id=%s", task_session_id, request_id)
         try:
@@ -120,6 +122,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             sequence += 1
             keepalive_sessions.add(session_id)
             logger.info("acp prompt keepalive session_id=%s sequence=%s", session_id, sequence)
+            await send_prompt_progress(session_id, sequence=sequence)
             await send_update(
                 session_id,
                 {
@@ -136,6 +139,23 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     },
                 },
             )
+
+    async def send_prompt_progress(session_id: str, *, sequence: int) -> None:
+        if session_id not in sessions:
+            return
+        await send_update(
+            session_id,
+            {
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": ACP_PROMPT_PROGRESS_TEXT},
+                "_meta": {
+                    "jetlinksRuntimeEvent": {
+                        "type": "acp.prompt.progress",
+                        "data": {"sequence": sequence},
+                    }
+                },
+            },
+        )
 
     async def send_prompt_keepalive_completed(session_id: str) -> None:
         await send_update(

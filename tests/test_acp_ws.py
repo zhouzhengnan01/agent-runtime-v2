@@ -290,6 +290,14 @@ def test_acp_websocket_prompt_sends_keepalive_during_long_runtime(
         for update in updates
         if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.keepalive"
     ]
+    progress_updates = [
+        update
+        for update in updates
+        if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.progress"
+    ]
+    assert progress_updates
+    assert progress_updates[0]["sessionUpdate"] == "agent_thought_chunk"
+    assert progress_updates[0]["content"] == {"type": "text", "text": "processing"}
     assert keepalive_updates
     assert keepalive_updates[0]["sessionUpdate"] == "tool_call"
     assert keepalive_updates[0]["toolCallId"] == "acp-prompt-keepalive"
