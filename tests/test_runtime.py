@@ -1453,6 +1453,55 @@ def test_agent_runtime_recovers_selected_skill_from_workbench_message_context(
     assert "data-auto-annotation" in seen_tools
 
 
+def test_agent_runtime_infers_behavior_review_skill_from_routing_text(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="routing-selected-skill-agent",
+        display_name="Routing Selected Skill Agent",
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content=(
+                    "当前复判事件来源id为[8aa313fbc0dd729c196fe1b332a37399|ClutterDetection|a4502e03485d35bd9957ed811623cb9c]。\n"
+                    "本次复判的识别目标为[ClutterDetection]\n\n"
+                    "请基于信息及随附图片、视频文件，匹配对应的skill技能，执行智能体审核/复判任务。"
+                ),
+            )
+        ],
+        attachments=[
+            Attachment(
+                name="image.jpg",
+                path="http://example.local/image.jpg",
+                mime_type="image/jpeg",
+                metadata={"sourceId": "a4502e03485d35bd9957ed811623cb9c"},
+            )
+        ],
+        runtime_options=RuntimeOptions(thread_id="routing-behavior-review"),
+    )
+
+    effective_agent, effective_request = runtime._prepare_execution(agent, request)
+
+    assert effective_request.runtime_options.selected_skills == ["behavior-review"]
+    assert "behavior-review" in effective_agent.skills
+
+
+def test_agent_runtime_does_not_infer_skill_for_explicit_artifact_workflow(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfigLoader().load("default")
+    request = ChatRequest(
+        messages=[Message(role="user", content="给这个架构图再加上 AI 复判逻辑")],
+        runtime_options=RuntimeOptions(thread_id="explicit-artifact-routing", workflow="artifact_workflow"),
+    )
+
+    _effective_agent, effective_request = runtime._prepare_execution(agent, request)
+
+    assert effective_request.runtime_options.selected_skills == []
+
+
 def test_agent_runtime_merges_runtime_selected_skill_into_workflow_allowlist(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfig(

@@ -27,6 +27,7 @@ from app.core.events import EventRecorder, RunEventStore
 from app.core.llm import OpenAICompatibleClient
 from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.agent.input_required import required_inputs_for_request, required_inputs_for_result
+from app.core.routing.workflow_router import WorkflowRouter
 from app.core.skills import SkillDefinition, SkillRegistry
 from app.core.skills.aliases import expand_skill_aliases
 from app.core.tools import ToolInvocationService
@@ -747,7 +748,11 @@ class AgentRuntime:
     ) -> RuntimeOptions:
         if runtime_options.selected_skills:
             return runtime_options
+        if runtime_options.workflow and runtime_options.workflow not in {"agent_loop", "default"}:
+            return runtime_options
         selected_skills = self._selected_skills_from_messages(messages)
+        if not selected_skills:
+            selected_skills = self._selected_skills_from_routing(messages)
         if not selected_skills:
             return runtime_options
         # Preserve the original explicit-field set so downstream model
@@ -819,6 +824,18 @@ class AgentRuntime:
                 continue
             return cls._normalize_skills([item.strip() for item in match.group(1).split(",")]) or []
         return []
+
+    def _selected_skills_from_routing(self, messages: list[Message]) -> list[str]:
+        routing_text = "\n".join(message.content for message in messages if message.role == "user").strip()
+        if not routing_text or WorkflowRouter.is_meta_request(routing_text):
+            return []
+        skill_name, score = WorkflowRouter.manifest_skill_match(
+            routing_text,
+            SkillRegistry(self.app_template_registry.root_dir).list(executable_only=True),
+        )
+        if score <= 0 or not skill_name:
+            return []
+        return [skill_name]
 
     def _thread_file_attachments(self, thread_id: str) -> list[Attachment]:
         paths = self.artifact_store.prepare_thread(thread_id)

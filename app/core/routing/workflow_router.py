@@ -156,6 +156,10 @@ class WorkflowRouter:
         return allowed.get(skill_name)
 
     @classmethod
+    def manifest_skill_match(cls, routing_text: str, skills: list[SkillDefinition]) -> tuple[str, int]:
+        return cls._select_skill_from_manifest(routing_text, skills)
+
+    @classmethod
     def _select_skill_from_manifest(cls, routing_text: str, skills: list[SkillDefinition]) -> tuple[str, int]:
         normalized = cls._normalize(routing_text)
         best_name = ""
@@ -172,8 +176,10 @@ class WorkflowRouter:
         routing = skill.routing or {}
         score = 0
         for keyword in cls._strings(routing.get("keywords")):
-            if cls._normalize(keyword) in normalized_text:
-                score = max(score, 100)
+            normalized_keyword = cls._normalize(keyword)
+            occurrences = normalized_text.count(normalized_keyword)
+            if occurrences:
+                score = max(score, 100 + min(50, occurrences * 5) + min(10, len(normalized_keyword) // 2))
         for example in cls._strings(routing.get("examples")):
             overlap = cls._token_overlap(normalized_text, cls._normalize(example))
             if overlap:
