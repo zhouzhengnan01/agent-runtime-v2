@@ -17,7 +17,9 @@ ACP_PROMPT_KEEPALIVE_SECONDS = max(
     float(os.getenv("ACP_PROMPT_KEEPALIVE_SECONDS", "10") or "10"),
 )
 ACP_PROMPT_KEEPALIVE_TOOL_CALL_ID = "acp-prompt-keepalive"
-ACP_PROMPT_PROGRESS_TEXT = "processing"
+ACP_PROMPT_PROGRESS_TEXT = "正在处理，请等待..."
+ACP_PROMPT_WAITING_TEXT = "已收到请求，正在处理，请等待..."
+ACP_PROMPT_STILL_WAITING_TEXT = "仍在处理，请等待..."
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -52,6 +54,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
         keepalive_task: asyncio.Task[None] | None = None
         if task_session_id is not None:
             await send_prompt_progress(task_session_id, sequence=0)
+            await send_prompt_wait_message(task_session_id, sequence=0)
             keepalive_task = asyncio.create_task(send_prompt_keepalive(task_session_id))
         logger.info("acp prompt started session_id=%s request_id=%s", task_session_id, request_id)
         try:
@@ -123,6 +126,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             keepalive_sessions.add(session_id)
             logger.info("acp prompt keepalive session_id=%s sequence=%s", session_id, sequence)
             await send_prompt_progress(session_id, sequence=sequence)
+            await send_prompt_wait_message(session_id, sequence=sequence)
             await send_update(
                 session_id,
                 {
@@ -152,6 +156,24 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     "jetlinksRuntimeEvent": {
                         "type": "acp.prompt.progress",
                         "data": {"sequence": sequence},
+                    }
+                },
+            },
+        )
+
+    async def send_prompt_wait_message(session_id: str, *, sequence: int) -> None:
+        if session_id not in sessions:
+            return
+        text = ACP_PROMPT_WAITING_TEXT if sequence <= 0 else ACP_PROMPT_STILL_WAITING_TEXT
+        await send_update(
+            session_id,
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": text},
+                "_meta": {
+                    "jetlinksRuntimeEvent": {
+                        "type": "acp.prompt.wait_message",
+                        "data": {"sequence": sequence, "text": text},
                     }
                 },
             },

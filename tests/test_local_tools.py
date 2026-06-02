@@ -53,6 +53,48 @@ def test_local_tools_write_read_search_and_todo(tmp_path: Path) -> None:
     assert complete_result.structured_content["todos"][0]["done"] is True
 
 
+def test_local_read_file_reads_selected_skill_package_files(tmp_path: Path) -> None:
+    service = ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path))
+    skill_root = tmp_path / "plugins" / "skills" / "screen-skill"
+    reference = skill_root / "references" / "blueprint-standard.md"
+    reference.parent.mkdir(parents=True)
+    reference.write_text("# Blueprint\n", encoding="utf-8")
+
+    relative_result = service.call_tool(
+        "local_read_file",
+        {
+            "_thread_id": "skill-package-read",
+            "_skill_roots": [str(skill_root)],
+            "path": "references/blueprint-standard.md",
+        },
+    )
+    missing_slash_result = service.call_tool(
+        "local_read_file",
+        {
+            "_thread_id": "skill-package-read",
+            "_skill_roots": [str(skill_root)],
+            "path": str(reference).lstrip("/"),
+        },
+    )
+    outside_result = service.call_tool(
+        "local_read_file",
+        {
+            "_thread_id": "skill-package-read",
+            "_skill_roots": [str(skill_root)],
+            "path": str(tmp_path / "plugins" / "outside.md"),
+        },
+    )
+
+    assert relative_result.is_error is False
+    assert "# Blueprint" in relative_result.content[0]["text"]
+    assert relative_result.structured_content["path"] == (
+        "/mnt/user-data/skills/screen-skill/references/blueprint-standard.md"
+    )
+    assert missing_slash_result.is_error is False
+    assert "# Blueprint" in missing_slash_result.content[0]["text"]
+    assert outside_result.is_error is True
+
+
 def test_present_files_lists_thread_outputs_and_optional_workspace(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path)
     paths = store.prepare_thread("present-files")

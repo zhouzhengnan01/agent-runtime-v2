@@ -82,7 +82,7 @@ class LocalToolProvider:
         )
 
     def _read_file(self, paths: ThreadPaths, arguments: dict[str, Any]) -> ToolInvocationResult:
-        target = self._workspace_path(paths, str(arguments.get("path") or ""), arguments)
+        target = self._readable_path(paths, str(arguments.get("path") or ""), arguments)
         if not target.is_file():
             raise FileNotFoundError(f"File not found: {self._display_path(paths, target, arguments)}")
         max_chars = self._bounded_int(arguments.get("max_chars"), default=12000, minimum=100, maximum=50000)
@@ -873,6 +873,11 @@ class LocalToolProvider:
                 return path.resolve().relative_to(Path(raw_session_cwd).expanduser().resolve()).as_posix()
             except ValueError:
                 pass
+        for root in LocalToolProvider._allowed_skill_roots(arguments):
+            try:
+                return f"/mnt/user-data/skills/{root.name}/{path.resolve().relative_to(root).as_posix()}"
+            except ValueError:
+                pass
         try:
             return f"/mnt/user-data/uploads/{path.resolve().relative_to(paths.uploads.resolve()).as_posix()}"
         except ValueError:
@@ -985,6 +990,57 @@ class LocalToolProvider:
         except ValueError as exc:
             raise ValueError("Workspace path traversal blocked") from exc
         return candidate
+
+    @staticmethod
+    def _readable_path(paths: ThreadPaths, raw_path: str, arguments: dict[str, Any] | None = None) -> Path:
+        skill_path = LocalToolProvider._skill_read_path(raw_path, arguments)
+        if skill_path is not None:
+            return skill_path
+        return LocalToolProvider._workspace_path(paths, raw_path, arguments)
+
+    @staticmethod
+    def _skill_read_path(raw_path: str, arguments: dict[str, Any] | None = None) -> Path | None:
+        if not raw_path.strip():
+            return None
+        normalized_raw = raw_path.replace("\\", "/").strip()
+        raw_candidate = Path(normalized_raw).expanduser()
+        if raw_candidate.is_absolute():
+            absolute_candidates = [raw_candidate]
+        elif normalized_raw:
+            absolute_candidates = [Path("/" + normalized_raw)]
+        else:
+            absolute_candidates = []
+        for root in LocalToolProvider._allowed_skill_roots(arguments):
+            candidate_paths = list(absolute_candidates)
+            if not raw_candidate.is_absolute():
+                candidate_paths.append(root / normalized_raw.lstrip("/"))
+            for candidate in candidate_paths:
+                resolved = candidate.resolve()
+                try:
+                    resolved.relative_to(root)
+                except ValueError:
+                    continue
+                if resolved.is_file():
+                    return resolved
+        return None
+
+    @staticmethod
+    def _allowed_skill_roots(arguments: dict[str, Any] | None = None) -> list[Path]:
+        raw_roots = (arguments or {}).get("_skill_roots")
+        if not isinstance(raw_roots, list):
+            return []
+        roots: list[Path] = []
+        seen: set[Path] = set()
+        for item in raw_roots:
+            raw = str(item or "").strip()
+            if not raw:
+                continue
+            root = Path(raw).expanduser().resolve()
+            if root in seen or not root.is_dir():
+                continue
+            seen.add(root)
+            roots.append(root)
+        return roots
 
 
 def local_tool_definitions() -> list[ToolDefinition]:

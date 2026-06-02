@@ -8,6 +8,7 @@ from typing import Any
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmToolCall
+from app.core.skills import SkillRegistry
 from app.core.tools.invocation import ToolInvocationService
 from app.core.tools.schemas import ToolInvocationResult
 from app.schemas import RuntimeOptions
@@ -75,8 +76,8 @@ class ToolOrchestrator:
         )
         return ToolExecutionOutcome(result=result, arguments=arguments, duration_ms=duration_ms)
 
-    @staticmethod
     def _apply_scoped_arguments(
+        self,
         arguments: dict[str, Any],
         agent_config: AgentConfig,
         thread_id: str,
@@ -132,6 +133,9 @@ class ToolOrchestrator:
             runtime_mcp_tools = runtime_options.config_options.get("runtime_mcp_tools")
             if isinstance(runtime_mcp_tools, list):
                 arguments["_runtime_mcp_tools"] = runtime_mcp_tools
+            skill_roots = self._selected_skill_roots(runtime_options)
+            if skill_roots:
+                arguments["_skill_roots"] = skill_roots
 
     @staticmethod
     def tool_arguments(raw_arguments: str) -> dict[str, Any]:
@@ -166,3 +170,27 @@ class ToolOrchestrator:
         if "arguments" in message and "json" in message:
             return "TOOL_ARGUMENTS_INVALID"
         return "TOOL_EXECUTION_FAILED"
+
+    def _selected_skill_roots(self, runtime_options: RuntimeOptions) -> list[str]:
+        roots: list[str] = []
+        seen: set[str] = set()
+        registry = SkillRegistry(self.tool_service.root_dir)
+        for raw_name in runtime_options.selected_skills:
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            try:
+                skill = registry.get(name)
+            except KeyError:
+                continue
+            root = skill.plugin_root
+            if root is None and skill.manifest_path is not None:
+                root = skill.manifest_path.parent
+            if root is None:
+                continue
+            resolved = str(root.resolve())
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            roots.append(resolved)
+        return roots

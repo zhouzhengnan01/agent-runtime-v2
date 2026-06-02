@@ -295,9 +295,17 @@ def test_acp_websocket_prompt_sends_keepalive_during_long_runtime(
         for update in updates
         if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.progress"
     ]
+    wait_message_updates = [
+        update
+        for update in updates
+        if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.wait_message"
+    ]
     assert progress_updates
     assert progress_updates[0]["sessionUpdate"] == "agent_thought_chunk"
-    assert progress_updates[0]["content"] == {"type": "text", "text": "processing"}
+    assert progress_updates[0]["content"] == {"type": "text", "text": "正在处理，请等待..."}
+    assert wait_message_updates
+    assert wait_message_updates[0]["sessionUpdate"] == "agent_message_chunk"
+    assert wait_message_updates[0]["content"] == {"type": "text", "text": "已收到请求，正在处理，请等待..."}
     assert keepalive_updates
     assert keepalive_updates[0]["sessionUpdate"] == "tool_call"
     assert keepalive_updates[0]["toolCallId"] == "acp-prompt-keepalive"

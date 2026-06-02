@@ -1012,6 +1012,74 @@ def test_skill_markdown_context_loads_declared_reference_files_only() -> None:
     assert "# Standard Bigscreen Blueprint" in blueprint.content
 
 
+def test_agent_loop_passes_selected_skill_roots_to_local_tools(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_arguments: list[dict[str, Any]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(
+            tool_calls=[
+                LlmToolCall(
+                    id="call-read-reference",
+                    name="local_read_file",
+                    arguments='{"path":"references/blueprint-standard.md"}',
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+
+    original_call_tool = ToolInvocationService.call_tool
+
+    def capture_call_tool(
+        self: ToolInvocationService,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> Any:
+        seen_arguments.append(dict(arguments))
+        return original_call_tool(self, name, arguments)
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    monkeypatch.setattr(ToolInvocationService, "call_tool", capture_call_tool)
+    agent = AgentConfig(
+        name="screen-skill-root-agent",
+        display_name="Screen Skill Root Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["local_read_file"],
+        skills=[],
+        workflows={"default": "agent_loop"},
+        runtime={"max_tool_rounds": 1},
+    )
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path)))
+    recorder = EventRecorder(agent=agent.name, thread_id="screen-skill-root-read")
+
+    loop_result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="生成智慧园区运营可视化大屏")],
+            thread_id="screen-skill-root-read",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="screen-skill-root-read",
+                selected_skills=["generate-screen-skill"],
+            ),
+        )
+    )
+
+    assert loop_result.result.metadata["tool_call_count"] == 1
+    assert seen_arguments
+    skill_roots = seen_arguments[0]["_skill_roots"]
+    assert len(skill_roots) == 1
+    assert skill_roots[0].endswith("plugins/skills/1780049181817h6isu9jw")
+
+
 def test_agent_loop_keeps_primary_skill_guidance_alongside_composite_guidance(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
