@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -8,6 +9,12 @@ from pydantic import ValidationError
 
 from app.protocols.acp.dispatcher import AcpDispatcher
 from app.protocols.acp.schemas import AcpWebSocketSession, JsonRpcId
+
+
+ACP_PROMPT_KEEPALIVE_SECONDS = max(
+    1.0,
+    float(os.getenv("ACP_PROMPT_KEEPALIVE_SECONDS", "30") or "30"),
+)
 
 
 async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher | None = None) -> None:
@@ -36,6 +43,9 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             await _send_error(websocket, request_id, code, message)
 
     async def run_prompt(request_id: JsonRpcId, params: dict[str, Any], task_session_id: str | None) -> None:
+        keepalive_task: asyncio.Task[None] | None = None
+        if task_session_id is not None:
+            keepalive_task = asyncio.create_task(send_prompt_keepalive(task_session_id))
         try:
             result = await active_dispatcher.dispatch(sessions, "prompt", params, send_update)
         except asyncio.CancelledError:
@@ -57,8 +67,32 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             if request_id is not None:
                 await send_result(request_id, result)
         finally:
+            if keepalive_task is not None:
+                keepalive_task.cancel()
+                await asyncio.gather(keepalive_task, return_exceptions=True)
             if task_session_id is not None and prompt_tasks.get(task_session_id) is asyncio.current_task():
                 prompt_tasks.pop(task_session_id, None)
+
+    async def send_prompt_keepalive(session_id: str) -> None:
+        sequence = 0
+        while True:
+            await asyncio.sleep(ACP_PROMPT_KEEPALIVE_SECONDS)
+            if session_id not in sessions:
+                return
+            sequence += 1
+            await send_update(
+                session_id,
+                {
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": {"type": "text", "text": "still working"},
+                    "_meta": {
+                        "jetlinksRuntimeEvent": {
+                            "type": "acp.prompt.keepalive",
+                            "data": {"sequence": sequence},
+                        }
+                    },
+                },
+            )
 
     try:
         while True:

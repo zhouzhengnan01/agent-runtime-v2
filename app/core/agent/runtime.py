@@ -11,6 +11,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 from app.core.artifacts import ArtifactStore
+from app.core.artifacts.store import ThreadPaths
 from app.core.artifacts.preview import guess_mime_type
 from app.core.agent.execution_context import ExecutionContext
 from app.core.agent.execution_context import build_execution_context
@@ -164,6 +165,7 @@ class AgentRuntime:
 
         # Default path: merge thread history and let the agent loop decide when
         # to answer directly versus when to call tools.
+        conversation = self._conversation_with_vision_attachments(execution.conversation, execution.request.attachments, execution.paths)
         recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
         recorder.emit(
             "run.started",
@@ -186,7 +188,7 @@ class AgentRuntime:
                 return direct_result, recorder.events
             loop_result = await self.agent_loop.run(
                 agent_config=execution.agent_config,
-                messages=execution.conversation,
+                messages=conversation,
                 thread_id=execution.paths.thread_id,
                 recorder=recorder,
                 runtime_options=execution.request.runtime_options,
@@ -200,7 +202,7 @@ class AgentRuntime:
             raise
         self._enrich_required_inputs(loop_result.result, execution.request)
         self._replace_final_result_event(recorder.events, loop_result.result)
-        self.session_store.save(execution.paths, loop_result.messages, run_id=recorder.run_id)
+        self.session_store.save(execution.paths, self._strip_internal_message_fields(loop_result.messages), run_id=recorder.run_id)
         self._persist_events(
             execution.agent_config,
             execution.request,
@@ -299,6 +301,7 @@ class AgentRuntime:
                 self._persist_events(execution.agent_config, execution.request, thread_id, captured_events, final_result)
 
     async def _stream_agent_loop_events(self, execution: ExecutionContext) -> AsyncIterator[ChatEvent]:
+        conversation = self._conversation_with_vision_attachments(execution.conversation, execution.request.attachments, execution.paths)
         recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
         yield recorder.emit(
             "run.started",
@@ -345,12 +348,12 @@ class AgentRuntime:
                 },
             )
             chunks: list[str] = []
-            async for chunk in llm.stream_complete(execution.agent_config.prompts.system, execution.conversation):
+            async for chunk in llm.stream_complete(execution.agent_config.prompts.system, conversation):
                 chunks.append(chunk)
                 yield recorder.emit("agent.message.delta", {"text": chunk})
 
             reply = "".join(chunks)
-            final_messages = [*execution.conversation, {"role": "assistant", "content": reply}]
+            final_messages = [*conversation, {"role": "assistant", "content": reply}]
             yield recorder.emit("agent.message", {"text": reply})
             result = AgentRunResult(
                 agent=execution.agent_config.name,
@@ -371,7 +374,11 @@ class AgentRuntime:
             )
             self._enrich_required_inputs(result, execution.request)
             yield recorder.emit("run.completed", {"result": result.model_dump()})
-            self.session_store.save(execution.paths, final_messages, run_id=recorder.run_id)
+            self.session_store.save(
+                execution.paths,
+                self._strip_internal_message_fields(final_messages),
+                run_id=recorder.run_id,
+            )
             self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, recorder.events, result)
             self.session_manager.finish_turn(
                 thread_id=execution.paths.thread_id,
@@ -383,7 +390,7 @@ class AgentRuntime:
         try:
             loop_result = await self.agent_loop.run(
                 agent_config=execution.agent_config,
-                messages=execution.conversation,
+                messages=conversation,
                 thread_id=execution.paths.thread_id,
                 recorder=recorder,
                 runtime_options=execution.request.runtime_options,
@@ -400,7 +407,11 @@ class AgentRuntime:
         self._replace_final_result_event(recorder.events, loop_result.result)
         for event in recorder.events[emitted:]:
             yield event
-        self.session_store.save(execution.paths, loop_result.messages, run_id=recorder.run_id)
+        self.session_store.save(
+            execution.paths,
+            self._strip_internal_message_fields(loop_result.messages),
+            run_id=recorder.run_id,
+        )
         self._persist_events(
             execution.agent_config,
             execution.request,
@@ -634,6 +645,74 @@ class AgentRuntime:
         if conversation and conversation[-1].get("role") == "assistant" and conversation[-1].get("content") == result.reply:
             return conversation
         return [*conversation, {"role": "assistant", "content": result.reply}]
+
+    @classmethod
+    def _conversation_with_vision_attachments(
+        cls,
+        conversation: list[dict[str, Any]],
+        attachments: list[Attachment],
+        paths: ThreadPaths,
+    ) -> list[dict[str, Any]]:
+        vision_attachments = cls._vision_attachment_payloads(attachments, paths)
+        if not vision_attachments or not conversation:
+            return conversation
+        updated = [dict(message) for message in conversation]
+        for index in range(len(updated) - 1, -1, -1):
+            if updated[index].get("role") == "user":
+                existing = updated[index].get("_attachments")
+                merged = [*existing, *vision_attachments] if isinstance(existing, list) else vision_attachments
+                updated[index]["_attachments"] = merged
+                return updated
+        return conversation
+
+    @classmethod
+    def _vision_attachment_payloads(cls, attachments: list[Attachment], paths: ThreadPaths) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        for attachment in attachments:
+            mime_type = (attachment.mime_type or "").split(";", 1)[0].strip().lower()
+            if not mime_type.startswith("image/"):
+                continue
+            payload = attachment.model_dump(mode="python")
+            local_path = cls._attachment_local_path(attachment.path or "", paths)
+            if local_path is not None:
+                payload["_local_path"] = str(local_path)
+            payloads.append(payload)
+        return payloads
+
+    @staticmethod
+    def _attachment_local_path(raw_path: str, paths: ThreadPaths) -> Path | None:
+        normalized = raw_path.replace("\\", "/").strip()
+        if not normalized:
+            return None
+        virtual_roots = {
+            "/mnt/user-data/uploads": paths.uploads,
+            "/mnt/user-data/outputs": paths.outputs,
+        }
+        for prefix, root in virtual_roots.items():
+            if normalized == prefix or normalized.startswith(prefix + "/"):
+                suffix = normalized[len(prefix):].lstrip("/")
+                candidate = (root / suffix).resolve()
+                try:
+                    candidate.relative_to(root.resolve())
+                except ValueError:
+                    return None
+                return candidate
+        candidate = Path(normalized).expanduser()
+        if not candidate.is_absolute():
+            return None
+        try:
+            return candidate.resolve()
+        except OSError:
+            return None
+
+    @staticmethod
+    def _strip_internal_message_fields(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        stripped: list[dict[str, Any]] = []
+        for message in messages:
+            clean = dict(message)
+            clean.pop("_attachments", None)
+            stripped.append(clean)
+        return stripped
 
     @staticmethod
     def _run_id(events: list[ChatEvent]) -> str:

@@ -510,6 +510,62 @@ def test_agent_loop_persists_and_restores_thread_conversation(
     assert "第二轮回复" in transcript_path.read_text(encoding="utf-8")
 
 
+def test_agent_loop_passes_uploaded_image_as_vision_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del system_prompt, tools
+        payload = self._chat_payload("system", messages)
+        seen_messages.append(payload["messages"])
+        return LlmChatResponse(content="看到了图片", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    paths = runtime.artifact_store.prepare_thread("vision-upload")
+    (paths.uploads / "scene.jpg").write_bytes(b"fake-image")
+    agent = AgentConfig(
+        name="vision-agent",
+        display_name="Vision Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="请复判图片")],
+                attachments=[
+                    Attachment(
+                        name="scene.jpg",
+                        path="/mnt/user-data/uploads/scene.jpg",
+                        mime_type="image/jpeg",
+                    )
+                ],
+                runtime_options=RuntimeOptions(thread_id="vision-upload"),
+            ),
+        )
+    )
+
+    assert result.reply == "看到了图片"
+    user_content = seen_messages[0][1]["content"]
+    assert isinstance(user_content, list)
+    assert user_content[0]["type"] == "text"
+    assert user_content[1]["type"] == "image_url"
+    assert user_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    history_path = tmp_path / "threads" / "vision-upload" / "memory" / "conversation.jsonl"
+    assert "_attachments" not in history_path.read_text(encoding="utf-8")
+
+
 def test_agent_loop_does_not_duplicate_client_supplied_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

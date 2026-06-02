@@ -2399,6 +2399,80 @@ def test_agent_loop_modes_control_tool_exposure(tmp_path: Path, monkeypatch: Mon
     }
 
 
+def test_agent_loop_passes_downloaded_image_to_next_llm_round(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    original_client = httpx.Client
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "image/png", "content-length": "7"},
+            content=b"pngdata",
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    seen_payload_messages: list[list[dict[str, Any]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del system_prompt, tools
+        seen_payload_messages.append(self._chat_payload("system", messages)["messages"])
+        if len(seen_payload_messages) == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_download",
+                        name="local_download_url",
+                        arguments='{"url":"https://example.test/scene.png"}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="已看图。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="download-vision-agent",
+        display_name="Download Vision Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="vision-model"),
+        tools=["local_download_url"],
+        workflows={"default": "agent_loop"},
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="下载并复判图片")],
+                runtime_options=RuntimeOptions(thread_id="download-vision"),
+            ),
+        )
+    )
+
+    assert result.reply == "已看图。"
+    second_round = seen_payload_messages[1]
+    vision_messages = [
+        message
+        for message in second_round
+        if isinstance(message.get("content"), list)
+        and any(block.get("type") == "image_url" for block in message["content"] if isinstance(block, dict))
+    ]
+    assert vision_messages
+    image_block = next(block for block in vision_messages[-1]["content"] if block.get("type") == "image_url")
+    assert image_block["image_url"]["url"].startswith("data:image/png;base64,")
+
+
 def test_agent_loop_verify_phase_allows_shell_in_autonomous_mode(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

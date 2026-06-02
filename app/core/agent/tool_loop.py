@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -501,6 +502,39 @@ class ToolCallingAgentLoop:
                     ),
                 }
             )
+            vision_message = self._tool_result_vision_message(tool_result)
+            if vision_message is not None:
+                state.conversation.append(vision_message)
+
+    @classmethod
+    def _tool_result_vision_message(cls, tool_result: ToolInvocationResult) -> dict[str, Any] | None:
+        if tool_result.is_error:
+            return None
+        structured = tool_result.structured_content
+        if not isinstance(structured, dict):
+            return None
+        mime_type = str(structured.get("mime_type") or structured.get("mimeType") or "").split(";", 1)[0].lower()
+        kind = str(structured.get("kind") or "").lower()
+        path = structured.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return None
+        if kind != "image" and not mime_type.startswith("image/"):
+            return None
+        if not mime_type:
+            guessed, _encoding = mimetypes.guess_type(path)
+            mime_type = guessed or "image/*"
+        return {
+            "role": "user",
+            "content": "The downloaded image is available for visual inspection.",
+            "_attachments": [
+                {
+                    "name": str(structured.get("filename") or path.rsplit("/", 1)[-1] or "image"),
+                    "path": path,
+                    "mime_type": mime_type,
+                    "_local_path": structured.get("_local_path"),
+                }
+            ],
+        }
 
     async def _wait_before_conditional_tool_retry(
         self,

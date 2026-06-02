@@ -20,6 +20,7 @@ from app.schemas import AgentRunResult, ArtifactRef, ChatEvent, ChatRequest
 from app.schemas import Message
 from app.main import create_app
 from app.protocols.acp.adapter import _event_to_update
+from app.protocols.acp import transport_ws as acp_transport_ws
 
 
 class CapturingAcpRuntime(AgentRuntime):
@@ -227,6 +228,62 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
         assert "agent_thought_chunk" in session_update_types
         assert "runtime_event" not in session_update_types
         assert "agent_message" not in session_update_types
+
+
+def test_acp_websocket_prompt_sends_keepalive_during_long_runtime(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"), block=True)
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    monkeypatch.setattr(acp_transport_ws, "ACP_PROMPT_KEEPALIVE_SECONDS", 0.01)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(thread_id="acp-keepalive", cwd=str(tmp_path)),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "long task"}]},
+            }
+        )
+
+        updates: list[dict[str, Any]] = []
+        for _ in range(10):
+            packet = websocket.receive_json()
+            if packet.get("method") != "session/update":
+                continue
+            updates.append(packet["params"]["update"])
+            runtime_event = packet["params"]["update"].get("_meta", {}).get("jetlinksRuntimeEvent", {})
+            if runtime_event.get("type") == "acp.prompt.keepalive":
+                break
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/cancel",
+                "params": {"sessionId": session_id},
+            }
+        )
+
+    keepalive_updates = [
+        update
+        for update in updates
+        if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.keepalive"
+    ]
+    assert keepalive_updates
+    assert keepalive_updates[0]["sessionUpdate"] == "agent_thought_chunk"
 
 
 def test_acp_websocket_new_session_defaults_session_id_to_thread_id() -> None:

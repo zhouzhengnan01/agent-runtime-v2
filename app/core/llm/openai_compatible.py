@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -234,7 +238,15 @@ class OpenAICompatibleClient:
     def _message_payload(message: ChatMessageInput) -> dict[str, Any]:
         if isinstance(message, Message):
             return message.model_dump()
-        return dict(message)
+        payload = dict(message)
+        role = payload.get("role")
+        content = payload.get("content")
+        if role == "user":
+            content_blocks = _multimodal_user_content(content, payload.get("_attachments"))
+            if content_blocks is not None:
+                payload["content"] = content_blocks
+        payload.pop("_attachments", None)
+        return payload
 
     @classmethod
     def _parse_chat_response(cls, data: dict[str, Any]) -> LlmChatResponse:
@@ -335,3 +347,92 @@ def _first_defined(*values: str | None) -> str:
         if value is not None:
             return value
     return ""
+
+
+def _multimodal_user_content(content: object, attachments: object) -> list[dict[str, Any]] | None:
+    image_blocks = _attachment_image_blocks(attachments)
+    if not image_blocks:
+        return None
+    blocks: list[dict[str, Any]] = []
+    if isinstance(content, list):
+        blocks.extend(dict(item) for item in content if isinstance(item, dict))
+    else:
+        text = str(content or "")
+        if text:
+            blocks.append({"type": "text", "text": text})
+    blocks.extend(image_blocks)
+    return blocks
+
+
+def _attachment_image_blocks(attachments: object) -> list[dict[str, Any]]:
+    if not isinstance(attachments, list):
+        return []
+    blocks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_attachment in attachments:
+        if not isinstance(raw_attachment, dict):
+            continue
+        mime_type = _clean_mime_type(raw_attachment.get("mime_type") or raw_attachment.get("mimeType"))
+        if not mime_type.startswith("image/"):
+            continue
+        image_url = _attachment_image_url(raw_attachment, mime_type)
+        if not image_url or image_url in seen:
+            continue
+        seen.add(image_url)
+        blocks.append({"type": "image_url", "image_url": {"url": image_url}})
+    return blocks
+
+
+def _attachment_image_url(attachment: dict[str, Any], mime_type: str) -> str:
+    data_base64 = attachment.get("data_base64") or attachment.get("dataBase64")
+    if isinstance(data_base64, str) and data_base64.strip():
+        return _data_uri(mime_type, data_base64.strip())
+    path = attachment.get("_local_path") or attachment.get("path")
+    if not isinstance(path, str) or not path.strip():
+        return ""
+    clean_path = path.strip()
+    if _is_http_url(clean_path):
+        return clean_path
+    local_path = _local_attachment_path(clean_path)
+    if local_path is None or not local_path.is_file():
+        return ""
+    max_bytes = 10 * 1024 * 1024
+    file_size = local_path.stat().st_size
+    if file_size > max_bytes:
+        return ""
+    raw = local_path.read_bytes()
+    encoded = base64.b64encode(raw).decode("ascii")
+    local_mime = mime_type or _guess_mime_type(local_path)
+    return _data_uri(local_mime, encoded)
+
+
+def _data_uri(mime_type: str, encoded: str) -> str:
+    if encoded.startswith("data:"):
+        return encoded
+    return f"data:{mime_type or 'application/octet-stream'};base64,{encoded}"
+
+
+def _is_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _local_attachment_path(path: str) -> Path | None:
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        return None
+    try:
+        return candidate.resolve()
+    except OSError:
+        return None
+
+
+def _clean_mime_type(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.split(";", 1)[0].strip().lower()
+
+
+def _guess_mime_type(path: Path) -> str:
+    guessed, _encoding = mimetypes.guess_type(path.name)
+    return guessed or "application/octet-stream"

@@ -248,6 +248,73 @@ def test_runtime_selected_skills_enable_tool_choice_auto(monkeypatch: MonkeyPatc
     assert payload["tools"][0]["function"]["name"] == "cpu-training-runner"
 
 
+def test_chat_payload_converts_image_attachments_to_vision_blocks(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    agent = AgentConfig(
+        name="vision-agent",
+        display_name="Vision Agent",
+        model=ModelConfig(model="vision-model", base_url="http://llm.local/v1", api_key="key"),
+    )
+    client = OpenAICompatibleClient(agent)
+
+    payload = client._chat_payload(
+        "system",
+        [
+            {
+                "role": "user",
+                "content": "看图",
+                "_attachments": [
+                    {"name": "scene.jpg", "mime_type": "image/jpeg", "data_base64": "ZmFrZQ=="},
+                    {"name": "video.mp4", "mime_type": "video/mp4", "data_base64": "dmRhdGE="},
+                ],
+            }
+        ],
+    )
+
+    content = payload["messages"][1]["content"]
+    assert content == [
+        {"type": "text", "text": "看图"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,ZmFrZQ=="}},
+    ]
+    assert "_attachments" not in payload["messages"][1]
+
+
+def test_chat_payload_keeps_http_image_attachment_as_image_url(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    agent = AgentConfig(
+        name="vision-url-agent",
+        display_name="Vision URL Agent",
+        model=ModelConfig(model="vision-model", base_url="http://llm.local/v1", api_key="key"),
+    )
+    client = OpenAICompatibleClient(agent)
+
+    payload = client._chat_payload(
+        "system",
+        [
+            {
+                "role": "user",
+                "content": "看 URL 图片",
+                "_attachments": [
+                    {
+                        "name": "image.jpg",
+                        "path": "http://example.test/image.jpg",
+                        "mime_type": "image/jpeg",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert payload["messages"][1]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "http://example.test/image.jpg"},
+    }
+
+
 def test_model_manager_normalizes_model_tags_for_public_payload() -> None:
     manager = ModelManager(
         [

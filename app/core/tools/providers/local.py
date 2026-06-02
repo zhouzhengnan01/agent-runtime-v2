@@ -185,6 +185,7 @@ class LocalToolProvider:
             structured_content={
                 "url": url,
                 "path": display_path,
+                "_local_path": str(target),
                 "filename": target.name,
                 "scope": "uploads",
                 "bytes": bytes_written,
