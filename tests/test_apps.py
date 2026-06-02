@@ -471,7 +471,10 @@ def test_algorithm_training_related_templates_use_dedicated_category() -> None:
     workflows = {name: registry.get(name).workflow for name in training_templates}
 
     assert categories == {name: "algorithm-training" for name in training_templates}
-    assert workflows == {name: None for name in training_templates}
+    assert workflows["algorithm-training-orchestration"] == "agent_loop"
+    assert {name: workflow for name, workflow in workflows.items() if name != "algorithm-training-orchestration"} == {
+        name: None for name in training_templates if name != "algorithm-training-orchestration"
+    }
 
 
 def test_tianjin_park_templates_use_dedicated_category_and_real_skills() -> None:
