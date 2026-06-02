@@ -324,7 +324,7 @@ class YoloTrainingWorkflow:
         }
 
         recorder.emit("skill.started", {"skill_name": "data-auto-annotation", "attempt": 0})
-        annotation_result = self.skill_runner.run("data-auto-annotation", data_prep_spec, paths)
+        annotation_result = self.skill_runner.run("data-auto-annotation", data_prep_spec, paths, on_event=recorder.emit)
         recorder.emit("skill.completed", {"skill_name": "data-auto-annotation", "output_count": len(annotation_result.outputs)})
 
         data_prep_data = annotation_result.data if isinstance(annotation_result.data, dict) else {}

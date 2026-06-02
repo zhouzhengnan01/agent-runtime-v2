@@ -52,11 +52,12 @@ def call_runner(
     spec: dict[str, Any],
     paths: ThreadPaths,
     artifact_store: ArtifactStore,
+    on_event: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> object:
     if hasattr(module, "run_skill"):
-        return invoke_callable(getattr(module, "run_skill"), skill_name, spec, paths, artifact_store)
+        return invoke_callable(getattr(module, "run_skill"), skill_name, spec, paths, artifact_store, on_event=on_event)
     if hasattr(module, "run"):
-        return invoke_callable(getattr(module, "run"), skill_name, spec, paths, artifact_store)
+        return invoke_callable(getattr(module, "run"), skill_name, spec, paths, artifact_store, on_event=on_event)
     runner_class = getattr(module, "SkillRunner", None)
     if runner_class is not None:
         runner = runner_class(artifact_store)
@@ -76,6 +77,7 @@ def invoke_callable(
     spec: dict[str, Any],
     paths: ThreadPaths,
     artifact_store: ArtifactStore,
+    on_event: Callable[[str, dict[str, Any]], Any] | None = None,
 ) -> object:
     if not callable(func):
         raise ValueError("Skill plugin runner hook is not callable.")
@@ -85,6 +87,7 @@ def invoke_callable(
         "spec": spec,
         "paths": paths,
         "artifact_store": artifact_store,
+        "on_event": on_event,
     }
     accepted = {name: value for name, value in kwargs.items() if name in signature.parameters}
     if accepted:

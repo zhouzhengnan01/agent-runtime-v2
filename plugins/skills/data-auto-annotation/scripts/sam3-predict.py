@@ -14,16 +14,21 @@ import json
 import mimetypes
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
-DEFAULT_URL = "http://192.168.33.140:8800/sam3/predict"
+import requests
+from PIL import Image
+
+DEFAULT_URL = "http://218.67.242.10:58800/sam3/predict"
 URL_ENV_NAMES = ("SAM3_PREDICT_URL", "SAM3_URL")
 DEFAULT_TOKEN = "abc@123"
 DEFAULT_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DEFAULT_CONNECT_TIMEOUT = 5
 DEFAULT_READ_TIMEOUT = 12
 DEFAULT_MIN_IMAGE_SIZE = 16
+RETRYABLE_HTTP_STATUS = {502, 503, 504}
 
 
 def build_args() -> argparse.Namespace:
@@ -52,11 +57,34 @@ def build_args() -> argparse.Namespace:
     parser.add_argument("--min-image-size", type=int, default=DEFAULT_MIN_IMAGE_SIZE, help="Minimum accepted image width/height")
     parser.add_argument("--connect-timeout", type=int, default=DEFAULT_CONNECT_TIMEOUT, help="Connection timeout in seconds")
     parser.add_argument("--timeout", type=int, default=DEFAULT_READ_TIMEOUT, help="Read timeout in seconds")
+    parser.add_argument("--retries", type=int, default=3, help="Retries for transient SAM3 HTTP 502/503/504, connection, and timeout errors")
+    parser.add_argument("--retry-sleep", type=float, default=2.0, help="Base sleep seconds between SAM3 retry attempts")
     parser.add_argument("--workers", type=int, default=4, help="Number of concurrent request workers (reserved)")
     parser.add_argument(
         "--output",
         default=None,
         help="Path to save COCO JSON output. If omitted, prints COCO JSON to stdout.",
+    )
+    parser.add_argument(
+        "--per-image-output-dir",
+        default=None,
+        help="Optional directory for streaming one COCO JSON sidecar per annotated image.",
+    )
+    parser.add_argument(
+        "--per-image-base-dir",
+        default=None,
+        help="Optional image root used to mirror relative paths under --per-image-output-dir.",
+    )
+    parser.add_argument(
+        "--source",
+        default="real",
+        choices=["real", "synthetic", "generated"],
+        help="Dataset source tag written to each COCO image.",
+    )
+    parser.add_argument(
+        "--is-synthetic",
+        action="store_true",
+        help="Mark exported COCO images as synthetic. This is used by training split policy.",
     )
     return parser.parse_args()
 
@@ -72,36 +100,6 @@ def effective_url(value: str) -> str:
     return normalized
 
 
-def _requests_module() -> Any:
-    import requests
-
-    return requests
-
-
-def _image_module() -> Any:
-    from PIL import Image
-
-    return Image
-
-
-def parse_input_json_arg(value: str | None) -> dict[str, Any] | None:
-    if not value:
-        return None
-    normalized = value.strip()
-    text = normalized
-    if not normalized.startswith("{"):
-        try:
-            candidate = Path(normalized)
-            if candidate.is_file():
-                text = candidate.read_text(encoding="utf-8")
-        except OSError:
-            text = normalized
-    parsed = json.loads(text)
-    if not isinstance(parsed, dict):
-        raise ValueError("--input-json must be a JSON object or a path to a JSON object file")
-    return parsed
-
-
 def resolve_prompts(args: argparse.Namespace) -> list[str]:
     if args.text_prompts_json:
         prompts = json.loads(args.text_prompts_json)
@@ -111,11 +109,15 @@ def resolve_prompts(args: argparse.Namespace) -> list[str]:
     if args.text_prompts:
         return args.text_prompts
     if args.input_json:
-        parsed = parse_input_json_arg(args.input_json)
-        labels = parsed.get("labels") if parsed else None
-        if isinstance(labels, list) and all(isinstance(item, str) for item in labels):
-            return labels
-    return ["person", "monitor"]
+        parsed = _unwrap_payload(_parse_input_json_arg(args.input_json))
+        if isinstance(parsed, dict):
+            labels = parsed.get("labels")
+            if isinstance(labels, list) and all(isinstance(item, str) for item in labels):
+                return labels
+    raise ValueError(
+        "data-auto-annotation requires labels. Provide labels in input JSON, "
+        'for example: {"image_path":"./images","labels":["person","cigarette"]}'
+    )
 
 
 def _collect_image_paths(value: Any) -> list[Path]:
@@ -123,7 +125,7 @@ def _collect_image_paths(value: Any) -> list[Path]:
     if isinstance(value, str):
         p = Path(value)
         if p.is_dir():
-            for child in sorted(p.iterdir()):
+            for child in sorted(p.rglob("*")):
                 if child.is_file() and child.suffix.lower() in DEFAULT_IMAGE_EXTENSIONS:
                     paths.append(child)
         elif p.is_file() and p.suffix.lower() in DEFAULT_IMAGE_EXTENSIONS:
@@ -142,8 +144,8 @@ def resolve_image_paths(args: argparse.Namespace) -> list[Path]:
         return paths
 
     if args.input_json:
-        parsed = parse_input_json_arg(args.input_json)
-        if parsed is None:
+        parsed = _unwrap_payload(_parse_input_json_arg(args.input_json))
+        if not isinstance(parsed, dict):
             raise ValueError("--input-json must be a JSON object")
 
         for key in ("image_path", "image_paths", "path", "paths", "input_dir", "input_path"):
@@ -151,9 +153,72 @@ def resolve_image_paths(args: argparse.Namespace) -> list[Path]:
                 paths = _collect_image_paths(parsed[key])
                 if paths:
                     return paths
+        # recursive fallback for nested request envelopes
+        nested = _find_image_field_recursive(parsed)
+        if nested is not None:
+            paths = _collect_image_paths(nested)
+            if paths:
+                return paths
         raise ValueError("--input-json must contain image_path, image_paths, path, paths, input_dir, or input_path")
 
     raise ValueError("You must provide either --input-dir or --input-json")
+
+
+def _parse_input_json_arg(raw_value: str) -> Any:
+    value = (raw_value or "").strip()
+    if value in {"$spec_json", "${spec_json}"}:
+        value = ""
+    try:
+        return json.loads(value)
+    except Exception:
+        pass
+    candidate = Path(value)
+    if candidate.exists() and candidate.is_file():
+        with candidate.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    fallback = Path.cwd() / "data-auto-annotation-input.json"
+    if fallback.exists() and fallback.is_file():
+        with fallback.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    raise ValueError("--input-json must be a JSON string or a JSON file path")
+
+
+def _unwrap_payload(parsed: Any) -> Any:
+    if not isinstance(parsed, dict):
+        return parsed
+    workflow_ctx = parsed.get("workflow_context")
+    if isinstance(workflow_ctx, dict) and ("image_path" in workflow_ctx or "input_dir" in workflow_ctx):
+        merged = dict(parsed)
+        merged.update(workflow_ctx)
+        return merged
+    for key in ("spec", "input", "payload", "data"):
+        value = parsed.get(key)
+        if isinstance(value, dict):
+            workflow_ctx = value.get("workflow_context")
+            if isinstance(workflow_ctx, dict) and ("image_path" in workflow_ctx or "input_dir" in workflow_ctx):
+                merged = dict(value)
+                merged.update(workflow_ctx)
+                return merged
+            return value
+    return parsed
+
+
+def _find_image_field_recursive(node: Any) -> Any:
+    keys = ("image_path", "image_paths", "path", "paths", "input_dir", "input_path")
+    if isinstance(node, dict):
+        for k in keys:
+            if k in node:
+                return node[k]
+        for v in node.values():
+            found = _find_image_field_recursive(v)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for item in node:
+            found = _find_image_field_recursive(item)
+            if found is not None:
+                return found
+    return None
 
 
 def _extract_boxes(payload: Any) -> list[dict[str, Any]]:
@@ -208,7 +273,6 @@ def seed_categories(labels: list[str], category_map: dict[str, int], categories:
 
 
 def image_size(image_path: Path) -> tuple[int, int]:
-    Image = _image_module()
     with Image.open(image_path) as img:
         return img.size
 
@@ -219,19 +283,31 @@ def response_to_coco(
     image_id: int,
     category_map: dict[str, int],
     categories: list[dict[str, Any]],
+    source: str = "real",
+    is_synthetic: bool = False,
     annotation_start_id: int = 1,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    Image = _image_module()
     with Image.open(image_path) as img:
         width, height = img.size
 
-    image = {"id": image_id, "file_name": image_path.name, "width": width, "height": height}
+    image = {
+        "id": image_id,
+        "file_name": image_path.name,
+        "width": width,
+        "height": height,
+        "source": source,
+        "is_synthetic": is_synthetic,
+    }
     annotations: list[dict[str, Any]] = []
 
     for idx, item in enumerate(_extract_boxes(payload), start=annotation_start_id):
         normalized = _normalize_box(item)
         if normalized is None:
             continue
+        canonical_label = next((name for name in category_map if name.lower() == str(normalized["label"]).lower()), "")
+        if not canonical_label:
+            continue
+        normalized["label"] = canonical_label
         category_id = get_category_id(category_map, categories, normalized["label"])
         x, y, w, h = normalized["bbox"]
         annotations.append(
@@ -255,20 +331,89 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _single_image_coco(image_info: dict[str, Any], annotations: list[dict[str, Any]], categories: list[dict[str, Any]]) -> dict[str, Any]:
+    local_image = dict(image_info)
+    original_image_id = int(local_image.get("id", 1) or 1)
+    local_image["id"] = 1
+    local_annotations: list[dict[str, Any]] = []
+    for annotation_id, annotation in enumerate(annotations, start=1):
+        local_annotation = dict(annotation)
+        local_annotation["id"] = annotation_id
+        local_annotation["image_id"] = 1
+        local_annotations.append(local_annotation)
+    return {
+        "images": [local_image],
+        "annotations": local_annotations,
+        "categories": [dict(category) for category in categories],
+        "licenses": [],
+        "info": {
+            "description": "SAM3 per-image auto-annotation export",
+            "original_image_id": original_image_id,
+        },
+    }
+
+
+def save_per_image_coco(
+    output_dir: str | None,
+    base_dir: str | None,
+    image_path: Path,
+    image_info: dict[str, Any],
+    annotations: list[dict[str, Any]],
+    categories: list[dict[str, Any]],
+) -> Path | None:
+    if not output_dir:
+        return None
+    root = Path(output_dir).resolve()
+    try:
+        relative_image = image_path.resolve().relative_to(Path(base_dir).resolve()) if base_dir else Path(image_path.name)
+    except ValueError:
+        relative_image = Path(image_path.name)
+    sidecar = root / relative_image.parent / f"{image_path.stem}_coco.json"
+    save_json(sidecar, _single_image_coco(image_info, annotations, categories))
+    print(f"per_image_coco_path: {sidecar}", flush=True)
+    return sidecar
+
+
 def post_image(args: argparse.Namespace, headers: dict[str, str], data: dict[str, str], image_path: Path) -> Any:
-    requests = _requests_module()
     content_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
-    with image_path.open("rb") as f:
-        files = {"file": (image_path.name, f, content_type)}
-        response = requests.post(
-            effective_url(args.url),
-            headers=headers,
-            data=data,
-            files=files,
-            timeout=(args.connect_timeout, args.timeout),
-        )
-    response.raise_for_status()
-    return response.json()
+    attempts = max(1, int(args.retries) + 1)
+    last_error: requests.exceptions.RequestException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with image_path.open("rb") as f:
+                files = {"file": (image_path.name, f, content_type)}
+                response = requests.post(
+                    effective_url(args.url),
+                    headers=headers,
+                    data=data,
+                    files=files,
+                    timeout=(args.connect_timeout, args.timeout),
+                )
+            if response.status_code in RETRYABLE_HTTP_STATUS and attempt < attempts:
+                print(
+                    f"[sam3-predict] transient HTTP {response.status_code} for {image_path.name}; retry {attempt}/{attempts - 1}",
+                    file=sys.stderr,
+                )
+                time.sleep(float(args.retry_sleep) * attempt)
+                continue
+            response.raise_for_status()
+            return response.json()
+        except (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as exc:
+            last_error = exc
+            if attempt >= attempts:
+                raise
+            print(f"[sam3-predict] transient request error for {image_path.name}: {exc}; retry {attempt}/{attempts - 1}", file=sys.stderr)
+            time.sleep(float(args.retry_sleep) * attempt)
+        except requests.exceptions.HTTPError as exc:
+            last_error = exc
+            status_code = exc.response.status_code if exc.response is not None else None
+            if status_code not in RETRYABLE_HTTP_STATUS or attempt >= attempts:
+                raise
+            print(f"[sam3-predict] transient HTTP {status_code} for {image_path.name}; retry {attempt}/{attempts - 1}", file=sys.stderr)
+            time.sleep(float(args.retry_sleep) * attempt)
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"SAM3 request failed without response for {image_path}")
 
 
 def _error_payload(error_type: str, message: str, args: argparse.Namespace) -> dict[str, Any]:
@@ -281,7 +426,7 @@ def _error_payload(error_type: str, message: str, args: argparse.Namespace) -> d
     }
 
 
-def _http_error_payload(exc: Any, args: argparse.Namespace) -> dict[str, Any]:
+def _http_error_payload(exc: requests.exceptions.HTTPError, args: argparse.Namespace) -> dict[str, Any]:
     response = exc.response
     status_code = response.status_code if response is not None else None
     response_text = response.text[:2000] if response is not None else ""
@@ -298,6 +443,13 @@ def _http_error_payload(exc: Any, args: argparse.Namespace) -> dict[str, Any]:
     return payload
 
 
+def _print_request_error(error_type: str, exc: Exception, args: argparse.Namespace, image_path: Path | None = None) -> None:
+    payload = _http_error_payload(exc, args) if isinstance(exc, requests.exceptions.HTTPError) else _error_payload(error_type, str(exc), args)
+    if image_path is not None:
+        payload["image_path"] = str(image_path)
+    _print_error(payload)
+
+
 def _print_error(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     print(payload["message"], file=sys.stderr)
@@ -306,7 +458,6 @@ def _print_error(payload: dict[str, Any]) -> None:
 def main() -> int:
     args = build_args()
     image_paths = resolve_image_paths(args)
-    requests = _requests_module()
 
     for image_path in image_paths:
         if not image_path.is_file():
@@ -342,25 +493,35 @@ def main() -> int:
                 image_id=image_id,
                 category_map=category_map,
                 categories=categories,
+                source=args.source,
+                is_synthetic=bool(args.is_synthetic or args.source in {"synthetic", "generated"}),
                 annotation_start_id=next_annotation_id,
             )
             images.append(image_info)
             annotations.extend(image_annotations)
             next_annotation_id += len(image_annotations)
+            save_per_image_coco(
+                args.per_image_output_dir,
+                args.per_image_base_dir or args.input_dir,
+                image_path,
+                image_info,
+                image_annotations,
+                categories,
+            )
     except requests.exceptions.ConnectTimeout as exc:
-        _print_error(_error_payload("sam3_connect_timeout", str(exc), args))
+        _print_request_error("sam3_connect_timeout", exc, args, locals().get("image_path"))
         return 2
     except requests.exceptions.ReadTimeout as exc:
-        _print_error(_error_payload("sam3_read_timeout", str(exc), args))
+        _print_request_error("sam3_read_timeout", exc, args, locals().get("image_path"))
         return 2
     except requests.exceptions.ConnectionError as exc:
-        _print_error(_error_payload("sam3_connection_error", str(exc), args))
+        _print_request_error("sam3_connection_error", exc, args, locals().get("image_path"))
         return 2
     except requests.exceptions.HTTPError as exc:
-        _print_error(_http_error_payload(exc, args))
+        _print_request_error("sam3_http_error", exc, args, locals().get("image_path"))
         return 2
     except requests.exceptions.RequestException as exc:
-        _print_error(_error_payload("sam3_request_error", str(exc), args))
+        _print_request_error("sam3_request_error", exc, args, locals().get("image_path"))
         return 2
 
     coco = {
