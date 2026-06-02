@@ -773,6 +773,65 @@ def test_agent_loop_treats_selected_skill_as_tool_when_no_workflow_mapping(
     assert tools_event.data["tools"] == ["drawio-generation"]
 
 
+def test_agent_loop_marks_completed_prompt_only_primary_skill(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[list[dict[str, Any]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, tools
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_review",
+                        name="17803963378248hh02dvt",
+                        arguments='{"skill_name":"17803963378248hh02dvt","objective":"复判这张图里是否存在杂物堆积"}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="复判结果：未命中。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="review-skill-agent",
+        display_name="Review Skill Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=["17803963378248hh02dvt"],
+        workflows={"default": "agent_loop"},
+    )
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path)))
+    recorder = EventRecorder(agent=agent.name, thread_id="prompt-only-review")
+
+    result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="复判这张图里是否存在杂物堆积")],
+            thread_id="prompt-only-review",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="prompt-only-review",
+                selected_skills=["17803963378248hh02dvt"],
+            ),
+        )
+    ).result
+
+    assert result.status == "completed"
+    assert result.metadata["verification_verdict"] == "passed"
+    assert result.metadata["primary_skill_name"] == "17803963378248hh02dvt"
+    assert result.metadata["primary_skill_stage_count"] == 0
+    assert result.metadata["primary_skill_completion_status"] == "completed"
+
+
 def test_agent_loop_explore_phase_prefers_read_only_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
