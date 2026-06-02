@@ -1,0 +1,38 @@
+{
+  "category": "general",
+  "agent_name": "default",
+  "name": "737d9452-99c6-470e-a77a-20f2f7d73eff",
+  "title": "测试测试",
+  "description": "",
+  "prompt_examples": [
+    "生成一个测试大屏，包含核心指标、趋势图、明细表格和事件列表，并尽量调用大屏平台工具创建项目和保存页面。"
+  ],
+  "selected_skills": [
+    "generate-screen-skill"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat",
+        "tool_call"
+      ],
+      "priority_features": [
+        "tool_call",
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://218.67.242.10:59202/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "api_key": "abc@123",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048
+    }
+  ]
+}
