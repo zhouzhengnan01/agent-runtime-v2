@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from typing import Any
 
@@ -15,6 +16,9 @@ ACP_PROMPT_KEEPALIVE_SECONDS = max(
     1.0,
     float(os.getenv("ACP_PROMPT_KEEPALIVE_SECONDS", "30") or "30"),
 )
+ACP_PROMPT_KEEPALIVE_TOOL_CALL_ID = "acp-prompt-keepalive"
+
+logger = logging.getLogger("uvicorn.error")
 
 
 async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher | None = None) -> None:
@@ -27,6 +31,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
     await websocket.accept(subprotocol="acp.v1")
     sessions: dict[str, AcpWebSocketSession] = {}
     prompt_tasks: dict[str, asyncio.Task[None]] = {}
+    keepalive_sessions: set[str] = set()
     send_lock = asyncio.Lock()
     active_dispatcher = dispatcher or AcpDispatcher()
 
@@ -46,30 +51,63 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
         keepalive_task: asyncio.Task[None] | None = None
         if task_session_id is not None:
             keepalive_task = asyncio.create_task(send_prompt_keepalive(task_session_id))
+        logger.info("acp prompt started session_id=%s request_id=%s", task_session_id, request_id)
         try:
             result = await active_dispatcher.dispatch(sessions, "prompt", params, send_update)
         except asyncio.CancelledError:
+            logger.info("acp prompt cancelled session_id=%s request_id=%s", task_session_id, request_id)
             if request_id is not None:
                 await send_result(request_id, {"stopReason": "cancelled"})
         except FileNotFoundError as exc:
+            logger.warning(
+                "acp prompt file not found session_id=%s request_id=%s error=%s",
+                task_session_id,
+                request_id,
+                exc,
+            )
             if request_id is not None:
                 await send_error(request_id, -32004, str(exc))
         except ValidationError as exc:
+            logger.warning(
+                "acp prompt validation failed session_id=%s request_id=%s error=%s",
+                task_session_id,
+                request_id,
+                exc.errors()[0]["msg"],
+            )
             if request_id is not None:
                 await send_error(request_id, -32602, exc.errors()[0]["msg"])
         except ValueError as exc:
+            logger.warning(
+                "acp prompt value error session_id=%s request_id=%s error=%s",
+                task_session_id,
+                request_id,
+                exc,
+            )
             if request_id is not None:
                 await send_error(request_id, -32602, str(exc))
         except Exception as exc:
+            logger.exception(
+                "acp prompt failed session_id=%s request_id=%s",
+                task_session_id,
+                request_id,
+            )
             if request_id is not None:
                 await send_error(request_id, -32000, str(exc))
         else:
+            logger.info("acp prompt completed session_id=%s request_id=%s", task_session_id, request_id)
             if request_id is not None:
                 await send_result(request_id, result)
         finally:
             if keepalive_task is not None:
                 keepalive_task.cancel()
                 await asyncio.gather(keepalive_task, return_exceptions=True)
+                if (
+                    task_session_id is not None
+                    and task_session_id in sessions
+                    and task_session_id in keepalive_sessions
+                ):
+                    await send_prompt_keepalive_completed(task_session_id)
+                    keepalive_sessions.discard(task_session_id)
             if task_session_id is not None and prompt_tasks.get(task_session_id) is asyncio.current_task():
                 prompt_tasks.pop(task_session_id, None)
 
@@ -80,11 +118,16 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             if session_id not in sessions:
                 return
             sequence += 1
+            keepalive_sessions.add(session_id)
+            logger.info("acp prompt keepalive session_id=%s sequence=%s", session_id, sequence)
             await send_update(
                 session_id,
                 {
-                    "sessionUpdate": "agent_thought_chunk",
-                    "content": {"type": "text", "text": "still working"},
+                    "sessionUpdate": "tool_call" if sequence == 1 else "tool_call_update",
+                    "toolCallId": ACP_PROMPT_KEEPALIVE_TOOL_CALL_ID,
+                    "title": "processing",
+                    "kind": "other",
+                    "status": "in_progress",
                     "_meta": {
                         "jetlinksRuntimeEvent": {
                             "type": "acp.prompt.keepalive",
@@ -93,6 +136,24 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     },
                 },
             )
+
+    async def send_prompt_keepalive_completed(session_id: str) -> None:
+        await send_update(
+            session_id,
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": ACP_PROMPT_KEEPALIVE_TOOL_CALL_ID,
+                "title": "processing",
+                "kind": "other",
+                "status": "completed",
+                "_meta": {
+                    "jetlinksRuntimeEvent": {
+                        "type": "acp.prompt.keepalive.completed",
+                        "data": {},
+                    }
+                },
+            },
+        )
 
     try:
         while True:

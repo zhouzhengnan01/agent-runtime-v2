@@ -276,6 +276,14 @@ def test_acp_websocket_prompt_sends_keepalive_during_long_runtime(
                 "params": {"sessionId": session_id},
             }
         )
+        for _ in range(5):
+            packet = websocket.receive_json()
+            if packet.get("method") != "session/update":
+                continue
+            updates.append(packet["params"]["update"])
+            runtime_event = packet["params"]["update"].get("_meta", {}).get("jetlinksRuntimeEvent", {})
+            if runtime_event.get("type") == "acp.prompt.keepalive.completed":
+                break
 
     keepalive_updates = [
         update
@@ -283,7 +291,18 @@ def test_acp_websocket_prompt_sends_keepalive_during_long_runtime(
         if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.keepalive"
     ]
     assert keepalive_updates
-    assert keepalive_updates[0]["sessionUpdate"] == "agent_thought_chunk"
+    assert keepalive_updates[0]["sessionUpdate"] == "tool_call"
+    assert keepalive_updates[0]["toolCallId"] == "acp-prompt-keepalive"
+    assert keepalive_updates[0]["status"] == "in_progress"
+    keepalive_completed = [
+        update
+        for update in updates
+        if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.keepalive.completed"
+    ]
+    assert keepalive_completed
+    assert keepalive_completed[0]["sessionUpdate"] == "tool_call_update"
+    assert keepalive_completed[0]["toolCallId"] == "acp-prompt-keepalive"
+    assert keepalive_completed[0]["status"] == "completed"
 
 
 def test_acp_websocket_new_session_defaults_session_id_to_thread_id() -> None:
