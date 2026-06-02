@@ -27,6 +27,8 @@ from app.core.agent.turn_verifier import verify_turn_completion
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
+from app.core.skills import SkillRegistry
+from app.core.skills.context_files import load_skill_markdown_context
 from app.core.tools import ToolDefinition, ToolInvocationResult, ToolInvocationService
 from app.core.tools.orchestrator import ToolOrchestrator
 from app.schemas import AgentRunResult, ArtifactRef, Message, RuntimeOptions
@@ -156,6 +158,7 @@ class ToolCallingAgentLoop:
             tool_service=self.tool_service,
             primary_skill_context=primary_skill_context,
         )
+        self._emit_primary_skill_context_loaded(recorder, runtime_options)
         system_prompt = self._prompt_with_turn_policy(base_prompt, turn_policy.phase, turn_policy.reason)
         if agent_config.memory.enabled:
             recorder.emit(
@@ -303,7 +306,7 @@ class ToolCallingAgentLoop:
         while state.rounds < max_rounds or run_final_pass_after_conditional_repeat:
             run_final_pass_after_conditional_repeat = False
             state.rounds += 1
-            self._advance_turn_state(state, agent_config, runtime_options)
+            self._advance_turn_state(state, agent_config, runtime_options, recorder)
             self._apply_context_compaction(state, agent_config, recorder, round_number=state.rounds)
             request_started_at = time.perf_counter()
             recorder.emit(
@@ -387,7 +390,7 @@ class ToolCallingAgentLoop:
                 runtime_options,
             )
             if state.required_inputs:
-                self._advance_turn_state(state, agent_config, runtime_options)
+                self._advance_turn_state(state, agent_config, runtime_options, recorder)
                 return self._finalize_completed_turn(
                     state,
                     state.latest_assistant_reply,
@@ -406,7 +409,7 @@ class ToolCallingAgentLoop:
                 runtime_options,
             )
             if state.required_inputs:
-                self._advance_turn_state(state, agent_config, runtime_options)
+                self._advance_turn_state(state, agent_config, runtime_options, recorder)
                 return self._finalize_completed_turn(
                     state,
                     state.latest_assistant_reply,
@@ -644,6 +647,7 @@ class ToolCallingAgentLoop:
         state: ToolLoopState,
         agent_config: AgentConfig,
         runtime_options: RuntimeOptions | None,
+        recorder: EventRecorder,
     ) -> None:
         primary_skill_context = load_primary_skill_context(
             root_dir=self.tool_service.root_dir,
@@ -688,6 +692,7 @@ class ToolCallingAgentLoop:
             primary_skill_context=primary_skill_context,
         )
         state.system_prompt = self._prompt_with_turn_policy(base_prompt, state.turn_phase, state.turn_policy_reason)
+        self._emit_primary_skill_context_loaded(recorder, runtime_options)
         state.memory_context_count = memory_context_count
         tool_definitions = self._tool_definitions_for_run(agent_config, runtime_options)
         state.system_prompt = prompt_with_runtime_mcp_discovery_failures(state.system_prompt, runtime_options)
@@ -909,6 +914,68 @@ class ToolCallingAgentLoop:
         ]
         definitions = [tool for tool in definitions if self._tool_allowed_in_mode(tool, mode)]
         return definitions
+
+    def _emit_primary_skill_context_loaded(
+        self,
+        recorder: EventRecorder,
+        runtime_options: RuntimeOptions | None,
+    ) -> None:
+        if runtime_options is None or not runtime_options.selected_skills:
+            return
+        skill_name = runtime_options.selected_skills[0].strip()
+        if not skill_name:
+            return
+        try:
+            skill = SkillRegistry(self.tool_service.root_dir).get(skill_name)
+        except KeyError:
+            recorder.emit(
+                "skill.context.loaded",
+                {
+                    "skill_name": skill_name,
+                    "found": False,
+                    "reason": "skill_not_found",
+                },
+            )
+            return
+        context = load_skill_markdown_context(skill)
+        if context is None:
+            recorder.emit(
+                "skill.context.loaded",
+                {
+                    "skill_name": skill_name,
+                    "found": True,
+                    "skill_md_found": False,
+                    "reason": "skill_md_not_found",
+                    "manifest_path": str(skill.manifest_path) if skill.manifest_path is not None else "",
+                    "plugin_root": str(skill.plugin_root) if skill.plugin_root is not None else "",
+                },
+            )
+            return
+        references = [
+            {
+                "path": reference.path,
+                "chars": len(reference.content),
+                "truncated": reference.truncated,
+            }
+            for reference in context.references
+        ]
+        recorder.emit(
+            "skill.context.loaded",
+            {
+                "skill_name": skill_name,
+                "found": True,
+                "skill_md_found": True,
+                "skill_md_path": context.skill_md_path,
+                "skill_md_chars": len(context.skill_md),
+                "skill_md_truncated": context.skill_md_truncated,
+                "reference_count": len(references),
+                "total_reference_chars": sum(int(item["chars"]) for item in references),
+                "reference_truncated_count": sum(1 for item in references if item["truncated"]),
+                "references": references,
+                "manifest_path": str(skill.manifest_path) if skill.manifest_path is not None else "",
+                "plugin_root": str(skill.plugin_root) if skill.plugin_root is not None else "",
+            },
+        )
 
     @staticmethod
     def _tool_selected_for_run(

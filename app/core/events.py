@@ -5,12 +5,44 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import json
+import logging
 from pathlib import Path
 import time
 from typing import Any
 import uuid
 
 from app.schemas import ChatEvent
+
+logger = logging.getLogger("uvicorn.error")
+
+_LOGGED_EVENT_TYPES = {
+    "agent.message",
+    "artifact.created",
+    "context.compacted",
+    "llm.empty_response",
+    "llm.request.completed",
+    "llm.request.started",
+    "llm.started",
+    "mcp.discovery.failed",
+    "memory.context.loaded",
+    "run.completed",
+    "run.failed",
+    "run.started",
+    "skill.completed",
+    "skill.context.loaded",
+    "skill.failed",
+    "skill.started",
+    "tool.calls.started",
+    "tool.completed",
+    "tool.failed",
+    "tool.loop.auto_repeating",
+    "tool.loop.waiting",
+    "tool.started",
+    "tools.available",
+    "verifier.completed",
+    "verifier.failed",
+    "verifier.started",
+}
 
 
 @dataclass
@@ -41,6 +73,7 @@ class EventRecorder:
 
         event = ChatEvent(type=event_type, data=payload)
         self.events.append(event)
+        _log_event(event)
         if self.on_emit is not None:
             self.on_emit(event)
         self._sequence += 1
@@ -260,3 +293,149 @@ def _structured_error(data: dict[str, Any]) -> str:
     if isinstance(value, str):
         return value
     return ""
+
+
+def _log_event(event: ChatEvent) -> None:
+    if event.type not in _LOGGED_EVENT_TYPES:
+        return
+    data = event.data
+    fields = _event_log_fields(event.type, data)
+    rendered = " ".join(
+        f"{key}={_log_value(value)}"
+        for key, value in fields.items()
+        if value is not None and value != ""
+    )
+    level = (
+        logging.WARNING
+        if event.type.endswith(".failed") or event.type in {"run.failed", "mcp.discovery.failed"}
+        else logging.INFO
+    )
+    logger.log(level, "runtime event type=%s %s", event.type, rendered)
+
+
+def _event_log_fields(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "run_id": data.get("run_id"),
+        "thread_id": data.get("thread_id"),
+        "agent": data.get("agent"),
+        "seq": data.get("sequence"),
+        "elapsed_ms": data.get("elapsed_ms"),
+    }
+    for key in (
+        "workflow",
+        "execution_mode",
+        "model",
+        "configured",
+        "request_timeout_seconds",
+        "round",
+        "mode",
+        "message_count",
+        "tool_count",
+        "tool_choice",
+        "finish_reason",
+        "tool_call_count",
+        "duration_ms",
+        "content_chars",
+        "tool_name",
+        "tool_call_id",
+        "is_error",
+        "error_code",
+        "turn_phase",
+        "turn_policy_reason",
+        "verification_verdict",
+        "verification_reason",
+        "skill_name",
+        "skill_md_path",
+        "reference_count",
+        "total_reference_chars",
+        "server_name",
+        "server_type",
+        "endpoint",
+        "reason",
+    ):
+        if key in data:
+            fields[key] = data.get(key)
+    if event_type == "tools.available":
+        fields["tools"] = _compact_names(data.get("tools"))
+        fields["priority_tools"] = _compact_names(data.get("priority_tools"))
+        fields["hidden_tool_count"] = (
+            len(data.get("hidden_tools")) if isinstance(data.get("hidden_tools"), list) else None
+        )
+    if event_type == "tool.calls.started":
+        calls = data.get("tool_calls")
+        fields["tool_calls"] = _tool_call_names(calls)
+    if event_type == "skill.context.loaded":
+        references = data.get("references")
+        fields["references"] = _reference_names(references)
+        fields["skill_md_truncated"] = data.get("skill_md_truncated")
+        fields["reference_truncated_count"] = data.get("reference_truncated_count")
+    if event_type in {"run.completed", "run.failed"}:
+        result = data.get("result")
+        metadata = result.get("metadata") if isinstance(result, dict) else None
+        if isinstance(metadata, dict):
+            fields["status"] = result.get("status")
+            fields["reply_chars"] = len(str(result.get("reply") or ""))
+            fields["tool_rounds"] = metadata.get("tool_rounds")
+            fields["tool_call_count"] = metadata.get("tool_call_count")
+            fields["artifacts"] = (
+                len(result.get("artifacts")) if isinstance(result.get("artifacts"), list) else None
+            )
+    if event_type in {"tool.completed", "tool.failed"}:
+        structured = data.get("structured_content")
+        if isinstance(structured, dict):
+            fields["structured_keys"] = _compact_names(list(structured.keys()))
+            fields["error"] = structured.get("error")
+    if event_type == "mcp.discovery.failed":
+        fields["error"] = data.get("error")
+    if event_type == "agent.message":
+        fields["text_chars"] = len(str(data.get("text") or data.get("message") or ""))
+    return fields
+
+
+def _compact_names(value: object, *, limit: int = 12) -> str:
+    if not isinstance(value, list | tuple):
+        return ""
+    names = [str(item) for item in value if str(item)]
+    suffix = "" if len(names) <= limit else f",+{len(names) - limit}"
+    return ",".join(names[:limit]) + suffix
+
+
+def _tool_call_names(value: object, *, limit: int = 12) -> str:
+    if not isinstance(value, list | tuple):
+        return ""
+    names: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        call_id = str(item.get("id") or "").strip()
+        if name and call_id:
+            names.append(f"{name}({call_id})")
+        elif name:
+            names.append(name)
+    suffix = "" if len(names) <= limit else f",+{len(names) - limit}"
+    return ",".join(names[:limit]) + suffix
+
+
+def _reference_names(value: object, *, limit: int = 12) -> str:
+    if not isinstance(value, list | tuple):
+        return ""
+    names: list[str] = []
+    for item in value:
+        if isinstance(item, dict) and item.get("path"):
+            names.append(str(item["path"]))
+    suffix = "" if len(names) <= limit else f",+{len(names) - limit}"
+    return ",".join(names[:limit]) + suffix
+
+
+def _log_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    rendered = str(value).replace("\n", "\\n").replace("\r", "\\r")
+    if len(rendered) > 500:
+        rendered = rendered[:497] + "..."
+    if not rendered or any(char.isspace() for char in rendered):
+        return json.dumps(rendered, ensure_ascii=False)
+    return rendered

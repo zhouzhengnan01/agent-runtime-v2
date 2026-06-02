@@ -983,6 +983,14 @@ def test_agent_loop_injects_primary_skill_markdown_declared_references(
     assert "### references/command-standard.md" in prompt
     assert "Service ID: fileService" in prompt
     assert "### references/components/custom-chart.json" in prompt
+    context_event = next(event for event in recorder.events if event.type == "skill.context.loaded")
+    assert context_event.data["skill_name"] == "generate-screen-skill"
+    assert context_event.data["skill_md_path"].endswith("plugins/skills/1780049181817h6isu9jw/SKILL.md")
+    assert context_event.data["reference_count"] >= 10
+    reference_paths = [item["path"] for item in context_event.data["references"]]
+    assert "references/blueprint-standard.md" in reference_paths
+    assert "references/component-registry.json" in reference_paths
+    assert "references/command-standard.md" in reference_paths
 
 
 def test_skill_markdown_context_loads_declared_reference_files_only() -> None:
