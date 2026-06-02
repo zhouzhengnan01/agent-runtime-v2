@@ -76,6 +76,30 @@ def test_skill_plugin_upload_registers_and_executes_uploaded_skill(
     assert "x-param-kind" not in saved_manifest["input_schema"]["properties"]["legacy"]
 
 
+def test_generate_screen_skill_executes_quick_local_bigscreen_generator(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("generate-screen-local")
+
+    result = SkillRunner(store).run(
+        "generate-screen-skill",
+        {"objective": "生成一个智慧园区运营可视化大屏"},
+        paths,
+    )
+
+    page_path = paths.outputs / "generated-bigscreen" / "page.json"
+    page = json.loads(page_path.read_text(encoding="utf-8"))
+    resource_paths = sorted((paths.outputs / "generated-bigscreen" / "resources").glob("*.resource.json"))
+
+    assert result.skill_name == "generate-screen-skill"
+    assert result.data["execution_type"] == "python_script"
+    assert result.data["primary_artifact"] == "generated-bigscreen/page.json"
+    assert page["canvas"]["width"] == 1920
+    assert page["canvas"]["height"] == 1080
+    assert page["components"]
+    assert len(resource_paths) >= 3
+    assert any(artifact.name == "page.json" for artifact in result.outputs)
+
+
 def test_skill_plugin_upload_can_replace_existing_plugin(tmp_path: Path) -> None:
     manager = SkillPluginManager(tmp_path)
 

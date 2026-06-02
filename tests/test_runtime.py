@@ -740,21 +740,7 @@ def test_message_selected_skills_do_not_block_app_template_model_injection(
 
 def test_app_template_name_applies_template_skills_for_sse_style_requests(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: dict[str, object] = {}
-
-    async def fake_complete_with_tools(
-        self: OpenAICompatibleClient,
-        system_prompt: str,
-        messages: list[dict[str, object]],
-        tools: list[dict[str, object]],
-    ) -> LlmChatResponse:
-        del self, system_prompt, messages
-        seen["tools"] = [tool["function"]["name"] for tool in tools]
-        return LlmChatResponse(content="ok")
-
-    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
     agent = AgentConfigLoader().load("default")
     request = ChatRequest(
@@ -767,11 +753,44 @@ def test_app_template_name_applies_template_skills_for_sse_style_requests(
         ),
     )
 
-    result = asyncio.run(runtime.run(agent, request))
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+    event_types = [event.type for event in events]
 
-    assert result.reply == "ok"
-    assert "generate-screen-skill" in seen["tools"]
-    assert "local_file_to_base64" in seen["tools"]
+    assert result.status == "completed"
+    assert result.metadata["auto_execute_primary_skill"] is True
+    assert any(artifact.name == "page.json" for artifact in result.artifacts)
+    assert "llm.request.started" not in event_types
+    assert "skill.started" in event_types
+    assert "skill.completed" in event_types
+
+
+def test_runtime_auto_executes_primary_skill_when_configured(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="screen-auto-skill-agent",
+        display_name="Screen Auto Skill Agent",
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成一个智慧园区运营可视化大屏")],
+        runtime_options=RuntimeOptions(
+            thread_id="screen-auto-skill",
+            selected_skills=["generate-screen-skill"],
+            config_options={"auto_execute_primary_skill": True},
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+    event_types = [event.type for event in events]
+
+    assert result.status == "completed"
+    assert result.metadata["auto_execute_primary_skill"] is True
+    assert result.metadata["tool_call_count"] == 1
+    assert result.artifacts
+    assert any(artifact.name == "page.json" for artifact in result.artifacts)
+    assert "llm.request.started" not in event_types
+    assert "skill.started" in event_types
+    assert "skill.completed" in event_types
 
 
 def test_runtime_expands_uploaded_plugin_id_selected_skill(

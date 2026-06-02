@@ -770,10 +770,12 @@ class AcpRuntimeAdapter:
         merged = self._merge_and_resolve_runtime_options(merged, _runtime_options_payload(params))
         merged["thread_id"] = thread_id
         merged["mode"] = _mode_from_options(merged, fallback=session.mode_id)
-        merged["config_options"] = dict(session.config_options)
-        merged["config_options"]["session_cwd"] = session.cwd
+        raw_config_options = merged.get("config_options")
+        config_options = dict(raw_config_options) if isinstance(raw_config_options, dict) else {}
+        config_options["session_cwd"] = session.cwd
         if session.mcp_servers:
-            merged["config_options"]["mcpServers"] = list(session.mcp_servers)
+            config_options["mcpServers"] = list(session.mcp_servers)
+        merged["config_options"] = config_options
         return RuntimeOptions.model_validate(merged)
 
     def _merge_and_resolve_runtime_options(self, base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -868,6 +870,9 @@ def _template_runtime_options(app_template: AppTemplate | None) -> dict[str, Any
     if app_template is None:
         return {}
     payload = _runtime_options_from_source(app_template.runtime_options)
+    raw_config_options = app_template.runtime_options.get("config_options") if isinstance(app_template.runtime_options, dict) else None
+    if isinstance(raw_config_options, dict):
+        payload["config_options"] = dict(raw_config_options)
     if app_template.workflow is not None and "workflow" not in payload:
         payload["workflow"] = app_template.workflow
     if app_template.selected_skills and "selected_skills" not in payload:
@@ -983,6 +988,7 @@ def _auto_permission_option(raw_options: object) -> str | None:
 def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
     meta = _params(params.get("_meta"))
     sources = [
+        params,
         _params(params.get("runtimeOptions") or params.get("runtime_options")),
         _params(meta.get("runtimeOptions") or meta.get("runtime_options")),
     ]
@@ -1136,6 +1142,9 @@ def _app_template_name(params: dict[str, Any]) -> str | None:
         meta.get("appTemplateName")
         or meta.get("app_template_name")
         or meta.get("app")
+        or params.get("appTemplateName")
+        or params.get("app_template_name")
+        or params.get("app")
         or top_runtime_options.get("appTemplateName")
         or top_runtime_options.get("app_template_name")
         or runtime_options.get("appTemplateName")

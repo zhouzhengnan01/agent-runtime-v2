@@ -37,6 +37,13 @@
     "request_schema_version" : "skill-run.v1",
     "fallback_to_local" : true
   },
+  "execution" : {
+    "type" : "python_script",
+    "script" : "scripts/generate_bigscreen.py",
+    "timeout_seconds" : 30,
+    "input_mode" : "stdin_json",
+    "collect_outputs" : true
+  },
   "metadata" : {
     "developerCenter" : {
       "domain" : "general"

@@ -29,7 +29,7 @@ from app.core.llm import OpenAICompatibleClient
 from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.agent.input_required import required_inputs_for_request, required_inputs_for_result
 from app.core.routing.workflow_router import WorkflowRouter
-from app.core.skills import SkillDefinition, SkillRegistry
+from app.core.skills import SkillDefinition, SkillRegistry, SkillRunner
 from app.core.skills.aliases import expand_skill_aliases
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
@@ -186,6 +186,9 @@ class AgentRuntime:
             direct_result = self._try_complete_direct_json_artifact_turn(execution, recorder)
             if direct_result is not None:
                 return direct_result, recorder.events
+            direct_skill_result = self._try_auto_execute_primary_skill_turn(execution, recorder)
+            if direct_skill_result is not None:
+                return direct_skill_result, recorder.events
             loop_result = await self.agent_loop.run(
                 agent_config=execution.agent_config,
                 messages=conversation,
@@ -330,6 +333,19 @@ class AgentRuntime:
             )
             raise
         if direct_result is not None:
+            for event in recorder.events[emitted:]:
+                yield event
+            return
+        try:
+            direct_skill_result = self._try_auto_execute_primary_skill_turn(execution, recorder)
+        except Exception:
+            self.session_manager.finish_turn(
+                thread_id=execution.paths.thread_id,
+                run_id=recorder.run_id,
+                status="failed",
+            )
+            raise
+        if direct_skill_result is not None:
             for event in recorder.events[emitted:]:
                 yield event
             return
@@ -518,6 +534,109 @@ class AgentRuntime:
             status="completed",
         )
         return result
+
+    def _try_auto_execute_primary_skill_turn(
+        self,
+        execution: ExecutionContext,
+        recorder: EventRecorder,
+    ) -> AgentRunResult | None:
+        runtime_options = execution.request.runtime_options
+        if runtime_options.config_options.get("auto_execute_primary_skill") is not True:
+            return None
+        if not runtime_options.selected_skills:
+            return None
+        skill_name = runtime_options.selected_skills[0].strip()
+        if not skill_name:
+            return None
+        try:
+            skill = SkillRegistry(self.app_template_registry.root_dir).get(skill_name)
+        except KeyError:
+            return None
+        if not skill.executable:
+            return None
+
+        spec = self._auto_primary_skill_spec(skill_name, execution.request)
+        recorder.emit("skill.started", {"skill_name": skill_name, "spec": spec, "auto_execute": True})
+        recorder.emit("tool.started", {"tool_name": skill_name, "tool_call_id": f"auto-skill-{skill_name}"})
+        run_result = SkillRunner(self.artifact_store, root_dir=self.app_template_registry.root_dir).run(
+            skill_name,
+            spec,
+            execution.paths,
+        )
+        artifacts = [artifact.model_dump(mode="json") for artifact in run_result.outputs]
+        recorder.emit(
+            "tool.completed",
+            {
+                "tool_name": skill_name,
+                "tool_call_id": f"auto-skill-{skill_name}",
+                "is_error": False,
+                "structured_content": {
+                    "skill_name": skill_name,
+                    "thread_id": execution.paths.thread_id,
+                    "artifacts": artifacts,
+                    "data": run_result.data,
+                },
+            },
+        )
+        recorder.emit(
+            "skill.completed",
+            {
+                "skill_name": skill_name,
+                "output_count": len(run_result.outputs),
+                "data": run_result.data,
+                "auto_execute": True,
+            },
+        )
+        for artifact in run_result.outputs:
+            recorder.emit("artifact.created", {"artifact": artifact.model_dump(mode="json")})
+
+        primary = run_result.data.get("primary_artifact") or (run_result.outputs[0].path if run_result.outputs else "")
+        reply = f"已生成大屏产物：{primary}" if primary else f"已执行技能：{skill_name}"
+        result = AgentRunResult(
+            agent=execution.agent_config.name,
+            thread_id=execution.paths.thread_id,
+            reply=reply,
+            artifacts=run_result.outputs,
+            metadata={
+                "workflow": "agent_loop",
+                "run_id": recorder.run_id,
+                "auto_execute_primary_skill": True,
+                "skill_name": skill_name,
+                "skill_data": run_result.data,
+                "tool_rounds": 0,
+                "tool_call_count": 1,
+                "mode": runtime_options.mode or "edit",
+            },
+        )
+        recorder.emit("agent.message", {"text": result.reply, "content": result.content})
+        recorder.emit("run.completed", {"result": result.model_dump()})
+        self.session_store.save(
+            execution.paths,
+            self._conversation_with_result(execution.conversation, result),
+            run_id=recorder.run_id,
+        )
+        self._persist_events(
+            execution.agent_config,
+            execution.request,
+            execution.paths.thread_id,
+            recorder.events,
+            result,
+        )
+        self.session_manager.finish_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            status="completed",
+        )
+        return result
+
+    @classmethod
+    def _auto_primary_skill_spec(cls, skill_name: str, request: ChatRequest) -> dict[str, Any]:
+        text = cls._last_user_text(request)
+        return {
+            "skill_name": skill_name,
+            "objective": text or skill_name,
+            "message": text,
+        }
 
     @classmethod
     def _direct_json_artifact_intent(cls, request: ChatRequest) -> _DirectJsonArtifactIntent | None:

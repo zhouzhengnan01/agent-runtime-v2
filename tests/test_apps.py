@@ -302,6 +302,15 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 16
         elif template.name == "reference-image-yolo-training":
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
+        elif template.name == "70aaee52-99c2-49f5-a9c7-fb746821d3df":
+            assert template.runtime_options == {
+                "mode": "safe",
+                "config_options": {
+                    "max_tool_rounds": 3,
+                    "max_empty_response_retries": 0,
+                    "auto_execute_primary_skill": True,
+                },
+            }
         elif template.name == "algorithm-engineer-full-cycle-test":
             assert template.runtime_options["model_env"] == "LLM_MODEL"
             assert template.runtime_options["base_url_env"] == "LLM_BASE_URL"

@@ -907,6 +907,54 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
     assert second.max_tokens == 2000
 
 
+def test_acp_websocket_top_level_app_template_preserves_template_config_options(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "cwd": str(tmp_path),
+                    "threadId": "acp-screen-template",
+                    "appTemplateName": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        session_id = created["sessionId"]
+
+        assert created["appTemplateName"] == "70aaee52-99c2-49f5-a9c7-fb746821d3df"
+        assert created["runtimeOptions"]["selectedSkills"] == ["generate-screen-skill"]
+        assert created["runtimeOptions"]["configOptions"]["auto_execute_primary_skill"] is True
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "生成一个可视化大屏"}],
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.thread_id == "acp-screen-template"
+    assert options.selected_skills == ["generate-screen-skill"]
+    assert options.config_options["auto_execute_primary_skill"] is True
+    assert options.config_options["max_tool_rounds"] == 3
+
+
 def test_acp_websocket_session_new_accepts_standard_meta_extensions(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -6,6 +6,14 @@
   "description" : "根据自然语言需求生成智慧大屏、数据大屏、智慧园区和能耗大屏方案，并调用大屏平台工具创建项目、保存页面或输出 page.json 指导。",
   "prompt_examples" : [ "生成一个智慧园区运营可视化大屏，包含园区概览、设备在线率、告警趋势、能耗统计、人员/车辆通行和重点事件列表，并尽量调用大屏平台工具创建项目和保存页面。" ],
   "selected_skills" : [ "generate-screen-skill" ],
+  "runtime_options" : {
+    "mode" : "safe",
+    "config_options" : {
+      "max_tool_rounds" : 3,
+      "max_empty_response_retries" : 0,
+      "auto_execute_primary_skill" : true
+    }
+  },
   "models" : [ {
     "name" : "Qwen3.6-35B-A3B",
     "features" : [ "vision", "reasoning", "chat", "tool_call" ],
