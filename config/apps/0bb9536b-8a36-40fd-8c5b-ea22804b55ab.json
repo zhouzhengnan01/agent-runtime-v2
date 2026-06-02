@@ -12,22 +12,23 @@
   ],
   "models": [
     {
-      "name": "gpt-5.4",
+      "name": "Qwen3.6-35B-A3B",
       "features": [
         "vision",
-        "reasoning",
-        "chat"
-      ],
-      "priority_features": [
         "reasoning",
         "chat",
         "tool_call"
       ],
+      "priority_features": [
+        "tool_call",
+        "chat",
+        "reasoning"
+      ],
       "priority": 0,
       "provider": "openai-compatible",
-      "model": "gpt-5.4",
-      "base_url": "http://192.168.32.10:9200/api/llm/openai/v1/providers/f3a05ffa-1122-49b8-a04b-002478205381/",
-      "default_model": "gpt-5.4",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://218.67.242.10:59202/v1",
+      "default_model": "Qwen3.6-35B-A3B",
       "api_key": "abc@123",
       "tool_choice": "auto",
       "temperature": 0.4,
