@@ -306,6 +306,7 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
             "70aaee52-99c2-49f5-a9c7-fb746821d3df",
             "0bb9536b-8a36-40fd-8c5b-ea22804b55ab",
             "737d9452-99c6-470e-a77a-20f2f7d73eff",
+            "305fb466-1f7f-442b-861e-02e3246f8563",
         }:
             assert template.runtime_options == {
                 "mode": "safe",
@@ -332,8 +333,12 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         assert model.model, template.name
         assert model.default_model, template.name
         assert model.base_url, template.name
-        assert model.api_key == "abc@123", template.name
-        assert model.api_key_env is None, template.name
+        if template.name == "305fb466-1f7f-442b-861e-02e3246f8563":
+            assert model.api_key is None, template.name
+            assert model.api_key_env == "JETLINKS_APP_305FB466_GPT54_API_KEY", template.name
+        else:
+            assert model.api_key == "abc@123", template.name
+            assert model.api_key_env is None, template.name
         assert model.api_key_enc is None, template.name
         assert model.temperature == 0.4, template.name
         assert model.max_tokens == 2048, template.name

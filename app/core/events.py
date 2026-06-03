@@ -11,9 +11,12 @@ import time
 from typing import Any
 import uuid
 
+from app.core.diagnostics import diagnostic_json, env_flag, env_int
 from app.schemas import ChatEvent
 
 logger = logging.getLogger("uvicorn.error")
+RUNTIME_EVENT_TRACE_PAYLOADS = env_flag("RUNTIME_EVENT_TRACE_PAYLOADS", "1")
+RUNTIME_EVENT_TRACE_MAX_CHARS = env_int("RUNTIME_EVENT_TRACE_MAX_CHARS", 0)
 
 _LOGGED_EVENT_TYPES = {
     "agent.message",
@@ -311,6 +314,16 @@ def _log_event(event: ChatEvent) -> None:
         else logging.INFO
     )
     logger.log(level, "runtime event type=%s %s", event.type, rendered)
+    if RUNTIME_EVENT_TRACE_PAYLOADS:
+        logger.log(
+            level,
+            "runtime event detail type=%s run_id=%s thread_id=%s seq=%s data=%s",
+            event.type,
+            data.get("run_id"),
+            data.get("thread_id"),
+            data.get("sequence"),
+            diagnostic_json(data, max_chars=RUNTIME_EVENT_TRACE_MAX_CHARS),
+        )
 
 
 def _event_log_fields(event_type: str, data: dict[str, Any]) -> dict[str, Any]:

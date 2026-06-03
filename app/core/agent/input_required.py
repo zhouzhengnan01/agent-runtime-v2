@@ -50,6 +50,8 @@ def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
     # Preflight guards catch common long-running flows before the agent spends
     # tool rounds only to discover that basic files were never provided.
     selected_skills = {name.strip() for name in request.runtime_options.selected_skills if name.strip()}
+    if _requires_clutter_review_image(request, selected_skills) and not _has_attachment(request.attachments, "image"):
+        return [_requirement("image", reason="Clutter review requires an uploaded image.")]
     if _requires_algorithm_training_inputs(request, selected_skills) and not _has_algorithm_training_input(request):
         return [
             _requirement(
@@ -63,6 +65,14 @@ def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
     if _requires_data_auto_annotation(request, selected_skills) and not _has_attachment(request.attachments, "image"):
         return [_requirement("image", reason="Data auto annotation requires an uploaded image.")]
     return []
+
+
+def _requires_clutter_review_image(request: ChatRequest, selected_skills: set[str]) -> bool:
+    if "17803963378248hh02dvt" in selected_skills:
+        return True
+    if request.runtime_options.app_template_name == "ParkingAbnormalEventMonitoring":
+        return True
+    return False
 
 
 def _requires_data_auto_annotation(request: ChatRequest, selected_skills: set[str]) -> bool:

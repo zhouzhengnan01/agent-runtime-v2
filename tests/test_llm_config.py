@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 import httpx
+import pytest
 from pytest import MonkeyPatch
 
 from app.core.config.agent_config import AgentConfig, ModelConfig
@@ -531,6 +532,69 @@ def test_complete_with_tools_preserves_usage_metadata(monkeypatch: MonkeyPatch) 
 
     assert response.content == "ok"
     assert response.usage == {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}
+
+
+def test_llm_client_logs_request_and_response_details_redacted(
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    import app.core.llm.openai_compatible as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_TRACE_PAYLOADS", True)
+    monkeypatch.setattr(llm_module, "LLM_TRACE_MAX_CHARS", 0)
+
+    async def fake_post(
+        self: httpx.AsyncClient,
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        del self, json
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
+                "debug_headers": headers,
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model=ModelConfig(
+            model="json-model-name",
+            base_url="http://llm.local/v1",
+            api_key="json-key",
+            tool_choice="auto",
+            max_tokens=128,
+        ),
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        response = asyncio.run(
+            OpenAICompatibleClient(agent).complete_with_tools(
+                "system",
+                [Message(role="user", content="hi")],
+                [{"type": "function", "function": {"name": "demo", "parameters": {"type": "object"}}}],
+            )
+        )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert response.content == "ok"
+    assert "llm request operation=complete_with_tools" in logs
+    assert "llm http response operation=complete_with_tools" in logs
+    assert "llm response data operation=complete_with_tools" in logs
+    assert '"content":"hi"' in logs
+    assert '"max_tokens":128' in logs
+    assert '"Authorization":"********"' in logs
+    assert "json-key" not in logs
 
 
 def test_http_status_error_includes_upstream_response_body(monkeypatch: MonkeyPatch) -> None:

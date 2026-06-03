@@ -2,6 +2,7 @@
   "name" : "generate-screen-skill",
   "description" : "Generate platform-compatible visualization big-screen JSON packages for 大屏、智慧大屏、可视化大屏、数据大屏、智慧园区、能耗大屏, including generated-bigscreen/page.json and ECharts resource guidance.",
   "generation" : true,
+  "auto_execute" : true,
   "output_kind" : "markdown",
   "routing" : {
     "summary" : "Use for natural-language visualization big-screen generation requests.",

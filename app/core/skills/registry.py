@@ -36,6 +36,7 @@ class SkillDefinition:
     description: str
     output_kind: str
     generation: bool = True
+    auto_execute: bool = False
     model_tags: tuple[str, ...] = ()
     quality_template: tuple[str, ...] = ()
     skill_type: str = "atomic"
@@ -70,6 +71,7 @@ class SkillDefinition:
             "description": self.description,
             "output_kind": self.output_kind,
             "generation": self.generation,
+            "auto_execute": self.auto_execute,
             "model_tags": list(self.model_tags),
             "quality_template": list(self.quality_template),
             "skill_type": self.skill_type,
@@ -111,6 +113,7 @@ class SkillDefinition:
             description=self.description,
             output_kind=self.output_kind,
             generation=self.generation,
+            auto_execute=self.auto_execute,
             model_tags=self.model_tags,
             quality_template=self.quality_template,
             skill_type=self.skill_type,
@@ -216,6 +219,7 @@ def definition_from_manifest(data: object, path: Path) -> SkillDefinition:
         description=description,
         output_kind=output_kind,
         generation=bool(data.get("generation", True)),
+        auto_execute=bool(data.get("auto_execute", False)),
         model_tags=tuple(normalize_model_tags(data.get("model_tags"))),
         quality_template=_string_tuple(data.get("quality_template")),
         skill_type=_skill_type(data),

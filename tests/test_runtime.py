@@ -793,6 +793,33 @@ def test_runtime_auto_executes_primary_skill_when_configured(tmp_path: Path) -> 
     assert "skill.completed" in event_types
 
 
+def test_runtime_auto_executes_primary_skill_when_skill_declares_auto_execute(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="screen-auto-skill-agent",
+        display_name="Screen Auto Skill Agent",
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成一个智慧园区运营可视化大屏")],
+        runtime_options=RuntimeOptions(
+            thread_id="screen-auto-skill-manifest",
+            selected_skills=["generate-screen-skill"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+    event_types = [event.type for event in events]
+
+    assert result.status == "completed"
+    assert result.metadata["auto_execute_primary_skill"] is True
+    assert result.artifacts
+    assert any(artifact.name == "page.json" for artifact in result.artifacts)
+    assert "llm.request.started" not in event_types
+    assert "skill.started" in event_types
+    assert "skill.completed" in event_types
+
+
 def test_runtime_expands_uploaded_plugin_id_selected_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1133,6 +1160,45 @@ def test_agent_runtime_preflights_data_auto_annotation_without_image(
     assert [event.type for event in events] == ["run.started", "agent.message", "run.completed"]
     completed = events[-1].data["result"]
     assert completed["metadata"]["required_inputs"][0]["accept"] == "image/*"
+
+
+def test_agent_runtime_preflights_clutter_review_without_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        raise AssertionError("LLM should not be called when clutter review has no image attachment.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="clutter-review-preflight-agent",
+        display_name="Clutter Review Preflight Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="复判这张图里是否存在杂物堆积")],
+        runtime_options=RuntimeOptions(
+            thread_id="clutter-review-preflight",
+            app_template_name="ParkingAbnormalEventMonitoring",
+            selected_skills=["17803963378248hh02dvt"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.reply == "请先上传图片后继续。"
+    assert result.metadata["requires_input"] is True
+    assert result.metadata["required_inputs"][0]["type"] == "image"
+    assert result.metadata["required_inputs"][0]["accept"] == "image/*"
+    assert [event.type for event in events] == ["run.started", "agent.message", "run.completed"]
 
 
 def test_agent_runtime_yolo_mode_still_requires_missing_inputs(

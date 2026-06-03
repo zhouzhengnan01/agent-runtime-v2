@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 from collections.abc import AsyncIterator
@@ -34,6 +35,9 @@ from app.core.skills.aliases import expand_skill_aliases
 from app.core.tools import ToolInvocationService
 from app.core.workflow import WorkflowRegistry
 from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, Role, RuntimeOptions
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass(frozen=True)
@@ -541,8 +545,6 @@ class AgentRuntime:
         recorder: EventRecorder,
     ) -> AgentRunResult | None:
         runtime_options = execution.request.runtime_options
-        if runtime_options.config_options.get("auto_execute_primary_skill") is not True:
-            return None
         if not runtime_options.selected_skills:
             return None
         skill_name = runtime_options.selected_skills[0].strip()
@@ -553,6 +555,22 @@ class AgentRuntime:
         except KeyError:
             return None
         if not skill.executable:
+            return None
+        auto_execute = (
+            runtime_options.config_options.get("auto_execute_primary_skill") is True
+            or skill.auto_execute is True
+        )
+        logger.info(
+            "primary skill auto-execute decision thread_id=%s skill=%s app_template=%s config_auto=%s skill_auto=%s executable=%s selected_skills=%s",
+            execution.paths.thread_id,
+            skill_name,
+            runtime_options.app_template_name,
+            runtime_options.config_options.get("auto_execute_primary_skill") is True,
+            skill.auto_execute is True,
+            skill.executable,
+            runtime_options.selected_skills,
+        )
+        if not auto_execute:
             return None
 
         spec = self._auto_primary_skill_spec(skill_name, execution.request)

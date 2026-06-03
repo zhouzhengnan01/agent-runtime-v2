@@ -14,6 +14,7 @@ from app.core.agent import AgentRuntime
 from app.core.apps import AppTemplate, AppTemplateRegistry
 from app.core.artifacts import ThreadPaths
 from app.core.config import AgentConfigLoader
+from app.core.diagnostics import diagnostic_json, env_flag, env_int
 from app.core.runtime import ModelManager
 from app.core.skills.aliases import expand_skill_aliases
 from app.protocols.acp.content import prompt_parts_from_dict_blocks
@@ -26,6 +27,8 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 
 AcpUpdateSender = Callable[[str, dict[str, Any]], Awaitable[None]]
 logger = logging.getLogger("uvicorn.error")
+ACP_ADAPTER_TRACE_PAYLOADS = env_flag("ACP_ADAPTER_TRACE_PAYLOADS", "1")
+ACP_ADAPTER_TRACE_MAX_CHARS = env_int("ACP_ADAPTER_TRACE_MAX_CHARS", 0)
 
 _RUNTIME_OPTION_ALIASES = {
     "threadId": "thread_id",
@@ -331,6 +334,26 @@ class AcpRuntimeAdapter:
 
         messages = _messages_from_params(params)
         attachments = _attachments_from_params(params)
+        if ACP_ADAPTER_TRACE_PAYLOADS:
+            logger.info(
+                "acp prompt detail session_id=%s thread_id=%s app_template=%s params=%s runtime_options=%s messages=%s attachments=%s",
+                session_id,
+                thread_id,
+                session.app_template_name,
+                diagnostic_json(params, max_chars=ACP_ADAPTER_TRACE_MAX_CHARS),
+                diagnostic_json(
+                    runtime_options.model_dump(mode="python", exclude_none=True),
+                    max_chars=ACP_ADAPTER_TRACE_MAX_CHARS,
+                ),
+                diagnostic_json(
+                    [message.model_dump(mode="python") for message in messages],
+                    max_chars=ACP_ADAPTER_TRACE_MAX_CHARS,
+                ),
+                diagnostic_json(
+                    [attachment.model_dump(mode="python") for attachment in attachments],
+                    max_chars=ACP_ADAPTER_TRACE_MAX_CHARS,
+                ),
+            )
         request = ChatRequest(
             messages=messages,
             attachments=attachments,
@@ -341,6 +364,14 @@ class AcpRuntimeAdapter:
         last_error = ""
         agent_message_delta_seen = False
         async for event in self.runtime.iter_events(agent, request):
+            if ACP_ADAPTER_TRACE_PAYLOADS:
+                logger.info(
+                    "acp runtime event detail session_id=%s thread_id=%s event_type=%s data=%s",
+                    session_id,
+                    thread_id,
+                    event.type,
+                    diagnostic_json(event.data, max_chars=ACP_ADAPTER_TRACE_MAX_CHARS),
+                )
             update = _event_to_update(event, suppress_agent_message=agent_message_delta_seen)
             if update is not None:
                 await send_update(session_id, update)
@@ -824,6 +855,8 @@ class AcpRuntimeAdapter:
         if session.mcp_servers:
             config_options["mcpServers"] = list(session.mcp_servers)
         merged["config_options"] = config_options
+        if session.app_template_name is not None and "app_template_name" not in merged:
+            merged["app_template_name"] = session.app_template_name
         return RuntimeOptions.model_validate(merged)
 
     def _merge_and_resolve_runtime_options(self, base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -1279,6 +1312,8 @@ def _template_name_from_source(source: dict[str, Any]) -> str | None:
         or source.get("template_id")
         or source.get("appId")
         or source.get("app_id")
+        or source.get("agentId")
+        or source.get("agent_id")
     )
 
 
@@ -1302,6 +1337,8 @@ def _messages_from_params(params: dict[str, Any]) -> list[Message]:
 
     text, prompt_attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
     if not text and not prompt_attachments:
+        text = _agent_command_content(params)
+    if not text and not prompt_attachments:
         raise ValueError("prompt text or messages are required")
     return [Message(role="user", content=text or " ")]
 
@@ -1317,6 +1354,17 @@ def _attachments_from_params(params: dict[str, Any]) -> list[Attachment]:
         return prompt_attachments
     explicit_attachments = [Attachment.model_validate(item) for item in raw_attachments if isinstance(item, dict)]
     return [*prompt_attachments, *explicit_attachments]
+
+
+def _agent_command_content(params: dict[str, Any]) -> str | None:
+    command = _string(params.get("command"))
+    if command is not None and command.lower() != "chat":
+        return None
+    for source in (params, *_bridge_payload_containers(params)):
+        value = _string(source.get("content") or source.get("text") or source.get("message"))
+        if value is not None:
+            return value
+    return None
 
 
 def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) -> dict[str, Any] | None:
