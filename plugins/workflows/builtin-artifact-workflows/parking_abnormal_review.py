@@ -4,9 +4,10 @@ import json
 import re
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from app.core.artifacts import ArtifactStore
+from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import OpenAICompatibleClient
@@ -71,6 +72,7 @@ class ParkingAbnormalReviewWorkflow:
                 runtime_options,
                 prompt_text,
                 image_attachments,
+                paths,
                 review_source_id,
                 objective,
             )
@@ -104,6 +106,7 @@ class ParkingAbnormalReviewWorkflow:
         runtime_options: RuntimeOptions,
         prompt_text: str,
         image_attachments: list[Attachment],
+        paths: ThreadPaths,
         review_source_id: str,
         objective: str,
     ) -> str:
@@ -130,7 +133,7 @@ class ParkingAbnormalReviewWorkflow:
         payload = {
             "role": "user",
             "content": user_prompt,
-            "_attachments": [attachment.model_dump(mode="python") for attachment in image_attachments],
+            "_attachments": _attachment_payloads(image_attachments, paths),
         }
         return client.complete_sync(system_prompt, [payload])
 
@@ -168,6 +171,43 @@ def _image_attachments(attachments: list[Attachment]) -> list[Attachment]:
         for attachment in attachments
         if (attachment.mime_type or "").split(";", 1)[0].strip().lower().startswith("image/")
     ]
+
+
+def _attachment_payloads(attachments: list[Attachment], paths: ThreadPaths) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for attachment in attachments:
+        payload = attachment.model_dump(mode="python")
+        local_path = _attachment_local_path(str(attachment.path or ""), paths)
+        if local_path is not None:
+            payload["_local_path"] = str(local_path)
+        payloads.append(payload)
+    return payloads
+
+
+def _attachment_local_path(raw_path: str, paths: ThreadPaths) -> Path | None:
+    normalized = raw_path.replace("\\", "/").strip()
+    if not normalized:
+        return None
+    virtual_roots = {
+        "/mnt/user-data/uploads": paths.uploads,
+        "/mnt/user-data/outputs": paths.outputs,
+    }
+    for prefix, root in virtual_roots.items():
+        if normalized == prefix or normalized.startswith(prefix + "/"):
+            suffix = normalized[len(prefix) :].lstrip("/")
+            candidate = (root / suffix).resolve()
+            try:
+                candidate.relative_to(root.resolve())
+            except ValueError:
+                return None
+            return candidate
+    candidate = Path(normalized).expanduser()
+    if not candidate.is_absolute():
+        return None
+    try:
+        return candidate.resolve()
+    except OSError:
+        return None
 
 
 def _normalize_json_reply(raw_reply: str, *, review_source_id: str, objective: str) -> str:

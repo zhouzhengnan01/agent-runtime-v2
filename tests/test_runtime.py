@@ -868,6 +868,57 @@ def test_parking_abnormal_review_workflow_returns_final_json_with_image(
     assert "空旷路面" in user_content[0]["text"]
 
 
+def test_parking_abnormal_review_workflow_encodes_virtual_upload_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+
+    def fake_complete_sync(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del system_prompt
+        payload = self._chat_payload("system", messages)
+        seen_messages.append(payload["messages"])
+        return '[{"reviewSourceId":"source-1","reviewEventId":"event-1","hit":0,"result":"未发现明确杂物堆积证据。"}]'
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    paths = runtime.artifact_store.prepare_thread("parking-review-virtual-image")
+    (paths.uploads / "image.jpg").write_bytes(b"jpeg")
+    agent = AgentConfig(
+        name="parking-review-agent",
+        display_name="Parking Review Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content="当前复判事件来源reviewSourceId为[source-1]。\n本次复判的识别目标为[ClutterDetection]",
+            )
+        ],
+        attachments=[
+            Attachment(name="image.jpg", path="/mnt/user-data/uploads/image.jpg", mime_type="image/jpeg")
+        ],
+        runtime_options=RuntimeOptions(thread_id="parking-review-virtual-image", workflow="parking_abnormal_review"),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert json.loads(result.reply)[0]["reviewSourceId"] == "source-1"
+    user_content = seen_messages[0][1]["content"]
+    assert isinstance(user_content, list)
+    image_blocks = [block for block in user_content if block.get("type") == "image_url"]
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["image_url"]["url"] == "data:image/jpeg;base64,anBlZw=="
+
+
 def test_parking_abnormal_review_workflow_returns_json_when_image_missing(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
     agent = AgentConfig(name="parking-review-agent", display_name="Parking Review Agent", tools=[], skills=[])
