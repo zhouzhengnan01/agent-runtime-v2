@@ -7,6 +7,11 @@
   "selected_skills": [
     "17803963378248hh02dvt"
   ],
+  "runtime_options": {
+    "config_options": {
+      "force_model_config": true
+    }
+  },
   "models": [
     {
       "name": "Qwen3.6-35B-A3B",

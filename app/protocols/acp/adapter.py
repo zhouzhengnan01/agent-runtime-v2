@@ -857,6 +857,8 @@ class AcpRuntimeAdapter:
         merged["config_options"] = config_options
         if session.app_template_name is not None and "app_template_name" not in merged:
             merged["app_template_name"] = session.app_template_name
+        if isinstance(merged.get("selected_skills"), list):
+            merged["selected_skills"] = expand_skill_aliases(merged["selected_skills"])
         return RuntimeOptions.model_validate(merged)
 
     def _merge_and_resolve_runtime_options(self, base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

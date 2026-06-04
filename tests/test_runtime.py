@@ -70,6 +70,78 @@ def test_agent_with_no_configured_skills_uses_installed_skill_plugins(tmp_path: 
     assert result.artifacts[0].name == "result.md"
 
 
+def test_runtime_fixed_reply_bypasses_input_required_for_integration_debug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JETLINKS_AGENT_FIXED_REPLY", '[{"hit":0,"result":"debug-ok"}]')
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfigLoader().load("default")
+    request = ChatRequest(
+        messages=[Message(role="user", content="复判这张图里是否有杂物堆积")],
+        runtime_options=RuntimeOptions(
+            thread_id="fixed-reply-debug",
+            app_template_name="ParkingAbnormalEventMonitoring",
+            selected_skills=["17803963378248hh02dvt"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.status == "completed"
+    assert result.reply == '[{"hit":0,"result":"debug-ok"}]'
+    assert result.metadata["workflow"] == "fixed_reply"
+    assert result.metadata["fixed_reply"] is True
+    assert [event.type for event in events] == [
+        "run.started",
+        "agent.message.delta",
+        "agent.message",
+        "run.completed",
+    ]
+
+
+def test_runtime_fixed_reply_forever_streams_same_delta_without_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("JETLINKS_AGENT_FIXED_REPLY", '[{"hit":0,"result":"debug-ok"}]')
+    monkeypatch.setenv("JETLINKS_AGENT_FIXED_REPLY_FOREVER", "true")
+    monkeypatch.setenv("JETLINKS_AGENT_FIXED_REPLY_INTERVAL_SECONDS", "5")
+
+    async def fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.core.agent.runtime.asyncio.sleep", fake_sleep)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfigLoader().load("default")
+    request = ChatRequest(
+        messages=[Message(role="user", content="复判这张图里是否有杂物堆积")],
+        runtime_options=RuntimeOptions(
+            thread_id="fixed-reply-forever-debug",
+            app_template_name="ParkingAbnormalEventMonitoring",
+            selected_skills=["17803963378248hh02dvt"],
+        ),
+    )
+
+    async def collect_first_three() -> list[ChatEvent]:
+        events: list[ChatEvent] = []
+        async for event in runtime.iter_events(agent, request):
+            events.append(event)
+            if len(events) == 3:
+                break
+        return events
+
+    events = asyncio.run(collect_first_three())
+
+    assert [event.type for event in events] == [
+        "run.started",
+        "agent.message.delta",
+        "agent.message.delta",
+    ]
+    assert events[1].data["text"] == '[{"hit":0,"result":"debug-ok"}]'
+    assert events[2].data["text"] == '[{"hit":0,"result":"debug-ok"}]'
+    assert events[1].data["interval_seconds"] == 5.0
+    assert not any(event.type == "run.completed" for event in events)
+
+
 def test_artifact_generator_emits_coded_events(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("default")
@@ -378,6 +450,92 @@ def test_app_template_models_supply_default_chat_model(
         "api_key": "chat-env-key",
         "temperature": 0.2,
         "max_tokens": 1024,
+    }
+
+
+def test_app_template_can_force_model_config_over_runtime_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apps_dir = tmp_path / "config" / "apps"
+    apps_dir.mkdir(parents=True)
+    (apps_dir / "parking-review.json").write_text(
+        """
+        {
+          "name": "parking-review",
+          "title": "Parking Review",
+          "agent_name": "default",
+          "runtime_options": {
+            "config_options": {
+              "force_model_config": true
+            }
+          },
+          "models": [
+            {
+              "name": "Qwen3.6-35B-A3B",
+              "features": ["chat"],
+              "model": "Qwen3.6-35B-A3B",
+              "base_url": "http://new-model.local/v1",
+              "api_key": "new-key",
+              "temperature": 0.4,
+              "max_tokens": 2048
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del system_prompt, messages
+        seen.update(
+            {
+                "model": self.model,
+                "base_url": self.base_url,
+                "api_key": self.api_key,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+            }
+        )
+        return "ok"
+
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"), app_template_registry=AppTemplateRegistry(tmp_path))
+    agent = AgentConfig(
+        name="default",
+        display_name="Default",
+        model={"model": "agent-model", "base_url": "http://agent.local/v1", "api_key": "agent-key"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="hello")],
+        runtime_options=RuntimeOptions(
+            thread_id="forced-app-model",
+            app_template_name="parking-review",
+            model_name="old-model",
+            base_url="http://192.168.35.140:9100/api/llm/openai/v1/providers/builtin-openai-compatible",
+            api_key="old-key",
+            temperature=0.9,
+            max_tokens=64,
+        ),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    assert result.reply == "ok"
+    assert seen == {
+        "model": "Qwen3.6-35B-A3B",
+        "base_url": "http://new-model.local/v1",
+        "api_key": "new-key",
+        "temperature": 0.4,
+        "max_tokens": 2048,
     }
 
 

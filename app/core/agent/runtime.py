@@ -38,6 +38,16 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 
 
 logger = logging.getLogger("uvicorn.error")
+FIXED_REPLY_ENV = "JETLINKS_AGENT_FIXED_REPLY"
+FIXED_REPLY_ENABLED_ENV = "JETLINKS_AGENT_FIXED_REPLY_ENABLED"
+FIXED_REPLY_FOREVER_ENV = "JETLINKS_AGENT_FIXED_REPLY_FOREVER"
+FIXED_REPLY_INTERVAL_ENV = "JETLINKS_AGENT_FIXED_REPLY_INTERVAL_SECONDS"
+DEFAULT_FIXED_REPLY = (
+    '[{"reviewSourceId":"debug-review-source",'
+    '"reviewEventId":"debug-review-event",'
+    '"hit":0,'
+    '"result":"联调固定响应：agent-v2 已收到请求并返回固定内容。"}]'
+)
 
 
 @dataclass(frozen=True)
@@ -100,6 +110,9 @@ class AgentRuntime:
         self, agent_config: AgentConfig, request: ChatRequest
     ) -> tuple[AgentRunResult, list[ChatEvent]]:
         execution = self._execution_context(agent_config, request)
+        fixed_reply = self._fixed_reply_text()
+        if fixed_reply is not None:
+            return self._fixed_reply_result(execution, fixed_reply)
         if execution.input_required:
             # Preflight exit: do not enter workflows or tool calling when the
             # runtime already knows the request cannot proceed yet.
@@ -233,6 +246,16 @@ class AgentRuntime:
 
     async def iter_events(self, agent_config: AgentConfig, request: ChatRequest) -> AsyncIterator[ChatEvent]:
         execution = self._execution_context(agent_config, request)
+        fixed_reply = self._fixed_reply_text()
+        if fixed_reply is not None:
+            if self._fixed_reply_forever_enabled():
+                async for event in self._stream_fixed_reply_forever_events(execution, fixed_reply):
+                    yield event
+                return
+            _result, events = self._fixed_reply_result(execution, fixed_reply)
+            for event in events:
+                yield event
+            return
         if execution.input_required:
             async for event in self._stream_input_required_events(execution):
                 yield event
@@ -733,6 +756,122 @@ class AgentRuntime:
         )
 
     @staticmethod
+    def _fixed_reply_text() -> str | None:
+        explicit = os.getenv(FIXED_REPLY_ENV)
+        if explicit is not None:
+            return explicit.strip() or DEFAULT_FIXED_REPLY
+        enabled = (os.getenv(FIXED_REPLY_ENABLED_ENV) or "").strip().lower()
+        if enabled in {"1", "true", "yes", "on"}:
+            return DEFAULT_FIXED_REPLY
+        return None
+
+    @staticmethod
+    def _fixed_reply_forever_enabled() -> bool:
+        enabled = (os.getenv(FIXED_REPLY_FOREVER_ENV) or "").strip().lower()
+        return enabled in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _fixed_reply_interval_seconds() -> float:
+        raw = (os.getenv(FIXED_REPLY_INTERVAL_ENV) or "5").strip()
+        try:
+            return max(0.1, float(raw))
+        except ValueError:
+            return 5.0
+
+    async def _stream_fixed_reply_forever_events(
+        self,
+        execution: ExecutionContext,
+        reply: str,
+    ) -> AsyncIterator[ChatEvent]:
+        recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
+        yield recorder.emit(
+            "run.started",
+            {
+                "run_id": recorder.run_id,
+                "workflow": "fixed_reply_forever",
+                "execution_mode": "fixed_reply_forever",
+                "stateless": execution.agent_config.runtime.stateless,
+            },
+        )
+        self.session_manager.begin_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            agent=execution.agent_config.name,
+            workflow="fixed_reply_forever",
+        )
+        interval_seconds = self._fixed_reply_interval_seconds()
+        try:
+            while True:
+                yield recorder.emit(
+                    "agent.message.delta",
+                    {
+                        "text": reply,
+                        "fixed_reply": True,
+                        "fixed_reply_forever": True,
+                        "interval_seconds": interval_seconds,
+                    },
+                )
+                await asyncio.sleep(interval_seconds)
+        finally:
+            self.session_manager.finish_turn(
+                thread_id=execution.paths.thread_id,
+                run_id=recorder.run_id,
+                status="cancelled",
+            )
+
+    def _fixed_reply_result(self, execution: ExecutionContext, reply: str) -> tuple[AgentRunResult, list[ChatEvent]]:
+        recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
+        events = [
+            recorder.emit(
+                "run.started",
+                {
+                    "run_id": recorder.run_id,
+                    "workflow": "fixed_reply",
+                    "execution_mode": "fixed_reply",
+                    "stateless": execution.agent_config.runtime.stateless,
+                },
+            )
+        ]
+        self.session_manager.begin_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            agent=execution.agent_config.name,
+            workflow="fixed_reply",
+        )
+        result = AgentRunResult(
+            agent=execution.agent_config.name,
+            thread_id=execution.paths.thread_id,
+            reply=reply,
+            metadata={
+                "workflow": "fixed_reply",
+                "run_id": recorder.run_id,
+                "fixed_reply": True,
+                "tool_rounds": 0,
+                "tool_call_count": 0,
+                "mode": (
+                    execution.request.runtime_options.mode
+                    if execution.request.runtime_options is not None and execution.request.runtime_options.mode
+                    else "edit"
+                ),
+            },
+        )
+        events.append(recorder.emit("agent.message.delta", {"text": reply}))
+        events.append(recorder.emit("agent.message", {"text": reply}))
+        events.append(recorder.emit("run.completed", {"result": result.model_dump()}))
+        self.session_store.save(
+            execution.paths,
+            self._conversation_with_result(execution.conversation, result),
+            run_id=recorder.run_id,
+        )
+        self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, events, result)
+        self.session_manager.finish_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            status="completed",
+        )
+        return result, events
+
+    @staticmethod
     def _replace_final_result_event(events: list[ChatEvent], result: AgentRunResult) -> None:
         for index in range(len(events) - 1, -1, -1):
             if events[index].type in {"run.completed", "run.failed"}:
@@ -1156,9 +1295,10 @@ class AgentRuntime:
         app_template_name: str,
     ) -> dict[str, object]:
         explicit = runtime_options.model_fields_set
+        force_model_config = runtime_options.config_options.get("force_model_config") is True
         updates: dict[str, object] = {}
         model_name = model.model or model.default_model or model.name
-        if model_name and "model_name" not in explicit:
+        if model_name and (force_model_config or "model_name" not in explicit):
             updates["model_name"] = model_name
         for option_name in (
             "base_url",
@@ -1168,16 +1308,16 @@ class AgentRuntime:
             "max_tokens",
             "request_timeout_seconds",
         ):
-            if option_name in explicit:
+            if option_name in explicit and not force_model_config:
                 continue
             value = getattr(model, option_name)
             if value is not None:
                 updates[option_name] = value
-        if "api_key" not in explicit and "api_key" not in updates and model.api_key_enc:
+        if (force_model_config or "api_key" not in explicit) and "api_key" not in updates and model.api_key_enc:
             decrypted = self._decrypt_app_model_api_key(model.api_key_enc, app_template_name, model)
             if decrypted:
                 updates["api_key"] = decrypted
-        if "api_key" not in explicit and "api_key" not in updates:
+        if (force_model_config or "api_key" not in explicit) and "api_key" not in updates:
             api_key = self._api_key_from_app_model_env(model)
             if api_key:
                 updates["api_key"] = api_key
