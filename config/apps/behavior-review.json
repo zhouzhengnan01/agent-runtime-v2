@@ -1,0 +1,99 @@
+{
+  "name": "behavior-review",
+  "title": "行为识别连续复判",
+  "description": "对翻越、摔倒、禁区逗留等告警做证据优先二次研判，并支持持续拉取告警、连续复判、误报抑制、处置建议和人工复核要求。",
+  "category": "vision",
+  "icon": "shield",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [
+    "behavior-review"
+  ],
+  "selected_mcp_tools": [],
+  "runtime_options": {
+    "mode": "yolo",
+    "config_options": {
+      "max_tool_rounds": 1000,
+      "agent_execution_policy": {
+        "name": "behavior_review_continuous_second_pass",
+        "mode": "continuous_review",
+        "stage_order": [
+          "alert_ingest",
+          "evidence_integrity_check",
+          "second_pass_judgement",
+          "false_positive_suppression",
+          "risk_grade",
+          "action_recommendation",
+          "review_ledger"
+        ],
+        "instructions": [
+          "优先连续处理待复判告警，不要只输出方案文案。",
+          "二次研判必须先区分文本规则命中、模型视觉证据、结构化检测结果和人工复核要求。",
+          "没有图片、视频或结构化视觉证据时，不得把文本规则命中升级为视觉确认事件。",
+          "有 MCP 告警拉取工具时，先调用告警查询工具，再对每条告警调用 behavior-review；只要仍有待复判告警就继续拉取和复判。",
+          "如果 MCP 工具本身已经完成拉取和批量复判，并返回 pending_count，则可交给 runtime 按 pending_count 自动重放；如果 MCP 只负责查询列表，则必须先逐条复判再继续查询。",
+          "复判结果必须输出 review_decision、risk_level、evidence_mode、risk_score、evidence_gaps、actions 和 continuous_review.next_action。",
+          "高风险确认事件要保留证据、生成处置建议并记录复判链路；证据不足或疑似误报时进入人工复核或补证流程。"
+        ],
+        "completion_gates": [
+          "当前批次无待复判告警",
+          "所有已拉取告警均生成复判结论",
+          "证据不足项已转 required_inputs 或补证建议",
+          "高风险项已生成处置动作和留痕要求"
+        ]
+      },
+      "conditional_tool_loop": {
+        "continue_while": {
+          "json_path": "$.pending_count",
+          "operator": "gt",
+          "expected": 0
+        },
+        "poll_interval_seconds": 3,
+        "marker": "pending_count"
+      }
+    }
+  },
+  "prompt_examples": [
+    "这是 smoke 测试：必须调用名为 behavior-review 的 skill 工具一次，禁止调用 artifact_manifest_update 或只更新 manifest。工具参数：event_id=smoke-1，text_rule_candidates=[\"人员翻越围栏\"]，has_visual_evidence=false，rule_confidence=0.82，continuous_review=false。工具完成后只回复 behavior-review.md 和 behavior-review.json。",
+    "复核老人摔倒事件：区分文本规则命中、视觉证据确认、证据缺口和处置建议。",
+    "不间断拉取待复判告警，每 3 秒复判一批，直到 pending_count 为 0。"
+  ],
+  "tags": [
+    "行为识别",
+    "复判",
+    "连续复判",
+    "二次研判",
+    "证据优先",
+    "人工复核"
+  ],
+  "model_tags": [
+    "chat",
+    "vision",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat",
+        "tool_call"
+      ],
+      "priority_features": [
+        "tool_call",
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

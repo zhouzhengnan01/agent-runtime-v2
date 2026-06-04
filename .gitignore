@@ -1,0 +1,15 @@
+.DS_Store
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.env
+.runtime/
+test-results/
+__pycache__/
+*.py[cod]
+config/agents/*.local.json
+config/*.local.json
+config/sandbox/*.local.json
+frontend/workbench/dist/
+frontend/workbench/node_modules/

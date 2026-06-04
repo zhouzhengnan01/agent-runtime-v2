@@ -1,0 +1,10 @@
+{
+  "id": "tianjin-document-generator",
+  "name": "tianjin-document-generator",
+  "version": "0.1.0",
+  "description": "使用大模型和当前会话文件生成天津园区商务文档、报价、投标和合同草案。",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-document-generator/manifest.json"
+  ]
+}

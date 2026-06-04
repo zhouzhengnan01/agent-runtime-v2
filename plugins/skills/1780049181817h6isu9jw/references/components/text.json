@@ -1,0 +1,77 @@
+{
+    "type": "text",
+    "name": "文本框",
+    "visible": true,
+    "isLocked": false,
+    "dataSourceProps": {
+        "mode": "static",
+        "type": "string",
+        "defaultValue": [
+            {
+                "text": "-"
+            }
+        ],
+        "sourceId": "",
+        "mapping": {
+            "text": ""
+        },
+        "action": {
+            "enable": false,
+            "actions": []
+        }
+    },
+    "eventProps": [],
+    "animationProps": [],
+    "componentProps": {
+        "style": {
+            "x": 384,
+            "y": 233,
+            "width": 267,
+            "height": 125,
+            "rotate": {
+                "angle": 0
+            }
+        },
+        "background": {
+            "backgroundColor": "#0000",
+            "imgField": "",
+            "opacity": 1,
+            "borderColor": "#000",
+            "borderType": "solid",
+            "borderWidth": 1,
+            "borderRadius": 0,
+            "shadowColor": "#0000",
+            "shadowBlur": 0,
+            "shadowX": 0,
+            "shadowY": 0,
+            "shadowDiff": 0
+        },
+        "font": {
+            "colorType": "default",
+            "color": "rgba(255,255,255,1)",
+            "color1": "rgba(255,255,255,1)",
+            "color2": "#096dd9",
+            "gradientAngle": 180,
+            "fontSize": 16,
+            "fontWeight": "normal",
+            "fontFamily": "Arial",
+            "fontStyle": "normal",
+            "verticalAlign": "center",
+            "horizontalAlign": "center",
+            "isTextShadow": false,
+            "textShadow": "0 5px 10px #096dd9",
+            "paddingTop": 0,
+            "paddingBottom": 0,
+            "paddingLeft": 0,
+            "paddingRight": 0
+        },
+        "text": {
+            "scroll": false,
+            "speed": 100,
+            "sweepLight": false,
+            "sweepLightSpeed": 2,
+            "sweepLightColor": "rgba(255,255,255,0.6)"
+        }
+    },
+    "id": "text_pwz5F2n7f6sEYj3J"
+}

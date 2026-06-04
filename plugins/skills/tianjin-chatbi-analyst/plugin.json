@@ -1,0 +1,10 @@
+{
+  "id": "tianjin-chatbi-analyst",
+  "name": "tianjin-chatbi-analyst",
+  "version": "0.1.0",
+  "description": "使用大模型和当前会话文件实现天津园区智能问数、数据分析口径梳理和图表建议。",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-chatbi-analyst/manifest.json"
+  ]
+}

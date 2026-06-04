@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "required": ["commands", "steps"],
+  "properties": {
+    "commands": {
+      "type": "string",
+      "title": "命令调用说明"
+    },
+    "steps": {
+      "type": "string",
+      "title": "部署/实施步骤"
+    },
+    "commands_name": {
+      "type": "string",
+      "default": "命令调用.txt"
+    },
+    "steps_name": {
+      "type": "string",
+      "default": "步骤说明.docx"
+    }
+  }
+}

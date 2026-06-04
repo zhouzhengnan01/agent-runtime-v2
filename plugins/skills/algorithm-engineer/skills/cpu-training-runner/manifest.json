@@ -1,0 +1,109 @@
+{
+  "name": "cpu-training-runner",
+  "description": "Run a small CPU YOLO training job in the sandbox and collect best.pt, last.pt, results.csv, args.yaml, and a training summary.",
+  "output_kind": "model",
+  "generation": true,
+  "routing": {
+    "summary": "Use when the user explicitly wants to start a CPU training sandbox, smoke train a detector, or produce a best.pt locally before moving to GPU.",
+    "keywords": [
+      "cpu 训练",
+      "CPU 训练",
+      "沙盒训练",
+      "启动沙盒",
+      "best.pt",
+      "yolo train",
+      "device=cpu",
+      "epochs"
+    ],
+    "examples": [
+      "用 CPU 沙盒跑 1 epoch，验证能生成 best.pt",
+      "给这个 data.yaml 启动一次 CPU YOLO 训练"
+    ]
+  },
+  "quality_template": [
+    "data_yaml",
+    "cpu_device",
+    "bounded_epochs",
+    "best_pt",
+    "results_csv",
+    "training_summary"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "cpu-training-runner"
+      },
+      "data": {
+        "type": "string",
+        "description": "Path to YOLO data.yaml."
+      },
+      "data_yaml": {
+        "type": "string",
+        "description": "Path to YOLO data.yaml."
+      },
+      "model": {
+        "type": "string",
+        "default": "yolo11n.pt"
+      },
+      "epochs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 5,
+        "default": 1
+      },
+      "imgsz": {
+        "type": "integer",
+        "minimum": 128,
+        "maximum": 960,
+        "default": 320
+      },
+      "batch": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 8,
+        "default": 1
+      },
+      "experiment_name": {
+        "type": "string"
+      },
+      "mock": {
+        "type": "boolean",
+        "default": false
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "best_pt": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": true,
+    "profile": "python-skill",
+    "request_schema_version": "skill-run.v1",
+    "adapter_command": "python {package_dir}/scripts/cpu_training_runner.py --request {request_path} --outputs {outputs_dir}",
+    "fallback_to_local": false
+  },
+  "model_tags": [
+    "chat",
+    "reasoning"
+  ]
+}

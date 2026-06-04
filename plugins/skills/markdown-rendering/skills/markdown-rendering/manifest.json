@@ -1,0 +1,92 @@
+{
+  "name": "markdown-rendering",
+  "description": "Generate rich Markdown artifacts.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "Use for Markdown documents, architecture notes, reports, tables, Mermaid diagrams, ECharts blocks, and rich text artifacts.",
+    "keywords": [
+      "markdown",
+      "md",
+      "文档",
+      "报告",
+      "说明",
+      "mermaid",
+      "表格"
+    ],
+    "examples": [
+      "生成一份 markdown 架构说明",
+      "输出一份技术报告",
+      "生成带 Mermaid 的文档"
+    ]
+  },
+  "quality_template": [
+    "mermaid",
+    "tables",
+    "echarts_block",
+    "attachment_block"
+  ],
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string"
+      },
+      "message": {
+        "type": "string"
+      },
+      "markdown": {
+        "type": "string"
+      },
+      "blocks": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "output_name": {
+        "type": "string"
+      },
+      "outputName": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "success": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": "string"
+      },
+      "outputs": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "result": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "success",
+      "message",
+      "outputs",
+      "result"
+    ]
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat"
+  ]
+}

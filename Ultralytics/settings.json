@@ -1,0 +1,21 @@
+{
+  "settings_version": "0.0.6",
+  "datasets_dir": "D:\\Skill\\jetlinks-agent-runtime-agent-v2-0527\\jetlinks-agent-runtime-agent-v2-zzn\\datasets",
+  "weights_dir": "weights",
+  "runs_dir": "runs",
+  "uuid": "ea44fbb593e4785452a1130d26801c5b3bfa7267cb7531cb9546fa2118e338f7",
+  "sync": true,
+  "api_key": "",
+  "openai_api_key": "",
+  "clearml": true,
+  "comet": true,
+  "dvc": true,
+  "hub": true,
+  "mlflow": true,
+  "neptune": true,
+  "raytune": true,
+  "tensorboard": false,
+  "wandb": false,
+  "vscode_msg": true,
+  "openvino_msg": true
+}

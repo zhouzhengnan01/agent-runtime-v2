@@ -1,0 +1,52 @@
+{
+  "name": "algorithm-cpu-training-sandbox",
+  "title": "CPU 训练沙盒",
+  "description": "用本机 CPU 沙盒执行受限 YOLO smoke 训练，验证 data.yaml 到 best.pt 的闭环。",
+  "category": "algorithm-training",
+  "icon": "package",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [
+    "cpu-training-runner"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "用 CPU 沙盒跑一个 mock smoke 训练，mock=true，验证能生成 best.pt。",
+    "用 CPU 沙盒训练一个目标检测数据集，data_yaml=/data/datasets/<project>/data.yaml model=yolo11n.pt epochs=1 imgsz=320 batch=1。"
+  ],
+  "tags": [
+    "CPU",
+    "训练",
+    "沙盒",
+    "best.pt",
+    "YOLO"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

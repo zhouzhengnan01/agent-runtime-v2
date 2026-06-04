@@ -1,0 +1,57 @@
+{
+  "name": "tianjin-park-big-screen",
+  "title": "天津园区大屏驾驶舱",
+  "description": "生成园区运营大屏方案、指标体系、实时事件流契约、摄像头复判看板和静态 HTML 预览。",
+  "category": "park-operations",
+  "icon": "park",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [
+    "tianjin-park-big-screen",
+    "tianjin-chatbi-analyst",
+    "tianjin-system-monitor",
+    "tianjin-sentiment-monitor",
+    "tianjin-rpa-operator",
+    "behavior-review"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "生成一个天津园区运营大屏，包含摄像头在线率、实时告警、AI 行为复判、系统健康、舆情风险和 RPA 巡检状态。",
+    "做一个摄像头连续复判态势大屏，输出 dashboard-spec.json、接口契约和 HTML 预览。"
+  ],
+  "tags": [
+    "天津园区",
+    "大屏",
+    "驾驶舱",
+    "实时监控",
+    "行为复判"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

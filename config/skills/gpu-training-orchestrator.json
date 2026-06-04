@@ -1,0 +1,114 @@
+{
+  "name": "gpu-training-orchestrator",
+  "description": "Orchestrate benchmark, formal training, resume, monitoring, ETA estimation, and safe training parameter records.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "Use for planning YOLO/RT-DETR training runs, small benchmarks, formal epochs, monitoring results.csv, and selecting safe batch sizes.",
+    "keywords": [
+      "训练",
+      "benchmark",
+      "epochs",
+      "batch",
+      "断点恢复",
+      "results.csv",
+      "best.pt",
+      "last.pt"
+    ],
+    "examples": [
+      "先跑 1 epoch benchmark 再正式训练",
+      "生成 RT-DETR 训练命令和监控方案"
+    ]
+  },
+  "quality_template": [
+    "benchmark_first",
+    "training_command",
+    "monitoring",
+    "eta",
+    "resume",
+    "parameters_record"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "gpu-training-orchestrator"
+      },
+      "model": {
+        "type": "string"
+      },
+      "data": {
+        "type": "string",
+        "description": "Legacy path field. Prefer dataset_root or dataset.root_dir for an extracted image/dataset directory."
+      },
+      "dataset_root": {
+        "type": "string",
+        "description": "Extracted image/dataset directory. Do not pass .zip/.tar archives; call extract_archive first."
+      },
+      "ref_image": {
+        "type": "string",
+        "description": "Optional reference image path used by generation/annotation flows."
+      },
+      "labels": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Detection labels/classes such as ['person']."
+      },
+      "training": {
+        "type": "object",
+        "description": "YOLO training parameters such as model, epochs, imgsz, batch, device, workers, patience, amp. Use amp=false on restricted-network GPU machines to avoid Ultralytics AMP self-check downloads."
+      },
+      "runtime": {
+        "type": "object",
+        "description": "Runtime parameters such as conda_env_name."
+      },
+      "dry_run": {
+        "type": "boolean",
+        "description": "When true, write a dry-run summary and do not start training."
+      },
+      "skip_training": {
+        "type": "boolean",
+        "description": "When true, validate and write the normalized request without starting training."
+      },
+      "epochs": {
+        "type": "integer"
+      },
+      "batch": {
+        "type": "integer"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "execution": {
+    "type": "template",
+    "filename": "gpu-training-orchestrator.md",
+    "template": "# GPU 训练编排方案\n\n## 输入\n\n- 模型：${model}\n- 数据：${data}\n- epochs：${epochs}\n- batch：${batch}\n- 机器：${machines}\n\n## Benchmark\n\n先跑小样本 benchmark，确认数据路径、类别、显存峰值、单 epoch 耗时和 best.pt 产出链路。\n\n```bash\nyolo detect train model=${model} data=${data} epochs=1 batch=${batch} imgsz=640 workers=4 name=benchmark_e1\n```\n\n## 正式训练\n\nbenchmark 通过后再放大 epochs，并记录 args.yaml、results.csv、best.pt、last.pt。\n\n```bash\nyolo detect train model=${model} data=${data} epochs=${epochs} batch=${batch} imgsz=640 patience=8 name=formal_train\n```\n\n## 监控\n\n```bash\ntail -f runs/detect/formal_train/results.csv\nnvidia-smi\n```\n"
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning"
+  ]
+}

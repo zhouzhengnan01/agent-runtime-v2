@@ -1,0 +1,76 @@
+{
+  "name": "experiment-ledger",
+  "description": "Create and summarize experiment records so training runs remain reproducible and comparable.",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "Use for experiment YAML records, result summaries, compare-experiment tables, and post-training retrospectives.",
+    "keywords": [
+      "实验记录",
+      "ledger",
+      "复盘",
+      "记录实验",
+      "对比实验",
+      "experiment_id",
+      "results.csv"
+    ],
+    "examples": [
+      "给这次训练生成实验台账",
+      "汇总几个 results.csv 的实验结论"
+    ]
+  },
+  "quality_template": [
+    "experiment_id",
+    "parameters",
+    "machine",
+    "dataset",
+    "status",
+    "metrics",
+    "notes"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "experiment-ledger"
+      },
+      "experiment_id": {
+        "type": "string"
+      },
+      "model": {
+        "type": "string"
+      },
+      "dataset": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat"
+  ]
+}

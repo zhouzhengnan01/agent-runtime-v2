@@ -1,0 +1,53 @@
+{
+  "name": "algorithm-dataset-curation",
+  "title": "算法数据治理",
+  "description": "把散乱图片、人工标签、训练标签和 review queue 整理成可复现 YOLO 数据集，并输出去重、冲突和统计报告。",
+  "category": "algorithm-training",
+  "icon": "table",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [
+    "dataset-curator",
+    "data-auto-annotation",
+    "image-dataset-generation"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "这是 smoke 测试：只调用 dataset-curator 生成一个最小数据集审计报告，source_path=/mnt/user-data/uploads，output_path=/mnt/user-data/outputs/dataset-smoke，不要调用 SAM3 或图像生成。",
+    "把目标检测图库整理成训练集 <project>_train_v1，manual 标签优先，training 次之，review queue 再次。"
+  ],
+  "tags": [
+    "数据治理",
+    "YOLO",
+    "去重",
+    "标签冲突"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

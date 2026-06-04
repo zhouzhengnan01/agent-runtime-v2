@@ -1,0 +1,15 @@
+{
+  "name": "reference-image-yolo-trainer",
+  "description": "Composite skill for reference-image-driven YOLO training.",
+  "output_kind": "model",
+  "generation": true,
+  "skill_type": "composite",
+  "child_skills": [
+    "image-dataset-generation",
+    "data-auto-annotation",
+    "dataset-curator",
+    "cpu-training-runner",
+    "detector-evaluator",
+    "experiment-ledger"
+  ]
+}

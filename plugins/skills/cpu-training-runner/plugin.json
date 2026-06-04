@@ -1,0 +1,12 @@
+{
+  "id": "cpu-training-runner",
+  "name": "cpu-training-runner",
+  "version": "0.1.0",
+  "description": "Run a small CPU YOLO training job in the sandbox and collect best.pt, last.pt, results.csv, args.yaml, and a training summary.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/cpu-training-runner/manifest.json"
+  ],
+  "source_suite": "algorithm-engineer"
+}

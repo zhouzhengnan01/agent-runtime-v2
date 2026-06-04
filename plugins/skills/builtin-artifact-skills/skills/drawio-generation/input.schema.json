@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "diagram_type": {
+      "type": "string",
+      "enum": ["product_architecture", "system_architecture", "flowchart", "mindmap"],
+      "default": "system_architecture"
+    },
+    "diagramType": {
+      "type": "string",
+      "enum": ["product_architecture", "system_architecture", "flowchart", "mindmap"]
+    },
+    "title": {
+      "type": "string"
+    },
+    "data": {
+      "type": "object"
+    },
+    "style": {
+      "type": "string",
+      "enum": ["default", "modern", "colorful", "minimal"],
+      "default": "modern"
+    },
+    "message": {
+      "type": "string"
+    }
+  }
+}

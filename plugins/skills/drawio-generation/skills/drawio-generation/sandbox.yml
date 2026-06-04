@@ -1,0 +1,17 @@
+version: 1
+runtime:
+  type: python
+  python: "3.12"
+  requirements: requirements.txt
+  entrypoint: scripts/run_skill.py
+sandbox:
+  profile: python-skill
+  network: false
+  timeout_sec: 60
+  memory_mb: 256
+mounts:
+  skill_dir: readonly
+  workspace: readwrite
+outputs:
+  file_globs:
+    - "*.drawio"

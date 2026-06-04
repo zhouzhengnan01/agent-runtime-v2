@@ -1,0 +1,53 @@
+{
+    "name": "data-auto-annotation-test",
+    "title": "数据自动标注助手-test",
+    "description": "预置 SAM3 自动标注和image-dataset-generation能力，适合上传图片后生成目标检测预标注和标准 COCO JSON 数据集。",
+    "category": "vision",
+    "icon": "image",
+    "agent_name": "default",
+    "workflow": null,
+    "selected_skills": [
+      "data-auto-annotation",
+      "image-dataset-generation"
+    ],
+    "selected_mcp_tools": [],
+    "prompt_examples": [
+      "请把我上传的图片自动标注成 COCO JSON，类别 labels: person car helmet",
+      "用 SAM3 对这张图片做目标检测预标注，并导出 annotations.coco.json"
+    ],
+    "tags": [
+      "自动标注",
+      "COCO",
+      "SAM3",
+      "数据集",
+      "图片合成"
+    ],
+    "model_tags": [
+      "chat",
+      "vision_segmentation",
+      "tool_call"
+    ],
+    "models": [
+      {
+        "name": "Qwen3.6-35B-A3B",
+        "features": [
+          "vision",
+          "reasoning",
+          "chat"
+        ],
+        "priority_features": [
+          "chat",
+          "reasoning"
+        ],
+        "priority": 0,
+        "provider": "openai-compatible",
+        "model": "Qwen3.6-35B-A3B",
+        "base_url": "http://124.132.152.75:62092/v1",
+        "default_model": "Qwen3.6-35B-A3B",
+        "tool_choice": "auto",
+        "temperature": 0.4,
+        "max_tokens": 2048,
+        "api_key": "abc@123"
+      }
+    ]
+  }

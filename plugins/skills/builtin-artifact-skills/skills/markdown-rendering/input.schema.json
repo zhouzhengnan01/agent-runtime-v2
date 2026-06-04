@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "title": { "type": "string" },
+    "message": { "type": "string" },
+    "markdown": { "type": "string" },
+    "blocks": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "output_name": { "type": "string" },
+    "outputName": { "type": "string" }
+  }
+}

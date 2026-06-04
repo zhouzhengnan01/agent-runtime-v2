@@ -1,0 +1,151 @@
+{
+  "name": "behavior-review",
+  "description": "Evidence-first continuous second-pass review for behavior alerts, producing review conclusion, second-pass logic, risk score, evidence gaps, handling actions, and manual review recommendation.",
+  "output_kind": "json",
+  "generation": false,
+  "routing": {
+    "summary": "Use for AI复判, 连续复判, 不间断复判, 二次研判, 人工复核, 二次审核, 告警审核 after behavior detection or alarm events.",
+    "keywords": [
+      "复判",
+      "复核",
+      "二次审核",
+      "人工审核",
+      "告警审核",
+      "连续复判",
+      "不间断复判",
+      "二次研判",
+      "AI复判",
+      "review"
+    ],
+    "examples": [
+      "对这个翻越告警做 AI 复判",
+      "复核老人摔倒事件是否需要升级处理",
+      "持续拉取待复判告警并逐条二次研判"
+    ]
+  },
+  "quality_template": [
+    "evidence_first",
+    "second_pass_logic",
+    "review_decision",
+    "risk_score",
+    "false_positive_suppression",
+    "evidence_gaps",
+    "actions",
+    "continuous_review"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "text_rule_candidates",
+      "has_visual_evidence"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "behavior-review"
+      },
+      "event_id": {
+        "type": "string"
+      },
+      "original_decision": {
+        "type": "string"
+      },
+      "batch_id": {
+        "type": "string"
+      },
+      "review_round": {
+        "type": "integer"
+      },
+      "continuous_review": {
+        "type": "boolean"
+      },
+      "detector_confidence": {
+        "type": "number"
+      },
+      "rule_confidence": {
+        "type": "number"
+      },
+      "structured_evidence": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "false_positive_signals": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "text_rule_candidates": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "has_visual_evidence": {
+        "type": "boolean"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "review_decision",
+      "risk_level",
+      "evidence_mode",
+      "actions"
+    ],
+    "properties": {
+      "review_decision": {
+        "type": "string"
+      },
+      "risk_level": {
+        "type": "string"
+      },
+      "risk_score": {
+        "type": "number"
+      },
+      "evidence_mode": {
+        "type": "string"
+      },
+      "second_review_logic": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "continuous_review": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "actions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "vision"
+  ]
+}

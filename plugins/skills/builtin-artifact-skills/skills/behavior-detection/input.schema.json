@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "required": ["skill_name", "text_rule_candidates", "has_visual_evidence"],
+  "properties": {
+    "skill_name": { "const": "behavior-detection" },
+    "text_rule_candidates": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "has_visual_evidence": { "type": "boolean" },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

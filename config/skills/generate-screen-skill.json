@@ -1,0 +1,73 @@
+{
+  "name": "generate-screen-skill",
+  "description": "Generate platform-compatible visualization big-screen JSON packages for 大屏、智慧大屏、可视化大屏、数据大屏、智慧园区、能耗大屏, including generated-bigscreen/page.json and ECharts resource guidance.",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "Use for natural-language visualization big-screen generation requests.",
+    "keywords": [
+      "大屏",
+      "智慧大屏",
+      "可视化大屏",
+      "数据大屏",
+      "智慧园区",
+      "能耗大屏",
+      "page.json",
+      "ECharts",
+      "custom-chart",
+      "resourceComponentEcharts"
+    ],
+    "examples": [
+      "给我生成一个智慧大屏",
+      "生成智慧园区运营可视化大屏",
+      "输出大屏 page.json 和 ECharts 资源说明"
+    ]
+  },
+  "quality_template": [
+    "page_json",
+    "echarts_resources",
+    "platform_commands"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "generate-screen-skill"
+      },
+      "objective": {
+        "type": "string",
+        "description": "The natural-language big-screen generation objective."
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

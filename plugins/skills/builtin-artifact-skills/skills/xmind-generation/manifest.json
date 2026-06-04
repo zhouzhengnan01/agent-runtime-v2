@@ -1,0 +1,91 @@
+{
+  "name": "xmind-generation",
+  "description": "Generate XMind mind maps.",
+  "output_kind": "mindmap",
+  "generation": true,
+  "routing": {
+    "summary": "Use for XMind mind maps, topic trees, brainstorm structures, and multi-level task breakdowns.",
+    "keywords": [
+      "xmind",
+      "思维导图",
+      "脑图",
+      "mindmap",
+      "主题树",
+      "任务拆解"
+    ],
+    "examples": [
+      "生成一份 xmind 思维导图",
+      "输出脑图",
+      "做一个任务拆解 mind map"
+    ]
+  },
+  "quality_template": [
+    "multi_level_topics",
+    "priorities",
+    "notes",
+    "task_structure"
+  ],
+  "input_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string"
+      },
+      "sheet_title": {
+        "type": "string"
+      },
+      "topics": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "message": {
+        "type": "string"
+      },
+      "output_path": {
+        "type": "string"
+      },
+      "outputPath": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+      "success": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": "string"
+      },
+      "outputs": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        }
+      },
+      "result": {
+        "type": "object"
+      }
+    },
+    "required": [
+      "success",
+      "message",
+      "outputs",
+      "result"
+    ]
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat"
+  ]
+}

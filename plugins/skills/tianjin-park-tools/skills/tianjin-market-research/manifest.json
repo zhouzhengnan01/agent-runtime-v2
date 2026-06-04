@@ -1,0 +1,164 @@
+{
+  "name": "tianjin-market-research",
+  "description": "使用大模型和当前会话文件实现天津园区市场调研，执行市场搜索、需求解析、多关键词搜索、AI 洞察、问卷和市场预测。",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "使用大模型和当前会话文件实现天津园区市场调研，执行市场搜索、需求解析、多关键词搜索、AI 洞察、问卷和市场预测。",
+    "keywords": [
+      "市场调研",
+      "竞品",
+      "搜索",
+      "需求解析",
+      "问卷",
+      "预测",
+      "洞察"
+    ],
+    "examples": [
+      "搜索九阳厨房小家电市场动态",
+      "解析这段市场需求",
+      "分析一个调研问卷"
+    ]
+  },
+  "quality_template": [
+    "local_model_generation",
+    "artifact_report"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-market-research"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "search",
+          "latest",
+          "parse_demand",
+          "search_multi",
+          "ai_insights",
+          "list_surveys",
+          "survey_templates",
+          "save_survey",
+          "analyze_survey",
+          "prediction"
+        ],
+        "description": "要执行的能力动作。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "可选。仅 mode=backend 时用于覆盖天津后端 API base URL。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "query": {
+        "type": "string"
+      },
+      "search_type": {
+        "type": "string",
+        "default": "market"
+      },
+      "page_size": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      },
+      "demand": {
+        "type": "string"
+      },
+      "keywords": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "survey_id": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "type": {
+        "type": "string"
+      },
+      "targetAudience": {
+        "type": "string"
+      },
+      "sampleSize": {
+        "type": "integer"
+      },
+      "questions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "topic": {
+        "type": "string"
+      },
+      "results": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "competitors": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "focus": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "backend"
+        ],
+        "default": "local",
+        "description": "执行模式。默认 local：使用当前 Runtime 大模型和会话文件生成成果；backend：显式调用天津后端 HTTP API。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

@@ -1,0 +1,156 @@
+{
+  "name": "tianjin-document-generator",
+  "description": "使用大模型和当前会话文件实现天津园区智能文档，生成商务文档、报价估算、报价/投标记录，并写入可下载文档产物。",
+  "output_kind": "document",
+  "generation": true,
+  "routing": {
+    "summary": "使用大模型和当前会话文件实现天津园区智能文档，生成商务文档、报价估算、报价/投标记录，并写入可下载文档产物。",
+    "keywords": [
+      "文档生成",
+      "报价",
+      "投标",
+      "合同",
+      "DocuGen",
+      "商务文档"
+    ],
+    "examples": [
+      "为某客户生成报价单",
+      "估算这个项目报价",
+      "列出最近报价记录"
+    ]
+  },
+  "quality_template": [
+    "local_model_generation",
+    "artifact_report"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-document-generator"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "generate",
+          "templates",
+          "estimate_quote",
+          "list_quote_records",
+          "save_quote_record",
+          "list_bid_records",
+          "save_bid_record",
+          "export_document"
+        ],
+        "description": "要执行的能力动作。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "可选。仅 mode=backend 时用于覆盖天津后端 API base URL。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "document_type": {
+        "type": "string",
+        "description": "price_file/bidding/contract/software 等文档类型。"
+      },
+      "template_type": {
+        "type": "string"
+      },
+      "project_name": {
+        "type": "string"
+      },
+      "client_name": {
+        "type": "string"
+      },
+      "key_info": {
+        "type": "string"
+      },
+      "requirements": {
+        "type": "string"
+      },
+      "clientName": {
+        "type": "string"
+      },
+      "projectName": {
+        "type": "string"
+      },
+      "projectDescription": {
+        "type": "string"
+      },
+      "serviceItems": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "title": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "document_id": {
+        "type": "string"
+      },
+      "format": {
+        "type": "string",
+        "default": "docx"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "backend"
+        ],
+        "default": "local",
+        "description": "执行模式。默认 local：使用当前 Runtime 大模型和会话文件生成成果；backend：显式调用天津后端 HTTP API。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}
