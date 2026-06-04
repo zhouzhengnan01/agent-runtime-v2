@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
+import httpx
 import pytest
 from PIL import Image
 
@@ -724,6 +725,170 @@ def test_agent_loop_passes_uploaded_image_as_vision_content(
     assert "_attachments" not in history_path.read_text(encoding="utf-8")
 
 
+def test_agent_runtime_downloads_remote_image_attachment_before_llm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://example.test/frame?id=1"
+        return httpx.Response(
+            200,
+            headers={"content-type": "image/jpeg", "content-length": "8"},
+            content=b"jpegdata",
+        )
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del system_prompt, tools
+        payload = self._chat_payload("system", messages)
+        seen_messages.append(payload["messages"])
+        return LlmChatResponse(content="已复判图片", finish_reason="stop")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="remote-vision-agent",
+        display_name="Remote Vision Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="请复判图片")],
+                attachments=[
+                    Attachment(
+                        name="image.jpg",
+                        path="https://example.test/frame?id=1",
+                        mime_type="image/jpeg",
+                        metadata={"acp_type": "resource_link", "uri": "https://example.test/frame?id=1"},
+                    )
+                ],
+                runtime_options=RuntimeOptions(thread_id="remote-vision"),
+            ),
+        )
+    )
+
+    assert result.reply == "已复判图片"
+    downloaded = tmp_path / "threads" / "remote-vision" / "uploads" / "image.jpg"
+    assert downloaded.read_bytes() == b"jpegdata"
+    user_content = seen_messages[0][1]["content"]
+    assert isinstance(user_content, list)
+    assert user_content[1]["type"] == "image_url"
+    assert user_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    history_text = (tmp_path / "threads" / "remote-vision" / "memory" / "conversation.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "/mnt/user-data/uploads/image.jpg" in history_text
+
+
+def test_parking_abnormal_review_workflow_returns_final_json_with_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+    seen_system_prompts: list[str] = []
+
+    def fake_complete_sync(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        seen_system_prompts.append(system_prompt)
+        payload = self._chat_payload("system", messages)
+        seen_messages.append(payload["messages"])
+        return (
+            "```json\n"
+            "[{\"reviewSourceId\":\"source-from-model\",\"reviewEventId\":\"event-1\",\"hit\":1,\"result\":\"发现杂物堆积。\"}]\n"
+            "```"
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="parking-review-agent",
+        display_name="Parking Review Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content=(
+                    "当前复判事件来源reviewSourceId为[source-1]。\n"
+                    "本次复判的识别目标为[ClutterDetection]\n"
+                    "请基于随附图片复判。"
+                ),
+            )
+        ],
+        attachments=[Attachment(name="image.jpg", mime_type="image/jpeg", data_base64="anBlZw==")],
+        runtime_options=RuntimeOptions(thread_id="parking-review", workflow="parking_abnormal_review"),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    parsed = json.loads(result.reply)
+    assert parsed == [
+        {
+            "reviewSourceId": "source-from-model",
+            "reviewEventId": "event-1",
+            "hit": 1,
+            "result": "发现杂物堆积。",
+        }
+    ]
+    assert "```" not in result.reply
+    assert result.metadata["workflow"] == "parking_abnormal_review"
+    assert result.artifacts == []
+    assert result.metadata["artifact_path"] == "outputs/parking_abnormal_review_result.json"
+    assert (tmp_path / "threads" / "parking-review" / "outputs" / "parking_abnormal_review_result.json").is_file()
+    user_content = seen_messages[0][1]["content"]
+    assert isinstance(user_content, list)
+    assert user_content[1]["type"] == "image_url"
+    assert user_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert "车场异常" not in seen_system_prompts[0]
+    assert "只基于用户文本和随附图片中可直接看见的内容" in seen_system_prompts[0]
+    assert "空旷路面" in user_content[0]["text"]
+
+
+def test_parking_abnormal_review_workflow_returns_json_when_image_missing(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(name="parking-review-agent", display_name="Parking Review Agent", tools=[], skills=[])
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content="当前复判事件来源reviewSourceId为[source-1]。\n本次复判的识别目标为[ClutterDetection]",
+            )
+        ],
+        runtime_options=RuntimeOptions(thread_id="parking-review-missing-image", workflow="parking_abnormal_review"),
+    )
+
+    result = asyncio.run(runtime.run(agent, request))
+
+    parsed = json.loads(result.reply)
+    assert parsed[0]["reviewSourceId"] == "source-1"
+    assert parsed[0]["hit"] == 0
+    assert "未提供可访问的图片" in parsed[0]["result"]
+
+
 def test_agent_loop_does_not_duplicate_client_supplied_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1382,7 +1547,62 @@ def test_agent_runtime_preflights_data_auto_annotation_without_image(
     assert completed["metadata"]["required_inputs"][0]["accept"] == "image/*"
 
 
-def test_agent_runtime_preflights_clutter_review_without_image(
+def test_agent_runtime_parking_template_without_image_returns_review_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        raise AssertionError("LLM should not be called when parking review has no image attachment.")
+
+    def fail_sync_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del self, system_prompt, messages
+        raise AssertionError("LLM should not be called when parking review has no image attachment.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fail_sync_if_called)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="clutter-review-preflight-agent",
+        display_name="Clutter Review Preflight Agent",
+        model={"base_url": "http://llm.local/v1", "api_key": "key", "model": "tool-model"},
+        skills=[],
+        workflows={"default": "agent_loop"},
+    )
+    request = ChatRequest(
+        messages=[Message(role="user", content="复判这张图里是否存在杂物堆积")],
+        runtime_options=RuntimeOptions(
+            thread_id="clutter-review-preflight",
+            app_template_name="ParkingAbnormalEventMonitoring",
+            workflow="parking_abnormal_review",
+            selected_skills=["17803963378248hh02dvt"],
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    parsed = json.loads(result.reply)
+    assert parsed[0]["hit"] == 0
+    assert "未提供可访问的图片" in parsed[0]["result"]
+    assert result.metadata["workflow"] == "parking_abnormal_review"
+    assert [event.type for event in events] == [
+        "run.started",
+        "review.input",
+        "artifact.created",
+        "agent.message",
+        "run.completed",
+    ]
+
+
+def test_agent_runtime_selected_clutter_skill_without_workflow_still_requires_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def fail_if_called(
@@ -1406,8 +1626,7 @@ def test_agent_runtime_preflights_clutter_review_without_image(
     request = ChatRequest(
         messages=[Message(role="user", content="复判这张图里是否存在杂物堆积")],
         runtime_options=RuntimeOptions(
-            thread_id="clutter-review-preflight",
-            app_template_name="ParkingAbnormalEventMonitoring",
+            thread_id="clutter-review-preflight-selected-skill",
             selected_skills=["17803963378248hh02dvt"],
         ),
     )
@@ -1417,7 +1636,6 @@ def test_agent_runtime_preflights_clutter_review_without_image(
     assert result.reply == "请先上传图片后继续。"
     assert result.metadata["requires_input"] is True
     assert result.metadata["required_inputs"][0]["type"] == "image"
-    assert result.metadata["required_inputs"][0]["accept"] == "image/*"
     assert [event.type for event in events] == ["run.started", "agent.message", "run.completed"]
 
 

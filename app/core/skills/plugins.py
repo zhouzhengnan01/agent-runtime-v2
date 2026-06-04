@@ -246,6 +246,7 @@ class SkillPluginManager:
             content = json.dumps(parsed, ensure_ascii=False, indent=2) + "\n"
         package_file.path.parent.mkdir(parents=True, exist_ok=True)
         package_file.path.write_text(content, encoding="utf-8")
+        invalidate_skill_alias_cache()
         return self._package_file(self.get_loaded_skill(skill_name), file_id), content
 
     def save_manifest(self, skill_name: str, manifest: dict[str, Any]) -> LoadedSkill:
@@ -268,6 +269,7 @@ class SkillPluginManager:
             package_root = self._sandbox_write_root(existing)
             if package_root is not None:
                 self._write_sandbox_package_file(package_root, data.get("sandbox"))
+        invalidate_skill_alias_cache()
         loaded = self.load_skills().get(skill_name)
         if loaded is not None:
             return loaded
@@ -323,6 +325,16 @@ class SkillPluginManager:
         temp_root.replace(target_root)
         plugin = self._load_plugin(target_root)
         self._materialize_plugin_entities(plugin)
+        invalidate_skill_alias_cache()
+        return plugin
+
+    def delete_plugin(self, plugin_id: str) -> SkillPlugin:
+        safe_id = _validated_plugin_id(plugin_id.strip())
+        target_root = self.plugin_dir / safe_id
+        if not target_root.is_dir() or not (target_root / "plugin.json").is_file():
+            raise FileNotFoundError(f"Skill plugin not found: {safe_id}")
+        plugin = self._load_plugin(target_root)
+        shutil.rmtree(target_root)
         invalidate_skill_alias_cache()
         return plugin
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -14,6 +15,18 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import acp, agents, apps, artifacts, cron, health, mcp, sandbox, skills, uploads, workflows
 from app.core.runtime import RuntimeBootstrapConfig, default_container
+
+
+def _configure_logging() -> None:
+    """Use one timestamped formatter for uvicorn and application logs."""
+    formatter = logging.Formatter(
+        fmt="%(asctime)s.%(msecs)03d %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        target = logging.getLogger(logger_name)
+        for handler in target.handlers:
+            handler.setFormatter(formatter)
 
 
 @asynccontextmanager
@@ -99,4 +112,6 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
     return app
 
+
+_configure_logging()
 app = create_app()

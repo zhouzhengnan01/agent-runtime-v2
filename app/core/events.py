@@ -16,7 +16,7 @@ from app.schemas import ChatEvent
 
 logger = logging.getLogger("uvicorn.error")
 RUNTIME_EVENT_TRACE_PAYLOADS = env_flag("RUNTIME_EVENT_TRACE_PAYLOADS", "1")
-RUNTIME_EVENT_TRACE_MAX_CHARS = env_int("RUNTIME_EVENT_TRACE_MAX_CHARS", 0)
+RUNTIME_EVENT_TRACE_MAX_CHARS = env_int("RUNTIME_EVENT_TRACE_MAX_CHARS", 100)
 
 _LOGGED_EVENT_TYPES = {
     "agent.message",
@@ -303,26 +303,31 @@ def _log_event(event: ChatEvent) -> None:
         return
     data = event.data
     fields = _event_log_fields(event.type, data)
-    rendered = " ".join(
-        f"{key}={_log_value(value)}"
-        for key, value in fields.items()
-        if value is not None and value != ""
-    )
     level = (
         logging.WARNING
         if event.type.endswith(".failed") or event.type in {"run.failed", "mcp.discovery.failed"}
         else logging.INFO
     )
-    logger.log(level, "runtime event type=%s %s", event.type, rendered)
+    logger.log(
+        level,
+        "\n===== 运行事件 | runtime event type=%s =====\n%s\n===== 运行事件结束 =====",
+        event.type,
+        _render_multiline_fields(fields),
+    )
     if RUNTIME_EVENT_TRACE_PAYLOADS:
         logger.log(
             level,
-            "runtime event detail type=%s run_id=%s thread_id=%s seq=%s data=%s",
+            "\n----- 运行事件详情 | runtime event detail type=%s -----\n"
+            "运行ID: %s\n"
+            "线程ID: %s\n"
+            "序号: %s\n"
+            "完整数据:\n%s\n"
+            "----- 运行事件详情结束 -----",
             event.type,
             data.get("run_id"),
             data.get("thread_id"),
             data.get("sequence"),
-            diagnostic_json(data, max_chars=RUNTIME_EVENT_TRACE_MAX_CHARS),
+            _pretty_json(diagnostic_json(data, max_chars=RUNTIME_EVENT_TRACE_MAX_CHARS)),
         )
 
 
@@ -452,3 +457,84 @@ def _log_value(value: object) -> str:
     if not rendered or any(char.isspace() for char in rendered):
         return json.dumps(rendered, ensure_ascii=False)
     return rendered
+
+
+def _render_multiline_fields(fields: dict[str, Any]) -> str:
+    lines: list[str] = []
+    for key, value in fields.items():
+        if value is None or value == "":
+            continue
+        lines.append(f"{_field_label(key)}: {_display_value(value)}")
+    return "\n".join(lines) if lines else "无摘要字段"
+
+
+def _display_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, int | float):
+        return str(value)
+    if isinstance(value, dict | list | tuple):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _pretty_json(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+
+def _field_label(key: str) -> str:
+    return {
+        "run_id": "运行ID",
+        "thread_id": "线程ID",
+        "agent": "智能体",
+        "seq": "序号",
+        "elapsed_ms": "已耗时(ms)",
+        "workflow": "工作流",
+        "execution_mode": "执行模式",
+        "model": "模型",
+        "configured": "是否已配置",
+        "request_timeout_seconds": "请求超时(秒)",
+        "round": "轮次",
+        "mode": "模式",
+        "message_count": "消息数",
+        "tool_count": "工具数",
+        "tool_choice": "工具选择",
+        "finish_reason": "结束原因",
+        "tool_call_count": "工具调用数",
+        "duration_ms": "耗时(ms)",
+        "content_chars": "内容字符数",
+        "tool_name": "工具名",
+        "tool_call_id": "工具调用ID",
+        "is_error": "是否错误",
+        "error_code": "错误码",
+        "turn_phase": "对话阶段",
+        "turn_policy_reason": "对话策略原因",
+        "verification_verdict": "校验结论",
+        "verification_reason": "校验原因",
+        "skill_name": "技能名",
+        "skill_md_path": "技能说明路径",
+        "reference_count": "参考资料数",
+        "total_reference_chars": "参考资料字符数",
+        "server_name": "服务名",
+        "server_type": "服务类型",
+        "endpoint": "端点",
+        "reason": "原因",
+        "tools": "可用工具",
+        "priority_tools": "优先工具",
+        "hidden_tool_count": "隐藏工具数",
+        "tool_calls": "工具调用",
+        "references": "参考资料",
+        "skill_md_truncated": "技能说明是否截断",
+        "reference_truncated_count": "参考资料截断数",
+        "status": "状态",
+        "reply_chars": "回复字符数",
+        "tool_rounds": "工具轮数",
+        "artifacts": "产物数",
+        "structured_keys": "结构化字段",
+        "error": "错误",
+        "text_chars": "文本字符数",
+    }.get(key, key)

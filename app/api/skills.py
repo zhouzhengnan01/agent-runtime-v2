@@ -11,6 +11,7 @@ from app.core.sandbox.config import load_sandbox_config
 from app.core.sandbox.env_cache import SkillEnvironmentCache
 from app.core.sandbox.policy import load_sandbox_policy
 from app.core.skills import SkillDefinition, SkillRegistry
+from app.core.skills.aliases import invalidate_skill_alias_cache
 from app.core.skills.local_subprocess import LocalSubprocessEnvironmentCache
 from app.core.skills.plugins import SkillPluginManager
 
@@ -59,6 +60,25 @@ async def install_skill_plugin_from_local_path(payload: dict[str, Any]) -> dict[
         registry.reload()
         environments = [_environment_summary(skill_name) for skill_name in plugin.manifest_paths]
         return {"plugin": plugin.to_payload(), "environments": environments}
+    except (OSError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/plugins/cache/invalidate", dependencies=[Depends(require_admin_token)])
+async def invalidate_skill_plugin_cache() -> dict[str, object]:
+    invalidate_skill_alias_cache()
+    registry.reload()
+    return {"invalidated": True}
+
+
+@router.delete("/plugins/{plugin_id}", dependencies=[Depends(require_admin_token)])
+async def delete_skill_plugin(plugin_id: str) -> dict[str, object]:
+    try:
+        plugin = plugin_manager.delete_plugin(plugin_id)
+        registry.reload()
+        return {"plugin": plugin.to_payload(), "deleted": True}
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (OSError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

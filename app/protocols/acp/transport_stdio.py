@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -42,6 +43,7 @@ from acp.schema import (
 from app.core.agent import AgentRuntime
 from app.core.config import AgentConfig, AgentConfigLoader
 from app.core.runtime import ModelManager
+from app.core.skills.aliases import expand_skill_aliases
 from app.protocols.acp.content import prompt_parts_from_sdk_blocks
 from app.protocols.acp.session_files import delete_thread_files
 from app.schemas import ChatEvent, ChatRequest, Message, RuntimeOptions
@@ -341,18 +343,18 @@ class JetLinksAcpStdioAgent:
         if session.model_id is not None:
             resolved = self._runtime_options_for_model(session.model_id)
             if resolved:
-                merged.update(resolved)
+                merged = _merge_runtime_options(merged, resolved, root_dir=self.loader.root_dir)
             elif session.model_name is not None:
                 merged["model_name"] = session.model_name
         elif session.model_name is not None:
             merged["model_name"] = session.model_name
         override = _runtime_options_from_kwargs(kwargs)
         requested_model = _string(override.get("model_name"))
-        merged.update(override)
+        merged = _merge_runtime_options(merged, override, root_dir=self.loader.root_dir)
         if requested_model is not None:
             resolved = self._runtime_options_for_model(requested_model)
             if resolved:
-                merged.update(resolved)
+                merged = _merge_runtime_options(merged, resolved, root_dir=self.loader.root_dir)
         merged["thread_id"] = session.thread_id
         return RuntimeOptions.model_validate(merged)
 
@@ -418,11 +420,19 @@ def _runtime_options_from_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in options.items() if value is not None and value != []}
 
 
-def _merge_runtime_options(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def _merge_runtime_options(
+    base: dict[str, Any],
+    override: dict[str, Any],
+    *,
+    root_dir: Path | None = None,
+) -> dict[str, Any]:
     merged = {**base, **override}
     if not merged:
         return {}
-    return RuntimeOptions.model_validate(merged).model_dump(mode="python", exclude_none=True)
+    normalized = RuntimeOptions.model_validate(merged).model_dump(mode="python", exclude_none=True)
+    if "selected_skills" in normalized:
+        normalized["selected_skills"] = expand_skill_aliases(normalized["selected_skills"], root_dir)
+    return normalized
 
 
 def _string_list_from_kwargs(kwargs: dict[str, Any], camel_name: str, snake_name: str) -> list[str]:

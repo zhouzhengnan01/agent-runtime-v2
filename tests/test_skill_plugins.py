@@ -111,6 +111,29 @@ def test_skill_plugin_upload_can_replace_existing_plugin(tmp_path: Path) -> None
     assert "uploaded-summary" in manager.load_skills()
 
 
+def test_skill_plugin_replace_invalidates_alias_cache(tmp_path: Path) -> None:
+    manager = SkillPluginManager(tmp_path)
+
+    manager.install_zip(_alias_plugin_zip("alias-cache-plugin", "Alias Cache Plugin", "old-alias-skill"))
+    assert expand_skill_aliases(["alias-cache-plugin"], tmp_path) == ["old-alias-skill"]
+
+    manager.install_zip(_alias_plugin_zip("alias-cache-plugin", "Alias Cache Plugin", "new-alias-skill"))
+
+    assert expand_skill_aliases(["alias-cache-plugin"], tmp_path) == ["new-alias-skill"]
+
+
+def test_skill_plugin_delete_invalidates_alias_cache(tmp_path: Path) -> None:
+    manager = SkillPluginManager(tmp_path)
+
+    manager.install_zip(_alias_plugin_zip("deleted-alias-plugin", "Deleted Alias Plugin", "deleted-alias-skill"))
+    assert expand_skill_aliases(["deleted-alias-plugin"], tmp_path) == ["deleted-alias-skill"]
+
+    deleted = manager.delete_plugin("deleted-alias-plugin")
+
+    assert deleted.plugin_id == "deleted-alias-plugin"
+    assert expand_skill_aliases(["deleted-alias-plugin"], tmp_path) == ["deleted-alias-plugin"]
+
+
 def test_skill_plugin_local_path_install_registers_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -129,6 +152,75 @@ def test_skill_plugin_local_path_install_registers_skill(
     assert listed.status_code == 200
     skills = {skill["name"]: skill for skill in listed.json()["skills"]}
     assert "uploaded-summary" in skills
+
+
+def test_skill_plugin_api_delete_invalidates_alias_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    upload = client.post(
+        "/api/skills/plugins",
+        files={
+            "file": (
+                "api-delete-plugin.zip",
+                _alias_plugin_zip("api-delete-plugin", "API Delete Plugin", "api-delete-skill"),
+                "application/zip",
+            )
+        },
+    )
+    assert upload.status_code == 200
+    assert expand_skill_aliases(["api-delete-plugin"], tmp_path) == ["api-delete-skill"]
+
+    response = client.delete("/api/skills/plugins/api-delete-plugin")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert expand_skill_aliases(["api-delete-plugin"], tmp_path) == ["api-delete-plugin"]
+
+
+def test_skill_plugin_cache_invalidation_api_refreshes_direct_disk_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    assert expand_skill_aliases(["direct-platform-plugin"], tmp_path) == ["direct-platform-plugin"]
+    plugin_root = tmp_path / "plugins" / "skills" / "direct-platform-plugin"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "direct-platform-plugin",
+                "name": "Direct Platform Plugin",
+                "version": "1.0.0",
+                "skills": ["manifest.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "direct-platform-skill",
+                "description": "Direct platform skill.",
+                "output_kind": "markdown",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert expand_skill_aliases(["direct-platform-plugin"], tmp_path) == ["direct-platform-plugin"]
+
+    response = client.post("/api/skills/plugins/cache/invalidate")
+
+    assert response.status_code == 200
+    assert response.json()["invalidated"] is True
+    assert expand_skill_aliases(["direct-platform-plugin"], tmp_path) == ["direct-platform-skill"]
 
 
 def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
@@ -1902,6 +1994,37 @@ def run(skill_name, spec, paths, artifact_store):
         "data": {"length": len(text)}
     }
 """,
+        )
+    return buffer.getvalue()
+
+
+def _alias_plugin_zip(plugin_id: str, plugin_name: str, skill_name: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "plugin.json",
+            json.dumps(
+                {
+                    "id": plugin_id,
+                    "name": plugin_name,
+                    "version": "1.0.0",
+                    "skills": ["manifest.json"],
+                }
+            ),
+        )
+        archive.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "name": skill_name,
+                    "description": skill_name,
+                    "output_kind": "markdown",
+                    "generation": True,
+                    "input_schema": {"type": "object", "additionalProperties": True},
+                    "output_schema": {"type": "object", "additionalProperties": True},
+                    "sandbox": {"enabled": False, "request_schema_version": "skill-run.v1"},
+                }
+            ),
         )
     return buffer.getvalue()
 

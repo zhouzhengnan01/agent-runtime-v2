@@ -68,6 +68,8 @@ def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
 
 
 def _requires_clutter_review_image(request: ChatRequest, selected_skills: set[str]) -> bool:
+    if request.runtime_options.workflow == "parking_abnormal_review":
+        return False
     if "17803963378248hh02dvt" in selected_skills:
         return True
     if request.runtime_options.app_template_name == "ParkingAbnormalEventMonitoring":

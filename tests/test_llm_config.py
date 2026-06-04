@@ -591,9 +591,9 @@ def test_llm_client_logs_request_and_response_details_redacted(
     assert "llm request operation=complete_with_tools" in logs
     assert "llm http response operation=complete_with_tools" in logs
     assert "llm response data operation=complete_with_tools" in logs
-    assert '"content":"hi"' in logs
-    assert '"max_tokens":128' in logs
-    assert '"Authorization":"********"' in logs
+    assert '"content": "hi"' in logs
+    assert '"max_tokens": 128' in logs
+    assert '"Authorization": "********"' in logs
     assert "json-key" not in logs
 
 

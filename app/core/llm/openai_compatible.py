@@ -20,7 +20,7 @@ from app.schemas import Message, RuntimeOptions
 
 logger = logging.getLogger("uvicorn.error")
 LLM_TRACE_PAYLOADS = env_flag("LLM_TRACE_PAYLOADS", "1")
-LLM_TRACE_MAX_CHARS = env_int("LLM_TRACE_MAX_CHARS", 0)
+LLM_TRACE_MAX_CHARS = env_int("LLM_TRACE_MAX_CHARS", 100)
 
 
 @dataclass(frozen=True)
@@ -84,12 +84,22 @@ class OpenAICompatibleClient:
         )
         self.tool_choice = "auto" if selected_tools and model_config.tool_choice == "none" else model_config.tool_choice
         logger.info(
-            "llm client configured model=%s base_url=%s request_url=%s api_key_configured=%s api_key_len=%s "
-            "temperature=%s max_tokens=%s tool_choice=%s app_template=%s selected_skills=%s",
+            "\n===== 模型客户端配置 | llm client configured =====\n"
+            "模型: %s\n"
+            "Base URL: %s\n"
+            "请求地址: %s\n"
+            "API Key 是否配置: %s\n"
+            "API Key 长度: %s\n"
+            "Temperature: %s\n"
+            "Max Tokens: %s\n"
+            "工具选择: %s\n"
+            "应用模板: %s\n"
+            "已选技能: %s\n"
+            "===== 模型客户端配置结束 =====",
             self.model,
             self.base_url,
             self._chat_completions_url(),
-            bool(self.api_key),
+            "是" if self.api_key else "否",
             len(self.api_key or ""),
             self.temperature,
             self.max_tokens,
@@ -222,45 +232,82 @@ class OpenAICompatibleClient:
         )
 
     def _log_request(self, operation: str, payload: dict[str, Any]) -> None:
+        image_blocks = _payload_image_urls(payload)
         logger.info(
-            "llm request operation=%s model=%s base_url=%s request_url=%s timeout=%s api_key_configured=%s "
-            "api_key_len=%s message_count=%s tool_count=%s stream=%s payload=%s",
+            "\n===== 模型请求 | llm request operation=%s =====\n"
+            "操作: %s\n"
+            "模型: %s\n"
+            "Base URL: %s\n"
+            "请求地址: %s\n"
+            "超时(秒): %s\n"
+            "API Key 是否配置: %s\n"
+            "API Key 长度: %s\n"
+            "消息数: %s\n"
+            "工具数: %s\n"
+            "图片块数: %s\n"
+            "图片来源: %s\n"
+            "是否流式: %s\n"
+            "发送内容(最多 %s 字符):\n%s\n"
+            "===== 模型请求结束 =====",
+            operation,
             operation,
             self.model,
             self.base_url,
             self._chat_completions_url(),
             self.request_timeout_seconds,
-            bool(self.api_key),
+            "是" if self.api_key else "否",
             len(self.api_key or ""),
             len(payload.get("messages")) if isinstance(payload.get("messages"), list) else 0,
             len(payload.get("tools")) if isinstance(payload.get("tools"), list) else 0,
-            payload.get("stream") is True,
-            diagnostic_json(payload, max_chars=LLM_TRACE_MAX_CHARS) if LLM_TRACE_PAYLOADS else "<disabled>",
+            len(image_blocks),
+            _image_url_summary(image_blocks),
+            "是" if payload.get("stream") is True else "否",
+            LLM_TRACE_MAX_CHARS,
+            _pretty_json(diagnostic_json(payload, max_chars=LLM_TRACE_MAX_CHARS)) if LLM_TRACE_PAYLOADS else "<disabled>",
         )
 
     def _log_http_response(self, operation: str, response: httpx.Response, started_at: float) -> None:
         body = _response_json_or_text(response)
         logger.info(
-            "llm http response operation=%s model=%s status_code=%s duration_ms=%s body_chars=%s body=%s",
+            "\n===== 模型HTTP响应 | llm http response operation=%s =====\n"
+            "操作: %s\n"
+            "模型: %s\n"
+            "状态码: %s\n"
+            "耗时(ms): %s\n"
+            "响应字符数: %s\n"
+            "响应内容(最多 %s 字符):\n%s\n"
+            "===== 模型HTTP响应结束 =====",
+            operation,
             operation,
             self.model,
             response.status_code,
             round((time.perf_counter() - started_at) * 1000, 3),
             len(str(body)) if isinstance(body, str | dict | list) else 0,
-            diagnostic_json(body, max_chars=LLM_TRACE_MAX_CHARS) if LLM_TRACE_PAYLOADS else "<disabled>",
+            LLM_TRACE_MAX_CHARS,
+            _pretty_json(diagnostic_json(body, max_chars=LLM_TRACE_MAX_CHARS)) if LLM_TRACE_PAYLOADS else "<disabled>",
         )
 
     def _log_response_data(self, operation: str, data: dict[str, Any]) -> None:
         response = self._parse_chat_response(data)
         logger.info(
-            "llm response data operation=%s model=%s finish_reason=%s content_chars=%s tool_call_count=%s usage=%s data=%s",
+            "\n===== 模型解析结果 | llm response data operation=%s =====\n"
+            "操作: %s\n"
+            "模型: %s\n"
+            "结束原因: %s\n"
+            "回复字符数: %s\n"
+            "工具调用数: %s\n"
+            "Token 用量:\n%s\n"
+            "解析数据(最多 %s 字符):\n%s\n"
+            "===== 模型解析结果结束 =====",
+            operation,
             operation,
             self.model,
             response.finish_reason,
             len(response.content or ""),
             len(response.tool_calls),
-            diagnostic_json(response.usage, max_chars=LLM_TRACE_MAX_CHARS),
-            diagnostic_json(data, max_chars=LLM_TRACE_MAX_CHARS) if LLM_TRACE_PAYLOADS else "<disabled>",
+            _pretty_json(diagnostic_json(response.usage, max_chars=LLM_TRACE_MAX_CHARS)),
+            LLM_TRACE_MAX_CHARS,
+            _pretty_json(diagnostic_json(data, max_chars=LLM_TRACE_MAX_CHARS)) if LLM_TRACE_PAYLOADS else "<disabled>",
         )
 
     def _chat_payload(
@@ -470,6 +517,54 @@ def _response_json_or_text(response: httpx.Response) -> object:
         return {"text": response.text}
     except httpx.ResponseNotRead:
         return {"streaming": True, "reason": "response body not read yet"}
+
+
+def _pretty_json(value: str) -> str:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+
+def _payload_image_urls(payload: dict[str, Any]) -> list[str]:
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return []
+    urls: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "image_url":
+                continue
+            image_url = block.get("image_url")
+            if not isinstance(image_url, dict):
+                continue
+            url = image_url.get("url")
+            if isinstance(url, str) and url:
+                urls.append(url)
+    return urls
+
+
+def _image_url_summary(urls: list[str], *, limit: int = 3) -> str:
+    if not urls:
+        return "无"
+    items: list[str] = []
+    for url in urls[:limit]:
+        if url.startswith("data:"):
+            prefix = url.split(",", 1)[0]
+            items.append(f"{prefix},...({len(url)} chars)")
+        elif len(url) > 120:
+            items.append(url[:117] + "...")
+        else:
+            items.append(url)
+    if len(urls) > limit:
+        items.append(f"+{len(urls) - limit}")
+    return "; ".join(items)
 
 
 def _multimodal_user_content(content: object, attachments: object) -> list[dict[str, Any]] | None:

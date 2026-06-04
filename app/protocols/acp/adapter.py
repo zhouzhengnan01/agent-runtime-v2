@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -28,7 +29,7 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 AcpUpdateSender = Callable[[str, dict[str, Any]], Awaitable[None]]
 logger = logging.getLogger("uvicorn.error")
 ACP_ADAPTER_TRACE_PAYLOADS = env_flag("ACP_ADAPTER_TRACE_PAYLOADS", "1")
-ACP_ADAPTER_TRACE_MAX_CHARS = env_int("ACP_ADAPTER_TRACE_MAX_CHARS", 0)
+ACP_ADAPTER_TRACE_MAX_CHARS = env_int("ACP_ADAPTER_TRACE_MAX_CHARS", 100)
 
 _RUNTIME_OPTION_ALIASES = {
     "threadId": "thread_id",
@@ -215,7 +216,7 @@ class AcpRuntimeAdapter:
 
     def new_session(self, sessions: dict[str, AcpWebSocketSession], params: dict[str, Any]) -> dict[str, Any]:
         app_template = self._app_template_from_params(params)
-        session_runtime_options = _new_session_runtime_options(params, app_template)
+        session_runtime_options = _new_session_runtime_options(params, app_template, self.loader.root_dir)
         agent_name = (
             _agent_name_from_meta(params)
             or (app_template.agent_name if app_template is not None else None)
@@ -232,7 +233,8 @@ class AcpRuntimeAdapter:
         model_id = _string(stored_runtime_options.get("model_name")) or self._current_model_id()
         if model_id is not None:
             stored_runtime_options["model_name"] = model_id
-        stored_runtime_options = self._resolve_model_runtime_options(stored_runtime_options)
+        if not _force_model_config(stored_runtime_options):
+            stored_runtime_options = self._resolve_model_runtime_options(stored_runtime_options)
         model_name = _string(stored_runtime_options.get("model_name"))
         mcp_servers = _mcp_servers_from_params(params)
         logger.info(
@@ -299,9 +301,12 @@ class AcpRuntimeAdapter:
             raw_options = _runtime_options_payload(params)
             template_options = _template_runtime_options(prompt_app_template)
             app_model_options = _app_model_runtime_options(prompt_app_template, template_options, raw_options)
-            session.runtime_options = self._merge_and_resolve_runtime_options(
-                _merge_runtime_options(session.runtime_options, {**template_options, **app_model_options}),
+            session.runtime_options = _merge_app_template_runtime_options(
+                session.runtime_options,
+                template_options,
+                app_model_options,
                 raw_options,
+                root_dir=self.loader.root_dir,
             )
             session.app_template_name = prompt_app_template.name
             session.mode_id = _mode_from_options(session.runtime_options, fallback=session.mode_id)
@@ -363,6 +368,7 @@ class AcpRuntimeAdapter:
         result: AgentRunResult | None = None
         last_error = ""
         agent_message_delta_seen = False
+        structured_json_updates = _should_normalize_structured_json(runtime_options, session)
         async for event in self.runtime.iter_events(agent, request):
             if ACP_ADAPTER_TRACE_PAYLOADS:
                 logger.info(
@@ -372,6 +378,10 @@ class AcpRuntimeAdapter:
                     event.type,
                     diagnostic_json(event.data, max_chars=ACP_ADAPTER_TRACE_MAX_CHARS),
                 )
+            if structured_json_updates and event.type in {"agent.message", "agent.message.delta"}:
+                if event.type == "agent.message.delta":
+                    agent_message_delta_seen = True
+                continue
             update = _event_to_update(event, suppress_agent_message=agent_message_delta_seen)
             if update is not None:
                 await send_update(session_id, update)
@@ -394,6 +404,11 @@ class AcpRuntimeAdapter:
                 metadata={"error": last_error or "runtime did not return a final result"},
             )
 
+        result = _normalize_structured_json_result(result, runtime_options, session)
+        if structured_json_updates:
+            final_message_update = _final_structured_json_message_update(result)
+            if final_message_update is not None:
+                await send_update(session_id, final_message_update)
         stop_reason = stop_reason_for_result(result, request)
         payload = {
             "stopReason": stop_reason,
@@ -530,7 +545,11 @@ class AcpRuntimeAdapter:
         session.model_id = model_name
         resolved_options = self._runtime_options_for_model(model_name)
         if resolved_options:
-            session.runtime_options = _merge_runtime_options(session.runtime_options, resolved_options)
+            session.runtime_options = _merge_runtime_options(
+                session.runtime_options,
+                resolved_options,
+                root_dir=self.loader.root_dir,
+            )
         else:
             session.runtime_options["model_name"] = model_name
         session.model_name = _string(session.runtime_options.get("model_name")) or model_name
@@ -543,16 +562,24 @@ class AcpRuntimeAdapter:
         if session is None:
             raise ValueError(f"Unknown ACP session: {session_id}")
 
-        raw_options = _session_update_runtime_options(params)
+        raw_options = _session_update_runtime_options(params, self.loader.root_dir)
         app_template = self._app_template_from_params(params)
         base_options = dict(session.runtime_options)
         if app_template is not None:
             template_options = _template_runtime_options(app_template)
             app_model_options = _app_model_runtime_options(app_template, template_options, raw_options)
-            base_options = _merge_runtime_options(base_options, {**template_options, **app_model_options})
+            base_options = _merge_app_template_runtime_options(
+                base_options,
+                template_options,
+                app_model_options,
+                raw_options,
+                root_dir=self.loader.root_dir,
+            )
             session.app_template_name = app_template.name
+        else:
+            base_options = self._merge_and_resolve_runtime_options(base_options, raw_options)
 
-        session.runtime_options = self._merge_and_resolve_runtime_options(base_options, raw_options)
+        session.runtime_options = base_options
         session.mode_id = _mode_from_options(session.runtime_options, fallback=session.mode_id)
         session.config_options = _config_options_from_runtime_options(session.runtime_options)
         model_name = _string(session.runtime_options.get("model_name"))
@@ -790,7 +817,7 @@ class AcpRuntimeAdapter:
         cwd = _string(params.get("cwd")) or str(Path.cwd())
         if session is None:
             app_template = self._app_template_from_params(params)
-            runtime_options = _new_session_runtime_options(params, app_template)
+            runtime_options = _new_session_runtime_options(params, app_template, self.loader.root_dir)
             agent_name = (
                 _agent_name_from_meta(params)
                 or (app_template.agent_name if app_template is not None else None)
@@ -798,7 +825,8 @@ class AcpRuntimeAdapter:
             )
             agent_config = self.loader.load(agent_name)
             model_id = _string(runtime_options.get("model_name"))
-            runtime_options = self._resolve_model_runtime_options(runtime_options)
+            if not _force_model_config(runtime_options):
+                runtime_options = self._resolve_model_runtime_options(runtime_options)
             mcp_servers = _mcp_servers_from_params(params)
             sessions[session_id] = AcpWebSocketSession(
                 session_id=session_id,
@@ -841,12 +869,20 @@ class AcpRuntimeAdapter:
         if session.model_id is not None:
             resolved = self._runtime_options_for_model(session.model_id)
             if resolved:
-                merged = _merge_runtime_options(resolved, merged)
+                merged = _merge_runtime_options(resolved, merged, root_dir=self.loader.root_dir)
             elif session.model_name is not None:
                 merged["model_name"] = session.model_name
         elif session.model_name is not None:
             merged["model_name"] = session.model_name
-        merged = self._merge_and_resolve_runtime_options(merged, _runtime_options_payload(params))
+        raw_options = _runtime_options_payload(params)
+        merged = self._merge_and_resolve_runtime_options(merged, raw_options)
+        if session.app_template_name is not None:
+            app_template = self._app_template_from_name(session.app_template_name)
+            if app_template is not None:
+                template_options = _template_runtime_options(app_template)
+                app_model_options = _app_model_runtime_options(app_template, template_options, raw_options)
+                if _force_model_config(template_options, raw_options) and app_model_options:
+                    merged = _merge_runtime_options(merged, app_model_options, root_dir=self.loader.root_dir)
         merged["thread_id"] = thread_id
         merged["mode"] = _mode_from_options(merged, fallback=session.mode_id)
         raw_config_options = merged.get("config_options")
@@ -858,18 +894,18 @@ class AcpRuntimeAdapter:
         if session.app_template_name is not None and "app_template_name" not in merged:
             merged["app_template_name"] = session.app_template_name
         if isinstance(merged.get("selected_skills"), list):
-            merged["selected_skills"] = expand_skill_aliases(merged["selected_skills"])
+            merged["selected_skills"] = expand_skill_aliases(merged["selected_skills"], self.loader.root_dir)
         return RuntimeOptions.model_validate(merged)
 
     def _merge_and_resolve_runtime_options(self, base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-        merged = _merge_runtime_options(base, override)
+        merged = _merge_runtime_options(base, override, root_dir=self.loader.root_dir)
         requested_model = _string(override.get("model_name"))
         if requested_model is None:
             return merged
         resolved = self._runtime_options_for_model(requested_model)
         if not resolved:
             return merged
-        return _merge_runtime_options(merged, resolved)
+        return _merge_runtime_options(merged, resolved, root_dir=self.loader.root_dir)
 
     def _resolve_model_runtime_options(self, runtime_options: dict[str, Any]) -> dict[str, Any]:
         model_id = _string(runtime_options.get("model_name"))
@@ -878,7 +914,7 @@ class AcpRuntimeAdapter:
         resolved = self._runtime_options_for_model(model_id)
         if not resolved:
             return runtime_options
-        return _merge_runtime_options(runtime_options, resolved)
+        return _merge_runtime_options(runtime_options, resolved, root_dir=self.loader.root_dir)
 
     def _runtime_options_for_model(self, model_id: str) -> dict[str, Any]:
         options = self.model_manager.runtime_options_for(model_id)
@@ -942,11 +978,21 @@ def _resolve_thread_id(params: dict[str, Any], session: AcpWebSocketSession) -> 
     return _string(runtime_options.get("thread_id")) or session.thread_id
 
 
-def _new_session_runtime_options(params: dict[str, Any], app_template: AppTemplate | None) -> dict[str, Any]:
+def _new_session_runtime_options(
+    params: dict[str, Any],
+    app_template: AppTemplate | None,
+    root_dir: Path | None = None,
+) -> dict[str, Any]:
     template_options = _template_runtime_options(app_template)
     request_options = _runtime_options_payload(params)
     app_model_options = _app_model_runtime_options(app_template, template_options, request_options)
-    return _merge_runtime_options({**template_options, **app_model_options}, request_options)
+    return _merge_app_template_runtime_options(
+        {},
+        template_options,
+        app_model_options,
+        request_options,
+        root_dir=root_dir,
+    )
 
 
 def _template_runtime_options(app_template: AppTemplate | None) -> dict[str, Any]:
@@ -970,7 +1016,8 @@ def _app_model_runtime_options(
     template_options: dict[str, Any],
     request_options: dict[str, Any],
 ) -> dict[str, Any]:
-    if app_template is None or _string(request_options.get("model_name")) is not None:
+    force_model_config = _force_model_config(template_options, request_options)
+    if app_template is None or (_string(request_options.get("model_name")) is not None and not force_model_config):
         return {}
     model_type = _string(request_options.get("model_type")) or _string(template_options.get("model_type")) or "chat"
     model = app_template.select_model(model_type)
@@ -995,14 +1042,55 @@ def _app_model_runtime_options(
     return options
 
 
-def _merge_runtime_options(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+def _merge_runtime_options(
+    base: dict[str, Any],
+    override: dict[str, Any],
+    *,
+    root_dir: Path | None = None,
+) -> dict[str, Any]:
     merged = {**base, **override}
+    config_options = _merge_config_options(base.get("config_options"), override.get("config_options"))
+    if config_options:
+        merged["config_options"] = config_options
     if not merged:
         return {}
     normalized = RuntimeOptions.model_validate(merged).model_dump(mode="python", exclude_none=True)
     if "selected_skills" in normalized:
-        normalized["selected_skills"] = expand_skill_aliases(normalized["selected_skills"])
+        normalized["selected_skills"] = expand_skill_aliases(normalized["selected_skills"], root_dir)
     return normalized
+
+
+def _merge_app_template_runtime_options(
+    base: dict[str, Any],
+    template_options: dict[str, Any],
+    app_model_options: dict[str, Any],
+    request_options: dict[str, Any],
+    *,
+    root_dir: Path | None = None,
+) -> dict[str, Any]:
+    merged = _merge_runtime_options(base, template_options, root_dir=root_dir)
+    if _force_model_config(template_options, request_options):
+        merged = _merge_runtime_options(merged, request_options, root_dir=root_dir)
+        return _merge_runtime_options(merged, app_model_options, root_dir=root_dir)
+    merged = _merge_runtime_options(merged, app_model_options, root_dir=root_dir)
+    return _merge_runtime_options(merged, request_options, root_dir=root_dir)
+
+
+def _merge_config_options(base: object, override: object) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    if isinstance(base, dict):
+        merged.update(base)
+    if isinstance(override, dict):
+        merged.update(override)
+    return merged
+
+
+def _force_model_config(*sources: dict[str, Any]) -> bool:
+    for source in sources:
+        config_options = source.get("config_options")
+        if isinstance(config_options, dict) and config_options.get("force_model_config") is True:
+            return True
+    return False
 
 
 def _without_thread_id(runtime_options: dict[str, Any]) -> dict[str, Any]:
@@ -1252,7 +1340,7 @@ def _sensitive_name(name: str | None) -> bool:
     return any(token in lowered for token in ("authorization", "token", "secret", "key", "password"))
 
 
-def _session_update_runtime_options(params: dict[str, Any]) -> dict[str, Any]:
+def _session_update_runtime_options(params: dict[str, Any], root_dir: Path | None = None) -> dict[str, Any]:
     payload = _runtime_options_payload(params)
     if isinstance(params.get("configOptions"), dict) or isinstance(params.get("config_options"), dict):
         payload.pop("config_options", None)
@@ -1266,7 +1354,7 @@ def _session_update_runtime_options(params: dict[str, Any]) -> dict[str, Any]:
     ):
         container = _params(raw_container)
         if container:
-            payload = _merge_runtime_options(payload, _runtime_options_payload(container))
+            payload = _merge_runtime_options(payload, _runtime_options_payload(container), root_dir=root_dir)
     return payload
 
 
@@ -1356,6 +1444,95 @@ def _attachments_from_params(params: dict[str, Any]) -> list[Attachment]:
         return prompt_attachments
     explicit_attachments = [Attachment.model_validate(item) for item in raw_attachments if isinstance(item, dict)]
     return [*prompt_attachments, *explicit_attachments]
+
+
+def _normalize_structured_json_result(
+    result: AgentRunResult,
+    runtime_options: RuntimeOptions,
+    session: AcpWebSocketSession,
+) -> AgentRunResult:
+    if not _should_normalize_structured_json(runtime_options, session):
+        return result
+    normalized_reply = _validated_json_text_from_reply(result.reply)
+    if normalized_reply is None or normalized_reply == result.reply:
+        return result
+    content = _replace_primary_text_content(result.content, result.reply, normalized_reply)
+    return result.model_copy(update={"reply": normalized_reply, "content": content})
+
+
+def _should_normalize_structured_json(runtime_options: RuntimeOptions, session: AcpWebSocketSession) -> bool:
+    return (
+        runtime_options.response_format == "json"
+        or session.app_template_name == "ParkingAbnormalEventMonitoring"
+        or runtime_options.app_template_name == "ParkingAbnormalEventMonitoring"
+    )
+
+
+def _validated_json_text_from_reply(reply: str) -> str | None:
+    candidate = _extract_fenced_json(reply.strip())
+    if candidate is None:
+        candidate = reply.strip()
+    if not candidate:
+        return None
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    return json.dumps(value, ensure_ascii=False, indent=2)
+
+
+def _extract_fenced_json(text: str) -> str | None:
+    if not text.startswith("```"):
+        return None
+    lines = text.splitlines()
+    if len(lines) < 2 or not lines[0].strip().startswith("```"):
+        return None
+    closing_index: int | None = None
+    for index in range(len(lines) - 1, 0, -1):
+        if lines[index].strip() == "```":
+            closing_index = index
+            break
+    if closing_index is None:
+        return None
+    return "\n".join(lines[1:closing_index]).strip()
+
+
+def _replace_primary_text_content(content: list[dict[str, Any]], old_text: str, new_text: str) -> list[dict[str, Any]]:
+    updated: list[dict[str, Any]] = []
+    replaced = False
+    for block in content:
+        if not replaced and block.get("type") == "text" and block.get("text") == old_text:
+            next_block = dict(block)
+            next_block["text"] = new_text
+            updated.append(next_block)
+            replaced = True
+            continue
+        updated.append(block)
+    if not replaced:
+        return [{"type": "text", "text": new_text}, *updated]
+    return updated
+
+
+def _final_structured_json_message_update(result: AgentRunResult) -> dict[str, Any] | None:
+    if not result.reply.strip():
+        return None
+    return {
+        "_meta": {
+            "jetlinksRuntimeEvent": {
+                "type": "agent.message",
+                "data": {
+                    "agent": result.agent,
+                    "thread_id": result.thread_id,
+                    "text": result.reply,
+                    "final": True,
+                },
+            },
+            "jetlinksPlan": None,
+            "jetlinksDiff": None,
+        },
+        "sessionUpdate": "agent_message_chunk",
+        "content": {"type": "text", "text": result.reply},
+    }
 
 
 def _agent_command_content(params: dict[str, Any]) -> str | None:

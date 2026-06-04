@@ -5,6 +5,7 @@ import logging
 import os
 from typing import Any
 
+import httpx
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
@@ -17,12 +18,13 @@ ACP_PROMPT_KEEPALIVE_SECONDS = max(
     1.0,
     float(os.getenv("ACP_PROMPT_KEEPALIVE_SECONDS", "10") or "10"),
 )
+ACP_PROMPT_KEEPALIVE_ENABLED = env_flag("ACP_PROMPT_KEEPALIVE_ENABLED", "0")
 ACP_PROMPT_KEEPALIVE_TOOL_CALL_ID = "acp-prompt-keepalive"
 ACP_PROMPT_PROGRESS_TEXT = "正在处理，请等待..."
 ACP_PROMPT_WAITING_TEXT = "已收到请求，正在处理，请等待..."
 ACP_PROMPT_STILL_WAITING_TEXT = "仍在处理，请等待..."
 ACP_WS_TRACE_PAYLOADS = env_flag("ACP_WS_TRACE_PAYLOADS", "1")
-ACP_WS_TRACE_MAX_CHARS = env_int("ACP_WS_TRACE_MAX_CHARS", 0)
+ACP_WS_TRACE_MAX_CHARS = env_int("ACP_WS_TRACE_MAX_CHARS", 100)
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -76,9 +78,10 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 )
                 await send_platform_response_start(task_session_id, request_id)
                 platform_stream_started = True
-            await send_prompt_progress(task_session_id, sequence=0)
-            await send_prompt_wait_message(task_session_id, sequence=0)
-            keepalive_task = asyncio.create_task(send_prompt_keepalive(task_session_id))
+            if ACP_PROMPT_KEEPALIVE_ENABLED:
+                await send_prompt_progress(task_session_id, sequence=0)
+                await send_prompt_wait_message(task_session_id, sequence=0)
+                keepalive_task = asyncio.create_task(send_prompt_keepalive(task_session_id))
         logger.info("acp prompt started session_id=%s request_id=%s", task_session_id, request_id)
         try:
             result = await active_dispatcher.dispatch(sessions, "prompt", params, send_update)
@@ -127,15 +130,19 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             if task_session_id is not None and task_session_id in platform_sessions:
                 await send_platform_error_end(task_session_id, request_id, str(exc))
         except Exception as exc:
+            error_message = _user_visible_error_message(exc)
+            user_text = f"请求处理失败：{error_message}"
             logger.exception(
                 "acp prompt failed session_id=%s request_id=%s",
                 task_session_id,
                 request_id,
             )
-            if request_id is not None:
-                await send_error(request_id, -32000, str(exc))
             if task_session_id is not None and task_session_id in platform_sessions:
-                await send_platform_error_end(task_session_id, request_id, str(exc))
+                await send_platform_error_end(task_session_id, request_id, error_message)
+            elif task_session_id is not None:
+                await send_prompt_error_message(task_session_id, error_message)
+            if request_id is not None:
+                await send_result(request_id, _prompt_error_result(sessions, task_session_id, user_text, error_message))
         else:
             logger.info("acp prompt completed session_id=%s request_id=%s", task_session_id, request_id)
             if task_session_id is not None and task_session_id in platform_sessions:
@@ -212,12 +219,29 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
         await send_update(
             session_id,
             {
-                "sessionUpdate": "agent_message_chunk",
+                "sessionUpdate": "agent_thought_chunk",
                 "content": {"type": "text", "text": text},
                 "_meta": {
                     "jetlinksRuntimeEvent": {
                         "type": "acp.prompt.wait_message",
                         "data": {"sequence": sequence, "text": text},
+                    }
+                },
+            },
+        )
+
+    async def send_prompt_error_message(session_id: str, message: str) -> None:
+        if session_id not in sessions:
+            return
+        await send_update(
+            session_id,
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": f"请求处理失败：{message}"},
+                "_meta": {
+                    "jetlinksRuntimeEvent": {
+                        "type": "acp.prompt.error",
+                        "data": {"message": message},
                     }
                 },
             },
@@ -496,11 +520,20 @@ async def _send_platform_event(
 
 
 async def _send_result(websocket: WebSocket, request_id: JsonRpcId, result: dict[str, Any]) -> None:
+    result_payload = result.get("result")
+    result_data = result_payload if isinstance(result_payload, dict) else {}
+    reply = result_data.get("reply")
+    metadata = result_data.get("metadata")
+    metadata_data = metadata if isinstance(metadata, dict) else {}
     logger.info(
-        "acp ws send result request_id=%s stop_reason=%s thread_id=%s content_items=%s",
+        "acp ws send result request_id=%s stop_reason=%s thread_id=%s run_id=%s result_status=%s "
+        "reply_chars=%s content_items=%s",
         request_id,
         result.get("stopReason"),
         result.get("threadId"),
+        metadata_data.get("run_id"),
+        result_data.get("status"),
+        len(reply) if isinstance(reply, str) else 0,
         len(result.get("content") or []) if isinstance(result.get("content"), list) else 0,
     )
     payload = {"jsonrpc": "2.0", "id": request_id, "result": result}
@@ -520,6 +553,26 @@ async def _send_error(websocket: WebSocket, request_id: JsonRpcId, code: int, me
     }
     _log_ws_trace("send", payload, method="error", request_id=request_id)
     await websocket.send_json(payload)
+
+
+def _user_visible_error_message(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        status_text = f"{response.status_code} {response.reason_phrase}".strip()
+        message = f"模型连接/调用失败：模型服务返回 {status_text}"
+        if exc.request is not None:
+            message = f"{message}；地址：{exc.request.url}"
+        detail = response.text.strip()
+        if detail:
+            message = f"{message}；响应：{detail[:1000]}"
+        return message
+    if isinstance(exc, httpx.TimeoutException):
+        return f"模型连接超时：{exc}"
+    if isinstance(exc, httpx.ConnectError):
+        return f"模型连接失败：{exc}"
+    if isinstance(exc, httpx.HTTPError):
+        return f"模型连接/调用失败：{exc}"
+    return str(exc)
 
 
 def _request_id(message: dict[str, Any]) -> JsonRpcId:
@@ -555,6 +608,34 @@ def _platform_response_id_for_prompt(session_id: str, request_id: JsonRpcId, par
     if isinstance(value, str) and value:
         return value
     return _platform_response_id(session_id, request_id)
+
+
+def _prompt_error_result(
+    sessions: dict[str, AcpWebSocketSession],
+    session_id: str | None,
+    reply: str,
+    error_message: str,
+) -> dict[str, Any]:
+    session = sessions.get(session_id or "")
+    thread_id = session.thread_id if session is not None else session_id or ""
+    agent_name = session.agent_name if session is not None else "default"
+    content = [{"type": "text", "text": reply}]
+    result = {
+        "agent": agent_name,
+        "thread_id": thread_id,
+        "status": "failed",
+        "reply": reply,
+        "content": content,
+        "artifacts": [],
+        "metadata": {"error": error_message},
+    }
+    return {
+        "stopReason": "end_turn",
+        "threadId": thread_id,
+        "agentName": agent_name,
+        "content": content,
+        "result": result,
+    }
 
 
 def _client_label(websocket: WebSocket) -> str:

@@ -164,8 +164,8 @@ def test_runtime_event_detail_logs_full_redacted_payload(
     assert "runtime event detail type=run.completed" in logs
     assert "observable-detail-thread" in logs
     assert "日志详情测试" in logs
-    assert '"api_key":"********"' in logs
-    assert '"max_tokens":128' in logs
+    assert '"api_key": "********"' in logs
+    assert '"max_tokens": 128' in logs
     assert "runtime-secret-key" not in logs
 
 

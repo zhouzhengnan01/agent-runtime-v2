@@ -23,6 +23,9 @@ def merge_runtime_options_with_template(
         if key == "skill_parameters":
             merged[key] = _merge_skill_parameters(template_options.get(key), value, request_explicit=True)
             continue
+        if key == "config_options":
+            merged[key] = _merge_config_options(template_options.get(key), value)
+            continue
         if key in {"selected_skills", "selected_mcp_tools"}:
             merged[key] = _merge_string_lists(template_options.get(key), value, request_explicit=True)
             continue
@@ -42,6 +45,7 @@ def merge_runtime_options_with_template(
     merged["selected_skills"] = expand_skill_aliases(_merge_string_lists(template.selected_skills, merged.get("selected_skills")))
     merged["selected_mcp_tools"] = _merge_string_lists(template.selected_mcp_tools, merged.get("selected_mcp_tools"))
     merged["skill_parameters"] = _merge_skill_parameters(template_options.get("skill_parameters"), merged.get("skill_parameters"))
+    merged["config_options"] = _merge_config_options(template_options.get("config_options"), merged.get("config_options"))
     return RuntimeOptions.model_validate(merged)
 
 
@@ -74,4 +78,13 @@ def _merge_skill_parameters(
                 continue
             normalized_key = str(key)
             merged[normalized_key] = {**merged.get(normalized_key, {}), **value}
+    return merged
+
+
+def _merge_config_options(template_value: Any, request_value: Any) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    if isinstance(template_value, dict):
+        merged.update(template_value)
+    if isinstance(request_value, dict):
+        merged.update(request_value)
     return merged

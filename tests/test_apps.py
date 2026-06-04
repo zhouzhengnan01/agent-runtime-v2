@@ -147,6 +147,49 @@ def test_app_template_registry_deduplicates_collection_and_file_templates(tmp_pa
     assert registry.get("demo").selected_skills == ["drawio-generation"]
 
 
+def test_app_template_registry_expands_plugin_aliases_from_root_dir(tmp_path: Path) -> None:
+    apps_dir = tmp_path / "config" / "apps"
+    plugin_root = tmp_path / "plugins" / "skills" / "root-skill-plugin"
+    apps_dir.mkdir(parents=True)
+    plugin_root.mkdir(parents=True)
+    (apps_dir / "demo.json").write_text(
+        json.dumps(
+            {
+                "name": "demo",
+                "title": "Demo App",
+                "agent_name": "default",
+                "selected_skills": ["root-skill-plugin"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "root-skill-plugin",
+                "name": "Root Skill Plugin",
+                "version": "1.0.0",
+                "skills": ["manifest.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "root-dir-skill",
+                "description": "Root dir skill.",
+                "output_kind": "markdown",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    template = AppTemplateRegistry(root_dir=tmp_path).get("demo")
+
+    assert template.selected_skills == ["root-dir-skill"]
+
+
 def test_app_template_registry_rejects_unknown_template(tmp_path: Path) -> None:
     registry = AppTemplateRegistry(root_dir=tmp_path)
 

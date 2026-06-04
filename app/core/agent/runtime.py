@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
 from collections.abc import AsyncIterator
@@ -1440,9 +1441,9 @@ class AgentRuntime:
         name = Path(raw_name.replace("\\", "/")).name
         name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "attachment"
         if "." not in name:
-            extension = guess_mime_type(Path(f"attachment.{mime_type.split('/', 1)[-1]}"))
+            extension = mimetypes.guess_extension(mime_type.split(";", 1)[0].strip().lower())
             if extension:
-                name = f"{name}.{mime_type.split('/', 1)[-1]}"
+                name = f"{name}{extension}"
         return name[:180]
 
     @staticmethod
