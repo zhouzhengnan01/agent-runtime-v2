@@ -46,6 +46,77 @@ uvicorn app.main:app --reload --port 8010
 http://127.0.0.1:8010/workbench
 ```
 
+### 本地 Docker 镜像启动
+
+如果希望用容器启动当前工作区代码，可以先构建本地 Python 3.12 镜像：
+
+```bash
+cd /Users/chenhao/Desktop/code/jetlinks-official/jetlinks-agent-runtime-agent-v2
+
+docker build \
+  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
+  -t jetlinks-agent-runtime-v2:local-py312 .
+```
+
+启动容器：
+
+```bash
+APP_PORT=18013 \
+APP_HOST=127.0.0.1 \
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_PULL_IMAGE=false \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
+JETLINKS_AGENT_CONTAINER_PORT=8000 \
+./up.sh --docker
+```
+
+启动后访问：
+
+```bash
+curl http://127.0.0.1:18013/health
+```
+
+正常返回：
+
+```json
+{"status":"ok","service":"jetlinks-agent-runtime-v2"}
+```
+
+`up.sh --docker` 会自动把当前项目真实路径挂载到容器内，并把容器工作目录设置为挂载目录：
+
+```text
+/Users/chenhao/code/jetlinks-official/jetlinks-agent-runtime-agent-v2
+  -> /workspace/code/jetlinks-agent-runtime-agent-v2
+```
+
+这里的宿主机路径来自 `pwd -P`，所以即使从 `/Users/chenhao/Desktop/code/...` 进入项目，
+实际挂载路径也可能显示为 `/Users/chenhao/code/...`。
+
+可以用下面命令确认实际挂载：
+
+```bash
+docker inspect jetlinks-agent-runtime-v2-local-image \
+  --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+```
+
+查看状态：
+
+```bash
+APP_PORT=18013 \
+APP_HOST=127.0.0.1 \
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
+./status.sh --docker
+```
+
+停止容器：
+
+```bash
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
+./stop.sh --docker
+```
+
 ### 一键进程管理脚本
 
 仓库根目录提供了面向本地部署、Java `ProcessBuilder` 或其他进程管理器调用的脚本：
@@ -71,7 +142,7 @@ http://127.0.0.1:8010/workbench
 BASE_PYTHON=/usr/bin/python3.12 VENV_DIR=.venv ./install-deps.sh
 ```
 
-默认启动地址是 `http://127.0.0.1:8000`，Workbench 为：
+默认监听地址是 `0.0.0.0:8000`；本机访问 Workbench 为：
 
 ```text
 http://127.0.0.1:8000/workbench
@@ -97,7 +168,7 @@ APP_PORT=8010 ./stop.sh
 
 常用变量：
 
-- `APP_HOST`：监听地址，默认 `127.0.0.1`
+- `APP_HOST`：监听地址，默认 `0.0.0.0`
 - `APP_PORT`：监听端口，默认 `8000`
 - `APP_MODULE`：ASGI 应用，默认 `app.main:app`
 - `APP_WORKERS`：uvicorn workers，默认 `1`
