@@ -83,6 +83,20 @@ class OpenAICompatibleClient:
             name.strip() for name in runtime_options.selected_skills
         )
         self.tool_choice = "auto" if selected_tools and model_config.tool_choice == "none" else model_config.tool_choice
+        logger.info(
+            "llm client configured model=%s base_url=%s request_url=%s api_key_configured=%s api_key_len=%s "
+            "temperature=%s max_tokens=%s tool_choice=%s app_template=%s selected_skills=%s",
+            self.model,
+            self.base_url,
+            self._chat_completions_url(),
+            bool(self.api_key),
+            len(self.api_key or ""),
+            self.temperature,
+            self.max_tokens,
+            self.tool_choice,
+            runtime_options.app_template_name or "",
+            [name for name in runtime_options.selected_skills if name.strip()],
+        )
 
     @property
     def configured(self) -> bool:
@@ -209,11 +223,15 @@ class OpenAICompatibleClient:
 
     def _log_request(self, operation: str, payload: dict[str, Any]) -> None:
         logger.info(
-            "llm request operation=%s model=%s base_url=%s timeout=%s message_count=%s tool_count=%s stream=%s payload=%s",
+            "llm request operation=%s model=%s base_url=%s request_url=%s timeout=%s api_key_configured=%s "
+            "api_key_len=%s message_count=%s tool_count=%s stream=%s payload=%s",
             operation,
             self.model,
             self.base_url,
+            self._chat_completions_url(),
             self.request_timeout_seconds,
+            bool(self.api_key),
+            len(self.api_key or ""),
             len(payload.get("messages")) if isinstance(payload.get("messages"), list) else 0,
             len(payload.get("tools")) if isinstance(payload.get("tools"), list) else 0,
             payload.get("stream") is True,
@@ -273,6 +291,9 @@ class OpenAICompatibleClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+    def _chat_completions_url(self) -> str:
+        return f"{self.base_url}/chat/completions" if self.base_url else ""
 
     @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:

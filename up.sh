@@ -98,11 +98,7 @@ docker_run() {
     run_args+=("$@")
   else
     run_args+=(
-      python -m uvicorn "${APP_MODULE}"
-      --host 0.0.0.0
-      --port "${JETLINKS_AGENT_CONTAINER_PORT}"
-      --workers "${APP_WORKERS}"
-      --log-level "${APP_LOG_LEVEL}"
+      sh -c "mkdir -p '${RUNTIME_DIR}' && exec python -m uvicorn '${APP_MODULE}' --host 0.0.0.0 --port '${JETLINKS_AGENT_CONTAINER_PORT}' --workers '${APP_WORKERS}' --log-level '${APP_LOG_LEVEL}' 2>&1 | tee -a '${LOG_FILE}'"
     )
   fi
 

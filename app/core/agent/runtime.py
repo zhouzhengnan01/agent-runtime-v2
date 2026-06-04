@@ -9,7 +9,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
+
+import httpx
 
 from app.core.artifacts import ArtifactStore
 from app.core.artifacts.store import ThreadPaths
@@ -38,6 +41,8 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 
 
 logger = logging.getLogger("uvicorn.error")
+REMOTE_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
+REMOTE_ATTACHMENT_TIMEOUT_SECONDS = 30.0
 FIXED_REPLY_ENV = "JETLINKS_AGENT_FIXED_REPLY"
 FIXED_REPLY_ENABLED_ENV = "JETLINKS_AGENT_FIXED_REPLY_ENABLED"
 FIXED_REPLY_FOREVER_ENV = "JETLINKS_AGENT_FIXED_REPLY_FOREVER"
@@ -1171,6 +1176,8 @@ class AgentRuntime:
         attachments = request.attachments
         if not attachments and runtime_options.thread_id:
             attachments = self._thread_file_attachments(runtime_options.thread_id)
+        if attachments and runtime_options.thread_id:
+            attachments = self._materialize_remote_attachments(attachments, runtime_options.thread_id)
         messages = self._messages_with_attachment_context(request.messages, attachments)
         if runtime_options is request.runtime_options and messages is request.messages and attachments is request.attachments:
             return request
@@ -1316,6 +1323,155 @@ class AgentRuntime:
                 )
         return attachments
 
+    def _materialize_remote_attachments(self, attachments: list[Attachment], thread_id: str) -> list[Attachment]:
+        paths = self.artifact_store.prepare_thread(thread_id)
+        materialized: list[Attachment] = []
+        changed = False
+        for attachment in attachments:
+            if not self._should_materialize_remote_attachment(attachment):
+                materialized.append(attachment)
+                continue
+            try:
+                updated = self._download_remote_attachment(attachment, paths)
+            except Exception as exc:
+                logger.warning(
+                    "remote attachment download failed thread_id=%s name=%s url=%s error=%s",
+                    paths.thread_id,
+                    attachment.name,
+                    attachment.path,
+                    exc,
+                )
+                metadata = dict(attachment.metadata)
+                metadata["download_error"] = str(exc)
+                materialized.append(attachment.model_copy(update={"metadata": metadata}, deep=True))
+                continue
+            materialized.append(updated)
+            changed = True
+        return materialized if changed else attachments
+
+    @staticmethod
+    def _should_materialize_remote_attachment(attachment: Attachment) -> bool:
+        raw_path = (attachment.path or "").strip()
+        if not raw_path:
+            return False
+        parsed = urlparse(raw_path)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            return False
+        mime_type = (attachment.mime_type or "").split(";", 1)[0].strip().lower()
+        return mime_type.startswith(("image/", "video/"))
+
+    def _download_remote_attachment(self, attachment: Attachment, paths: ThreadPaths) -> Attachment:
+        url = str(attachment.path or "").strip()
+        with httpx.Client(timeout=REMOTE_ATTACHMENT_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            with client.stream("GET", url) as response:
+                response.raise_for_status()
+                content_length = self._remote_content_length(response.headers.get("content-length"))
+                if content_length is not None and content_length > REMOTE_ATTACHMENT_MAX_BYTES:
+                    raise ValueError(
+                        f"remote attachment is too large: {content_length} bytes > {REMOTE_ATTACHMENT_MAX_BYTES} bytes"
+                    )
+                header_mime = self._header_mime_type(response.headers.get("content-type"))
+                mime_type = header_mime or attachment.mime_type or guess_mime_type(Path(attachment.name))
+                if not self._remote_attachment_mime_allowed(mime_type):
+                    raise ValueError(f"remote attachment MIME type is not allowed: {mime_type}")
+                filename = self._remote_attachment_filename(url, attachment.name, mime_type)
+                target = self._unique_upload_target(paths, filename)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                bytes_written = 0
+                try:
+                    with target.open("wb") as handle:
+                        for chunk in response.iter_bytes():
+                            if not chunk:
+                                continue
+                            bytes_written += len(chunk)
+                            if bytes_written > REMOTE_ATTACHMENT_MAX_BYTES:
+                                raise ValueError(
+                                    f"remote attachment is too large: {bytes_written} bytes > {REMOTE_ATTACHMENT_MAX_BYTES} bytes"
+                                )
+                            handle.write(chunk)
+                except Exception:
+                    target.unlink(missing_ok=True)
+                    raise
+        virtual_path = self._virtual_upload_path(paths, target)
+        metadata = dict(attachment.metadata)
+        metadata.update(
+            {
+                "original_uri": metadata.get("uri") or url,
+                "uri": virtual_path,
+                "downloaded": True,
+                "size": target.stat().st_size,
+            }
+        )
+        return attachment.model_copy(
+            update={
+                "name": target.name,
+                "path": virtual_path,
+                "mime_type": mime_type,
+                "metadata": metadata,
+            },
+            deep=True,
+        )
+
+    @staticmethod
+    def _remote_content_length(value: str | None) -> int | None:
+        if value is None:
+            return None
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+
+    @staticmethod
+    def _header_mime_type(value: str | None) -> str:
+        if value is None:
+            return ""
+        return value.split(";", 1)[0].strip().lower()
+
+    @staticmethod
+    def _remote_attachment_mime_allowed(mime_type: str) -> bool:
+        clean = mime_type.split(";", 1)[0].strip().lower()
+        return clean.startswith(("image/", "video/"))
+
+    @staticmethod
+    def _remote_attachment_filename(url: str, attachment_name: str, mime_type: str) -> str:
+        parsed_name = Path(unquote(urlparse(url).path)).name
+        raw_name = attachment_name.strip() or parsed_name or "attachment"
+        name = Path(raw_name.replace("\\", "/")).name
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._") or "attachment"
+        if "." not in name:
+            extension = guess_mime_type(Path(f"attachment.{mime_type.split('/', 1)[-1]}"))
+            if extension:
+                name = f"{name}.{mime_type.split('/', 1)[-1]}"
+        return name[:180]
+
+    @staticmethod
+    def _unique_upload_target(paths: ThreadPaths, filename: str) -> Path:
+        uploads = paths.uploads.resolve()
+        target = (uploads / filename).resolve()
+        try:
+            target.relative_to(uploads)
+        except ValueError as exc:
+            raise ValueError("remote attachment upload path traversal blocked") from exc
+        if not target.exists():
+            return target
+        stem = target.stem or "attachment"
+        suffix = target.suffix
+        for index in range(1, 10_000):
+            candidate = (uploads / f"{stem}-{index}{suffix}").resolve()
+            try:
+                candidate.relative_to(uploads)
+            except ValueError as exc:
+                raise ValueError("remote attachment upload path traversal blocked") from exc
+            if not candidate.exists():
+                return candidate
+        raise FileExistsError(f"Could not choose a unique upload filename for {filename}")
+
+    @staticmethod
+    def _virtual_upload_path(paths: ThreadPaths, target: Path) -> str:
+        relative = target.resolve().relative_to(paths.uploads.resolve()).as_posix()
+        return f"/mnt/user-data/uploads/{relative}"
+
     @classmethod
     def _messages_with_attachment_context(
         cls,
@@ -1424,6 +1580,21 @@ class AgentRuntime:
             api_key = self._api_key_from_app_model_env(model)
             if api_key:
                 updates["api_key"] = api_key
+        logger.info(
+            "app model runtime options resolved app_template=%s selected_model=%s force_model_config=%s "
+            "explicit_fields=%s update_keys=%s base_url=%s model_name=%s api_key_configured=%s api_key_len=%s "
+            "api_key_source=%s",
+            app_template_name,
+            model.name or model.model or model.default_model or "",
+            force_model_config,
+            sorted(str(item) for item in explicit),
+            sorted(updates),
+            updates.get("base_url") or runtime_options.base_url or "",
+            updates.get("model_name") or runtime_options.model_name or "",
+            bool(updates.get("api_key") or runtime_options.api_key),
+            len(str(updates.get("api_key") or runtime_options.api_key or "")),
+            self._app_model_api_key_source(model, updates),
+        )
         return updates
 
     @staticmethod
@@ -1433,6 +1604,24 @@ class AgentRuntime:
             return None
         value = os.getenv(env_name, "").strip()
         return value or None
+
+    @staticmethod
+    def _app_model_api_key_source(model: AppModelOption, updates: dict[str, object]) -> str:
+        if updates.get("api_key"):
+            if model.api_key:
+                return "model.api_key"
+            if model.api_key_env:
+                return f"env:{model.api_key_env}"
+            if model.api_key_enc:
+                return "model.api_key_enc"
+            return "runtime_or_template"
+        if model.api_key:
+            return "model.api_key_not_applied"
+        if model.api_key_env:
+            return f"env:{model.api_key_env}:empty_or_not_applied"
+        if model.api_key_enc:
+            return "model.api_key_enc_not_applied"
+        return "none"
 
     def _decrypt_app_model_api_key(self, encrypted: str, app_template_name: str, model: AppModelOption) -> str | None:
         purposes = [
