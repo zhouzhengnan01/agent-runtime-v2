@@ -978,6 +978,68 @@ def test_runtime_auto_executes_primary_skill_when_skill_declares_auto_execute(tm
     assert "skill.completed" in event_types
 
 
+def test_runtime_returns_error_when_configured_auto_skill_is_missing(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(name="missing-auto-skill-agent", display_name="Missing Auto Skill Agent")
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成组件")],
+        runtime_options=RuntimeOptions(
+            thread_id="missing-auto-skill",
+            selected_skills=["missing-component-skill"],
+            config_options={"auto_execute_primary_skill": True},
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.status == "failed"
+    assert "自动执行的 Skill 未注册或不可用：missing-component-skill" in result.reply
+    assert result.metadata["error_reason"] == "skill_not_found"
+    assert [event.type for event in events] == [
+        "run.started",
+        "tool.failed",
+        "skill.failed",
+        "agent.message",
+        "run.failed",
+    ]
+
+
+def test_runtime_returns_error_when_configured_auto_skill_execution_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(name="failing-auto-skill-agent", display_name="Failing Auto Skill Agent")
+
+    def fail_run(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("runner exploded")
+
+    monkeypatch.setattr("app.core.agent.runtime.SkillRunner.run", fail_run)
+    request = ChatRequest(
+        messages=[Message(role="user", content="生成一个智慧园区运营可视化大屏")],
+        runtime_options=RuntimeOptions(
+            thread_id="failing-auto-skill",
+            selected_skills=["generate-screen-skill"],
+            config_options={"auto_execute_primary_skill": True},
+        ),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.status == "failed"
+    assert "自动执行 Skill 失败：generate-screen-skill。原因：runner exploded" in result.reply
+    assert result.metadata["error_reason"] == "skill_execution_failed"
+    assert [event.type for event in events] == [
+        "run.started",
+        "skill.started",
+        "tool.started",
+        "tool.failed",
+        "skill.failed",
+        "agent.message",
+        "run.failed",
+    ]
+
+
 def test_runtime_expands_uploaded_plugin_id_selected_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -59,7 +59,7 @@ class SkillDefinition:
 
     @property
     def executable(self) -> bool:
-        return self.source_type == "plugin" or self.runner_path is not None or _has_generic_execution(self.execution)
+        return self.runner_path is not None or _has_generic_execution(self.execution) or _has_prompt_only_routing(self)
 
     @property
     def composite(self) -> bool:
@@ -145,8 +145,11 @@ class SkillRegistry:
         self._skills = self._load_skills()
 
     def list(self, allowed: list[str] | None = None, *, executable_only: bool = False) -> list[SkillDefinition]:
-        names = allowed if allowed is not None else sorted(self._skills)
-        skills = [self._skills[name] for name in names if name in self._skills]
+        source = self._skills
+        if executable_only:
+            source = self._load_skills(include_plugin_only=True)
+        names = allowed if allowed is not None else sorted(source)
+        skills = [source[name] for name in names if name in source]
         if executable_only:
             return [skill for skill in skills if skill.executable]
         return skills
@@ -154,9 +157,12 @@ class SkillRegistry:
     def get(self, name: str) -> SkillDefinition:
         if name in self._skills:
             return self._skills[name]
-        aliases = [alias for alias in expand_skill_aliases([name], self.root_dir) if alias in self._skills]
+        skills = self._load_skills(include_plugin_only=True)
+        if name in skills:
+            return skills[name]
+        aliases = [alias for alias in expand_skill_aliases([name], self.root_dir) if alias in skills]
         if len(aliases) == 1:
-            return self._skills[aliases[0]]
+            return skills[aliases[0]]
         raise KeyError(f"Unknown skill: {name}")
 
     def read_manifest(self, name: str) -> dict[str, Any]:
@@ -182,8 +188,11 @@ class SkillRegistry:
     def reload(self) -> None:
         self._skills = self._load_skills()
 
-    def _load_skills(self) -> dict[str, SkillDefinition]:
-        return {name: loaded.definition for name, loaded in self._manager().load_skills().items()}
+    def _load_skills(self, *, include_plugin_only: bool = False) -> dict[str, SkillDefinition]:
+        return {
+            name: loaded.definition
+            for name, loaded in self._manager().load_skills(include_plugin_only=include_plugin_only).items()
+        }
 
     def _manifest_path(self, name: str) -> Path:
         self._validate_skill_name(name)
@@ -317,3 +326,19 @@ def _has_generic_execution(execution: dict[str, Any] | None) -> bool:
     if not isinstance(execution, dict):
         return False
     return _string_value(execution.get("type")) in {"python_script", "template", "http", "command"}
+
+
+def _has_prompt_only_routing(skill: SkillDefinition) -> bool:
+    if skill.source_type != "plugin":
+        return False
+    routing = skill.routing
+    if not isinstance(routing, dict):
+        return False
+    summary = routing.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return True
+    for key in ("keywords", "examples"):
+        value = routing.get(key)
+        if isinstance(value, list) and any(isinstance(item, str) and item.strip() for item in value):
+            return True
+    return False

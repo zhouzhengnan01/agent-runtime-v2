@@ -1018,6 +1018,47 @@ def test_acp_websocket_top_level_app_template_preserves_template_config_options(
     assert options.config_options["max_tool_rounds"] == 3
 
 
+def test_acp_websocket_prompt_expands_platform_skill_alias_before_runtime(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(thread_id="acp-platform-skill-alias", cwd=str(tmp_path)),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": _acp_params(
+                    sessionId=session_id,
+                    prompt=[{"type": "text", "text": "生成一个园区本月用电的echarts的柱状图组件"}],
+                    runtime_options={
+                        "selectedSkills": ["178054047680069qndudx"],
+                        "configOptions": {"auto_execute_primary_skill": True},
+                    },
+                ),
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.selected_skills == ["jetlinks-ai-component"]
+    assert options.config_options["auto_execute_primary_skill"] is True
+
+
 def test_acp_websocket_accepts_platform_session_init_and_agent_command(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

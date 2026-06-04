@@ -1,5 +1,7 @@
 {
-  "id" : "1779867237931mnv6gtbj",
-  "name" : "emoji技能",
-  "skills" : [ "manifest.json" ]
+  "id": "emoji",
+  "name": "emoji",
+  "skills": [
+    "manifest.json"
+  ]
 }

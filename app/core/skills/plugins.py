@@ -101,7 +101,11 @@ class LoadedSkill:
 
     @property
     def executable(self) -> bool:
-        return self.plugin is not None or self.runner_path is not None or _can_run_generic(self.definition.to_event_payload())
+        return (
+            self.runner_path is not None
+            or _can_run_generic(self.definition.to_event_payload())
+            or _can_run_prompt_only(self.definition)
+        )
 
 
 class SkillPluginManager:
@@ -122,10 +126,10 @@ class SkillPluginManager:
                 continue
         return sorted(plugins, key=lambda plugin: plugin.plugin_id)
 
-    def load_skills(self) -> dict[str, LoadedSkill]:
+    def load_skills(self, *, include_plugin_only: bool | None = None) -> dict[str, LoadedSkill]:
         plugin_skills = self._load_plugin_skills()
 
-        loaded: dict[str, LoadedSkill] = dict(plugin_skills)
+        loaded: dict[str, LoadedSkill] = {}
         for entity_path in self._config_entity_paths():
             try:
                 definition = definition_from_manifest(_read_json(entity_path), entity_path)
@@ -150,6 +154,12 @@ class SkillPluginManager:
                 runner_path=implementation.runner_path,
                 spec_builder_path=implementation.spec_builder_path,
             )
+
+        if include_plugin_only is None:
+            include_plugin_only = self.root_dir != self.project_root
+        if include_plugin_only:
+            for skill_name, implementation in plugin_skills.items():
+                loaded.setdefault(skill_name, implementation)
 
         return loaded
 
@@ -780,6 +790,22 @@ def _with_plugin_metadata(
         runner_path=runner_path,
         spec_builder_path=spec_builder_path,
     )
+
+
+def _can_run_prompt_only(definition: SkillDefinition) -> bool:
+    if definition.source_type != "plugin":
+        return False
+    routing = definition.routing
+    if not isinstance(routing, dict):
+        return False
+    summary = routing.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return True
+    for key in ("keywords", "examples"):
+        value = routing.get(key)
+        if isinstance(value, list) and any(isinstance(item, str) and item.strip() for item in value):
+            return True
+    return False
 
 
 def _prompt_only_markdown(skill_name: str, manifest: dict[str, Any], spec: dict[str, Any], loaded: LoadedSkill) -> str:

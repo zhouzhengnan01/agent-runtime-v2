@@ -573,14 +573,32 @@ class AgentRuntime:
         skill_name = runtime_options.selected_skills[0].strip()
         if not skill_name:
             return None
+        config_auto_execute = runtime_options.config_options.get("auto_execute_primary_skill") is True
         try:
             skill = SkillRegistry(self.app_template_registry.root_dir).get(skill_name)
-        except KeyError:
+        except KeyError as exc:
+            if config_auto_execute:
+                return self._auto_primary_skill_failed_result(
+                    execution,
+                    recorder,
+                    skill_name=skill_name,
+                    error=f"自动执行的 Skill 未注册或不可用：{skill_name}",
+                    reason="skill_not_found",
+                    cause=exc,
+                )
             return None
         if not skill.executable:
+            if config_auto_execute:
+                return self._auto_primary_skill_failed_result(
+                    execution,
+                    recorder,
+                    skill_name=skill_name,
+                    error=f"自动执行的 Skill 不可执行：{skill_name}",
+                    reason="skill_not_executable",
+                )
             return None
         auto_execute = (
-            runtime_options.config_options.get("auto_execute_primary_skill") is True
+            config_auto_execute
             or skill.auto_execute is True
         )
         logger.info(
@@ -599,11 +617,21 @@ class AgentRuntime:
         spec = self._auto_primary_skill_spec(skill_name, execution.request)
         recorder.emit("skill.started", {"skill_name": skill_name, "spec": spec, "auto_execute": True})
         recorder.emit("tool.started", {"tool_name": skill_name, "tool_call_id": f"auto-skill-{skill_name}"})
-        run_result = SkillRunner(self.artifact_store, root_dir=self.app_template_registry.root_dir).run(
-            skill_name,
-            spec,
-            execution.paths,
-        )
+        try:
+            run_result = SkillRunner(self.artifact_store, root_dir=self.app_template_registry.root_dir).run(
+                skill_name,
+                spec,
+                execution.paths,
+            )
+        except Exception as exc:
+            return self._auto_primary_skill_failed_result(
+                execution,
+                recorder,
+                skill_name=skill_name,
+                error=f"自动执行 Skill 失败：{skill_name}。原因：{exc}",
+                reason="skill_execution_failed",
+                cause=exc,
+            )
         artifacts = [artifact.model_dump(mode="json") for artifact in run_result.outputs]
         recorder.emit(
             "tool.completed",
@@ -667,6 +695,81 @@ class AgentRuntime:
             thread_id=execution.paths.thread_id,
             run_id=recorder.run_id,
             status="completed",
+        )
+        return result
+
+    def _auto_primary_skill_failed_result(
+        self,
+        execution: ExecutionContext,
+        recorder: EventRecorder,
+        *,
+        skill_name: str,
+        error: str,
+        reason: str,
+        cause: BaseException | None = None,
+    ) -> AgentRunResult:
+        if cause is not None:
+            logger.warning(
+                "primary skill auto-execute failed thread_id=%s skill=%s reason=%s error=%s",
+                execution.paths.thread_id,
+                skill_name,
+                reason,
+                cause,
+            )
+        recorder.emit(
+            "tool.failed",
+            {
+                "tool_name": skill_name,
+                "tool_call_id": f"auto-skill-{skill_name}",
+                "is_error": True,
+                "error": error,
+                "reason": reason,
+            },
+        )
+        recorder.emit(
+            "skill.failed",
+            {
+                "skill_name": skill_name,
+                "error": error,
+                "reason": reason,
+                "auto_execute": True,
+            },
+        )
+        result = AgentRunResult(
+            agent=execution.agent_config.name,
+            thread_id=execution.paths.thread_id,
+            status="failed",
+            reply=error,
+            metadata={
+                "workflow": "agent_loop",
+                "run_id": recorder.run_id,
+                "auto_execute_primary_skill": True,
+                "skill_name": skill_name,
+                "error": error,
+                "error_reason": reason,
+                "tool_rounds": 0,
+                "tool_call_count": 1,
+                "mode": execution.request.runtime_options.mode or "edit",
+            },
+        )
+        recorder.emit("agent.message", {"text": result.reply, "content": result.content})
+        recorder.emit("run.failed", {"error": error, "result": result.model_dump()})
+        self.session_store.save(
+            execution.paths,
+            self._conversation_with_result(execution.conversation, result),
+            run_id=recorder.run_id,
+        )
+        self._persist_events(
+            execution.agent_config,
+            execution.request,
+            execution.paths.thread_id,
+            recorder.events,
+            result,
+        )
+        self.session_manager.finish_turn(
+            thread_id=execution.paths.thread_id,
+            run_id=recorder.run_id,
+            status="failed",
         )
         return result
 

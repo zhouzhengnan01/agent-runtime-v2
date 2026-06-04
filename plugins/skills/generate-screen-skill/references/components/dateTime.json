@@ -1,0 +1,51 @@
+{
+    "type": "dateTime",
+    "name": "时间框",
+    "visible": true,
+    "isLocked": false,
+    "animationProps": [],
+    "componentProps": {
+        "style": {
+            "x": 1013.1249904632568,
+            "y": 190.4472942352295,
+            "width": 150,
+            "height": 40,
+            "rotate": {
+                "angle": 0
+            }
+        },
+        "font": {
+            "colorType": "default",
+            "color": "rgba(255,255,255,1)",
+            "color1": "rgba(255,255,255,1)",
+            "color2": "#096dd9",
+            "gradientAngle": 180,
+            "fontSize": 16,
+            "fontWeight": "normal",
+            "fontFamily": "Arial",
+            "fontStyle": "normal",
+            "verticalAlign": "center",
+            "horizontalAlign": "center",
+            "isTextShadow": false,
+            "textShadow": "0 5px 10px #096dd9"
+        },
+        "background": {
+            "backgroundColor": "#0000",
+            "imgField": "",
+            "opacity": 1,
+            "borderColor": "#000",
+            "borderType": "solid",
+            "borderWidth": 1,
+            "borderRadius": 0,
+            "shadowColor": "#0000",
+            "shadowBlur": 0,
+            "shadowX": 0,
+            "shadowY": 0,
+            "shadowDiff": 0
+        },
+        "dateTime": {
+            "format": "YYYY-mm-dd HH:MM:SS"
+        }
+    },
+    "id": "dateTime_b8TcHecxBe6eze5R"
+}

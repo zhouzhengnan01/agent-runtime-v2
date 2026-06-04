@@ -1,0 +1,53 @@
+{
+  "name" : "generate-screen-skill",
+  "description" : "Generate platform-compatible visualization big-screen JSON packages for 大屏、智慧大屏、可视化大屏、数据大屏、智慧园区、能耗大屏, including generated-bigscreen/page.json and ECharts resource guidance.",
+  "generation" : true,
+  "auto_execute" : true,
+  "output_kind" : "markdown",
+  "routing" : {
+    "summary" : "Use for natural-language visualization big-screen generation requests.",
+    "keywords" : [ "大屏", "智慧大屏", "可视化大屏", "数据大屏", "智慧园区", "能耗大屏", "page.json", "ECharts", "custom-chart", "resourceComponentEcharts" ],
+    "examples" : [ "给我生成一个智慧大屏", "生成智慧园区运营可视化大屏", "输出大屏 page.json 和 ECharts 资源说明" ]
+  },
+  "quality_template" : [ ],
+  "input_schema" : {
+    "type" : "object",
+    "required" : [ "skill_name", "objective" ],
+    "properties" : {
+      "skill_name" : {
+        "const" : "generate-screen-skill"
+      },
+      "objective" : {
+        "type" : "string"
+      }
+    },
+    "additionalProperties" : true
+  },
+  "output_schema" : {
+    "type" : "object",
+    "required" : [ "artifacts" ],
+    "properties" : {
+      "artifacts" : {
+        "type" : "array"
+      }
+    },
+    "additionalProperties" : true
+  },
+  "sandbox" : {
+    "enabled" : false,
+    "request_schema_version" : "skill-run.v1",
+    "fallback_to_local" : true
+  },
+  "execution" : {
+    "type" : "python_script",
+    "script" : "scripts/generate_bigscreen.py",
+    "timeout_seconds" : 30,
+    "input_mode" : "stdin_json",
+    "collect_outputs" : true
+  },
+  "metadata" : {
+    "developerCenter" : {
+      "domain" : "general"
+    }
+  }
+}

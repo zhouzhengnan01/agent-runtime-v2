@@ -287,6 +287,21 @@ def test_preconfigured_app_template_workflows_have_local_entities() -> None:
     assert missing == []
 
 
+def test_component_development_app_uses_executable_auto_skill() -> None:
+    registry = AppTemplateRegistry()
+    template = registry.get("zujiankaifa")
+    options = merge_runtime_options_with_template(
+        RuntimeOptions(app_template_name=template.name),
+        template,
+    )
+    skill = SkillRegistry(registry.root_dir).get(options.selected_skills[0])
+
+    assert options.selected_skills == ["jetlinks-ai-component"]
+    assert skill.executable is True
+    assert skill.output_kind == "component"
+    assert options.config_options["auto_execute_primary_skill"] is True
+
+
 def test_preconfigured_app_templates_carry_model_defaults() -> None:
     registry = AppTemplateRegistry()
 

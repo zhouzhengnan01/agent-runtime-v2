@@ -1,0 +1,7 @@
+{
+  "id": "generate-screen-skill",
+  "name": "Generate Screen Skill",
+  "skills": [
+    "manifest.json"
+  ]
+}
