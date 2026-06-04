@@ -89,13 +89,26 @@ JETLINKS_AGENT_CONTAINER_PORT=8000 \
 如果希望把镜像里的内置代码、配置和 skill 文件同步到本地目录，再用本地目录挂载启动，可以先执行：
 
 ```bash
-JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
-JETLINKS_AGENT_PULL_IMAGE=false \
 JETLINKS_AGENT_SYNC_TARGET_DIR=/opt/jetlinks-agent-runtime-v2 \
 ./sync-image-code.sh
 ```
 
-`sync-image-code.sh` 可以单独拷到目标机器执行；如果目标目录为空，它会把镜像里的代码、配置、skill 和启动脚本都同步出来。
+`sync-image-code.sh` 可以单独拷到目标机器执行；如果没有显式传 `JETLINKS_AGENT_IMAGE`，脚本会根据当前机器架构自动选择镜像：
+
+```text
+x86_64/amd64   -> registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:stable-amd64
+aarch64/arm64  -> registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:stable-arm64
+```
+
+如果需要指定完整镜像地址，也可以显式传：
+
+```bash
+./sync-image-code.sh \
+  --image registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:stable-arm64 \
+  --target /opt/jetlinks-agent-runtime-v2
+```
+
+如果目标目录为空，它会把镜像里的代码、配置、skill 和启动脚本都同步出来。
 然后进入同步出来的目录，用默认挂载模式启动：
 
 ```bash
