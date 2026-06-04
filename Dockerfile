@@ -9,6 +9,9 @@ WORKDIR /workspace/code/jetlinks-agent-runtime-agent-v2
 
 COPY README.md pyproject.toml ./
 COPY app ./app
+COPY config ./config
+COPY plugins ./plugins
+COPY static ./static
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -e .

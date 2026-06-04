@@ -58,7 +58,7 @@ docker build \
   -t jetlinks-agent-runtime-v2:local-py312 .
 ```
 
-启动容器：
+启动容器（联调模式，默认会挂载当前源码目录，改代码后重启即可生效）：
 
 ```bash
 APP_PORT=18013 \
@@ -69,6 +69,22 @@ JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
 JETLINKS_AGENT_CONTAINER_PORT=8000 \
 ./up.sh --docker
 ```
+
+如果不希望目标机器拉取或挂载源码，需要使用已经把 `app/config/plugins/static` 打进镜像的版本，并关闭源码挂载：
+
+```bash
+APP_PORT=18013 \
+APP_HOST=127.0.0.1 \
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_PULL_IMAGE=false \
+JETLINKS_AGENT_MOUNT_CODE=false \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-image-only \
+JETLINKS_AGENT_CONTAINER_PORT=8000 \
+./up.sh --docker
+```
+
+远端仓库镜像同理，把 `JETLINKS_AGENT_IMAGE` 换成仓库地址即可；目标机器只需要有 `up.sh/runtime-env.sh/status.sh/stop.sh`
+这几个启动脚本和 Docker，不需要完整源码目录。
 
 启动后访问：
 
@@ -82,7 +98,7 @@ curl http://127.0.0.1:18013/health
 {"status":"ok","service":"jetlinks-agent-runtime-v2"}
 ```
 
-`up.sh --docker` 会自动把当前项目真实路径挂载到容器内，并把容器工作目录设置为挂载目录：
+默认情况下，`up.sh --docker` 会自动把当前项目真实路径挂载到容器内，并把容器工作目录设置为挂载目录：
 
 ```text
 /Users/chenhao/code/jetlinks-official/jetlinks-agent-runtime-agent-v2
@@ -98,6 +114,8 @@ curl http://127.0.0.1:18013/health
 docker inspect jetlinks-agent-runtime-v2-local-image \
   --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
 ```
+
+如果设置了 `JETLINKS_AGENT_MOUNT_CODE=false`，上面的命令不会输出源码挂载，服务会直接使用镜像内置代码。
 
 查看状态：
 

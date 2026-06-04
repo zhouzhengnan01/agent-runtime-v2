@@ -58,7 +58,13 @@ docker_run() {
   fi
 
   touch "${LOG_FILE}"
-  echo "starting ${APP_NAME} container=${JETLINKS_AGENT_CONTAINER_NAME} image=${JETLINKS_AGENT_IMAGE} host_port=${APP_PORT} code=${PROJECT_DIR}"
+  local code_source
+  if is_truthy "${JETLINKS_AGENT_MOUNT_CODE}"; then
+    code_source="${PROJECT_DIR}"
+  else
+    code_source="image"
+  fi
+  echo "starting ${APP_NAME} container=${JETLINKS_AGENT_CONTAINER_NAME} image=${JETLINKS_AGENT_IMAGE} host_port=${APP_PORT} code=${code_source}"
 
   local run_args=(
     docker run -d
@@ -69,7 +75,6 @@ docker_run() {
   run_args+=(
     --name "${JETLINKS_AGENT_CONTAINER_NAME}"
     -p "${APP_PORT}:${JETLINKS_AGENT_CONTAINER_PORT}"
-    -v "${PROJECT_DIR}:${JETLINKS_AGENT_CONTAINER_WORKDIR}"
     -w "${JETLINKS_AGENT_CONTAINER_WORKDIR}"
     -e APP_HOST=0.0.0.0
     -e APP_PORT="${JETLINKS_AGENT_CONTAINER_PORT}"
@@ -80,6 +85,9 @@ docker_run() {
     -e JETLINKS_AGENT_FIXED_REPLY_FOREVER="${JETLINKS_AGENT_FIXED_REPLY_FOREVER}"
     -e JETLINKS_AGENT_FIXED_REPLY_INTERVAL_SECONDS="${JETLINKS_AGENT_FIXED_REPLY_INTERVAL_SECONDS}"
   )
+  if is_truthy "${JETLINKS_AGENT_MOUNT_CODE}"; then
+    run_args+=(-v "${PROJECT_DIR}:${JETLINKS_AGENT_CONTAINER_WORKDIR}")
+  fi
   if [ -n "${JETLINKS_AGENT_DOCKER_EXTRA_ARGS}" ]; then
     # shellcheck disable=SC2206
     local extra_args=(${JETLINKS_AGENT_DOCKER_EXTRA_ARGS})
