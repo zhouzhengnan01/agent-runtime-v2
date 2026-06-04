@@ -8,12 +8,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /workspace/code/jetlinks-agent-runtime-agent-v2
 
 COPY README.md pyproject.toml ./
+COPY runtime-env.sh up.sh status.sh stop.sh sync-image-code.sh ./
 COPY app ./app
 COPY config ./config
 COPY plugins ./plugins
 COPY static ./static
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir -e .
+    && python -m pip install --no-cache-dir -e . \
+    && chmod +x runtime-env.sh up.sh status.sh stop.sh sync-image-code.sh
 
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

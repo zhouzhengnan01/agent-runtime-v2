@@ -86,6 +86,35 @@ JETLINKS_AGENT_CONTAINER_PORT=8000 \
 远端仓库镜像同理，把 `JETLINKS_AGENT_IMAGE` 换成仓库地址即可；目标机器只需要有 `up.sh/runtime-env.sh/status.sh/stop.sh`
 这几个启动脚本和 Docker，不需要完整源码目录。
 
+如果希望把镜像里的内置代码、配置和 skill 文件同步到本地目录，再用本地目录挂载启动，可以先执行：
+
+```bash
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_PULL_IMAGE=false \
+JETLINKS_AGENT_SYNC_TARGET_DIR=/opt/jetlinks-agent-runtime-v2 \
+./sync-image-code.sh
+```
+
+`sync-image-code.sh` 可以单独拷到目标机器执行；如果目标目录为空，它会把镜像里的代码、配置、skill 和启动脚本都同步出来。
+然后进入同步出来的目录，用默认挂载模式启动：
+
+```bash
+cd /opt/jetlinks-agent-runtime-v2
+
+APP_PORT=18013 \
+APP_HOST=127.0.0.1 \
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_PULL_IMAGE=false \
+JETLINKS_AGENT_MOUNT_CODE=true \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-code \
+JETLINKS_AGENT_CONTAINER_PORT=8000 \
+./up.sh --docker
+```
+
+`sync-image-code.sh` 默认从镜像内的 `/workspace/code/jetlinks-agent-runtime-agent-v2` 同步；如果镜像工作目录不同，可以设置
+`JETLINKS_AGENT_SYNC_SOURCE_DIR` 覆盖。注意 Docker 的 bind mount 不会自动把镜像里的已有文件复制到宿主机目录；
+必须先同步，再挂载运行。
+
 启动后访问：
 
 ```bash
