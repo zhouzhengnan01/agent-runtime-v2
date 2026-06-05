@@ -1,0 +1,10 @@
+{
+  "id": "tianjin-efficiency-training",
+  "name": "tianjin-efficiency-training",
+  "version": "0.1.0",
+  "description": "使用大模型和当前会话文件生成天津园区效率培训计划、课程路径和测试记录建议。",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-efficiency-training/manifest.json"
+  ]
+}

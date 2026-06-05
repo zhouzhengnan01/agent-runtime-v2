@@ -1,0 +1,128 @@
+{
+  "name": "image-dataset-generation",
+  "description": "Generate synthetic training images from a reference image and prompt through a local image generation HTTP API.",
+  "output_kind": "image",
+  "generation": true,
+  "routing": {
+    "summary": "Use when the user wants to generate synthetic training images, data augmentation images, style-transfer samples, or reference-image-based dataset expansion.",
+    "keywords": [
+      "合成图片",
+      "生成图片",
+      "数据增强",
+      "扩充数据集",
+      "训练数据生成",
+      "参考图生成",
+      "image generation",
+      "synthetic dataset",
+      "augmentation",
+      "flux"
+    ],
+    "examples": [
+      "基于这张棕榈果图片生成 20 张训练增强图",
+      "用参考图和 prompt 扩充目标检测训练数据"
+    ]
+  },
+  "quality_template": [
+    "input_image",
+    "prompt",
+    "output_dir",
+    "result_image_path",
+    "generation_summary"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "input_image",
+      "prompt"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "image-dataset-generation"
+      },
+      "input_image": {
+        "type": "string",
+        "description": "Absolute local path to the reference image."
+      },
+      "prompt": {
+        "type": "string",
+        "description": "Image generation prompt."
+      },
+      "output_dir": {
+        "type": "string",
+        "description": "Absolute output directory. Defaults to the current thread outputs directory."
+      },
+      "api_url": {
+        "type": "string",
+        "default": "http://218.67.242.10:58801/v1/flux2/generate"
+      },
+      "token": {
+        "type": "string",
+        "default": "abc@123"
+      },
+      "model": {
+        "type": "string",
+        "default": "flux2"
+      },
+      "width": {
+        "type": "integer",
+        "default": 640
+      },
+      "height": {
+        "type": "integer",
+        "default": 640
+      },
+      "steps": {
+        "type": "integer",
+        "default": 8
+      },
+      "timeout": {
+        "type": "integer",
+        "default": 120
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "result_image_path": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "execution": {
+    "type": "python_script",
+    "runtime": "local_subprocess",
+    "script": "scripts/run_generation.py",
+    "input_mode": "json_file",
+    "args": [
+      "--input",
+      "{workspace}/image-dataset-generation-input.json"
+    ],
+    "timeout_seconds": 180,
+    "collect_outputs": true,
+    "stderr_filename": "image-dataset-generation-stderr.txt"
+  },
+  "sandbox": {
+    "enabled": true,
+    "profile": "python-skill",
+    "request_schema_version": "skill-run.v1",
+    "adapter_command": "python {package_dir}/scripts/run_generation.py --input {request_path}",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "image_generation",
+    "vision_segmentation"
+  ]
+}

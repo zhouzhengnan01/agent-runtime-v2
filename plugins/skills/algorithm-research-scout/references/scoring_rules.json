@@ -1,0 +1,18 @@
+{
+  "score_100": {
+    "task_fit": 20,
+    "small_dense_fit": 15,
+    "official_repo": 10,
+    "weights_available": 10,
+    "training_support": 10,
+    "public_metrics": 10,
+    "deployment_fit_docs": 10,
+    "license_safety": 10,
+    "maintenance": 5
+  },
+  "license_penalty": {
+    "unknown": -5,
+    "non_commercial": -20,
+    "gpl_or_agpl": -10
+  }
+}

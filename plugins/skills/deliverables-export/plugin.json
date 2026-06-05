@@ -1,0 +1,12 @@
+{
+  "id": "deliverables-export",
+  "name": "deliverables-export",
+  "version": "0.1.0",
+  "description": "Export command notes and implementation steps as TXT and DOCX deliverables.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/deliverables-export/manifest.json"
+  ],
+  "source_suite": "builtin-artifact-skills"
+}

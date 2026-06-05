@@ -1,0 +1,51 @@
+{
+    "type": "tabs",
+    "name": "选项卡",
+    "visible": true,
+    "isLocked": false,
+    "animationProps": [],
+    "componentProps": {
+        "style": {
+            "x": 742.4374904632568,
+            "y": 191.0722942352295,
+            "width": 150,
+            "height": 40,
+            "rotate": {
+                "angle": 0
+            }
+        },
+        "tabs": {
+            "isHorizontal": true,
+            "pattern": "default",
+            "autoPlay": false,
+            "autoPlayInterval": 6000,
+            "style": {
+                "fileId": "",
+                "__bgColor": "#00000000",
+                "__bgFontColor": "#adadad",
+                "__bgFontFamily": "AliRegular",
+                "__bgFontSize": 16,
+                "__ckBgColor": "#1B66FB",
+                "__ckBgFontColor": "#ffffff",
+                "__tabMargin": 0,
+                "__ckBgFontFamily": "AliRegular",
+                "__ckBgFontSize": 16
+            },
+            "tabPane": [
+                {
+                    "name": "选项-1",
+                    "id": 1,
+                    "components": [],
+                    "actions": "visible"
+                },
+                {
+                    "name": "选项-2",
+                    "id": 2,
+                    "components": [],
+                    "actions": "visible"
+                }
+            ]
+        }
+    },
+    "id": "tabs_MfEFf72RPwHa2djh"
+}

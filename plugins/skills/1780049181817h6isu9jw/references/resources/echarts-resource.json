@@ -1,0 +1,13 @@
+{
+    "resourceId": "__RESOURCE_ID__",
+    "name": "__RESOURCE_NAME__",
+    "version": 0,
+    "thumbnailUrl": "",
+    "provider": "local",
+    "type": "component",
+    "group": "[\"vis_oneself_dimension___CHART_GROUP__\"]",
+    "configuration": {
+        "componentType": "echarts",
+        "javaScript": "__ECHARTS_JAVASCRIPT__"
+    }
+}

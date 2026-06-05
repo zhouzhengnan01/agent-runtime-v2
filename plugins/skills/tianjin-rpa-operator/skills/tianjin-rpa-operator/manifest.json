@@ -1,0 +1,128 @@
+{
+  "name": "tianjin-rpa-operator",
+  "description": "使用大模型和当前会话文件实现天津园区 RPA 方案，查询模板/流程/日志/统计，创建流程；启动和停止流程必须 confirm=true。",
+  "output_kind": "json",
+  "generation": true,
+  "routing": {
+    "summary": "使用大模型和当前会话文件实现天津园区 RPA 方案，查询模板/流程/日志/统计，创建流程；启动和停止流程必须 confirm=true。",
+    "keywords": [
+      "RPA",
+      "流程",
+      "数据同步",
+      "报表",
+      "系统巡检",
+      "日志",
+      "调度"
+    ],
+    "examples": [
+      "列出 RPA 模板",
+      "创建数据同步流程",
+      "查看某流程日志"
+    ]
+  },
+  "quality_template": [
+    "local_model_generation",
+    "artifact_report"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-rpa-operator"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "list_processes",
+          "templates",
+          "create_process",
+          "start_process",
+          "stop_process",
+          "test_process",
+          "logs",
+          "statistics"
+        ],
+        "description": "要执行的能力动作。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "可选。仅 mode=backend 时用于覆盖天津后端 API base URL。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "process_id": {
+        "type": "integer"
+      },
+      "name": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "process_type": {
+        "type": "string"
+      },
+      "config": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "schedule": {
+        "type": "string"
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "confirm": {
+        "type": "boolean",
+        "description": "启动/停止流程必须显式设置 true。"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "backend"
+        ],
+        "default": "local",
+        "description": "执行模式。默认 local：使用当前 Runtime 大模型和会话文件生成成果；backend：显式调用天津后端 HTTP API。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

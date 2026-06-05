@@ -1,0 +1,53 @@
+{
+  "name": "artifact-suite",
+  "title": "产物生成全家桶",
+  "description": "一次性启用常用产物技能，适合复杂交付物：图、PPT、Excel、脑图和 Markdown。",
+  "category": "generation",
+  "icon": "package",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [
+    "drawio-generation",
+    "pptx-generation",
+    "excel-generation",
+    "xmind-generation",
+    "markdown-rendering",
+    "deliverables-export"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "这是 smoke 测试：按顺序各调用一次 drawio-generation、pptx-generation、excel-generation、xmind-generation、markdown-rendering 工具，主题为 JetLinks IoT 平台最小交付物。每个工具只调用一次，不要重复优化或生成 v2/v3 版本；完成后只汇总产物文件名。"
+  ],
+  "tags": [
+    "全量",
+    "交付物",
+    "组合能力"
+  ],
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

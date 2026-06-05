@@ -1,0 +1,56 @@
+{
+  "name": "tianjin-park-assistant",
+  "title": "天津园区综合助手",
+  "description": "面向天津园区运营的综合入口，可使用模型原生调用问数、文档、舆情、会议、日历、市场和系统能力。",
+  "category": "park-operations",
+  "icon": "park",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [
+    "tianjin-chatbi-analyst",
+    "tianjin-document-generator",
+    "tianjin-sentiment-monitor",
+    "tianjin-meeting-minutes",
+    "tianjin-calendar-reminder",
+    "tianjin-market-research",
+    "tianjin-system-monitor"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "帮我查看园区系统概览，并生成一份运营摘要。",
+    "分析这段舆情文本并生成一份近7天舆情报告。"
+  ],
+  "tags": [
+    "天津园区",
+    "园区运营",
+    "模型原生"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

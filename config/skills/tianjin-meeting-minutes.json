@@ -1,0 +1,119 @@
+{
+  "name": "tianjin-meeting-minutes",
+  "description": "使用大模型和当前会话文件实现天津园区会议纪要，分析转写内容、保存和读取会议记录。",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "使用大模型和当前会话文件实现天津园区会议纪要，分析转写内容、保存和读取会议记录。",
+    "keywords": [
+      "会议纪要",
+      "会议分析",
+      "转写",
+      "行动项",
+      "任务",
+      "摘要"
+    ],
+    "examples": [
+      "分析这段会议转写",
+      "保存会议纪要",
+      "列出最近会议记录"
+    ]
+  },
+  "quality_template": [
+    "local_model_generation",
+    "artifact_report"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-meeting-minutes"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "analyze",
+          "list_records",
+          "get_record",
+          "save_record"
+        ],
+        "description": "要执行的能力动作。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "可选。仅 mode=backend 时用于覆盖天津后端 API base URL。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "name": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "transcriptLines": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "record_id": {
+        "type": "string"
+      },
+      "status": {
+        "type": "string"
+      },
+      "keyword": {
+        "type": "string"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "backend"
+        ],
+        "default": "local",
+        "description": "执行模式。默认 local：使用当前 Runtime 大模型和会话文件生成成果；backend：显式调用天津后端 HTTP API。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

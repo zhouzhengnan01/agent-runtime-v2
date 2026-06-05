@@ -1,0 +1,42 @@
+{
+  "name": "public-skill-demo",
+  "description": "Demo skill installed through the local-path API.",
+  "output_kind": "markdown",
+  "generation": true,
+  "quality_template": [
+    "demo"
+  ],
+  "execution": {
+    "type": "template",
+    "filename": "$title.md",
+    "template": "# $title\n\n$message\n"
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "default": "demo-skill-output"
+      },
+      "message": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "message"
+    ]
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat"
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "name": "algorithm-training-orchestration",
+  "title": "GPU 训练编排",
+  "description": "上传数据集和可选 image1/image2 后，自动完成合成增强、SAM3 标注、YOLO 数据准备和 GPU 训练。",
+  "category": "algorithm-training",
+  "icon": "package",
+  "agent_name": "default",
+  "workflow": null,
+  "selected_skills": [
+    "image-composite-generation",
+    "data-auto-annotation",
+    "gpu-training-orchestrator"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "帮我训练一个YOLO抽烟检测模型，合成提示词为：把 image2 中的目标自然合成到 image1 的场景中，形成真实监控画面，标注类别为：person，cigarette，训练参数为：conda_env_name=yolo_jetson model=yolo11n.pt epochs=10 imgsz=640 batch=8 device=0 workers=4 patience=20 dataset.split.train=0.7 dataset.split.val=0.2 dataset.split.test=0.1",
+    "我上传了数据集压缩包和两组图片目录，请合成增强后训练 YOLO，labels=person,cigarette，conda_env_name=yolo_jetson model=yolo11n.pt epochs=10 imgsz=640 batch=8 device=0 workers=4 patience=20"
+  ],
+  "tags": [
+    "GPU",
+    "训练",
+    "benchmark",
+    "AGX",
+    "5090"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

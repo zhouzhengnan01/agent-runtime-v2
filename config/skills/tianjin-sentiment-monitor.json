@@ -1,0 +1,151 @@
+{
+  "name": "tianjin-sentiment-monitor",
+  "description": "使用大模型和当前会话文件实现天津园区舆情分析，做情绪分析、监控概览、报告生成、规则、告警、知识库和舆情搜索。",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "使用大模型和当前会话文件实现天津园区舆情分析，做情绪分析、监控概览、报告生成、规则、告警、知识库和舆情搜索。",
+    "keywords": [
+      "舆情",
+      "情感分析",
+      "告警",
+      "报告",
+      "规则",
+      "知识库",
+      "搜索"
+    ],
+    "examples": [
+      "分析这段舆情",
+      "生成近7天舆情报告",
+      "搜索某关键词负面舆情"
+    ]
+  },
+  "quality_template": [
+    "local_model_generation",
+    "artifact_report"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-sentiment-monitor"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "analyze",
+          "monitor",
+          "generate_report",
+          "list_reports",
+          "list_records",
+          "list_rules",
+          "save_rule",
+          "list_alerts",
+          "list_knowledge",
+          "search"
+        ],
+        "description": "要执行的能力动作。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "可选。仅 mode=backend 时用于覆盖天津后端 API base URL。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "text": {
+        "type": "string"
+      },
+      "source": {
+        "type": "string"
+      },
+      "days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 365,
+        "default": 7
+      },
+      "title": {
+        "type": "string"
+      },
+      "report_type": {
+        "type": "string",
+        "default": "sentiment"
+      },
+      "query": {
+        "type": "string"
+      },
+      "search_type": {
+        "type": "string",
+        "default": "sentiment"
+      },
+      "page_size": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 50
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200
+      },
+      "keywords": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "name": {
+        "type": "string"
+      },
+      "rules": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "backend"
+        ],
+        "default": "local",
+        "description": "执行模式。默认 local：使用当前 Runtime 大模型和会话文件生成成果；backend：显式调用天津后端 HTTP API。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

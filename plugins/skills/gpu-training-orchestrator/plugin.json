@@ -1,0 +1,10 @@
+{
+  "id": "gpu-training-orchestrator",
+  "name": "gpu-training-orchestrator",
+  "version": "0.1.0",
+  "description": "Run YOLO detect/segment training from a COCO dataset through a local conda subprocess.",
+  "runner": "runner.py",
+  "skills": [
+    "SKILL.md"
+  ]
+}

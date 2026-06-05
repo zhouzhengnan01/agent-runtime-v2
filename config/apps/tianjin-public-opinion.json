@@ -1,0 +1,51 @@
+{
+  "name": "tianjin-public-opinion",
+  "title": "舆情监控与报告",
+  "description": "真实执行舆情分析、监控、搜索、报告生成、规则和知识库查询。",
+  "category": "park-operations",
+  "icon": "shield",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [
+    "tianjin-sentiment-monitor",
+    "tianjin-market-research"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "分析这段文本的舆情倾向：这个园区系统最近告警很多，体验很差。",
+    "搜索智慧园区消防安全舆情并生成报告。"
+  ],
+  "tags": [
+    "天津园区",
+    "园区运营",
+    "模型原生"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

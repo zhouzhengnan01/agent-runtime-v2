@@ -1,0 +1,253 @@
+{
+  "tools": [
+    {
+      "name": "jetlinks_runtime_status",
+      "title": "JetLinks Runtime Status",
+      "description": "Return a simple status message for MCP connectivity checks.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "enabled": true,
+      "source": {
+        "type": "manual",
+        "response_template": "JetLinks Agent Runtime v2 MCP endpoint is reachable."
+      },
+      "editable": true
+    },
+    {
+      "name": "custom_mcp_mowd5xy6",
+      "title": "Custom MCP Tool",
+      "description": "A custom MCP tool.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "enabled": true,
+      "source": {
+        "type": "manual",
+        "response_template": "Custom MCP tool response."
+      },
+      "editable": true
+    },
+    {
+      "name": "aliyun_websearch_list_tools",
+      "title": "Aliyun WebSearch MCP Tools",
+      "description": "List tools exposed by Alibaba Cloud Bailian WebSearch MCP.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "enabled": true,
+      "source": {
+        "type": "mcp_streamable_http",
+        "url": "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp",
+        "operation": "list_tools",
+        "auth": "bearer",
+        "api_key_agent": "default",
+        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY", "LLM_API_KEY"],
+        "headers": {
+          "Authorization": "Bearer {api_key}"
+        },
+        "timeout_seconds": 30
+      },
+      "editable": true
+    },
+    {
+      "name": "aliyun_websearch_search",
+      "title": "Aliyun WebSearch",
+      "description": "Call Alibaba Cloud Bailian WebSearch MCP for public web search.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query."
+          }
+        },
+        "required": ["query"],
+        "additionalProperties": true
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "enabled": true,
+      "source": {
+        "type": "mcp_streamable_http",
+        "url": "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp",
+        "operation": "call",
+        "server_tool": "web_search",
+        "auth": "bearer",
+        "api_key_agent": "default",
+        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY", "LLM_API_KEY"],
+        "headers": {
+          "Authorization": "Bearer {api_key}"
+        },
+        "timeout_seconds": 45
+      },
+      "editable": true
+    },
+    {
+      "name": "aliyun_amap_list_tools",
+      "title": "Aliyun AMap MCP Tools",
+      "description": "List tools exposed by Alibaba Cloud Bailian amap-maps MCP.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "enabled": true,
+      "source": {
+        "type": "mcp_streamable_http",
+        "url": "https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/mcp",
+        "operation": "list_tools",
+        "auth": "bearer",
+        "api_key_agent": "default",
+        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY", "LLM_API_KEY"],
+        "headers": {
+          "Authorization": "Bearer {api_key}"
+        },
+        "timeout_seconds": 30
+      },
+      "editable": true
+    },
+    {
+      "name": "aliyun_amap_weather",
+      "title": "Aliyun AMap Weather",
+      "description": "Call Alibaba Cloud Bailian amap-maps MCP for weather lookup.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "City name, for example 杭州 or 上海."
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": true
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "enabled": true,
+      "source": {
+        "type": "mcp_streamable_http",
+        "url": "https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/mcp",
+        "operation": "call",
+        "server_tool": "maps_weather",
+        "auth": "bearer",
+        "api_key_agent": "default",
+        "api_key_envs": ["DASHSCOPE_API_KEY", "BAILIAN_API_KEY", "LLM_API_KEY"],
+        "headers": {
+          "Authorization": "Bearer {api_key}"
+        },
+        "timeout_seconds": 45
+      },
+      "editable": true
+    },
+    {
+      "name": "context7_list_tools",
+      "title": "Context7 MCP Tools",
+      "description": "List tools exposed by the public Context7 MCP documentation server.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "enabled": true,
+      "source": {
+        "type": "mcp_streamable_http",
+        "url": "https://mcp.context7.com/mcp",
+        "operation": "list_tools",
+        "timeout_seconds": 30
+      },
+      "editable": true
+    },
+    {
+      "name": "context7_resolve_library",
+      "title": "Context7 Resolve Library",
+      "description": "Resolve a package or framework name to a Context7-compatible library ID.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "libraryName": {
+            "type": "string",
+            "description": "Official library or framework name, for example FastAPI, React, or Vue."
+          },
+          "query": {
+            "type": "string",
+            "description": "Question or task used to rank matching library results."
+          }
+        },
+        "required": ["libraryName", "query"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "enabled": true,
+      "source": {
+        "type": "mcp_streamable_http",
+        "url": "https://mcp.context7.com/mcp",
+        "operation": "call",
+        "server_tool": "resolve-library-id",
+        "timeout_seconds": 45
+      },
+      "editable": true
+    },
+    {
+      "name": "context7_query_docs",
+      "title": "Context7 Query Documentation",
+      "description": "Query current documentation and code examples for a Context7 library ID.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "libraryId": {
+            "type": "string",
+            "description": "Context7-compatible library ID such as /fastapi/fastapi."
+          },
+          "query": {
+            "type": "string",
+            "description": "Specific documentation question."
+          }
+        },
+        "required": ["libraryId", "query"],
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "enabled": true,
+      "source": {
+        "type": "mcp_streamable_http",
+        "url": "https://mcp.context7.com/mcp",
+        "operation": "call",
+        "server_tool": "query-docs",
+        "timeout_seconds": 45
+      },
+      "editable": true
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "provider": "local_subprocess",
+  "executor_enabled": true,
+  "sandboxed_skills": [
+    "drawio-generation",
+    "pptx-generation",
+    "excel-generation",
+    "data-auto-annotation"
+  ],
+  "fallback_to_local": true,
+  "skill_env_cache": {
+    "enabled": false
+  }
+}

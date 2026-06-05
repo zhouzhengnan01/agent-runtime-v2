@@ -1,0 +1,10 @@
+{
+  "id": "tianjin-calendar-reminder",
+  "name": "tianjin-calendar-reminder",
+  "version": "0.1.0",
+  "description": "使用大模型和当前会话文件解析天津园区自然语言日程、生成提醒建议和效率建议。",
+  "runner": "runner.py",
+  "skills": [
+    "skills/tianjin-calendar-reminder/manifest.json"
+  ]
+}

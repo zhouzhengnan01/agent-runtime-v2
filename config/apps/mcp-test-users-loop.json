@@ -1,0 +1,60 @@
+{
+  "name": "mcp-test-users-loop",
+  "title": "MCP 用户轮询测试",
+  "description": "测试 query_users MCP 工具的条件自动轮询；应用只配置 MCP server，循环条件由用户自然语言和服务 env 控制。",
+  "category": "test",
+  "icon": "spark",
+  "agent_name": "default",
+  "workflow": "agent_loop",
+  "selected_skills": [],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "查超级管理员，若有等3秒再查，直到没有为止",
+    "查超级管理员，若有等3秒再查，直到没有为止；调用工具时 mode 使用 always_present"
+  ],
+  "runtime_options": {
+    "mode": "safe",
+    "config_options": {
+      "mcpServers": [
+        {
+          "name": "db",
+          "type": "http",
+          "url": "http://127.0.0.1:8000/api/mcp/test-users"
+        }
+      ]
+    }
+  },
+  "tags": [
+    "测试",
+    "MCP",
+    "轮询"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "reasoning",
+        "chat",
+        "tool_call"
+      ],
+      "priority_features": [
+        "chat",
+        "tool_call"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://124.132.152.75:62092/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

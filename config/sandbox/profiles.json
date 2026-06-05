@@ -1,0 +1,62 @@
+{
+  "profiles": {
+    "drawio": {
+      "description": "Draw.io XML and PNG rendering profile.",
+      "image": "jetlinks/opensandbox-drawio:0.1.0",
+      "python_requirements": [
+        "pillow>=11.0.0",
+        "lxml>=5.3.0"
+      ],
+      "system_packages": [
+        "fonts-noto-cjk"
+      ],
+      "requirements_file": "skills/drawio/requirements.txt",
+      "command": "python /opt/jetlinks/skills/run_skill.py --request {request_path} --outputs {outputs_dir}",
+      "timeout_seconds": 300,
+      "runtime_install": false
+    },
+    "office": {
+      "description": "Office document generation and preview conversion profile.",
+      "image": "jetlinks/opensandbox-office:0.1.0",
+      "python_requirements": [
+        "python-pptx>=1.0.2",
+        "openpyxl>=3.1.5",
+        "xlsxwriter>=3.2.0",
+        "pillow>=11.0.0"
+      ],
+      "system_packages": [
+        "libreoffice",
+        "fonts-noto-cjk"
+      ],
+      "requirements_file": "skills/office/requirements.txt",
+      "command": "python /opt/jetlinks/skills/run_skill.py --request {request_path} --outputs {outputs_dir}",
+      "timeout_seconds": 600,
+      "runtime_install": false
+    },
+    "data-code": {
+      "description": "Python data analysis and code execution profile.",
+      "image": "jetlinks/opensandbox-code:0.1.0",
+      "python_requirements": [
+        "pandas>=2.2.0",
+        "matplotlib>=3.9.0"
+      ],
+      "system_packages": [
+        "fonts-noto-cjk"
+      ],
+      "requirements_file": "skills/code/requirements.txt",
+      "command": "python /opt/jetlinks/skills/run_skill.py --request {request_path} --outputs {outputs_dir}",
+      "timeout_seconds": 600,
+      "runtime_install": false
+    },
+    "python-skill": {
+      "description": "Generic uploaded Python skill profile. The runtime uploads the plugin package and warms a dependency image from requirements.txt.",
+      "image": "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2",
+      "python_requirements": [],
+      "system_packages": [],
+      "requirements_file": "requirements.txt",
+      "command": "python {package_dir}/scripts/run_skill.py --request {request_path} --outputs {outputs_dir}",
+      "timeout_seconds": 600,
+      "runtime_install": false
+    }
+  }
+}

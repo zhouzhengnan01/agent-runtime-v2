@@ -1,0 +1,128 @@
+{
+  "name": "tianjin-park-big-screen",
+  "description": "生成天津园区运营大屏驾驶舱方案，包含指标体系、数据源契约、实时事件流、行为复判看板和静态 HTML 预览。",
+  "output_kind": "html",
+  "generation": true,
+  "routing": {
+    "summary": "生成园区大屏、驾驶舱、监控看板和实时复判态势屏方案。",
+    "keywords": [
+      "大屏",
+      "驾驶舱",
+      "看板",
+      "dashboard",
+      "cockpit",
+      "实时监控",
+      "行为复判",
+      "摄像头"
+    ],
+    "examples": [
+      "生成园区运营大屏方案",
+      "做一个摄像头复判态势大屏",
+      "输出大屏数据接口和页面布局"
+    ]
+  },
+  "quality_template": [
+    "dashboard_spec",
+    "artifact_report",
+    "html_preview"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-park-big-screen"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "generate_dashboard",
+          "camera_review",
+          "operations_overview"
+        ],
+        "default": "generate_dashboard",
+        "description": "要生成的大屏类型。"
+      },
+      "screen_title": {
+        "type": "string",
+        "description": "大屏标题。"
+      },
+      "scenario": {
+        "type": "string",
+        "description": "业务场景，例如园区运营、摄像头连续复判、舆情监控、RPA 巡检。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "建议的大屏聚合 API base URL。"
+      },
+      "event_stream_url": {
+        "type": "string",
+        "description": "建议的大屏事件流 SSE/WebSocket URL。"
+      },
+      "refresh_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 3600,
+        "default": 5
+      },
+      "camera_count": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 10000
+      },
+      "include_behavior_review": {
+        "type": "boolean",
+        "default": true
+      },
+      "include_public_opinion": {
+        "type": "boolean",
+        "default": true
+      },
+      "include_rpa_status": {
+        "type": "boolean",
+        "default": true
+      },
+      "data_sources": {
+        "type": "array",
+        "items": {
+          "type": "object"
+        },
+        "description": "可选。外部业务数据源定义。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts",
+      "dashboard"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "dashboard": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "event_stream_contract": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "pptx-generation",
+  "name": "pptx-generation",
+  "version": "0.1.0",
+  "description": "Generate PowerPoint slide decks.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "skills/pptx-generation/manifest.json"
+  ],
+  "source_suite": "builtin-artifact-skills"
+}

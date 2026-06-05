@@ -1,0 +1,125 @@
+{
+  "name": "tianjin-efficiency-training",
+  "description": "使用大模型和当前会话文件实现天津园区效率培训，查询培训概览、创建计划、开始课程和管理测试记录。",
+  "output_kind": "markdown",
+  "generation": true,
+  "routing": {
+    "summary": "使用大模型和当前会话文件实现天津园区效率培训，查询培训概览、创建计划、开始课程和管理测试记录。",
+    "keywords": [
+      "培训",
+      "效率",
+      "课程",
+      "测试",
+      "学习计划"
+    ],
+    "examples": [
+      "查看培训概览",
+      "创建一个制度学习计划",
+      "保存测试记录"
+    ]
+  },
+  "quality_template": [
+    "local_model_generation",
+    "artifact_report"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "tianjin-efficiency-training"
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "training_overview",
+          "create_training_plan",
+          "start_course",
+          "list_test_records",
+          "save_test_record"
+        ],
+        "description": "要执行的能力动作。"
+      },
+      "api_base_url": {
+        "type": "string",
+        "description": "可选。仅 mode=backend 时用于覆盖天津后端 API base URL。"
+      },
+      "timeout_seconds": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300
+      },
+      "title": {
+        "type": "string"
+      },
+      "description": {
+        "type": "string"
+      },
+      "courseId": {
+        "type": "string"
+      },
+      "targetPath": {
+        "type": "string"
+      },
+      "course_id": {
+        "type": "string"
+      },
+      "testName": {
+        "type": "string"
+      },
+      "score": {
+        "type": "number"
+      },
+      "totalQuestions": {
+        "type": "integer"
+      },
+      "correctAnswers": {
+        "type": "integer"
+      },
+      "duration": {
+        "type": "string"
+      },
+      "passed": {
+        "type": "boolean"
+      },
+      "mode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "backend"
+        ],
+        "default": "local",
+        "description": "执行模式。默认 local：使用当前 Runtime 大模型和会话文件生成成果；backend：显式调用天津后端 HTTP API。"
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "data": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}
