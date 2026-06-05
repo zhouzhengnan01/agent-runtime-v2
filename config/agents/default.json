@@ -13,17 +13,6 @@
     "workspace_mode": "ephemeral_thread",
     "require_verification": false
   },
-  "model": {
-    "provider": "openai_compatible",
-    "model": "Qwen3.6-35B-A3B",
-    "base_url": "http://218.67.242.10:59202/v1",
-    "default_model": "Qwen3.6-35B-A3B",
-    "api_key": "abc@123",
-    "tool_choice": "auto",
-    "temperature": 0.4,
-    "max_tokens": 4096,
-    "request_timeout_seconds": 180
-  },
   "tools": [
     "artifact_manifest_read",
     "artifact_list",

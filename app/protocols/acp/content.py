@@ -127,13 +127,11 @@ def _dict_block_parts(block: dict[str, Any], index: int) -> tuple[str, Attachmen
         name = _string(block.get("name")) or _attachment_name(uri, f"resource-{index + 1}")
         if uri is None:
             return "", None
-        block_meta = block.get("_meta") if isinstance(block.get("_meta"), dict) else {}
         return "", Attachment(
             name=name,
             path=uri,
             mime_type=_string(block.get("mimeType") or block.get("mime_type")),
             metadata={
-                **block_meta,
                 "acp_type": "resource_link",
                 "uri": uri,
                 "title": _string(block.get("title")),

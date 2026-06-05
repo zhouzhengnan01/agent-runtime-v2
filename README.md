@@ -46,137 +46,6 @@ uvicorn app.main:app --reload --port 8010
 http://127.0.0.1:8010/workbench
 ```
 
-### 本地 Docker 镜像启动
-
-如果希望用容器启动当前工作区代码，可以先构建本地 Python 3.12 镜像：
-
-```bash
-cd /Users/chenhao/Desktop/code/jetlinks-official/jetlinks-agent-runtime-agent-v2
-
-docker build \
-  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
-  -t jetlinks-agent-runtime-v2:local-py312 .
-```
-
-启动容器（联调模式，默认会挂载当前源码目录，改代码后重启即可生效）：
-
-```bash
-APP_PORT=18013 \
-APP_HOST=127.0.0.1 \
-JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
-JETLINKS_AGENT_PULL_IMAGE=false \
-JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
-JETLINKS_AGENT_CONTAINER_PORT=8000 \
-./up.sh --docker
-```
-
-如果不希望目标机器拉取或挂载源码，需要使用已经把 `app/config/plugins/static` 打进镜像的版本，并关闭源码挂载：
-
-```bash
-APP_PORT=18013 \
-APP_HOST=127.0.0.1 \
-JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
-JETLINKS_AGENT_PULL_IMAGE=false \
-JETLINKS_AGENT_MOUNT_CODE=false \
-JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-image-only \
-JETLINKS_AGENT_CONTAINER_PORT=8000 \
-./up.sh --docker
-```
-
-远端仓库镜像同理，把 `JETLINKS_AGENT_IMAGE` 换成仓库地址即可；目标机器只需要有 `up.sh/runtime-env.sh/status.sh/stop.sh`
-这几个启动脚本和 Docker，不需要完整源码目录。
-
-如果希望把镜像里的内置代码、配置和 skill 文件同步到本地目录，再用本地目录挂载启动，可以先执行：
-
-```bash
-JETLINKS_AGENT_SYNC_TARGET_DIR=/opt/jetlinks-agent-runtime-v2 \
-./sync-image-code.sh
-```
-
-`sync-image-code.sh` 可以单独拷到目标机器执行；如果没有显式传 `JETLINKS_AGENT_IMAGE`，脚本会根据当前机器架构自动选择镜像：
-
-```text
-x86_64/amd64   -> registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:stable-amd64
-aarch64/arm64  -> registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:stable-arm64
-```
-
-如果需要指定完整镜像地址，也可以显式传：
-
-```bash
-./sync-image-code.sh \
-  --image registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:stable-arm64 \
-  --target /opt/jetlinks-agent-runtime-v2
-```
-
-如果目标目录为空，它会把镜像里的代码、配置、skill 和启动脚本都同步出来。
-然后进入同步出来的目录，用默认挂载模式启动：
-
-```bash
-cd /opt/jetlinks-agent-runtime-v2
-
-APP_PORT=18013 \
-APP_HOST=127.0.0.1 \
-JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
-JETLINKS_AGENT_PULL_IMAGE=false \
-JETLINKS_AGENT_MOUNT_CODE=true \
-JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-code \
-JETLINKS_AGENT_CONTAINER_PORT=8000 \
-./up.sh --docker
-```
-
-`sync-image-code.sh` 默认从镜像内的 `/workspace/code/jetlinks-agent-runtime-agent-v2` 同步；如果镜像工作目录不同，可以设置
-`JETLINKS_AGENT_SYNC_SOURCE_DIR` 覆盖。注意 Docker 的 bind mount 不会自动把镜像里的已有文件复制到宿主机目录；
-必须先同步，再挂载运行。
-
-启动后访问：
-
-```bash
-curl http://127.0.0.1:18013/health
-```
-
-正常返回：
-
-```json
-{"status":"ok","service":"jetlinks-agent-runtime-v2"}
-```
-
-默认情况下，`up.sh --docker` 会自动把当前项目真实路径挂载到容器内，并把容器工作目录设置为挂载目录：
-
-```text
-/Users/chenhao/code/jetlinks-official/jetlinks-agent-runtime-agent-v2
-  -> /workspace/code/jetlinks-agent-runtime-agent-v2
-```
-
-这里的宿主机路径来自 `pwd -P`，所以即使从 `/Users/chenhao/Desktop/code/...` 进入项目，
-实际挂载路径也可能显示为 `/Users/chenhao/code/...`。
-
-可以用下面命令确认实际挂载：
-
-```bash
-docker inspect jetlinks-agent-runtime-v2-local-image \
-  --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
-```
-
-如果设置了 `JETLINKS_AGENT_MOUNT_CODE=false`，上面的命令不会输出源码挂载，服务会直接使用镜像内置代码。
-
-查看状态：
-
-```bash
-APP_PORT=18013 \
-APP_HOST=127.0.0.1 \
-JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
-JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
-./status.sh --docker
-```
-
-停止容器：
-
-```bash
-JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
-JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
-./stop.sh --docker
-```
-
 ### 一键进程管理脚本
 
 仓库根目录提供了面向本地部署、Java `ProcessBuilder` 或其他进程管理器调用的脚本：
@@ -202,7 +71,7 @@ JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
 BASE_PYTHON=/usr/bin/python3.12 VENV_DIR=.venv ./install-deps.sh
 ```
 
-默认监听地址是 `0.0.0.0:8000`；本机访问 Workbench 为：
+默认启动地址是 `http://127.0.0.1:8000`，Workbench 为：
 
 ```text
 http://127.0.0.1:8000/workbench
@@ -228,7 +97,7 @@ APP_PORT=8010 ./stop.sh
 
 常用变量：
 
-- `APP_HOST`：监听地址，默认 `0.0.0.0`
+- `APP_HOST`：监听地址，默认 `127.0.0.1`
 - `APP_PORT`：监听端口，默认 `8000`
 - `APP_MODULE`：ASGI 应用，默认 `app.main:app`
 - `APP_WORKERS`：uvicorn workers，默认 `1`

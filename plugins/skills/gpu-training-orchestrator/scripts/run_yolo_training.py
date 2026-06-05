@@ -8,6 +8,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 try:
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
@@ -62,20 +66,8 @@ def log_warn(msg: str) -> None:
 
 
 def _load_json(path: Path) -> Dict:
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
-
-
-def _bool_value(value, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return default
 
 
 def _normalize_flat_payload(payload: dict) -> dict:
@@ -91,13 +83,12 @@ def _normalize_flat_payload(payload: dict) -> dict:
     device = str(spec.get("device") or "0").strip()
     patience = int(spec.get("patience") or 8)
     workers = int(spec.get("workers") or 4)
-    amp = _bool_value(spec.get("amp"), False)
     split_train = float(spec.get("split_train") or 0.7)
     split_val = float(spec.get("split_val") or 0.2)
     split_test = float(spec.get("split_test") or 0.1)
     class_names = spec.get("class_names") or []
     project_dir = str(spec.get("project_dir") or "").strip()
-    run_name = str(spec.get("run_name") or "smoking_detect").strip()
+    run_name = str(spec.get("run_name") or "yolo_train").strip()
     outputs_dir = str(payload.get("outputs_dir") or "").strip()
 
     if not project_dir and outputs_dir:
@@ -121,7 +112,6 @@ def _normalize_flat_payload(payload: dict) -> dict:
             "device": device,
             "patience": patience,
             "workers": workers,
-            "amp": amp,
         },
         "output": {"project_dir": project_dir, "run_name": run_name},
     }
@@ -129,6 +119,47 @@ def _normalize_flat_payload(payload: dict) -> dict:
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _resolve_model_name(model_name: str) -> str:
+    model_path = Path(model_name).expanduser()
+    if model_path.is_absolute():
+        return str(model_path)
+    if model_path.suffix.lower() != ".pt":
+        return model_name
+    package_candidate = (Path(__file__).resolve().parent.parent / model_path).resolve()
+    if package_candidate.exists() and package_candidate.is_file():
+        return str(package_candidate)
+    return model_name
+
+
+def _load_yolo_model(yolo_cls: object, model_name: str, task: str):
+    resolved_model = _resolve_model_name(model_name)
+    try:
+        return yolo_cls(resolved_model, task=task), resolved_model
+    except RuntimeError as exc:
+        message = str(exc)
+        if "PytorchStreamReader failed reading zip archive" not in message and "failed finding central directory" not in message:
+            raise
+        candidate = Path(resolved_model)
+        if candidate.exists() and candidate.is_file() and candidate.suffix.lower() == ".pt":
+            log_warn(f"检测到本地权重文件损坏，删除后重新下载: {candidate}")
+            candidate.unlink()
+            return yolo_cls(model_name, task=task), model_name
+        raise
+
+
+def _safe_results_dict(results: object) -> Dict[str, object]:
+    raw = getattr(results, "results_dict", None)
+    if not isinstance(raw, dict):
+        return {}
+    safe: Dict[str, object] = {}
+    for key, value in raw.items():
+        try:
+            safe[str(key)] = float(value)
+        except (TypeError, ValueError):
+            safe[str(key)] = str(value)
+    return safe
 
 
 def _validate_split(split: Dict[str, float]) -> None:
@@ -218,23 +249,117 @@ def _build_category_mapping(coco: Dict, forced_class_names: List[str]) -> Tuple[
     return class_names, cat_id_to_index
 
 
+def _holdout_counts(total: int, split: Dict[str, float]) -> Tuple[int, int]:
+    val_ratio = max(0.0, float(split["val"]))
+    test_ratio = max(0.0, float(split["test"]))
+    n_val = int(total * val_ratio)
+    n_test = int(total * test_ratio)
+
+    if test_ratio > 0 and n_test == 0 and total >= 2:
+        n_test = 1
+    if val_ratio > 0 and n_val == 0 and total - n_test >= 2:
+        n_val = 1
+
+    while n_val + n_test >= total and total > 0:
+        if n_val >= n_test and n_val > 0:
+            n_val -= 1
+        elif n_test > 0:
+            n_test -= 1
+        else:
+            break
+    return n_val, n_test
+
+
 def _split_image_ids(image_ids: List[int], split: Dict[str, float], seed: int) -> Dict[str, List[int]]:
     random.seed(seed)
     ids = image_ids[:]
     random.shuffle(ids)
 
     total = len(ids)
-    n_train = int(total * float(split["train"]))
-    n_val = int(total * float(split["val"]))
+    n_val, n_test = _holdout_counts(total, split)
+    n_train = total - n_val - n_test
 
     train_ids = ids[:n_train]
     val_ids = ids[n_train : n_train + n_val]
-    test_ids = ids[n_train + n_val :]
+    test_ids = ids[n_train + n_val : n_train + n_val + n_test]
 
     if len(train_ids) + len(val_ids) + len(test_ids) != total:
         raise RuntimeError("数据集划分计数异常")
 
     return {"train": train_ids, "val": val_ids, "test": test_ids}
+
+
+def _is_synthetic_image(image_obj: Dict, synthetic_policy: Dict) -> bool:
+    source_field = str(synthetic_policy.get("source_field", "source") or "source")
+    synthetic_values = {
+        str(x).strip().lower()
+        for x in synthetic_policy.get("synthetic_values", ["synthetic", "generated", "gen"])
+    }
+    is_synthetic_fields = synthetic_policy.get("is_synthetic_fields", ["is_synthetic", "synthetic"])
+
+    for field in is_synthetic_fields:
+        if bool(image_obj.get(str(field), False)):
+            return True
+
+    source = str(image_obj.get(source_field, "real")).strip().lower()
+    return source in synthetic_values
+
+
+def _split_image_ids_with_source(
+    coco: Dict,
+    split: Dict[str, float],
+    seed: int,
+    synthetic_policy: Dict,
+) -> Tuple[Dict[str, List[int]], Dict[str, Dict[str, int]]]:
+    """Split images while keeping generated/synthetic images out of val/test.
+
+    When synthetic_policy.synthetic_to_train_only is true, val/test ratios are computed
+    from real images only. All synthetic images are appended to train.
+    """
+    real_ids: List[int] = []
+    synthetic_ids: List[int] = []
+
+    for image_obj in coco["images"]:
+        image_id = int(image_obj["id"])
+        if _is_synthetic_image(image_obj, synthetic_policy):
+            synthetic_ids.append(image_id)
+        else:
+            real_ids.append(image_id)
+
+    if not real_ids:
+        raise ValueError("启用 synthetic_policy 后未找到真实图片，无法构建只含真实图的 val/test")
+
+    random.seed(seed)
+    random.shuffle(real_ids)
+    random.shuffle(synthetic_ids)
+
+    real_total = len(real_ids)
+    val_real_only = bool(synthetic_policy.get("val_real_only", True))
+    test_real_only = bool(synthetic_policy.get("test_real_only", True))
+    synthetic_to_train_only = bool(synthetic_policy.get("synthetic_to_train_only", True))
+
+    if not (val_real_only and test_real_only and synthetic_to_train_only):
+        log_warn("synthetic_policy 已启用，但 val/test/train-only 约束未全部开启；当前实现仍强制合成图仅进入 train")
+
+    n_val, n_test = _holdout_counts(real_total, split)
+
+    val_ids = real_ids[:n_val]
+    test_ids = real_ids[n_val : n_val + n_test]
+    train_real_ids = real_ids[n_val + n_test :]
+    train_ids = train_real_ids + synthetic_ids
+
+    split_image_ids = {"train": train_ids, "val": val_ids, "test": test_ids}
+    source_counts = {
+        "train": {"real": len(train_real_ids), "synthetic": len(synthetic_ids)},
+        "val": {"real": len(val_ids), "synthetic": 0},
+        "test": {"real": len(test_ids), "synthetic": 0},
+    }
+
+    total_after_split = sum(len(ids) for ids in split_image_ids.values())
+    if total_after_split != real_total + len(synthetic_ids):
+        raise RuntimeError("数据集来源感知划分计数异常")
+
+    return split_image_ids, source_counts
 
 
 def _clip_bbox_to_image(bbox: List[float], width: int, height: int) -> List[float] | None:
@@ -432,7 +557,16 @@ def run(config_path: Path) -> None:
         raise ValueError("COCO images 为空，无法训练")
 
     seed = int(cfg.get("seed", 42))
-    split_image_ids = _split_image_ids(image_ids, split, seed)
+    synthetic_policy = dataset_cfg.get("synthetic_policy", {})
+    source_counts = None
+    if bool(synthetic_policy.get("enabled", False)):
+        split_image_ids, source_counts = _split_image_ids_with_source(coco, split, seed, synthetic_policy)
+        log_info(
+            "启用 synthetic_policy：合成图仅进入 train，val/test 仅从真实图中划分。"
+            f"source_counts={source_counts}"
+        )
+    else:
+        split_image_ids = _split_image_ids(image_ids, split, seed)
 
     prepared_root = run_root / "prepared_dataset"
     dataset_yaml = run_root / "dataset.yaml"
@@ -470,7 +604,22 @@ def run(config_path: Path) -> None:
     log_info(f"设备选择: {device} (CUDA available={_has_cuda}, device_count={torch.cuda.device_count() if _has_cuda else 0})")
     workers = int(training_cfg.get("workers", 8))
     patience = int(training_cfg.get("patience", 50))
-    amp = _bool_value(training_cfg.get("amp"), False)
+    train_overrides = {}
+    val_overrides = {}
+    if device == "cpu":
+        try:
+            torch.set_num_threads(1)
+            torch.set_num_interop_threads(1)
+        except Exception:
+            pass
+        if batch > 4:
+            log_warn(f"CPU 训练模式下 batch={batch} 较高，自动降为 4 以避免 Windows CPU 版 torch 原生崩溃")
+            batch = 4
+        if workers != 0:
+            log_warn(f"CPU 训练模式下 workers={workers}，自动降为 0")
+            workers = 0
+        train_overrides.update({"amp": False, "cache": False, "deterministic": False, "plots": True})
+        val_overrides.update({"plots": True})
 
     try:
         from ultralytics import YOLO
@@ -478,9 +627,9 @@ def run(config_path: Path) -> None:
         raise ImportError("请在 conda 环境内安装依赖: pip install ultralytics") from exc
 
     log_info(f"加载模型(自动下载): {model_name}")
-    model = YOLO(model_name, task=task)
+    model, model_name = _load_yolo_model(YOLO, model_name, task)
 
-    train_project = run_root / "runs"
+    train_project = run_root
     _ensure_dir(train_project)
 
     log_info("开始训练...日志将实时输出")
@@ -493,10 +642,10 @@ def run(config_path: Path) -> None:
         device=device,
         workers=workers,
         patience=patience,
-        amp=amp,
         project=str(train_project),
         name="train",
         exist_ok=True,
+        **train_overrides,
     )
 
     log_info("开始在 test split 上评估...")
@@ -511,11 +660,13 @@ def run(config_path: Path) -> None:
             project=str(train_project),
             name="test_eval",
             exist_ok=True,
+            **val_overrides,
         )
     except Exception as exc:
         eval_error = str(exc)
         log_warn(f"test split 评估失败，但训练已完成并保留权重: {eval_error}")
 
+    eval_results_dict = _safe_results_dict(eval_results)
     summary = {
         "config_path": str(config_path),
         "conda_env_name": conda_env_name,
@@ -527,10 +678,13 @@ def run(config_path: Path) -> None:
         "num_categories": len(class_names),
         "class_names": class_names,
         "split_counts": split_counts,
+        "source_counts": source_counts,
+        "synthetic_policy": synthetic_policy,
         "run_root": str(run_root),
         "runs_dir": str(train_project),
         "train_save_dir": str(getattr(train_results, "save_dir", "")),
         "eval_results": str(eval_results) if eval_results is not None else "",
+        "results_dict": eval_results_dict,
         "eval_error": eval_error,
     }
 

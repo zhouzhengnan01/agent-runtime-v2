@@ -1,20 +1,20 @@
 {
   "name": "algorithm-training-orchestration",
   "title": "GPU 训练编排",
-  "description": "标准化小样本 benchmark、正式训练、断点恢复、日志监控、显存检查和训练参数记录。",
+  "description": "上传数据集和可选 image1/image2 后，自动完成合成增强、SAM3 标注、YOLO 数据准备和 GPU 训练。",
   "category": "algorithm-training",
   "icon": "package",
   "agent_name": "default",
-  "workflow": "agent_loop",
+  "workflow": null,
   "selected_skills": [
-    "remote-gpu-ops",
-    "gpu-training-orchestrator",
-    "experiment-ledger"
+    "image-composite-generation",
+    "data-auto-annotation",
+    "gpu-training-orchestrator"
   ],
   "selected_mcp_tools": [],
   "prompt_examples": [
-    "帮我为 RT-DETR-L 生成 AGX 和 5090 两套训练编排方案：先跑 epochs=1 fraction=0.1 benchmark，再决定正式训练参数。",
-    "检查远端 GPU 训练前置条件，并生成 rsync 数据同步、nvidia-smi、df -h、docker ps 和 results.csv 监控方案。"
+    "帮我训练一个YOLO抽烟检测模型，合成提示词为：把 image2 中的目标自然合成到 image1 的场景中，形成真实监控画面，标注类别为：person，cigarette，训练参数为：conda_env_name=yolo_jetson model=yolo11n.pt epochs=10 imgsz=640 batch=8 device=0 workers=4 patience=20 dataset.split.train=0.7 dataset.split.val=0.2 dataset.split.test=0.1",
+    "我上传了数据集压缩包和两组图片目录，请合成增强后训练 YOLO，labels=person,cigarette，conda_env_name=yolo_jetson model=yolo11n.pt epochs=10 imgsz=640 batch=8 device=0 workers=4 patience=20"
   ],
   "tags": [
     "GPU",

@@ -1,8 +1,0 @@
-{
-  "name": "parking_abnormal_review",
-  "display_name": "Parking Abnormal Review",
-  "description": "Deterministic parking abnormal event review workflow that returns only the final JSON review result.",
-  "enabled": true,
-  "handler": "parking_abnormal_review.py:ParkingAbnormalReviewWorkflow",
-  "trigger": "explicit_runtime_options"
-}

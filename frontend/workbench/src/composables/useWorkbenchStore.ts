@@ -157,11 +157,8 @@ export const useWorkbenchStore = defineStore("workbench", {
       saveAdminToken(this.adminToken);
     },
     setThreadId(threadId: string) {
-      const nextThreadId = threadId.trim() || `local-${Date.now().toString(36)}`;
-      const changed = nextThreadId !== this.threadId;
-      this.threadId = nextThreadId;
+      this.threadId = threadId.trim() || `local-${Date.now().toString(36)}`;
       localStorage.setItem(THREAD_STORAGE_KEY, this.threadId);
-      if (changed) this.resetAcpSession("任务上下文已切换");
     },
     newThread() {
       this.setThreadId(`local-${Date.now().toString(36)}`);
@@ -244,13 +241,6 @@ export const useWorkbenchStore = defineStore("workbench", {
       if (options.run && this.input.trim()) void this.sendCurrentMessage();
     },
     applyAppTemplateCapabilities(template: AppTemplate) {
-      const previousRouting = acpRoutingSignature({
-        appTemplateName: this.selectedAppTemplateName,
-        agentName: this.selectedAgent,
-        skills: this.selectedSkills,
-        mcpTools: this.selectedMcpTools,
-        workflow: this.selectedWorkflow
-      });
       this.selectedAppTemplateName = template.name;
       this.selectedAgent = template.agent_name || "default";
       this.selectedSkills = [...(template.selected_skills || [])];
@@ -258,14 +248,6 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.selectedWorkflow = template.workflow || null;
       this.deepExecution = false;
       this.yoloExecution = false;
-      const nextRouting = acpRoutingSignature({
-        appTemplateName: this.selectedAppTemplateName,
-        agentName: this.selectedAgent,
-        skills: this.selectedSkills,
-        mcpTools: this.selectedMcpTools,
-        workflow: this.selectedWorkflow
-      });
-      if (previousRouting !== nextRouting) this.resetAcpSession("应用能力已切换");
     },
     async refreshArtifacts() {
       this.loadingArtifacts = true;
@@ -343,15 +325,6 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.acpSessionId = "";
       this.terminalId = "";
       this.acpToolStatus = "已关闭";
-    },
-    resetAcpSession(reason = "") {
-      if (!this.acpClient && !this.acpConnected && !this.acpSessionId && !this.terminalId) return;
-      this.acpClient?.close();
-      this.acpClient = null;
-      this.acpConnected = false;
-      this.acpSessionId = "";
-      this.terminalId = "";
-      this.acpToolStatus = reason ? `已重置：${reason}` : "";
     },
     async listAcpSessions() {
       await this.acpRpc("session/list");
@@ -833,22 +806,6 @@ function splitArgs(value: string): string[] {
     args.push(match[1] ?? match[2] ?? match[0]);
   }
   return args;
-}
-
-function acpRoutingSignature(options: {
-  appTemplateName: string;
-  agentName: string;
-  skills: string[];
-  mcpTools: string[];
-  workflow: string | null;
-}): string {
-  return JSON.stringify({
-    appTemplateName: options.appTemplateName,
-    agentName: options.agentName,
-    skills: options.skills,
-    mcpTools: options.mcpTools,
-    workflow: options.workflow
-  });
 }
 
 function requiredInputUsesFile(item: RequiredInput): boolean {

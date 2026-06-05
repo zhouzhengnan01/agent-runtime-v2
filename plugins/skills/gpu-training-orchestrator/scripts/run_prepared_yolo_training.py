@@ -75,12 +75,19 @@ def _safe_results_dict(results: object) -> Dict[str, object]:
     return safe
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
 def _resolve_model_name(model_name: str) -> str:
     model_path = Path(model_name).expanduser()
     if model_path.is_absolute():
         return str(model_path)
     if model_path.suffix.lower() != ".pt":
         return model_name
+    project_candidate = (_project_root() / "models" / model_path.name).resolve()
+    if project_candidate.exists() and project_candidate.is_file():
+        return str(project_candidate)
     package_candidate = (Path(__file__).resolve().parent.parent / model_path).resolve()
     if package_candidate.exists() and package_candidate.is_file():
         return str(package_candidate)
@@ -90,17 +97,77 @@ def _resolve_model_name(model_name: str) -> str:
 def _load_yolo_model(yolo_cls: object, model_name: str, task: str):
     resolved_model = _resolve_model_name(model_name)
     try:
-        return yolo_cls(resolved_model, task=task), resolved_model
+        return yolo_cls(resolved_model, task=task), resolved_model, False, ""
     except RuntimeError as exc:
         message = str(exc)
         if "PytorchStreamReader failed reading zip archive" not in message and "failed finding central directory" not in message:
-            raise
+            return _load_builtin_fallback_model(yolo_cls, model_name, resolved_model, task, exc)
         candidate = Path(resolved_model)
         if candidate.exists() and candidate.is_file() and candidate.suffix.lower() == ".pt":
+            if _is_builtin_fallback_candidate(candidate):
+                log_warn(f"Detected broken bundled weight file, trying another fallback without deleting: {candidate}")
+                return _load_builtin_fallback_model(yolo_cls, model_name, resolved_model, task, exc)
             log_warn(f"Detected broken local weight file, deleting and retrying download: {candidate}")
             candidate.unlink()
-            return yolo_cls(model_name, task=task), model_name
-        raise
+            try:
+                return yolo_cls(model_name, task=task), model_name, False, ""
+            except Exception as retry_exc:
+                return _load_builtin_fallback_model(yolo_cls, model_name, resolved_model, task, retry_exc)
+        return _load_builtin_fallback_model(yolo_cls, model_name, resolved_model, task, exc)
+    except Exception as exc:
+        return _load_builtin_fallback_model(yolo_cls, model_name, resolved_model, task, exc)
+
+
+def _load_builtin_fallback_model(yolo_cls: object, requested_model: str, resolved_model: str, task: str, original_exc: Exception):
+    fallback = _find_builtin_fallback_model(resolved_model)
+    if fallback is None:
+        raise original_exc
+    log_warn(
+        "Failed to load requested YOLO model "
+        f"'{requested_model}' ({original_exc}); using bundled fallback model: {fallback}"
+    )
+    try:
+        return yolo_cls(str(fallback), task=task), str(fallback), True, str(original_exc)
+    except Exception as fallback_exc:
+        raise RuntimeError(
+            f"Failed to load requested YOLO model '{requested_model}' and fallback model '{fallback}': {fallback_exc}"
+        ) from original_exc
+
+
+def _find_builtin_fallback_model(resolved_model: str = "") -> Path | None:
+    resolved_requested = _safe_resolved_path(resolved_model)
+    for candidate in _builtin_fallback_model_candidates():
+        if not candidate.is_file():
+            continue
+        if resolved_requested is not None and _safe_resolved_path(candidate) == resolved_requested:
+            continue
+        return candidate.resolve()
+    return None
+
+
+def _builtin_fallback_model_candidates() -> list[Path]:
+    project_models = _project_root() / "models"
+    package_root = Path(__file__).resolve().parent.parent
+    return [
+        project_models / "yolov11n.pt",
+        project_models / "yolo11n.pt",
+        package_root / "yolov11n.pt",
+        package_root / "yolo11n.pt",
+    ]
+
+
+def _is_builtin_fallback_candidate(path: Path) -> bool:
+    resolved = _safe_resolved_path(path)
+    if resolved is None:
+        return False
+    return any(_safe_resolved_path(candidate) == resolved for candidate in _builtin_fallback_model_candidates())
+
+
+def _safe_resolved_path(value: object) -> Path | None:
+    try:
+        return Path(str(value)).expanduser().resolve()
+    except Exception:
+        return None
 
 
 def _check_conda_runtime(cfg: Dict) -> str:
@@ -108,7 +175,7 @@ def _check_conda_runtime(cfg: Dict) -> str:
     conda_env_name = str(runtime_cfg.get("conda_env_name", "")).strip()
     enforce = bool(runtime_cfg.get("enforce_conda_env", True))
     if not conda_env_name:
-        raise ValueError("input.json missing runtime.conda_env_name")
+        return "current"
     current_env = str(os.environ.get("CONDA_DEFAULT_ENV", "")).strip()
     if current_env != conda_env_name:
         msg = f"Current conda env is '{current_env or 'N/A'}', but input requires '{conda_env_name}'."
@@ -144,9 +211,9 @@ def run(config_path: Path) -> None:
     try:
         from ultralytics import YOLO
     except ImportError as exc:
-        raise ImportError("Please install ultralytics in the requested conda environment") from exc
+        raise ImportError("Please install ultralytics in the current runtime environment") from exc
 
-    model_name = str(training_cfg.get("model", "yolo11n.pt"))
+    requested_model_name = str(training_cfg.get("model", "yolo11n.pt"))
     epochs = int(training_cfg.get("epochs", 100))
     imgsz = int(training_cfg.get("imgsz", 640))
     batch = int(training_cfg.get("batch", 16))
@@ -176,8 +243,8 @@ def run(config_path: Path) -> None:
         train_overrides.update({"amp": False, "cache": False, "deterministic": False, "plots": True})
         val_overrides.update({"plots": True})
 
-    log_info(f"Training conda_env={conda_env_name}, data={dataset_yaml}, device={device}, CUDA={_has_cuda}")
-    model, model_name = _load_yolo_model(YOLO, model_name, task)
+    log_info(f"Training runtime={conda_env_name}, data={dataset_yaml}, device={device}, CUDA={_has_cuda}")
+    model, model_name, model_fallback_used, model_load_error = _load_yolo_model(YOLO, requested_model_name, task)
     train_results = model.train(
         data=str(dataset_yaml),
         task=task,
@@ -215,7 +282,10 @@ def run(config_path: Path) -> None:
         "conda_env_name": conda_env_name,
         "dataset_yaml": str(dataset_yaml),
         "task": task,
+        "requested_model": requested_model_name,
         "model": model_name,
+        "model_fallback_used": model_fallback_used,
+        "model_load_error": model_load_error,
         "run_root": str(run_root),
         "runs_dir": str(run_root),
         "train_save_dir": str(getattr(train_results, "save_dir", "")),

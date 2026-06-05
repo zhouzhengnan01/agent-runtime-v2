@@ -22,11 +22,11 @@ class AcpDispatcher:
         normalized = method.replace("-", "_")
         if normalized in {"initialize", "connection_initialize"}:
             return self.adapter.initialize()
-        if normalized in {"new_session", "newsession", "session/new", "session.init"}:
+        if normalized in {"new_session", "newsession", "session/new"}:
             return self.adapter.new_session(sessions, params)
         if normalized in {"session/load", "load_session"}:
             return self.adapter.load_session(sessions, params)
-        if normalized in {"prompt", "session/prompt", "agent.command"}:
+        if normalized in {"prompt", "session/prompt"}:
             return await self.adapter.prompt(sessions, params, send_update)
         if normalized in {"session/list", "list_sessions"}:
             return self.adapter.list_sessions(sessions)
@@ -37,16 +37,8 @@ class AcpDispatcher:
             return self.adapter.fork_session(sessions, params)
         if normalized in {"session/resume", "resume_session"}:
             return self.adapter.resume_session(sessions, params)
-        if normalized in {
-            "session/update",
-            "session/updata",
-            "update_session",
-            "agent.config.update",
-            "session.param.update",
-        }:
+        if normalized in {"session/update", "session/updata", "update_session"}:
             return self.adapter.update_session(sessions, params)
-        if normalized == "session.ping":
-            return {}
         if normalized in {"session/set_mode", "set_session_mode"}:
             session_id = _required_session_id(params)
             mode_id = _required_mode_id(params)

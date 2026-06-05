@@ -3859,7 +3859,7 @@
       setAgent(template.agent_name || 'default');
       state.selectedChatSkills = [...(template.selected_skills || [])];
       state.selectedChatMcpTools = [...(template.selected_mcp_tools || [])];
-      state.selectedChatWorkflow = null;
+      state.selectedChatWorkflow = template.workflow || null;
       state.nextAgentOverride = null;
       state.nextWorkflowOverride = null;
       state.selectedAppTemplateName = template.name;
@@ -3980,7 +3980,7 @@
       setAgent(template.agent_name || 'default');
       state.selectedChatSkills = [...(template.selected_skills || [])];
       state.selectedChatMcpTools = [...(template.selected_mcp_tools || [])];
-      state.selectedChatWorkflow = null;
+      state.selectedChatWorkflow = template.workflow || null;
       state.nextAgentOverride = null;
       state.nextWorkflowOverride = null;
       state.selectedAppTemplateName = template.name;
@@ -4007,6 +4007,7 @@
       };
       if (threadId) runtimeOptions.thread_id = threadId;
       if (template?.name) runtimeOptions.app_template_name = template.name;
+      if (template?.workflow) runtimeOptions.workflow = template.workflow;
       return runtimeOptions;
     }
 
@@ -4014,6 +4015,7 @@
       const template = state.selectedAppTemplateName ? getAppTemplate(state.selectedAppTemplateName) : null;
       const runtimeOptions = legacyRuntimeOptionsFromAppTemplate(template);
       if (template?.name) runtimeOptions.app_template_name = template.name;
+      if (template?.workflow) runtimeOptions.workflow = template.workflow;
       return runtimeOptions;
     }
 
@@ -7210,7 +7212,7 @@
       const capabilityParts = [];
       if (state.selectedChatSkills.length) capabilityParts.push(`Skill ${state.selectedChatSkills.length}`);
       if (state.selectedChatMcpTools.length) capabilityParts.push(`MCP ${state.selectedChatMcpTools.length}`);
-      const selectedWorkflow = state.nextWorkflowOverride || state.selectedChatWorkflow;
+      const selectedWorkflow = state.nextWorkflowOverride || state.selectedChatWorkflow || (state.selectedAppTemplateName ? getAppTemplate(state.selectedAppTemplateName)?.workflow : null);
       if (selectedWorkflow) capabilityParts.push(`Workflow ${selectedWorkflow}`);
       if (state.selectedAppTemplateName) {
         const template = getAppTemplate(state.selectedAppTemplateName);

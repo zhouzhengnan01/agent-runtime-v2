@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
-import pytest
 from pytest import MonkeyPatch
 
 from app.api import agents as agents_api
@@ -14,7 +13,7 @@ from app.core.agent import AgentRuntime
 from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfig
 from app.core.config.agent_config import ModelConfig
-from app.core.events import EventRecorder, RunEventStore
+from app.core.events import RunEventStore
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
 from app.main import create_app
 from app.schemas import ChatRequest, Message, RuntimeOptions
@@ -132,41 +131,6 @@ def test_tool_events_include_duration_and_arguments(tmp_path: Path, monkeypatch:
     assert llm_completed.data["finish_reason"] == "tool_calls"
     assert llm_completed.data["tool_call_count"] == 1
     assert llm_completed.data["usage"]["total_tokens"] == 14
-
-
-def test_runtime_event_detail_logs_full_redacted_payload(
-    monkeypatch: MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    import app.core.events as events_module
-
-    monkeypatch.setattr(events_module, "RUNTIME_EVENT_TRACE_PAYLOADS", True)
-    monkeypatch.setattr(events_module, "RUNTIME_EVENT_TRACE_MAX_CHARS", 0)
-    recorder = EventRecorder(agent="observable-agent", thread_id="observable-detail-thread")
-
-    with caplog.at_level("INFO", logger="uvicorn.error"):
-        recorder.emit(
-            "run.completed",
-            {
-                "result": {
-                    "agent": "observable-agent",
-                    "thread_id": "observable-detail-thread",
-                    "reply": "日志详情测试",
-                    "metadata": {
-                        "api_key": "runtime-secret-key",
-                        "max_tokens": 128,
-                    },
-                }
-            },
-        )
-
-    logs = "\n".join(record.getMessage() for record in caplog.records)
-    assert "runtime event detail type=run.completed" in logs
-    assert "observable-detail-thread" in logs
-    assert "日志详情测试" in logs
-    assert '"api_key": "********"' in logs
-    assert '"max_tokens": 128' in logs
-    assert "runtime-secret-key" not in logs
 
 
 def test_tool_failures_include_error_code_and_debug_diagnostics(

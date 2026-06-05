@@ -25,7 +25,6 @@ MINIMAL_JPEG = bytes.fromhex(
 )
 
 SKILL_ARTIFACT_PATTERNS = {
-    "17803963378248hh02dvt": ["17803963378248hh02dvt-prompt.md"],
     "behavior-detection": ["behavior-detection.md", "behavior-detection.json"],
     "behavior-review": ["behavior-review.md", "behavior-review.json"],
     "cpu-training-runner": [

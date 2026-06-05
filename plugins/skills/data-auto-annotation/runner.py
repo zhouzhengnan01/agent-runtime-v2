@@ -67,6 +67,7 @@ def _run_data_preparation_pipeline(
     if not script_path.exists():
         raise FileNotFoundError(f"run_data_preparation_pipeline.py not found: {script_path}")
     normalized = _normalize_spec(spec, paths)
+    register_artifacts = _register_artifacts(normalized)
     request_path = Path(paths.workspace) / "data-auto-annotation-pipeline-input.json"
     request_path.parent.mkdir(parents=True, exist_ok=True)
     request_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -80,12 +81,14 @@ def _run_data_preparation_pipeline(
         paths,
         artifact_store,
         on_event,
+        register_artifacts=register_artifacts,
     )
     stdout_text = _decode_bytes(stdout_bytes)
     stderr_text = _decode_bytes(stderr_bytes)
     _write_skill_logs(normalized, stdout_text, stderr_text)
-    outputs = _collect_outputs(normalized, paths, artifact_store)
-    _emit_artifacts(outputs, on_event)
+    outputs = _collect_outputs(normalized, paths, artifact_store, register_artifacts=register_artifacts)
+    if register_artifacts:
+        _emit_artifacts(outputs, on_event)
     return {
         "skill_name": skill_name,
         "outputs": outputs,
@@ -166,6 +169,8 @@ def _run_pipeline_streaming(
     paths: Any,
     artifact_store: Any,
     on_event: Callable[[str, dict[str, Any]], Any] | None,
+    *,
+    register_artifacts: bool,
 ) -> tuple[int, bytes, bytes]:
     env = dict(env)
     env.setdefault("PYTHONUNBUFFERED", "1")
@@ -182,7 +187,7 @@ def _run_pipeline_streaming(
                     break
                 chunks.append(chunk)
                 text = _decode_bytes(chunk)
-                _handle_stream_line(text, paths, artifact_store, on_event, emitted)
+                _handle_stream_line(text, paths, artifact_store, on_event, emitted, register_artifacts=register_artifacts)
         finally:
             stream.close()
 
@@ -204,16 +209,34 @@ def _handle_stream_line(
     artifact_store: Any,
     on_event: Callable[[str, dict[str, Any]], Any] | None,
     emitted: set[str],
+    *,
+    register_artifacts: bool,
 ) -> None:
     clean = (text or "").strip()
     if not clean:
         return
     generated_image = _generated_image_from_line(clean)
     if generated_image is not None:
-        _emit_file_artifact(generated_image, paths, artifact_store, on_event, emitted, event_type="data_preparation.image_generated")
+        _emit_file_artifact(
+            generated_image,
+            paths,
+            artifact_store,
+            on_event,
+            emitted,
+            event_type="data_preparation.image_generated",
+            register_artifacts=register_artifacts,
+        )
     coco_path = _coco_path_from_line(clean)
     if coco_path is not None:
-        _emit_file_artifact(coco_path, paths, artifact_store, on_event, emitted, event_type="data_preparation.image_annotated")
+        _emit_file_artifact(
+            coco_path,
+            paths,
+            artifact_store,
+            on_event,
+            emitted,
+            event_type="data_preparation.image_annotated",
+            register_artifacts=register_artifacts,
+        )
 
 
 def _generated_image_from_line(line: str) -> Path | None:
@@ -251,6 +274,7 @@ def _emit_file_artifact(
     emitted: set[str],
     *,
     event_type: str,
+    register_artifacts: bool,
 ) -> None:
     if on_event is None or not file_path.is_file():
         return
@@ -258,15 +282,17 @@ def _emit_file_artifact(
     if key in emitted:
         return
     try:
-        artifact_store.upsert_artifact(paths, file_path)
+        if register_artifacts:
+            artifact_store.upsert_artifact(paths, file_path)
         artifact = artifact_store.to_artifact_ref(paths.thread_id, file_path)
     except Exception:
         return
     emitted.add(key)
     payload = {"artifact": artifact.model_dump()}
     on_event(event_type, payload)
-    on_event("artifact.created", payload)
-    on_event("preview.ready", payload)
+    if register_artifacts:
+        on_event("artifact.created", payload)
+        on_event("preview.ready", payload)
 
 
 def _emit_artifacts(outputs: list[Any], on_event: Callable[[str, dict[str, Any]], Any] | None) -> None:
@@ -381,11 +407,11 @@ def _synthetic_plan_path(spec: dict[str, Any]) -> str:
     return str(value) if value.exists() else ""
 
 
-def _collect_outputs(spec: dict[str, Any], paths: Any, artifact_store: Any) -> list[Any]:
+def _collect_outputs(spec: dict[str, Any], paths: Any, artifact_store: Any, *, register_artifacts: bool = True) -> list[Any]:
     outputs: list[Any] = []
     seen: set[str] = set()
     for file_path in _key_data_prep_artifacts(spec):
-        _append_artifact(outputs, seen, paths, artifact_store, file_path)
+        _append_artifact(outputs, seen, paths, artifact_store, file_path, register_artifacts=register_artifacts)
     log_dir = _log_dir(spec)
     if log_dir.is_dir():
         log_count = 0
@@ -396,7 +422,7 @@ def _collect_outputs(spec: dict[str, Any], paths: Any, artifact_store: Any) -> l
                 continue
             if log_count >= MAX_LOG_ARTIFACTS:
                 continue
-            _append_artifact(outputs, seen, paths, artifact_store, file_path)
+            _append_artifact(outputs, seen, paths, artifact_store, file_path, register_artifacts=register_artifacts)
             log_count += 1
     return outputs
 
@@ -432,18 +458,36 @@ def _collect_all_output_artifacts(paths: Any, artifact_store: Any) -> list[Any]:
     return outputs
 
 
-def _append_artifact(outputs: list[Any], seen: set[str], paths: Any, artifact_store: Any, file_path: Path) -> None:
+def _append_artifact(
+    outputs: list[Any],
+    seen: set[str],
+    paths: Any,
+    artifact_store: Any,
+    file_path: Path,
+    *,
+    register_artifacts: bool = True,
+) -> None:
     if not file_path.is_file():
         return
     key = str(file_path.resolve()).casefold()
     if key in seen:
         return
     try:
-        artifact_store.upsert_artifact(paths, file_path)
+        if register_artifacts:
+            artifact_store.upsert_artifact(paths, file_path)
         outputs.append(artifact_store.to_artifact_ref(paths.thread_id, file_path))
         seen.add(key)
     except Exception:
         return
+
+
+def _register_artifacts(spec: dict[str, Any]) -> bool:
+    value = spec.get("register_artifacts")
+    if isinstance(value, bool):
+        return value
+    ctx = spec.get("workflow_context") if isinstance(spec.get("workflow_context"), dict) else {}
+    value = ctx.get("register_artifacts")
+    return value if isinstance(value, bool) else True
 
 
 def _decode_bytes(value: bytes | str | None) -> str:

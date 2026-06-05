@@ -21,21 +21,6 @@ def select_tools_for_phase(
     phase: str,
     primary_skill_context: PrimarySkillContext | None = None,
 ) -> ToolExposure:
-    primary_skill_priority = _primary_skill_tool(tools, primary_skill_context)
-    if primary_skill_priority:
-        secondary = _stable_order([tool for tool in tools if tool not in primary_skill_priority])
-        return ToolExposure(
-            visible_tools=[*primary_skill_priority, *secondary],
-            priority_tools=primary_skill_priority,
-            secondary_tools=secondary,
-            hidden_tools=[],
-            metadata={
-                "phase": phase,
-                "policy": "primary_skill_tool_priority",
-                "visible_tool_count": len(tools),
-                "primary_skill": primary_skill_context.skill_name if primary_skill_context is not None else "",
-            },
-        )
     stage_priority = _stage_priority_tools(tools, primary_skill_context)
     if stage_priority:
         secondary = [tool for tool in tools if tool not in stage_priority]
@@ -169,19 +154,6 @@ def _stage_priority_tools(
         if str(tool.source.get("type") or "") == "skill" and tool.name in owner_skills
     ]
     return priority
-
-
-def _primary_skill_tool(
-    tools: list[ToolDefinition],
-    primary_skill_context: PrimarySkillContext | None,
-) -> list[ToolDefinition]:
-    if primary_skill_context is None or not primary_skill_context.skill_name:
-        return []
-    return [
-        tool
-        for tool in tools
-        if str(tool.source.get("type") or "") == "skill" and tool.name == primary_skill_context.skill_name
-    ]
 
 
 def _stable_order(tools: list[ToolDefinition]) -> list[ToolDefinition]:

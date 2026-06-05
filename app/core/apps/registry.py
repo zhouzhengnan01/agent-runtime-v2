@@ -54,24 +54,22 @@ class AppTemplateRegistry:
             templates_by_name[template.name] = template
         return list(templates_by_name.values())
 
-    def _load_template(self, path: Path) -> AppTemplate:
+    @staticmethod
+    def _load_template(path: Path) -> AppTemplate:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"App template must be a JSON object: {path}")
-        return _normalize_template(AppTemplate.model_validate(data), self.root_dir)
+        return _normalize_template(AppTemplate.model_validate(data))
 
-    def _load_template_collection(self, path: Path) -> builtins.list[AppTemplate]:
+    @staticmethod
+    def _load_template_collection(path: Path) -> builtins.list[AppTemplate]:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"App template collection must be a JSON object: {path}")
         raw_templates = data.get("templates")
         if not isinstance(raw_templates, list):
             raise ValueError(f"App template collection must contain templates list: {path}")
-        return [
-            _normalize_template(AppTemplate.model_validate(item), self.root_dir)
-            for item in raw_templates
-            if isinstance(item, dict)
-        ]
+        return [_normalize_template(AppTemplate.model_validate(item)) for item in raw_templates if isinstance(item, dict)]
 
     def validate_references(self) -> builtins.list[str]:
         """Return template reference problems without failing template loading."""
@@ -104,8 +102,8 @@ class AppTemplateRegistry:
         return safe_name
 
 
-def _normalize_template(template: AppTemplate, root_dir: Path | None = None) -> AppTemplate:
-    selected_skills = expand_skill_aliases(template.selected_skills, root_dir)
+def _normalize_template(template: AppTemplate) -> AppTemplate:
+    selected_skills = expand_skill_aliases(template.selected_skills)
     if selected_skills == template.selected_skills:
         return template
     return template.model_copy(update={"selected_skills": selected_skills}, deep=True)

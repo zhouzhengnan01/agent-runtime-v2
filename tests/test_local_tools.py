@@ -6,7 +6,6 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import httpx
 from pytest import MonkeyPatch
 
 from app.core.agent import AgentRuntime
@@ -51,48 +50,6 @@ def test_local_tools_write_read_search_and_todo(tmp_path: Path) -> None:
     complete_result = service.call_tool("local_todo", {**thread_args, "action": "complete", "id": 1})
     assert complete_result.is_error is False
     assert complete_result.structured_content["todos"][0]["done"] is True
-
-
-def test_local_read_file_reads_selected_skill_package_files(tmp_path: Path) -> None:
-    service = ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path))
-    skill_root = tmp_path / "plugins" / "skills" / "screen-skill"
-    reference = skill_root / "references" / "blueprint-standard.md"
-    reference.parent.mkdir(parents=True)
-    reference.write_text("# Blueprint\n", encoding="utf-8")
-
-    relative_result = service.call_tool(
-        "local_read_file",
-        {
-            "_thread_id": "skill-package-read",
-            "_skill_roots": [str(skill_root)],
-            "path": "references/blueprint-standard.md",
-        },
-    )
-    missing_slash_result = service.call_tool(
-        "local_read_file",
-        {
-            "_thread_id": "skill-package-read",
-            "_skill_roots": [str(skill_root)],
-            "path": str(reference).lstrip("/"),
-        },
-    )
-    outside_result = service.call_tool(
-        "local_read_file",
-        {
-            "_thread_id": "skill-package-read",
-            "_skill_roots": [str(skill_root)],
-            "path": str(tmp_path / "plugins" / "outside.md"),
-        },
-    )
-
-    assert relative_result.is_error is False
-    assert "# Blueprint" in relative_result.content[0]["text"]
-    assert relative_result.structured_content["path"] == (
-        "/mnt/user-data/skills/screen-skill/references/blueprint-standard.md"
-    )
-    assert missing_slash_result.is_error is False
-    assert "# Blueprint" in missing_slash_result.content[0]["text"]
-    assert outside_result.is_error is True
 
 
 def test_present_files_lists_thread_outputs_and_optional_workspace(tmp_path: Path) -> None:
@@ -149,130 +106,6 @@ def test_local_file_to_base64_rejects_oversized_files(tmp_path: Path) -> None:
 
     assert result.is_error is True
     assert "too large" in result.content[0]["text"]
-
-
-def test_local_download_url_downloads_image_to_uploads(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    original_client = httpx.Client
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == "https://example.test/assets/scene.jpeg?token=abc"
-        return httpx.Response(
-            200,
-            headers={"content-type": "image/jpeg", "content-length": "8"},
-            content=b"jpegdata",
-        )
-
-    monkeypatch.setattr(
-        httpx,
-        "Client",
-        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
-    )
-    store = ArtifactStore(root_dir=tmp_path)
-    service = ToolInvocationService(artifact_store=store)
-
-    result = service.call_tool(
-        "local_download_url",
-        {
-            "_thread_id": "download-image",
-            "url": "https://example.test/assets/scene.jpeg?token=abc",
-        },
-    )
-
-    assert result.is_error is False
-    assert result.structured_content["path"] == "/mnt/user-data/uploads/scene.jpeg"
-    assert result.structured_content["mime_type"] == "image/jpeg"
-    assert result.structured_content["kind"] == "image"
-    assert (tmp_path / "download-image" / "uploads" / "scene.jpeg").read_bytes() == b"jpegdata"
-
-
-def test_local_download_url_accepts_video_and_sanitizes_filename(
-    tmp_path: Path,
-    monkeypatch: MonkeyPatch,
-) -> None:
-    original_client = httpx.Client
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"content-type": "video/mp4"},
-            content=b"mp4data",
-        )
-
-    monkeypatch.setattr(
-        httpx,
-        "Client",
-        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
-    )
-    store = ArtifactStore(root_dir=tmp_path)
-    service = ToolInvocationService(artifact_store=store)
-
-    result = service.call_tool(
-        "local_download_url",
-        {
-            "_thread_id": "download-video",
-            "url": "https://example.test/video/download",
-            "filename": "../camera 01.mp4",
-        },
-    )
-
-    assert result.is_error is False
-    assert result.structured_content["path"] == "/mnt/user-data/uploads/camera_01.mp4"
-    assert result.structured_content["kind"] == "video"
-    assert (tmp_path / "download-video" / "uploads" / "camera_01.mp4").read_bytes() == b"mp4data"
-
-
-def test_local_download_url_rejects_non_media_response(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    original_client = httpx.Client
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/html"}, text="<html></html>")
-
-    monkeypatch.setattr(
-        httpx,
-        "Client",
-        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
-    )
-    service = ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path))
-
-    result = service.call_tool(
-        "local_download_url",
-        {"_thread_id": "download-html", "url": "https://example.test/index.html"},
-    )
-
-    assert result.is_error is True
-    assert "not allowed" in result.content[0]["text"]
-    assert not (tmp_path / "download-html" / "uploads" / "index.html").exists()
-
-
-def test_local_download_url_rejects_oversized_response(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
-    original_client = httpx.Client
-
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            headers={"content-type": "image/png", "content-length": "9"},
-            content=b"123456789",
-        )
-
-    monkeypatch.setattr(
-        httpx,
-        "Client",
-        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
-    )
-    service = ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path))
-
-    result = service.call_tool(
-        "local_download_url",
-        {
-            "_thread_id": "download-too-large",
-            "url": "https://example.test/image.png",
-            "max_bytes": 8,
-        },
-    )
-
-    assert result.is_error is True
-    assert "too large" in result.content[0]["text"]
-    assert not (tmp_path / "download-too-large" / "uploads" / "image.png").exists()
 
 
 def test_extract_archive_and_validate_yolo_training_inputs(tmp_path: Path) -> None:

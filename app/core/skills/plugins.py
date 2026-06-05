@@ -101,11 +101,7 @@ class LoadedSkill:
 
     @property
     def executable(self) -> bool:
-        return (
-            self.runner_path is not None
-            or _can_run_generic(self.definition.to_event_payload())
-            or _can_run_prompt_only(self.definition)
-        )
+        return self.plugin is not None or self.runner_path is not None or _can_run_generic(self.definition.to_event_payload())
 
 
 class SkillPluginManager:
@@ -126,10 +122,10 @@ class SkillPluginManager:
                 continue
         return sorted(plugins, key=lambda plugin: plugin.plugin_id)
 
-    def load_skills(self, *, include_plugin_only: bool | None = None) -> dict[str, LoadedSkill]:
+    def load_skills(self) -> dict[str, LoadedSkill]:
         plugin_skills = self._load_plugin_skills()
 
-        loaded: dict[str, LoadedSkill] = {}
+        loaded: dict[str, LoadedSkill] = dict(plugin_skills)
         for entity_path in self._config_entity_paths():
             try:
                 definition = definition_from_manifest(_read_json(entity_path), entity_path)
@@ -154,12 +150,6 @@ class SkillPluginManager:
                 runner_path=implementation.runner_path,
                 spec_builder_path=implementation.spec_builder_path,
             )
-
-        if include_plugin_only is None:
-            include_plugin_only = self.root_dir != self.project_root
-        if include_plugin_only:
-            for skill_name, implementation in plugin_skills.items():
-                loaded.setdefault(skill_name, implementation)
 
         return loaded
 
@@ -246,7 +236,6 @@ class SkillPluginManager:
             content = json.dumps(parsed, ensure_ascii=False, indent=2) + "\n"
         package_file.path.parent.mkdir(parents=True, exist_ok=True)
         package_file.path.write_text(content, encoding="utf-8")
-        invalidate_skill_alias_cache()
         return self._package_file(self.get_loaded_skill(skill_name), file_id), content
 
     def save_manifest(self, skill_name: str, manifest: dict[str, Any]) -> LoadedSkill:
@@ -269,7 +258,6 @@ class SkillPluginManager:
             package_root = self._sandbox_write_root(existing)
             if package_root is not None:
                 self._write_sandbox_package_file(package_root, data.get("sandbox"))
-        invalidate_skill_alias_cache()
         loaded = self.load_skills().get(skill_name)
         if loaded is not None:
             return loaded
@@ -325,16 +313,6 @@ class SkillPluginManager:
         temp_root.replace(target_root)
         plugin = self._load_plugin(target_root)
         self._materialize_plugin_entities(plugin)
-        invalidate_skill_alias_cache()
-        return plugin
-
-    def delete_plugin(self, plugin_id: str) -> SkillPlugin:
-        safe_id = _validated_plugin_id(plugin_id.strip())
-        target_root = self.plugin_dir / safe_id
-        if not target_root.is_dir() or not (target_root / "plugin.json").is_file():
-            raise FileNotFoundError(f"Skill plugin not found: {safe_id}")
-        plugin = self._load_plugin(target_root)
-        shutil.rmtree(target_root)
         invalidate_skill_alias_cache()
         return plugin
 
@@ -802,22 +780,6 @@ def _with_plugin_metadata(
         runner_path=runner_path,
         spec_builder_path=spec_builder_path,
     )
-
-
-def _can_run_prompt_only(definition: SkillDefinition) -> bool:
-    if definition.source_type != "plugin":
-        return False
-    routing = definition.routing
-    if not isinstance(routing, dict):
-        return False
-    summary = routing.get("summary")
-    if isinstance(summary, str) and summary.strip():
-        return True
-    for key in ("keywords", "examples"):
-        value = routing.get(key)
-        if isinstance(value, list) and any(isinstance(item, str) and item.strip() for item in value):
-            return True
-    return False
 
 
 def _prompt_only_markdown(skill_name: str, manifest: dict[str, Any], spec: dict[str, Any], loaded: LoadedSkill) -> str:

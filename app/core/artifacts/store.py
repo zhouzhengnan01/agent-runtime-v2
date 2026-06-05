@@ -72,11 +72,18 @@ class ArtifactStore:
 
     def list_artifacts(self, thread_id: str) -> list[ArtifactRef]:
         paths = self.prepare_thread(thread_id)
-        refs: list[ArtifactRef] = []
-        for file_path in sorted(paths.outputs.rglob("*")):
-            if file_path.is_file():
-                refs.append(self.to_artifact_ref(paths.thread_id, file_path))
-        return refs
+        manifest = self._read_manifest(paths)
+        scoped_root = self._artifact_listing_scope(paths, manifest)
+        if scoped_root is not None and scoped_root.is_dir():
+            refs = self._artifact_refs_for_files(paths, sorted(scoped_root.rglob("*")))
+            if refs:
+                return refs
+
+        manifest_refs = self._artifact_refs_from_manifest(paths, manifest)
+        if manifest_refs:
+            return manifest_refs
+
+        return self._artifact_refs_for_files(paths, sorted(paths.outputs.rglob("*")))
 
     def read_manifest(self, thread_id: str) -> dict[str, Any]:
         paths = self.prepare_thread(thread_id)
@@ -170,6 +177,54 @@ class ArtifactStore:
             preview_url=f"/api/artifacts/{quote(thread_id, safe='')}/{api_path}",
             download_url=f"/api/artifacts/{quote(thread_id, safe='')}/{api_path}?download=true",
         )
+
+    def _artifact_refs_from_manifest(self, paths: ThreadPaths, manifest: dict[str, Any]) -> list[ArtifactRef]:
+        refs: list[ArtifactRef] = []
+        seen: set[str] = set()
+        for item in self._manifest_artifacts(manifest):
+            raw_path = str(item.get("path") or "").strip()
+            if not raw_path:
+                continue
+            try:
+                file_path = self.output_path(paths, raw_path)
+            except ValueError:
+                continue
+            key = str(file_path.resolve()).casefold()
+            if key in seen or not file_path.is_file():
+                continue
+            seen.add(key)
+            refs.append(self.to_artifact_ref(paths.thread_id, file_path))
+        return refs
+
+    def _artifact_refs_for_files(self, paths: ThreadPaths, file_paths: list[Path]) -> list[ArtifactRef]:
+        refs: list[ArtifactRef] = []
+        for file_path in file_paths:
+            if file_path.is_file():
+                refs.append(self.to_artifact_ref(paths.thread_id, file_path))
+        return refs
+
+    def _artifact_listing_scope(self, paths: ThreadPaths, manifest: dict[str, Any]) -> Path | None:
+        metadata = manifest.get("metadata")
+        raw_scope = metadata.get("artifact_scope") if isinstance(metadata, dict) else None
+        if isinstance(raw_scope, str) and raw_scope.strip():
+            try:
+                return self.output_path(paths, raw_scope)
+            except ValueError:
+                return None
+
+        primary = str(manifest.get("primary_artifact") or "").replace("\\", "/").strip()
+        if not primary:
+            return None
+        normalized = self._normalize_output_name(primary)
+        parts = [part for part in normalized.split("/") if part]
+        if "training_run" not in parts:
+            return None
+        training_index = parts.index("training_run")
+        scoped_rel = "/".join(parts[: training_index + 1])
+        try:
+            return self.output_path(paths, scoped_rel)
+        except ValueError:
+            return None
 
     def resolve_virtual_path(self, thread_id: str, virtual_path: str) -> Path:
         paths = self.prepare_thread(thread_id)

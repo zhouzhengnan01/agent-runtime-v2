@@ -1,15 +1,23 @@
 import argparse
 import base64
 import json
-import os
+import mimetypes
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import requests
 
 
+DEFAULT_API_URL = "http://218.67.242.10:58801/v1/flux2/generate"
+DEFAULT_MODEL = "flux2"
+DEFAULT_WIDTH = 640
+DEFAULT_HEIGHT = 640
+DEFAULT_STEPS = 8
+
+
 def _guess_ext_from_bytes(content: bytes) -> str:
-    """通过文件魔数判断扩展名。"""
+    """Guess a file extension from image magic bytes."""
     if content.startswith(b"\x89PNG\r\n\x1a\n"):
         return ".png"
     if content.startswith(b"\xff\xd8\xff"):
@@ -29,6 +37,86 @@ def _save_bytes(out_dir: Path, content: bytes, ext: str, prefix: str = "generate
     return str(save_path)
 
 
+def _image_to_data_url(input_path: Path) -> str:
+    content = input_path.read_bytes()
+    mime_type = mimetypes.guess_type(input_path.name)[0] or "image/png"
+    encoded = base64.b64encode(content).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def _decode_base64_image(value: str) -> bytes:
+    b64_value = value
+    if "base64," in b64_value:
+        b64_value = b64_value.split("base64,", 1)[1]
+    return base64.b64decode(b64_value, validate=False)
+
+
+def _iter_response_candidates(data: Any):
+    if isinstance(data, str):
+        yield data
+        return
+    if isinstance(data, list):
+        for item in data:
+            yield from _iter_response_candidates(item)
+        return
+    if not isinstance(data, dict):
+        return
+
+    preferred_keys = (
+        "b64_json",
+        "image",
+        "image_base64",
+        "base64",
+        "url",
+        "data",
+        "result",
+        "output",
+    )
+    for key in preferred_keys:
+        if key in data:
+            value = data.get(key)
+            if isinstance(value, str):
+                yield value
+            else:
+                yield from _iter_response_candidates(value)
+
+    for key, value in data.items():
+        if key not in preferred_keys:
+            yield from _iter_response_candidates(value)
+
+
+def _save_json_image_response(data: dict[str, Any], out_dir: Path, timeout: int) -> str:
+    for candidate in _iter_response_candidates(data):
+        if not isinstance(candidate, str) or len(candidate) <= 30:
+            continue
+
+        if candidate.startswith(("http://", "https://")):
+            image_resp = requests.get(candidate, timeout=timeout)
+            if image_resp.status_code != 200:
+                continue
+            content = image_resp.content or b""
+            ext = _guess_ext_from_bytes(content)
+            if ext == ".bin":
+                content_type = image_resp.headers.get("Content-Type", "").lower()
+                if "png" in content_type:
+                    ext = ".png"
+                elif "jpeg" in content_type or "jpg" in content_type:
+                    ext = ".jpg"
+                elif "webp" in content_type:
+                    ext = ".webp"
+            return _save_bytes(out_dir, content, ext if ext != ".bin" else ".png")
+
+        if "base64," in candidate or len(candidate) > 30:
+            try:
+                img_bytes = _decode_base64_image(candidate)
+            except Exception:
+                continue
+            ext = _guess_ext_from_bytes(img_bytes)
+            return _save_bytes(out_dir, img_bytes, ext if ext != ".bin" else ".png")
+
+    raise RuntimeError("JSON response did not contain a recognized image field")
+
+
 def generate_image(
     api_url: str,
     token: str,
@@ -36,52 +124,50 @@ def generate_image(
     prompt: str,
     output_dir: str,
     timeout: int = 120,
+    model: str = DEFAULT_MODEL,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    steps: int = DEFAULT_STEPS,
 ) -> str:
-    """
-    上传图片到模型服务，并将返回的图片保存到本地。
-    兼容三种返回：
-    1) 直接二进制图片；
-    2) JSON 内含 base64 图片；
-    3) 非图片错误内容（会落盘 raw 便于排查）。
-    """
+    """Call the Flux2 OpenAI-style JSON API and save the generated image."""
     input_path = Path(input_image).resolve()
     if not input_path.exists() or not input_path.is_file():
-        raise FileNotFoundError(f"输入图片不存在: {input_path}")
+        raise FileNotFoundError(f"Input image does not exist: {input_path}")
 
     out_dir = Path(output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     headers = {
         "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": model or DEFAULT_MODEL,
+        "input": {
+            "prompt": prompt,
+            "image": _image_to_data_url(input_path),
+        },
+        "parameters": {
+            "height": int(height),
+            "width": int(width),
+            "steps": int(steps),
+        },
     }
 
-    with open(input_path, "rb") as f:
-        files = {
-            "file": (input_path.name, f, "application/octet-stream"),
-        }
-        data = {
-            "prompt": prompt,
-        }
-
-        resp = requests.post(
-            api_url,
-            headers=headers,
-            files=files,
-            data=data,
-            timeout=timeout,
-        )
+    resp = requests.post(
+        api_url,
+        headers=headers,
+        json=payload,
+        timeout=timeout,
+    )
 
     if resp.status_code != 200:
-        # 即使失败，也把响应落盘，便于你直接看服务端返回了什么
         raw_path = _save_bytes(out_dir, resp.content or b"", ".raw", prefix="error_response")
-        raise RuntimeError(
-            f"请求失败，HTTP {resp.status_code}。响应已保存: {raw_path}"
-        )
+        raise RuntimeError(f"Request failed, HTTP {resp.status_code}. Response saved: {raw_path}")
 
     content_type = resp.headers.get("Content-Type", "").lower()
     body = resp.content or b""
 
-    # 1) 直接返回图片二进制
     if body and (
         "image/" in content_type
         or body.startswith(b"\x89PNG\r\n\x1a\n")
@@ -98,102 +184,68 @@ def generate_image(
                 ext = ".webp"
         return _save_bytes(out_dir, body, ext)
 
-    # 2) 返回 JSON，里面包含 base64 图片
-    is_json = "application/json" in content_type
     text = resp.text or ""
-    if is_json or text.lstrip().startswith("{"):
+    if "application/json" in content_type or text.lstrip().startswith(("{", "[")):
         try:
             data = resp.json()
         except Exception:
-            try:
-                data = json.loads(text)
-            except Exception:
-                data = None
-
+            data = json.loads(text)
         if isinstance(data, dict):
-            # 常见字段兜底
-            candidates = [
-                data.get("image"),
-                data.get("image_base64"),
-                data.get("base64"),
-                data.get("data"),
-                data.get("result"),
-                data.get("output"),
-            ]
+            return _save_json_image_response(data, out_dir, timeout)
+        if isinstance(data, list):
+            return _save_json_image_response({"data": data}, out_dir, timeout)
 
-            # 兼容 output: {image: ...}
-            out_obj = data.get("output")
-            if isinstance(out_obj, dict):
-                candidates.extend([
-                    out_obj.get("image"),
-                    out_obj.get("image_base64"),
-                    out_obj.get("base64"),
-                ])
-
-            b64_str = None
-            for x in candidates:
-                if isinstance(x, str) and len(x) > 30:
-                    b64_str = x
-                    break
-
-            if b64_str:
-                # 去掉 data URL 前缀
-                if "base64," in b64_str:
-                    b64_str = b64_str.split("base64,", 1)[1]
-                try:
-                    img_bytes = base64.b64decode(b64_str, validate=False)
-                except Exception as e:
-                    raise RuntimeError(f"返回了 base64 字段，但解码失败: {e}")
-
-                ext = _guess_ext_from_bytes(img_bytes)
-                if ext == ".bin":
-                    ext = ".png"
-                return _save_bytes(out_dir, img_bytes, ext)
-
-    # 3) 既不是图片也不是可解析的 JSON 图片：保存原始响应
     raw_path = _save_bytes(out_dir, body, ".raw", prefix="unknown_response")
-    snippet = (resp.text or "")[:200].replace("\n", " ")
+    snippet = text[:200].replace("\n", " ")
     raise RuntimeError(
-        f"响应不是可识别图片格式，已保存原始响应到: {raw_path}；"
-        f"Content-Type={content_type or 'N/A'}；片段: {snippet}"
+        f"Response is not a recognized image format. Raw response saved: {raw_path}. "
+        f"Content-Type={content_type or 'N/A'}; snippet={snippet}"
     )
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="调用本地生图模型接口，上传图片并保存生成结果"
+        description="Call the Flux2 image generation API and save the generated image"
     )
     parser.add_argument(
         "--url",
-        default="http://218.67.242.10:58801/flux2/generate",
-        help="模型接口地址",
+        default=DEFAULT_API_URL,
+        help="Flux2 model API endpoint",
     )
     parser.add_argument(
         "--token",
         default="abc@123",
-        help="Bearer Token（仅填 token，不要写 Bearer 前缀）",
+        help="Bearer token value without the Bearer prefix",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help="Model name in the JSON payload",
     )
     parser.add_argument(
         "--input",
         default="./cat.jpg",
-        help="输入图片路径",
+        help="Input image path",
     )
     parser.add_argument(
         "--prompt",
-        default="把猫改成宇航员",
-        help="生成提示词",
+        default="turn it into watercolor style",
+        help="Image generation prompt",
     )
     parser.add_argument(
         "--output-dir",
         default="./outputs",
-        help="结果图片保存目录",
+        help="Output image directory",
     )
     parser.add_argument(
         "--timeout",
         type=int,
         default=120,
-        help="请求超时时间（秒）",
+        help="Request timeout in seconds",
     )
+    parser.add_argument("--width", type=int, default=DEFAULT_WIDTH)
+    parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT)
+    parser.add_argument("--steps", type=int, default=DEFAULT_STEPS)
 
     args = parser.parse_args()
 
@@ -205,10 +257,14 @@ def main():
             prompt=args.prompt,
             output_dir=args.output_dir,
             timeout=args.timeout,
+            model=args.model,
+            width=args.width,
+            height=args.height,
+            steps=args.steps,
         )
-        print(f"生成成功，已保存: {saved}")
+        print(f"Successfully saved: {saved}")
     except Exception as e:
-        print(f"生成失败: {e}")
+        print(f"Generation failed: {e}")
         raise SystemExit(1)
 
 

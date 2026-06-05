@@ -147,49 +147,6 @@ def test_app_template_registry_deduplicates_collection_and_file_templates(tmp_pa
     assert registry.get("demo").selected_skills == ["drawio-generation"]
 
 
-def test_app_template_registry_expands_plugin_aliases_from_root_dir(tmp_path: Path) -> None:
-    apps_dir = tmp_path / "config" / "apps"
-    plugin_root = tmp_path / "plugins" / "skills" / "root-skill-plugin"
-    apps_dir.mkdir(parents=True)
-    plugin_root.mkdir(parents=True)
-    (apps_dir / "demo.json").write_text(
-        json.dumps(
-            {
-                "name": "demo",
-                "title": "Demo App",
-                "agent_name": "default",
-                "selected_skills": ["root-skill-plugin"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    (plugin_root / "plugin.json").write_text(
-        json.dumps(
-            {
-                "id": "root-skill-plugin",
-                "name": "Root Skill Plugin",
-                "version": "1.0.0",
-                "skills": ["manifest.json"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    (plugin_root / "manifest.json").write_text(
-        json.dumps(
-            {
-                "name": "root-dir-skill",
-                "description": "Root dir skill.",
-                "output_kind": "markdown",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    template = AppTemplateRegistry(root_dir=tmp_path).get("demo")
-
-    assert template.selected_skills == ["root-dir-skill"]
-
-
 def test_app_template_registry_rejects_unknown_template(tmp_path: Path) -> None:
     registry = AppTemplateRegistry(root_dir=tmp_path)
 
@@ -330,21 +287,6 @@ def test_preconfigured_app_template_workflows_have_local_entities() -> None:
     assert missing == []
 
 
-def test_component_development_app_uses_executable_auto_skill() -> None:
-    registry = AppTemplateRegistry()
-    template = registry.get("zujiankaifa")
-    options = merge_runtime_options_with_template(
-        RuntimeOptions(app_template_name=template.name),
-        template,
-    )
-    skill = SkillRegistry(registry.root_dir).get(options.selected_skills[0])
-
-    assert options.selected_skills == ["jetlinks-ai-component"]
-    assert skill.executable is True
-    assert skill.output_kind == "component"
-    assert options.config_options["auto_execute_primary_skill"] is True
-
-
 def test_preconfigured_app_templates_carry_model_defaults() -> None:
     registry = AppTemplateRegistry()
 
@@ -360,20 +302,6 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 16
         elif template.name == "reference-image-yolo-training":
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
-        elif template.name in {
-            "70aaee52-99c2-49f5-a9c7-fb746821d3df",
-            "0bb9536b-8a36-40fd-8c5b-ea22804b55ab",
-            "737d9452-99c6-470e-a77a-20f2f7d73eff",
-            "305fb466-1f7f-442b-861e-02e3246f8563",
-        }:
-            assert template.runtime_options == {
-                "mode": "safe",
-                "config_options": {
-                    "max_tool_rounds": 3,
-                    "max_empty_response_retries": 0,
-                    "auto_execute_primary_skill": True,
-                },
-            }
         elif template.name == "algorithm-engineer-full-cycle-test":
             assert template.runtime_options["model_env"] == "LLM_MODEL"
             assert template.runtime_options["base_url_env"] == "LLM_BASE_URL"
@@ -391,12 +319,8 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         assert model.model, template.name
         assert model.default_model, template.name
         assert model.base_url, template.name
-        if template.name == "305fb466-1f7f-442b-861e-02e3246f8563":
-            assert model.api_key is None, template.name
-            assert model.api_key_env == "JETLINKS_APP_305FB466_GPT54_API_KEY", template.name
-        else:
-            assert model.api_key == "abc@123", template.name
-            assert model.api_key_env is None, template.name
+        assert model.api_key == "abc@123", template.name
+        assert model.api_key_env is None, template.name
         assert model.api_key_enc is None, template.name
         assert model.temperature == 0.4, template.name
         assert model.max_tokens == 2048, template.name
@@ -547,10 +471,7 @@ def test_algorithm_training_related_templates_use_dedicated_category() -> None:
     workflows = {name: registry.get(name).workflow for name in training_templates}
 
     assert categories == {name: "algorithm-training" for name in training_templates}
-    assert workflows["algorithm-training-orchestration"] == "agent_loop"
-    assert {name: workflow for name, workflow in workflows.items() if name != "algorithm-training-orchestration"} == {
-        name: None for name in training_templates if name != "algorithm-training-orchestration"
-    }
+    assert workflows == {name: None for name in training_templates}
 
 
 def test_tianjin_park_templates_use_dedicated_category_and_real_skills() -> None:

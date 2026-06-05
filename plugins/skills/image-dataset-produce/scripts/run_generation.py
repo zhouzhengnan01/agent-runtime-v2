@@ -21,6 +21,7 @@ IMAGE_GENERATE_SCRIPT = (
 )
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
+DEFAULT_API_URL = "http://218.67.242.10:58801/v1/flux2/generate"
 
 
 def _require_abs_path(path_str: str, field_name: str) -> Path:
@@ -49,8 +50,12 @@ def _normalize_runtime_payload(payload: dict) -> dict:
     ctx = spec.get("workflow_context") if isinstance(spec.get("workflow_context"), dict) else {}
     outputs_dir = str(payload.get("outputs_dir") or "").strip()
     model = {
-        "api_url": spec.get("api_url") or task_spec.get("api_url") or "http://218.67.242.10:58801/flux2/generate",
+        "api_url": spec.get("api_url") or task_spec.get("api_url") or DEFAULT_API_URL,
         "token": spec.get("token") or task_spec.get("token") or os.environ.get("IMAGE_GEN_TOKEN", "") or "abc@123",
+        "model": spec.get("model") or task_spec.get("model") or "flux2",
+        "width": spec.get("width") or task_spec.get("width") or 640,
+        "height": spec.get("height") or task_spec.get("height") or 640,
+        "steps": spec.get("steps") or task_spec.get("steps") or 8,
         "timeout": spec.get("timeout") or task_spec.get("timeout") or 120,
     }
     task = {
@@ -126,6 +131,10 @@ def main():
     api_url = str(model.get("api_url", "")).strip()
     token = str(model.get("token", "")).strip()
     timeout = int(model.get("timeout", 120))
+    model_name = str(model.get("model", "") or "flux2").strip()
+    width = int(model.get("width", 640) or 640)
+    height = int(model.get("height", 640) or 640)
+    steps = int(model.get("steps", 8) or 8)
 
     input_image = str(task.get("input_image", "")).strip()
     prompt = str(task.get("prompt", "")).strip()
@@ -165,6 +174,10 @@ def main():
         "--prompt", prompt,
         "--output-dir", str(output_dir_path),
         "--timeout", str(timeout),
+        "--model", model_name,
+        "--width", str(width),
+        "--height", str(height),
+        "--steps", str(steps),
     ]
 
     print("[image-dataset-produce] Starting image generation task...")
@@ -185,6 +198,9 @@ def main():
 
     print("\n--- summary ---")
     print(f"api_url: {api_url}")
+    print(f"model: {model_name}")
+    print(f"size: {width}x{height}")
+    print(f"steps: {steps}")
     print(f"input_image: {input_image_path}")
     print(f"prompt: {prompt}")
     print(f"output_dir: {output_dir_path}")

@@ -1,9 +1,0 @@
-{
-  "id": "17803963378248hh02dvt",
-  "name": "杂物检测",
-  "version": "0.1.0",
-  "description": "用于机器视觉复判杂物检测识别目标的情况。",
-  "skills": [
-    "skills/17803963378248hh02dvt/manifest.json"
-  ]
-}

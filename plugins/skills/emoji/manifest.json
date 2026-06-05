@@ -1,69 +1,45 @@
 {
-  "name": "emoji",
-  "description": "emoji.",
-  "output_kind": "markdown",
-  "generation": true,
-  "routing": {
-    "summary": "Use for experiment YAML records, result summaries, compare-experiment tables, and post-training retrospectives.",
-    "keywords": [
-      "emoji"
-    ],
-    "examples": [
-      "输出里带有emoji"
-    ]
+  "name" : "emoji生成选择",
+  "description" : "用户提及emoji相关内容的时候触发",
+  "generation" : true,
+  "output_kind" : "markdown",
+  "routing" : {
+    "summary" : "",
+    "keywords" : [ ],
+    "examples" : [ ]
   },
-  "quality_template": [
-    "experiment_id",
-    "parameters",
-    "machine",
-    "dataset",
-    "status",
-    "metrics",
-    "notes"
-  ],
-  "input_schema": {
-    "type": "object",
-    "required": [
-      "skill_name"
-    ],
-    "properties": {
-      "skill_name": {
-        "const": "emoji"
+  "quality_template" : [ ],
+  "input_schema" : {
+    "type" : "object",
+    "required" : [ "skill_name", "objective" ],
+    "properties" : {
+      "skill_name" : {
+        "const" : "emoji"
       },
-      "experiment_id": {
-        "type": "string"
-      },
-      "model": {
-        "type": "string"
-      },
-      "dataset": {
-        "type": "string"
-      },
-      "status": {
-        "type": "string"
+      "objective" : {
+        "type" : "string"
       }
     },
-    "additionalProperties": true
+    "additionalProperties" : true
   },
-  "output_schema": {
-    "type": "object",
-    "required": [
-      "artifacts"
-    ],
-    "properties": {
-      "artifacts": {
-        "type": "array"
+  "output_schema" : {
+    "type" : "object",
+    "required" : [ "artifacts" ],
+    "properties" : {
+      "artifacts" : {
+        "type" : "array"
       }
     },
-    "additionalProperties": true
+    "additionalProperties" : true
   },
-  "sandbox": {
-    "enabled": false,
-    "profile": null,
-    "request_schema_version": "skill-run.v1",
-    "fallback_to_local": true
+  "sandbox" : {
+    "enabled" : false,
+    "request_schema_version" : "skill-run.v1",
+    "fallback_to_local" : true
   },
-  "model_tags": [
-    "chat"
-  ]
+  "metadata" : {
+    "developerCenter" : {
+      "domain" : "general"
+    }
+  }
 }
