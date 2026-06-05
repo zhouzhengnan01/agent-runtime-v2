@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from app.core.artifacts import ArtifactStore
-from app.schemas import Attachment
+from app.core.config import AgentConfig
+from app.core.skills import SkillDefinition
+from app.core.skills.runner_types import SkillRunResult
+from app.schemas import Attachment, Message, RuntimeOptions
 
 
 def _load_workflow_module() -> Any:
@@ -156,3 +159,140 @@ def test_video_frame_attachments_report_missing_opencv(tmp_path: Path, monkeypat
     assert attachments == []
     assert reports[0]["status"] == "failed"
     assert reports[0]["error_code"] == "opencv_unavailable"
+
+
+def test_review_skill_candidates_expand_composite_and_score_objective() -> None:
+    workflow = _load_workflow_module()
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "behavior-group": SkillDefinition(
+                    name="behavior-group",
+                    description="组合行为识别",
+                    output_kind="json",
+                    skill_type="composite",
+                    child_skills=("smoking-review", "fall-review"),
+                ),
+                "smoking-review": SkillDefinition(
+                    name="smoking-review",
+                    description="抽烟 SmokingDetection 复判",
+                    output_kind="json",
+                    routing={"keywords": ["抽烟", "SmokingDetection"]},
+                ),
+                "fall-review": SkillDefinition(
+                    name="fall-review",
+                    description="跌倒 FallDetection 复判",
+                    output_kind="json",
+                    routing={"keywords": ["跌倒", "FallDetection"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+    candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["behavior-group"],
+        objective="SmokingDetection",
+        prompt_text="本次复判的识别目标为[SmokingDetection]",
+    )
+
+    assert [candidate.skill.name for candidate in candidates] == ["smoking-review", "fall-review"]
+    assert candidates[0].score > candidates[1].score
+
+
+def test_parking_review_invokes_one_selected_skill_and_injects_result(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    workflow = _load_workflow_module()
+    captured: dict[str, Any] = {}
+
+    class FakeRegistry:
+        def get(self, name: str) -> SkillDefinition:
+            if name == "behavior-group":
+                return SkillDefinition(
+                    name="behavior-group",
+                    description="组合行为识别",
+                    output_kind="json",
+                    skill_type="composite",
+                    child_skills=("smoking-review", "fall-review"),
+                )
+            if name == "smoking-review":
+                return SkillDefinition(
+                    name="smoking-review",
+                    description="抽烟 SmokingDetection 复判",
+                    output_kind="json",
+                    routing={"keywords": ["抽烟", "SmokingDetection"]},
+                )
+            if name == "fall-review":
+                return SkillDefinition(
+                    name="fall-review",
+                    description="跌倒 FallDetection 复判",
+                    output_kind="json",
+                    routing={"keywords": ["跌倒", "FallDetection"]},
+                )
+            raise KeyError(name)
+
+    class FakeRunner:
+        def run(self, skill_name: str, spec: dict[str, Any], paths: Any, on_event: Any = None) -> SkillRunResult:
+            captured["skill_name"] = skill_name
+            captured["spec"] = spec
+            return SkillRunResult(skill_name=skill_name, data={"review_decision": "hit", "reason": "skill says smoking"})
+
+    def fake_complete_review(
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions,
+        prompt_text: str,
+        image_attachments: list[Attachment],
+        paths: Any,
+        review_source_id: str,
+        objective: str,
+        skill_selection: Any,
+        skill_result: SkillRunResult | None,
+        skill_error: str,
+    ) -> str:
+        captured["final_skill_selection"] = skill_selection
+        captured["final_skill_result"] = skill_result
+        captured["final_skill_error"] = skill_error
+        return '[{"reviewSourceId":"source-1","reviewEventId":"event-1","hit":1,"result":"发现抽烟行为"}]'
+
+    monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(fake_complete_review))
+
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("thread-review")
+    image = paths.uploads / "image.jpg"
+    image.write_bytes(b"fake-image")
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(
+        store,
+        skill_registry=FakeRegistry(),
+        skill_runner=FakeRunner(),
+    )
+
+    result, events = review_workflow.run_with_events(
+        AgentConfig(name="default", display_name="Default"),
+        [
+            Message(
+                role="user",
+                content=(
+                    "当前复判事件来源reviewSourceId为[source-1]。\n"
+                    "本次复判的识别目标为[SmokingDetection]"
+                ),
+            )
+        ],
+        [Attachment(name="image.jpg", path="/mnt/user-data/uploads/image.jpg", mime_type="image/jpeg")],
+        "thread-review",
+        runtime_options=RuntimeOptions(selected_skills=["behavior-group"]),
+    )
+
+    assert captured["skill_name"] == "smoking-review"
+    assert captured["spec"]["objective"] == "SmokingDetection"
+    assert captured["spec"]["has_visual_evidence"] is True
+    assert captured["final_skill_selection"].skill_name == "smoking-review"
+    assert captured["final_skill_result"].data["review_decision"] == "hit"
+    assert captured["final_skill_error"] == ""
+    assert result.reply == '[{"reviewSourceId":"source-1","reviewEventId":"event-1","hit":1,"result":"发现抽烟行为"}]'
+    event_types = [event.type for event in events]
+    assert "review.skill_selection.completed" in event_types
+    assert "review.skill_invocation.completed" in event_types

@@ -14,6 +14,8 @@ from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import OpenAICompatibleClient
+from app.core.skills import SkillDefinition, SkillRegistry, SkillRunner
+from app.core.skills.runner_types import SkillRunResult
 from app.schemas import AgentRunResult, Attachment, ChatEvent, Message, RuntimeOptions
 
 
@@ -24,6 +26,8 @@ VIDEO_FRAME_MAX_ATTACHMENTS = 6
 VIDEO_FRAME_MAX_CANDIDATES = 24
 VIDEO_FRAME_MAX_WIDTH = 1280
 VIDEO_FRAME_MIN_DIFFERENCE = 8.0
+SKILL_CONTEXT_MAX_CHARS = 6000
+SKILL_LLM_SELECTION_SCORE_GAP = 3.0
 
 
 @dataclass
@@ -48,11 +52,36 @@ class ExtractedVideoFrame:
     score: float
 
 
+@dataclass(frozen=True)
+class ReviewSkillCandidate:
+    skill: SkillDefinition
+    context: str
+    score: float
+    score_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReviewSkillSelection:
+    skill_name: str
+    method: str
+    confidence: float
+    reason: str
+    candidates: tuple[ReviewSkillCandidate, ...]
+    selected_context: str
+
+
 class ParkingAbnormalReviewWorkflow:
     """Deterministic parking abnormal review workflow that returns only JSON."""
 
-    def __init__(self, artifact_store: ArtifactStore) -> None:
+    def __init__(
+        self,
+        artifact_store: ArtifactStore,
+        skill_registry: SkillRegistry | None = None,
+        skill_runner: SkillRunner | None = None,
+    ) -> None:
         self.artifact_store = artifact_store
+        self.skill_registry = skill_registry or SkillRegistry()
+        self.skill_runner = skill_runner or SkillRunner(artifact_store)
 
     def run_with_events(
         self,
@@ -78,11 +107,30 @@ class ParkingAbnormalReviewWorkflow:
         video_attachments = _video_attachments(attachments)
         video_frame_attachments, video_frame_reports = _video_frame_attachments(video_attachments, paths)
         review_attachments = [*image_attachments, *video_frame_attachments]
+        skill_selection = self._select_review_skill(
+            agent_config,
+            runtime_options,
+            prompt_text,
+            review_source_id,
+            objective,
+        )
+        skill_result, skill_error = self._invoke_review_skill(
+            skill_selection,
+            prompt_text=prompt_text,
+            review_source_id=review_source_id,
+            objective=objective,
+            attachments=review_attachments,
+            paths=paths,
+            recorder=recorder,
+        )
         recorder.emit(
             "review.input",
             {
                 "review_source_id": review_source_id,
                 "objective": objective,
+                "selected_skill": skill_selection.skill_name if skill_selection is not None else "",
+                "skill_selection": _skill_selection_event_payload(skill_selection),
+                "skill_error": skill_error,
                 "attachment_count": len(attachments),
                 "image_attachment_count": len(image_attachments),
                 "video_attachment_count": len(video_attachments),
@@ -111,6 +159,9 @@ class ParkingAbnormalReviewWorkflow:
                 paths,
                 review_source_id,
                 objective,
+                skill_selection,
+                skill_result,
+                skill_error,
             )
             reply = _normalize_json_reply(raw_reply, review_source_id=review_source_id, objective=objective)
 
@@ -136,6 +187,105 @@ class ParkingAbnormalReviewWorkflow:
         recorder.emit("run.completed", {"result": result.model_dump()})
         return result, recorder.events
 
+    def _select_review_skill(
+        self,
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions,
+        prompt_text: str,
+        review_source_id: str,
+        objective: str,
+    ) -> ReviewSkillSelection | None:
+        candidates = _review_skill_candidates(
+            self.skill_registry,
+            runtime_options.selected_skills,
+            objective=objective,
+            prompt_text=prompt_text,
+        )
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            candidate = candidates[0]
+            return ReviewSkillSelection(
+                skill_name=candidate.skill.name,
+                method="single_candidate",
+                confidence=1.0,
+                reason="只有一个候选 skill，直接用于复判。",
+                candidates=tuple(candidates),
+                selected_context=candidate.context,
+            )
+
+        ranked = sorted(candidates, key=lambda item: item.score, reverse=True)
+        score_gap = ranked[0].score - ranked[1].score
+        if ranked[0].score > 0 and score_gap >= SKILL_LLM_SELECTION_SCORE_GAP:
+            return ReviewSkillSelection(
+                skill_name=ranked[0].skill.name,
+                method="keyword_score",
+                confidence=min(1.0, max(0.35, ranked[0].score / 12.0)),
+                reason="根据 CV 标签、识别目标和 skill 描述关键词匹配选择。",
+                candidates=tuple(ranked),
+                selected_context=ranked[0].context,
+            )
+
+        llm_selection = _llm_select_review_skill(
+            agent_config,
+            runtime_options,
+            prompt_text=prompt_text,
+            review_source_id=review_source_id,
+            objective=objective,
+            candidates=ranked,
+        )
+        if llm_selection is not None:
+            return llm_selection
+
+        return ReviewSkillSelection(
+            skill_name=ranked[0].skill.name,
+            method="score_fallback",
+            confidence=min(1.0, max(0.2, ranked[0].score / 12.0)),
+            reason="大模型选择不可用，使用最高关键词匹配分数的 skill。",
+            candidates=tuple(ranked),
+            selected_context=ranked[0].context,
+        )
+
+    def _invoke_review_skill(
+        self,
+        selection: ReviewSkillSelection | None,
+        *,
+        prompt_text: str,
+        review_source_id: str,
+        objective: str,
+        attachments: list[Attachment],
+        paths: ThreadPaths,
+        recorder: EventRecorder,
+    ) -> tuple[SkillRunResult | None, str]:
+        if selection is None:
+            recorder.emit("review.skill_selection.completed", {"selected_skill": "", "reason": "no_candidate_skill"})
+            return None, "no_candidate_skill"
+        recorder.emit("review.skill_selection.completed", _skill_selection_event_payload(selection))
+        spec = _review_skill_spec(
+            selection,
+            prompt_text=prompt_text,
+            review_source_id=review_source_id,
+            objective=objective,
+            attachments=attachments,
+        )
+        recorder.emit("review.skill_invocation.started", {"skill_name": selection.skill_name, "spec": _public_spec(spec)})
+        try:
+            result = self.skill_runner.run(selection.skill_name, spec, paths, on_event=recorder.emit)
+        except Exception as exc:
+            error = str(exc)
+            recorder.emit("review.skill_invocation.failed", {"skill_name": selection.skill_name, "error": error[:1000]})
+            return None, error
+        recorder.emit(
+            "review.skill_invocation.completed",
+            {
+                "skill_name": selection.skill_name,
+                "output_count": len(result.outputs),
+                "data": result.data,
+                "artifacts": [artifact.model_dump(mode="json") for artifact in result.outputs],
+            },
+        )
+        return result, ""
+
     @staticmethod
     def _complete_review(
         agent_config: AgentConfig,
@@ -145,9 +295,13 @@ class ParkingAbnormalReviewWorkflow:
         paths: ThreadPaths,
         review_source_id: str,
         objective: str,
+        skill_selection: ReviewSkillSelection | None,
+        skill_result: SkillRunResult | None,
+        skill_error: str,
     ) -> str:
         client = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
         evidence_context = _attachment_evidence_context(image_attachments)
+        skill_context = _review_skill_prompt_context(skill_selection, skill_result, skill_error)
         system_prompt = (
             "你是机器视觉异常事件复判工作流。"
             "必须只基于用户文本和随附图片中可直接看见的内容判断识别目标是否命中。"
@@ -165,8 +319,10 @@ class ParkingAbnormalReviewWorkflow:
             "- result 用中文说明复判依据。\n"
             "- result 必须描述图片中清晰可见的证据；图片中不可确认的内容不要编造。\n"
             "- 如果图片来自视频抽帧，应综合所有抽帧画面判断，不要只依据单帧偶然现象下结论。\n"
+            "- 如存在已调用的复判 skill，必须优先遵循该 skill 的规则、判定边界和返回数据。\n"
             "- 不要使用“空旷路面”“停车位”“商场通道”“墙边堆放”等场景描述，除非这些内容在图片中清晰可见。\n"
             f"- 本次目标：{objective}\n"
+            f"{skill_context}"
             f"{evidence_context}"
         )
         payload = {
@@ -218,6 +374,294 @@ def _video_attachments(attachments: list[Attachment]) -> list[Attachment]:
         for attachment in attachments
         if (attachment.mime_type or "").split(";", 1)[0].strip().lower().startswith("video/")
     ]
+
+
+def _review_skill_candidates(
+    skill_registry: SkillRegistry,
+    selected_skills: list[str],
+    *,
+    objective: str,
+    prompt_text: str,
+) -> list[ReviewSkillCandidate]:
+    candidate_names = _expanded_candidate_skill_names(skill_registry, selected_skills)
+    candidates: list[ReviewSkillCandidate] = []
+    for name in candidate_names:
+        try:
+            skill = skill_registry.get(name)
+        except KeyError:
+            continue
+        context = _skill_context(skill)
+        score, reasons = _score_review_skill(skill, context, objective=objective, prompt_text=prompt_text)
+        candidates.append(ReviewSkillCandidate(skill=skill, context=context, score=score, score_reasons=tuple(reasons)))
+    return candidates
+
+
+def _expanded_candidate_skill_names(skill_registry: SkillRegistry, selected_skills: list[str]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw_name in selected_skills:
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        try:
+            skill = skill_registry.get(name)
+        except KeyError:
+            _append_unique(names, seen, name)
+            continue
+        if skill.composite:
+            for child in skill.child_skills:
+                _append_unique(names, seen, child)
+            continue
+        _append_unique(names, seen, name)
+    return names
+
+
+def _append_unique(target: list[str], seen: set[str], value: str) -> None:
+    normalized = value.strip()
+    if normalized and normalized not in seen:
+        target.append(normalized)
+        seen.add(normalized)
+
+
+def _skill_context(skill: SkillDefinition) -> str:
+    parts = [
+        f"skill_name: {skill.name}",
+        f"description: {skill.description}",
+    ]
+    routing = skill.routing if isinstance(skill.routing, dict) else {}
+    if routing:
+        parts.append("routing: " + json.dumps(routing, ensure_ascii=False, default=str))
+    skill_md = _read_skill_markdown(skill)
+    if skill_md:
+        parts.append("SKILL.md:\n" + skill_md)
+    context = "\n".join(parts).strip()
+    if len(context) > SKILL_CONTEXT_MAX_CHARS:
+        return context[:SKILL_CONTEXT_MAX_CHARS] + "\n...[truncated]"
+    return context
+
+
+def _read_skill_markdown(skill: SkillDefinition) -> str:
+    candidates: list[Path] = []
+    if skill.manifest_path is not None:
+        candidates.append(skill.manifest_path.parent / "SKILL.md")
+    if skill.plugin_root is not None:
+        candidates.append(skill.plugin_root / "SKILL.md")
+        candidates.extend(skill.plugin_root.glob("skills/*/SKILL.md"))
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            return path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+    return ""
+
+
+def _score_review_skill(
+    skill: SkillDefinition,
+    context: str,
+    *,
+    objective: str,
+    prompt_text: str,
+) -> tuple[float, list[str]]:
+    score = 0.0
+    reasons: list[str] = []
+    haystack = _normalize_match_text(" ".join([skill.name, skill.description, context]))
+    objective_terms = _objective_terms(objective, prompt_text)
+    for term in objective_terms:
+        normalized = _normalize_match_text(term)
+        if not normalized:
+            continue
+        if normalized == _normalize_match_text(skill.name):
+            score += 8.0
+            reasons.append(f"skill_name={term}")
+        elif normalized in haystack:
+            weight = 3.0 if len(normalized) >= 4 else 1.0
+            score += weight
+            reasons.append(f"keyword={term}")
+    return score, reasons
+
+
+def _objective_terms(objective: str, prompt_text: str) -> list[str]:
+    raw_terms = [objective]
+    raw_terms.extend(re.findall(r"\[([^\]]+)\]", prompt_text))
+    aliases = {
+        "clutterdetection": ["clutter", "杂物", "杂物检测", "堆积", "占道"],
+        "smokingdetection": ["smoking", "smoke", "抽烟", "吸烟"],
+        "fightdetection": ["fight", "fighting", "打架", "斗殴", "冲突"],
+        "falldetection": ["fall", "fallen", "跌倒", "摔倒"],
+    }
+    normalized_objective = _normalize_match_text(objective)
+    raw_terms.extend(aliases.get(normalized_objective, []))
+    terms: list[str] = []
+    seen: set[str] = set()
+    for term in raw_terms:
+        cleaned = str(term or "").strip()
+        normalized = _normalize_match_text(cleaned)
+        if cleaned and normalized not in seen:
+            terms.append(cleaned)
+            seen.add(normalized)
+    return terms
+
+
+def _normalize_match_text(value: str) -> str:
+    return re.sub(r"\s+", "", value).lower()
+
+
+def _llm_select_review_skill(
+    agent_config: AgentConfig,
+    runtime_options: RuntimeOptions,
+    *,
+    prompt_text: str,
+    review_source_id: str,
+    objective: str,
+    candidates: list[ReviewSkillCandidate],
+) -> ReviewSkillSelection | None:
+    client = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    if not client.configured:
+        return None
+    allowed = {candidate.skill.name: candidate for candidate in candidates}
+    system_prompt = (
+        "你是复判工作流的 skill 路由器。"
+        "只能从候选 skill_name 中选择一个最适合本次 CV 复判目标的 skill。"
+        "只返回 JSON 对象，不要 Markdown。"
+    )
+    candidate_payload = [
+        {
+            "skill_name": candidate.skill.name,
+            "description": candidate.skill.description,
+            "score": candidate.score,
+            "score_reasons": list(candidate.score_reasons),
+            "context_preview": candidate.context[:1200],
+        }
+        for candidate in candidates
+    ]
+    user_prompt = (
+        f"reviewSourceId: {review_source_id}\n"
+        f"objective: {objective}\n"
+        f"用户请求:\n{prompt_text[:4000]}\n\n"
+        "候选 skills:\n"
+        f"{json.dumps(candidate_payload, ensure_ascii=False, indent=2)}\n\n"
+        "返回格式：{\"skill_name\":\"候选之一\",\"confidence\":0.0到1.0,\"reason\":\"选择原因\"}"
+    )
+    try:
+        raw_reply = client.complete_sync(system_prompt, [{"role": "user", "content": user_prompt}])
+    except Exception:
+        return None
+    parsed = _parse_json_object(raw_reply)
+    if parsed is None:
+        return None
+    skill_name = str(parsed.get("skill_name") or "").strip()
+    candidate = allowed.get(skill_name)
+    if candidate is None:
+        return None
+    return ReviewSkillSelection(
+        skill_name=skill_name,
+        method="llm",
+        confidence=_bounded_float(parsed.get("confidence"), default=0.5, minimum=0.0, maximum=1.0),
+        reason=str(parsed.get("reason") or "大模型在候选 skill 中选择。")[:1000],
+        candidates=tuple(candidates),
+        selected_context=candidate.context,
+    )
+
+
+def _review_skill_spec(
+    selection: ReviewSkillSelection,
+    *,
+    prompt_text: str,
+    review_source_id: str,
+    objective: str,
+    attachments: list[Attachment],
+) -> dict[str, Any]:
+    attachment_payloads = [attachment.model_dump(mode="python") for attachment in attachments]
+    return {
+        "skill_name": selection.skill_name,
+        "objective": objective,
+        "review_source_id": review_source_id,
+        "event_id": review_source_id,
+        "prompt": prompt_text,
+        "text_rule_candidates": [objective],
+        "has_visual_evidence": bool(attachments),
+        "attachments": attachment_payloads,
+        "review_context": {
+            "selection_method": selection.method,
+            "selection_confidence": selection.confidence,
+            "selection_reason": selection.reason,
+        },
+    }
+
+
+def _public_spec(spec: dict[str, Any]) -> dict[str, Any]:
+    return _redact_base64_fields(spec)
+
+
+def _redact_base64_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"data_base64", "dataBase64", "base64", "content", "fileContent", "file_content"} and isinstance(item, str):
+                redacted[key] = f"<base64 omitted chars={len(item)}>" if item else item
+            else:
+                redacted[key] = _redact_base64_fields(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_base64_fields(item) for item in value]
+    return value
+
+
+def _skill_selection_event_payload(selection: ReviewSkillSelection | None) -> dict[str, Any]:
+    if selection is None:
+        return {"selected_skill": "", "candidate_skills": [], "method": "none", "confidence": 0.0, "reason": ""}
+    return {
+        "selected_skill": selection.skill_name,
+        "method": selection.method,
+        "confidence": selection.confidence,
+        "reason": selection.reason,
+        "candidate_skills": [
+            {
+                "skill_name": candidate.skill.name,
+                "description": candidate.skill.description,
+                "score": candidate.score,
+                "score_reasons": list(candidate.score_reasons),
+            }
+            for candidate in selection.candidates
+        ],
+    }
+
+
+def _review_skill_prompt_context(
+    selection: ReviewSkillSelection | None,
+    skill_result: SkillRunResult | None,
+    skill_error: str,
+) -> str:
+    if selection is None:
+        return "\n复判 skill：未选择到可用 skill，请仅依据图片/视频证据和本次目标保守判断。\n"
+    parts = [
+        "\n已选择并调用的复判 skill：",
+        f"- skill_name: {selection.skill_name}",
+        f"- selection_method: {selection.method}",
+        f"- selection_reason: {selection.reason}",
+        "\n该 skill 的规则/说明：",
+        selection.selected_context,
+    ]
+    if skill_result is not None:
+        parts.extend(
+            [
+                "\n该 skill 的调用结果：",
+                json.dumps(
+                    {
+                        "skill_name": skill_result.skill_name,
+                        "data": skill_result.data,
+                        "artifacts": [artifact.model_dump(mode="json") for artifact in skill_result.outputs],
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            ]
+        )
+    elif skill_error:
+        parts.extend(["\n该 skill 调用失败：", skill_error[:1000]])
+    return "\n".join(parts) + "\n"
 
 
 def _video_frame_attachments(
@@ -591,6 +1035,36 @@ def _parse_json_array(value: str) -> list[Any] | None:
         if isinstance(parsed, dict):
             return [parsed]
     return None
+
+
+def _parse_json_object(value: str) -> dict[str, Any] | None:
+    text = value.strip()
+    if not text:
+        return None
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
+    candidates = [text]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _bounded_float(value: object, *, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, parsed))
 
 
 def _extract_first_json_array(text: str) -> str | None:
