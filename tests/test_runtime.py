@@ -785,7 +785,10 @@ def test_agent_runtime_downloads_remote_image_attachment_before_llm(
     )
 
     assert result.reply == "已复判图片"
-    downloaded = tmp_path / "threads" / "remote-vision" / "uploads" / "image.jpg"
+    uploads = tmp_path / "threads" / "remote-vision" / "uploads"
+    downloaded_files = list(uploads.glob("image-*.jpg"))
+    assert len(downloaded_files) == 1
+    downloaded = downloaded_files[0]
     assert downloaded.read_bytes() == b"jpegdata"
     user_content = seen_messages[0][1]["content"]
     assert isinstance(user_content, list)
@@ -794,7 +797,7 @@ def test_agent_runtime_downloads_remote_image_attachment_before_llm(
     history_text = (tmp_path / "threads" / "remote-vision" / "memory" / "conversation.jsonl").read_text(
         encoding="utf-8"
     )
-    assert "/mnt/user-data/uploads/image.jpg" in history_text
+    assert f"/mnt/user-data/uploads/{downloaded.name}" in history_text
 
 
 def test_parking_abnormal_review_workflow_returns_final_json_with_image(

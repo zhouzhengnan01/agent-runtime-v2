@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import mimetypes
@@ -1376,32 +1377,56 @@ class AgentRuntime:
                 if not self._remote_attachment_mime_allowed(mime_type):
                     raise ValueError(f"remote attachment MIME type is not allowed: {mime_type}")
                 filename = self._remote_attachment_filename(url, attachment.name, mime_type)
-                target = self._unique_upload_target(paths, filename)
-                target.parent.mkdir(parents=True, exist_ok=True)
+                target: Path | None = None
+                digest = hashlib.sha1()
                 bytes_written = 0
+                chunks: list[bytes] = []
                 try:
+                    for chunk in response.iter_bytes():
+                        if not chunk:
+                            continue
+                        bytes_written += len(chunk)
+                        if bytes_written > REMOTE_ATTACHMENT_MAX_BYTES:
+                            raise ValueError(
+                                f"remote attachment is too large: {bytes_written} bytes > {REMOTE_ATTACHMENT_MAX_BYTES} bytes"
+                            )
+                        digest.update(chunk)
+                        chunks.append(chunk)
+                    fingerprint = digest.hexdigest()[:12] if bytes_written else uuid4().hex[:12]
+                    filename = self._fingerprinted_remote_attachment_filename(filename, fingerprint)
+                    target = self._unique_upload_target(paths, filename)
+                    target.parent.mkdir(parents=True, exist_ok=True)
                     with target.open("wb") as handle:
-                        for chunk in response.iter_bytes():
-                            if not chunk:
-                                continue
-                            bytes_written += len(chunk)
-                            if bytes_written > REMOTE_ATTACHMENT_MAX_BYTES:
-                                raise ValueError(
-                                    f"remote attachment is too large: {bytes_written} bytes > {REMOTE_ATTACHMENT_MAX_BYTES} bytes"
-                                )
+                        for chunk in chunks:
                             handle.write(chunk)
                 except Exception:
-                    target.unlink(missing_ok=True)
+                    if target is not None:
+                        target.unlink(missing_ok=True)
                     raise
         virtual_path = self._virtual_upload_path(paths, target)
         metadata = dict(attachment.metadata)
         metadata.update(
             {
                 "original_uri": metadata.get("uri") or url,
+                "original_name": attachment.name,
                 "uri": virtual_path,
                 "downloaded": True,
                 "size": target.stat().st_size,
+                "sha1": digest.hexdigest() if bytes_written else "",
             }
+        )
+        logger.info(
+            "remote attachment downloaded thread_id=%s original_name=%s name=%s url=%s path=%s size=%s sha1=%s source_id=%s data_id=%s timestamp=%s",
+            paths.thread_id,
+            attachment.name,
+            target.name,
+            url,
+            virtual_path,
+            target.stat().st_size,
+            digest.hexdigest() if bytes_written else "",
+            metadata.get("sourceId") or metadata.get("source_id"),
+            metadata.get("dataId") or metadata.get("data_id"),
+            metadata.get("timestamp"),
         )
         return attachment.model_copy(
             update={
@@ -1447,6 +1472,17 @@ class AgentRuntime:
         return name[:180]
 
     @staticmethod
+    def _fingerprinted_remote_attachment_filename(filename: str, fingerprint: str) -> str:
+        path = Path(filename)
+        stem = path.stem or "attachment"
+        suffix = path.suffix
+        clean_fingerprint = re.sub(r"[^A-Za-z0-9]+", "", fingerprint)[:12] or uuid4().hex[:12]
+        if stem.endswith(f"-{clean_fingerprint}"):
+            return filename
+        max_stem_len = max(1, 180 - len(suffix) - len(clean_fingerprint) - 1)
+        return f"{stem[:max_stem_len]}-{clean_fingerprint}{suffix}"
+
+    @staticmethod
     def _unique_upload_target(paths: ThreadPaths, filename: str) -> Path:
         uploads = paths.uploads.resolve()
         target = (uploads / filename).resolve()
@@ -1483,11 +1519,29 @@ class AgentRuntime:
             return messages
         lines = []
         for index, attachment in enumerate(attachments, start=1):
-            size = attachment.metadata.get("size") if isinstance(attachment.metadata, dict) else None
+            metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+            size = metadata.get("size")
             size_text = f", size={size}" if isinstance(size, int | float | str) and str(size) else ""
             path_text = f", path={attachment.path}" if attachment.path else ""
             mime_text = f", mime_type={attachment.mime_type}" if attachment.mime_type else ""
-            lines.append(f"{index}. name={attachment.name}{path_text}{mime_text}{size_text}")
+            original_uri = metadata.get("original_uri")
+            source_id = metadata.get("sourceId") or metadata.get("source_id")
+            data_id = metadata.get("dataId") or metadata.get("data_id")
+            timestamp = metadata.get("timestamp")
+            sha1 = metadata.get("sha1")
+            metadata_parts = []
+            if isinstance(original_uri, str) and original_uri:
+                metadata_parts.append(f"original_uri={original_uri}")
+            if isinstance(source_id, str) and source_id:
+                metadata_parts.append(f"sourceId={source_id}")
+            if isinstance(data_id, str) and data_id:
+                metadata_parts.append(f"dataId={data_id}")
+            if isinstance(timestamp, int | float | str) and str(timestamp):
+                metadata_parts.append(f"timestamp={timestamp}")
+            if isinstance(sha1, str) and sha1:
+                metadata_parts.append(f"sha1={sha1[:12]}")
+            metadata_text = ", " + ", ".join(metadata_parts) if metadata_parts else ""
+            lines.append(f"{index}. name={attachment.name}{path_text}{mime_text}{size_text}{metadata_text}")
         if not lines:
             return messages
         context = "\n\nUploaded files available to tools:\n" + "\n".join(lines)
