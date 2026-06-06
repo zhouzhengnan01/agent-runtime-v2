@@ -1526,6 +1526,7 @@ def test_acp_websocket_platform_agent_command_emits_platform_stream_events(
 
         platform_types: list[str] = []
         platform_chunks: list[str] = []
+        platform_end_params: dict[str, Any] | None = None
         agent_message_types: list[str] = []
         agent_message_response_ids: set[str] = set()
         accepted: dict[str, Any] | None = None
@@ -1545,6 +1546,8 @@ def test_acp_websocket_platform_agent_command_emits_platform_stream_events(
                         session_event_ended = True
                 event_params = params.get("params")
                 if isinstance(event_params, dict):
+                    if event_type == "session.response_end":
+                        platform_end_params = event_params
                     chunk = event_params.get("chunk")
                     if isinstance(chunk, dict) and isinstance(chunk.get("content"), str):
                         platform_chunks.append(chunk["content"])
@@ -1572,6 +1575,11 @@ def test_acp_websocket_platform_agent_command_emits_platform_stream_events(
     assert agent_message_types[-1] == "session.response_end"
     assert len(agent_message_response_ids) == 1
     assert platform_chunks == ["ok"]
+    assert platform_end_params is not None
+    assert platform_end_params["stopReason"] == "end_turn"
+    assert platform_end_params["status"] == "completed"
+    assert platform_end_params["reply"] == "ok"
+    assert platform_end_params["content"] == [{"type": "text", "text": "ok"}]
 
 
 def test_acp_websocket_platform_agent_command_emits_error_chunk(
@@ -1702,6 +1710,31 @@ def test_acp_websocket_trace_logs_full_conversation_payloads(
     assert '"api_key":"********"' in trace_logs
     assert "incoming-secret-key" not in trace_logs
     assert "abc@123" not in trace_logs
+
+
+def test_acp_websocket_logs_connection_lifecycle(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+            websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            websocket.receive_json()
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "acp ws connected connection_id=acp-ws-" in logs
+    assert "path=/api/acp/ws" in logs
+    assert "requested_subprotocols=acp.v1" in logs
+    assert "accepted_subprotocol=acp.v1" in logs
+    assert "acp ws received connection_id=acp-ws-" in logs
+    assert "method=initialize" in logs
+    assert "acp ws cleanup complete connection_id=acp-ws-" in logs
+    assert "duration_ms=" in logs
 
 
 def test_acp_websocket_accepts_bridge_payload_containers_for_app_template(

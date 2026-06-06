@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -12,6 +13,7 @@ from typing import Any
 
 from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.config import AgentConfig
+from app.core.diagnostics import diagnostic_json
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import OpenAICompatibleClient
 from app.core.skills import SkillDefinition, SkillRegistry, SkillRunner
@@ -28,6 +30,10 @@ VIDEO_FRAME_MAX_WIDTH = 1280
 VIDEO_FRAME_MIN_DIFFERENCE = 8.0
 SKILL_CONTEXT_MAX_CHARS = 6000
 SKILL_LLM_SELECTION_SCORE_GAP = 3.0
+REVIEW_LLM_REPLY_LOG_MAX_CHARS = 4000
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass
@@ -107,6 +113,7 @@ class ParkingAbnormalReviewWorkflow:
         video_attachments = _video_attachments(attachments)
         video_frame_attachments, video_frame_reports = _video_frame_attachments(video_attachments, paths)
         review_attachments = [*image_attachments, *video_frame_attachments]
+        image_sources = _attachment_source_payloads(review_attachments)
         skill_selection = self._select_review_skill(
             agent_config,
             runtime_options,
@@ -135,8 +142,21 @@ class ParkingAbnormalReviewWorkflow:
                 "image_attachment_count": len(image_attachments),
                 "video_attachment_count": len(video_attachments),
                 "video_frame_attachment_count": len(video_frame_attachments),
+                "image_sources": image_sources,
                 "video_frame_reports": video_frame_reports,
             },
+        )
+        logger.info(
+            "\n===== 复判图片来源 | parking review image sources =====\n"
+            "reviewSourceId: %s\n"
+            "识别目标: %s\n"
+            "图片数量: %s\n"
+            "图片链接/路径:\n%s\n"
+            "===== 复判图片来源结束 =====",
+            review_source_id,
+            objective,
+            len(image_sources),
+            _pretty_payload_json(image_sources),
         )
 
         if not review_attachments:
@@ -163,7 +183,68 @@ class ParkingAbnormalReviewWorkflow:
                 skill_result,
                 skill_error,
             )
+            logger.info(
+                "parking review llm raw reply review_source_id=%s objective=%s attachment_count=%s "
+                "skill_name=%s raw_chars=%s raw_reply=%s",
+                review_source_id,
+                objective,
+                len(review_attachments),
+                skill_selection.skill_name if skill_selection is not None else "",
+                len(raw_reply),
+                diagnostic_json({"reply": raw_reply}, max_chars=REVIEW_LLM_REPLY_LOG_MAX_CHARS),
+            )
+            recorder.emit(
+                "review.llm.raw_reply",
+                {
+                    "review_source_id": review_source_id,
+                    "objective": objective,
+                    "attachment_count": len(review_attachments),
+                    "skill_name": skill_selection.skill_name if skill_selection is not None else "",
+                    "raw_chars": len(raw_reply),
+                    "raw_reply": raw_reply,
+                },
+            )
             reply = _normalize_json_reply(raw_reply, review_source_id=review_source_id, objective=objective)
+            logger.info(
+                "\n===== 复判归一化结果 | parking review normalized result =====\n"
+                "reviewSourceId: %s\n"
+                "识别目标: %s\n"
+                "结果字符数: %s\n"
+                "复判结果:\n%s\n"
+                "===== 复判归一化结果结束 =====",
+                review_source_id,
+                objective,
+                len(reply),
+                _pretty_review_json(reply),
+            )
+            recorder.emit(
+                "review.normalized_result",
+                {
+                    "review_source_id": review_source_id,
+                    "objective": objective,
+                    "result_chars": len(reply),
+                    "result": reply,
+                },
+            )
+
+        logger.info(
+            "\n===== 复判最终结果 | parking review final result =====\n"
+            "reviewSourceId: %s\n"
+            "识别目标: %s\n"
+            "选中技能: %s\n"
+            "图片数量: %s\n"
+            "图片链接/路径:\n%s\n"
+            "结果字符数: %s\n"
+            "复判结果:\n%s\n"
+            "===== 复判最终结果结束 =====",
+            review_source_id,
+            objective,
+            skill_selection.skill_name if skill_selection is not None else "",
+            len(image_sources),
+            _pretty_payload_json(image_sources),
+            len(reply),
+            _pretty_review_json(reply),
+        )
 
         artifact = self.artifact_store.write_text_artifact(paths, OUTPUT_NAME, reply)
         recorder.emit(
@@ -356,8 +437,76 @@ def _review_source_id(text: str) -> str:
 def _objective(text: str) -> str:
     match = re.search(r"识别目标为\[([^\]]+)\]", text)
     if match:
-        return match.group(1).strip()
+        return _canonical_objective(match.group(1).strip())
+    payload = _parse_json_object(text)
+    target = _target_from_payload(payload)
+    if target:
+        return _canonical_objective(target)
+    inferred = _objective_from_text(text)
+    if inferred:
+        return inferred
     return "ClutterDetection"
+
+
+def _canonical_objective(value: str) -> str:
+    normalized = _normalize_match_text(value)
+    aliases = {
+        "fall": "FallDetection",
+        "fallen": "FallDetection",
+        "falldetection": "FallDetection",
+        "跌倒": "FallDetection",
+        "摔倒": "FallDetection",
+        "倒地": "FallDetection",
+        "人员跌倒": "FallDetection",
+        "人员倒地": "FallDetection",
+        "人员跌倒/倒地检测": "FallDetection",
+        "人员跌倒倒地检测": "FallDetection",
+        "smoking": "SmokingDetection",
+        "smoke": "SmokingDetection",
+        "smokingdetection": "SmokingDetection",
+        "抽烟": "SmokingDetection",
+        "吸烟": "SmokingDetection",
+        "抽烟检测": "SmokingDetection",
+        "吸烟检测": "SmokingDetection",
+    }
+    return aliases.get(normalized, value)
+
+
+def _objective_from_text(text: str) -> str:
+    normalized = _normalize_match_text(text)
+    fall_terms = ("人员跌倒/倒地检测", "人员跌倒", "人员倒地", "跌倒", "摔倒", "倒地", "falldetection", "fall")
+    if any(_normalize_match_text(term) in normalized for term in fall_terms):
+        return "FallDetection"
+    smoking_terms = ("smokingdetection", "抽烟检测", "吸烟检测", "抽烟", "吸烟", "smoking", "smoke")
+    if any(_normalize_match_text(term) in normalized for term in smoking_terms):
+        return "SmokingDetection"
+    return ""
+
+
+def _target_from_payload(payload: dict[str, Any] | None) -> str:
+    if not payload:
+        return ""
+    for path in (
+        ("taskTarget", "value"),
+        ("taskTarget", "text"),
+        ("schemaResults", "taskTarget", "value"),
+        ("schemaResults", "taskTarget", "text"),
+        ("value",),
+        ("text",),
+    ):
+        value = _nested_string(payload, path)
+        if value:
+            return value
+    return ""
+
+
+def _nested_string(payload: dict[str, Any], path: tuple[str, ...]) -> str:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return ""
+        current = current.get(key)
+    return current.strip() if isinstance(current, str) and current.strip() else ""
 
 
 def _image_attachments(attachments: list[Attachment]) -> list[Attachment]:
@@ -366,6 +515,43 @@ def _image_attachments(attachments: list[Attachment]) -> list[Attachment]:
         for attachment in attachments
         if (attachment.mime_type or "").split(";", 1)[0].strip().lower().startswith("image/")
     ]
+
+
+def _attachment_source_payloads(attachments: list[Attachment]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for index, attachment in enumerate(attachments, start=1):
+        metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+        source_url = _first_non_empty(
+            metadata.get("original_uri"),
+            metadata.get("url"),
+            metadata.get("uri"),
+            attachment.path,
+        )
+        payload: dict[str, Any] = {
+            "index": index,
+            "name": attachment.name,
+            "mime_type": attachment.mime_type,
+            "path": attachment.path,
+            "url": source_url,
+        }
+        for key in (
+            "dataId",
+            "data_id",
+            "sourceId",
+            "source_id",
+            "timestamp",
+            "sha1",
+            "size",
+            "source",
+            "source_video",
+            "frame_index",
+            "timestamp_ms",
+        ):
+            value = metadata.get(key)
+            if value not in (None, ""):
+                payload[key] = value
+        payloads.append(payload)
+    return payloads
 
 
 def _video_attachments(attachments: list[Attachment]) -> list[Attachment]:
@@ -485,11 +671,14 @@ def _score_review_skill(
 def _objective_terms(objective: str, prompt_text: str) -> list[str]:
     raw_terms = [objective]
     raw_terms.extend(re.findall(r"\[([^\]]+)\]", prompt_text))
+    payload = _parse_json_object(prompt_text)
+    if payload is not None:
+        raw_terms.extend(_target_terms_from_payload(payload))
     aliases = {
         "clutterdetection": ["clutter", "杂物", "杂物检测", "堆积", "占道"],
         "smokingdetection": ["smoking", "smoke", "抽烟", "吸烟"],
         "fightdetection": ["fight", "fighting", "打架", "斗殴", "冲突"],
-        "falldetection": ["fall", "fallen", "跌倒", "摔倒"],
+        "falldetection": ["fall", "fallen", "跌倒", "摔倒", "倒地", "人员跌倒", "人员跌倒/倒地检测"],
     }
     normalized_objective = _normalize_match_text(objective)
     raw_terms.extend(aliases.get(normalized_objective, []))
@@ -501,6 +690,31 @@ def _objective_terms(objective: str, prompt_text: str) -> list[str]:
         if cleaned and normalized not in seen:
             terms.append(cleaned)
             seen.add(normalized)
+    return terms
+
+
+def _target_terms_from_payload(payload: dict[str, Any]) -> list[str]:
+    terms: list[str] = []
+    for path in (
+        ("taskTarget", "value"),
+        ("taskTarget", "text"),
+        ("schemaResults", "taskTarget", "value"),
+        ("schemaResults", "taskTarget", "text"),
+        ("value",),
+        ("text",),
+        ("modelId",),
+        ("modelName",),
+        ("taskName",),
+        ("taskTarget",),
+    ):
+        if path == ("taskTarget",):
+            target = payload.get("taskTarget")
+            if isinstance(target, dict):
+                terms.extend(str(value).strip() for value in target.values() if isinstance(value, str) and value.strip())
+            continue
+        value = _nested_string(payload, path)
+        if value:
+            terms.append(value)
     return terms
 
 
@@ -1035,6 +1249,32 @@ def _parse_json_array(value: str) -> list[Any] | None:
         if isinstance(parsed, dict):
             return [parsed]
     return None
+
+
+def _pretty_review_json(value: str) -> str:
+    parsed = _parse_json_array(value)
+    if parsed is None:
+        text = value.strip()
+        if len(text) <= REVIEW_LLM_REPLY_LOG_MAX_CHARS:
+            return text
+        return f"{text[:REVIEW_LLM_REPLY_LOG_MAX_CHARS]}...<truncated chars={len(text) - REVIEW_LLM_REPLY_LOG_MAX_CHARS}>"
+    return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+
+def _pretty_payload_json(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False, indent=2)
+    if len(text) <= REVIEW_LLM_REPLY_LOG_MAX_CHARS:
+        return text
+    return f"{text[:REVIEW_LLM_REPLY_LOG_MAX_CHARS]}...<truncated chars={len(text) - REVIEW_LLM_REPLY_LOG_MAX_CHARS}>"
+
+
+def _first_non_empty(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if value is not None and not isinstance(value, str):
+            return str(value)
+    return ""
 
 
 def _parse_json_object(value: str) -> dict[str, Any] | None:

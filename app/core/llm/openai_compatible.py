@@ -21,6 +21,7 @@ from app.schemas import Message, RuntimeOptions
 logger = logging.getLogger("uvicorn.error")
 LLM_TRACE_PAYLOADS = env_flag("LLM_TRACE_PAYLOADS", "1")
 LLM_TRACE_MAX_CHARS = env_int("LLM_TRACE_MAX_CHARS", 100)
+LLM_REPLY_TRACE_MAX_CHARS = env_int("LLM_REPLY_TRACE_MAX_CHARS", 4000)
 
 
 @dataclass(frozen=True)
@@ -128,9 +129,12 @@ class OpenAICompatibleClient:
         self._log_response_data("complete", data)
         choices = data.get("choices") or []
         if not choices:
+            self._log_reply_content("complete", "")
             return ""
         message = choices[0].get("message") or {}
-        return str(message.get("content") or "")
+        content = str(message.get("content") or "")
+        self._log_reply_content("complete", content)
+        return content
 
     async def complete_with_tools(
         self,
@@ -166,7 +170,9 @@ class OpenAICompatibleClient:
             self._raise_for_status(response)
             data = response.json()
         self._log_response_data("complete_with_tools", data)
-        return self._parse_chat_response(data)
+        parsed = self._parse_chat_response(data)
+        self._log_reply_content("complete_with_tools", parsed.content)
+        return parsed
 
     def complete_sync(self, system_prompt: str, messages: Sequence[ChatMessageInput]) -> str:
         if not self.configured:
@@ -184,9 +190,12 @@ class OpenAICompatibleClient:
         self._log_response_data("complete_sync", data)
         choices = data.get("choices") or []
         if not choices:
+            self._log_reply_content("complete_sync", "")
             return ""
         message = choices[0].get("message") or {}
-        return str(message.get("content") or "")
+        content = str(message.get("content") or "")
+        self._log_reply_content("complete_sync", content)
+        return content
 
     async def stream_complete(self, system_prompt: str, messages: Sequence[ChatMessageInput]) -> AsyncIterator[str]:
         if not self.configured:
@@ -308,6 +317,22 @@ class OpenAICompatibleClient:
             _pretty_json(diagnostic_json(response.usage, max_chars=LLM_TRACE_MAX_CHARS)),
             LLM_TRACE_MAX_CHARS,
             _pretty_json(diagnostic_json(data, max_chars=LLM_TRACE_MAX_CHARS)) if LLM_TRACE_PAYLOADS else "<disabled>",
+        )
+
+    def _log_reply_content(self, operation: str, content: str) -> None:
+        logger.info(
+            "\n===== 模型回复正文 | llm reply content operation=%s =====\n"
+            "操作: %s\n"
+            "模型: %s\n"
+            "回复字符数: %s\n"
+            "回复内容(最多 %s 字符):\n%s\n"
+            "===== 模型回复正文结束 =====",
+            operation,
+            operation,
+            self.model,
+            len(content),
+            LLM_REPLY_TRACE_MAX_CHARS,
+            _truncate_log_text(content, LLM_REPLY_TRACE_MAX_CHARS),
         )
 
     def _chat_payload(
@@ -525,6 +550,14 @@ def _pretty_json(value: str) -> str:
     except json.JSONDecodeError:
         return value
     return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+
+def _truncate_log_text(value: str, max_chars: int) -> str:
+    if max_chars < 1:
+        return ""
+    if len(value) <= max_chars:
+        return value
+    return f"{value[:max_chars]}...<truncated chars={len(value) - max_chars}>"
 
 
 def _payload_image_urls(payload: dict[str, Any]) -> list[str]:

@@ -1359,7 +1359,7 @@ class AgentRuntime:
         parsed = urlparse(raw_path)
         if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
             return False
-        mime_type = (attachment.mime_type or "").split(";", 1)[0].strip().lower()
+        mime_type = _attachment_mime_type_for_remote_download(attachment)
         return mime_type.startswith(("image/", "video/"))
 
     def _download_remote_attachment(self, attachment: Attachment, paths: ThreadPaths) -> Attachment:
@@ -1373,7 +1373,7 @@ class AgentRuntime:
                         f"remote attachment is too large: {content_length} bytes > {REMOTE_ATTACHMENT_MAX_BYTES} bytes"
                     )
                 header_mime = self._header_mime_type(response.headers.get("content-type"))
-                mime_type = header_mime or attachment.mime_type or guess_mime_type(Path(attachment.name))
+                mime_type = header_mime or _attachment_mime_type_for_remote_download(attachment)
                 if not self._remote_attachment_mime_allowed(mime_type):
                     raise ValueError(f"remote attachment MIME type is not allowed: {mime_type}")
                 filename = self._remote_attachment_filename(url, attachment.name, mime_type)
@@ -1812,6 +1812,22 @@ class AgentRuntime:
     def _event(event: ChatEvent) -> str:
         payload = json.dumps(event.model_dump(), ensure_ascii=False)
         return f"event: {event.type}\ndata: {payload}\n\n"
+
+
+def _attachment_mime_type_for_remote_download(attachment: Attachment) -> str:
+    explicit = (attachment.mime_type or "").split(";", 1)[0].strip().lower()
+    if explicit:
+        return explicit
+    guessed_from_name = guess_mime_type(Path(attachment.name or "attachment"))
+    if guessed_from_name != "application/octet-stream":
+        return guessed_from_name
+    raw_path = str(attachment.path or "").strip()
+    parsed_name = Path(unquote(urlparse(raw_path).path)).name
+    if parsed_name:
+        guessed_from_url = guess_mime_type(Path(parsed_name))
+        if guessed_from_url != "application/octet-stream":
+            return guessed_from_url
+    return guessed_from_name
 
 
 def _input_type_label(value: object) -> str:

@@ -30,6 +30,7 @@ AcpUpdateSender = Callable[[str, dict[str, Any]], Awaitable[None]]
 logger = logging.getLogger("uvicorn.error")
 ACP_ADAPTER_TRACE_PAYLOADS = env_flag("ACP_ADAPTER_TRACE_PAYLOADS", "1")
 ACP_ADAPTER_TRACE_MAX_CHARS = env_int("ACP_ADAPTER_TRACE_MAX_CHARS", 100)
+ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS = env_int("ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS", 1200)
 
 _RUNTIME_OPTION_ALIASES = {
     "threadId": "thread_id",
@@ -417,6 +418,33 @@ class AcpRuntimeAdapter:
             "content": result.content,
             "result": result.model_dump(),
         }
+        logger.info(
+            "\n===== ACP 调度结果 | acp dispatch result =====\n"
+            "会话ID: %s\n"
+            "线程ID: %s\n"
+            "智能体: %s\n"
+            "停止原因: %s\n"
+            "运行状态: %s\n"
+            "工作流: %s\n"
+            "运行ID: %s\n"
+            "回复字符数: %s\n"
+            "内容项数: %s\n"
+            "回复内容(最多 %s 字符):\n%s\n"
+            "元数据:\n%s\n"
+            "===== ACP 调度结果结束 =====",
+            session_id,
+            result.thread_id,
+            result.agent,
+            stop_reason,
+            result.status,
+            result.metadata.get("workflow"),
+            result.metadata.get("run_id"),
+            len(result.reply),
+            len(result.content),
+            ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS,
+            _preview_log_text(result.reply, max_chars=ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS),
+            diagnostic_json(result.metadata, max_chars=ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS),
+        )
         if result.metadata.get("requires_input") is True:
             payload["_meta"] = {
                 "jetlinks": {
@@ -1533,6 +1561,12 @@ def _final_structured_json_message_update(result: AgentRunResult) -> dict[str, A
         "sessionUpdate": "agent_message_chunk",
         "content": {"type": "text", "text": result.reply},
     }
+
+
+def _preview_log_text(value: str, *, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return f"{value[:max_chars]}...<truncated chars={len(value) - max_chars}>"
 
 
 def _agent_command_content(params: dict[str, Any]) -> str | None:

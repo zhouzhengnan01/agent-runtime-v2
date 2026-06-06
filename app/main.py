@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,6 +16,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import acp, agents, apps, artifacts, cron, health, mcp, sandbox, skills, uploads, workflows
 from app.core.runtime import RuntimeBootstrapConfig, default_container
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def _configure_logging() -> None:
@@ -31,21 +35,35 @@ def _configure_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    del app
+    logger.info(
+        "runtime startup begin title=%s version=%s pid=%s python=%s executable=%s cwd=%s",
+        app.title,
+        app.version,
+        os.getpid(),
+        sys.version.split()[0],
+        sys.executable,
+        Path.cwd(),
+    )
     await cron.scheduler.start()
+    logger.info("cron scheduler started")
     try:
         yield
     finally:
+        logger.info("runtime shutdown begin")
         await cron.scheduler.stop()
+        logger.info("cron scheduler stopped")
 
 
 def _bootstrap_from_env() -> dict[str, Any] | None:
     path = os.getenv("JETLINKS_RUNTIME_BOOTSTRAP")
     if not path:
+        logger.info("runtime bootstrap skipped reason=env_not_set")
         return None
     bootstrap_path = Path(path)
     if not bootstrap_path.is_file():
+        logger.warning("runtime bootstrap skipped reason=file_missing path=%s", bootstrap_path)
         return None
+    logger.info("runtime bootstrap loading path=%s", bootstrap_path)
     data = json.loads(bootstrap_path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else None
 
@@ -54,6 +72,7 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
     runtime_bootstrap = bootstrap if bootstrap is not None else _bootstrap_from_env()
     if runtime_bootstrap is not None:
         default_container.configure(runtime_bootstrap)
+        logger.info("runtime bootstrap applied source=%s", "argument" if bootstrap is not None else "environment")
     app = FastAPI(title="JetLinks Agent Runtime v2", version="0.1.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
@@ -73,6 +92,7 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
     app.include_router(uploads.router)
     app.include_router(workflows.router)
     app.include_router(mcp.router)
+    logger.info("runtime routers registered count=%s", len(app.routes))
 
     static_dir = Path(__file__).resolve().parents[1] / "static"
     static_workbench_path = static_dir / "workbench.html"
@@ -110,6 +130,8 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
 
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
+        logger.info("static files mounted path=%s", static_dir)
+    logger.info("runtime app created routes=%s", len(app.routes))
     return app
 
 

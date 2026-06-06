@@ -800,6 +800,73 @@ def test_agent_runtime_downloads_remote_image_attachment_before_llm(
     assert f"/mnt/user-data/uploads/{downloaded.name}" in history_text
 
 
+def test_agent_runtime_downloads_remote_video_attachment_without_explicit_mime_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://example.test/videos/review.mp4?token=abc"
+        return httpx.Response(
+            200,
+            headers={"content-type": "video/mp4", "content-length": "7"},
+            content=b"mp4data",
+        )
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(content="已收到视频", finish_reason="stop")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="remote-video-agent",
+        display_name="Remote Video Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="请复判视频")],
+                attachments=[
+                    Attachment(
+                        name="review.mp4",
+                        path="https://example.test/videos/review.mp4?token=abc",
+                        metadata={"acp_type": "resource_link"},
+                    )
+                ],
+                runtime_options=RuntimeOptions(thread_id="remote-video"),
+            ),
+        )
+    )
+
+    assert result.reply == "已收到视频"
+    uploads = tmp_path / "threads" / "remote-video" / "uploads"
+    downloaded_files = list(uploads.glob("review-*.mp4"))
+    assert len(downloaded_files) == 1
+    assert downloaded_files[0].read_bytes() == b"mp4data"
+    history_text = (tmp_path / "threads" / "remote-video" / "memory" / "conversation.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert f"/mnt/user-data/uploads/{downloaded_files[0].name}" in history_text
+    assert "mime_type=video/mp4" in history_text
+
+
 def test_parking_abnormal_review_workflow_returns_final_json_with_image(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

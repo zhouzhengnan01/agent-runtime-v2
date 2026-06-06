@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import os
+import time
 from typing import Any
 
 import httpx
@@ -25,8 +27,10 @@ ACP_PROMPT_WAITING_TEXT = "已收到请求，正在处理，请等待..."
 ACP_PROMPT_STILL_WAITING_TEXT = "仍在处理，请等待..."
 ACP_WS_TRACE_PAYLOADS = env_flag("ACP_WS_TRACE_PAYLOADS", "1")
 ACP_WS_TRACE_MAX_CHARS = env_int("ACP_WS_TRACE_MAX_CHARS", 100)
+ACP_WS_RESULT_PREVIEW_MAX_CHARS = env_int("ACP_WS_RESULT_PREVIEW_MAX_CHARS", 1200)
 
 logger = logging.getLogger("uvicorn.error")
+_ACP_WS_CONNECTION_IDS = itertools.count(1)
 
 
 async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher | None = None) -> None:
@@ -38,7 +42,16 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
 
     await websocket.accept(subprotocol="acp.v1")
     client_label = _client_label(websocket)
-    logger.info("acp ws connected client=%s", client_label)
+    connection_id = f"acp-ws-{next(_ACP_WS_CONNECTION_IDS)}"
+    connected_at = time.monotonic()
+    logger.info(
+        "acp ws connected connection_id=%s client=%s path=%s requested_subprotocols=%s accepted_subprotocol=%s",
+        connection_id,
+        client_label,
+        websocket.url.path,
+        websocket.headers.get("sec-websocket-protocol"),
+        "acp.v1",
+    )
     sessions: dict[str, AcpWebSocketSession] = {}
     prompt_tasks: dict[str, asyncio.Task[None]] = {}
     keepalive_sessions: set[str] = set()
@@ -49,22 +62,23 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
 
     async def send_update(session_id: str, update: dict[str, Any]) -> None:
         async with send_lock:
-            await _send_session_update(websocket, session_id, update)
+            await _send_session_update(websocket, session_id, update, connection_id=connection_id)
             if session_id in platform_sessions:
                 await _send_platform_update(
                     websocket,
                     session_id,
                     update,
                     response_id=platform_response_ids.get(session_id),
+                    connection_id=connection_id,
                 )
 
     async def send_result(request_id: JsonRpcId, result: dict[str, Any]) -> None:
         async with send_lock:
-            await _send_result(websocket, request_id, result)
+            await _send_result(websocket, request_id, result, connection_id=connection_id)
 
     async def send_error(request_id: JsonRpcId, code: int, message: str) -> None:
         async with send_lock:
-            await _send_error(websocket, request_id, code, message)
+            await _send_error(websocket, request_id, code, message, connection_id=connection_id)
 
     async def run_prompt(request_id: JsonRpcId, params: dict[str, Any], task_session_id: str | None) -> None:
         keepalive_task: asyncio.Task[None] | None = None
@@ -273,6 +287,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 "session.response_start",
                 {"requestId": request_id},
                 response_id=platform_response_ids.get(session_id),
+                connection_id=connection_id,
             )
 
     async def send_platform_result_chunks(session_id: str, result: dict[str, Any]) -> None:
@@ -284,21 +299,48 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     "session.response_chunk",
                     {"chunk": {"content": chunk}},
                     response_id=platform_response_ids.get(session_id),
+                    connection_id=connection_id,
                 )
 
     async def send_platform_response_end(session_id: str, request_id: JsonRpcId, result: dict[str, Any]) -> None:
+        end_params = _platform_response_end_params(request_id, result)
+        logger.info(
+            "\n===== ACP 平台响应结束 | platform response_end =====\n"
+            "连接ID: %s\n"
+            "会话ID: %s\n"
+            "请求ID: %s\n"
+            "响应ID: %s\n"
+            "停止原因: %s\n"
+            "线程ID: %s\n"
+            "运行状态: %s\n"
+            "运行ID: %s\n"
+            "回复字符数: %s\n"
+            "内容项数: %s\n"
+            "回复内容(最多 %s 字符):\n%s\n"
+            "完整参数预览:\n%s\n"
+            "===== ACP 平台响应结束完成 =====",
+            connection_id,
+            session_id,
+            request_id,
+            platform_response_ids.get(session_id),
+            end_params.get("stopReason"),
+            end_params.get("threadId"),
+            end_params.get("status"),
+            _platform_result_run_id(end_params),
+            len(end_params.get("reply")) if isinstance(end_params.get("reply"), str) else 0,
+            len(end_params.get("content")) if isinstance(end_params.get("content"), list) else 0,
+            ACP_WS_RESULT_PREVIEW_MAX_CHARS,
+            _preview_log_text(_string_or_empty(end_params.get("reply")), max_chars=ACP_WS_RESULT_PREVIEW_MAX_CHARS),
+            diagnostic_json(end_params, max_chars=ACP_WS_RESULT_PREVIEW_MAX_CHARS),
+        )
         async with send_lock:
             await _send_platform_event(
                 websocket,
                 session_id,
                 "session.response_end",
-                {
-                    "requestId": request_id,
-                    "stopReason": result.get("stopReason"),
-                    "threadId": result.get("threadId"),
-                    "result": result.get("result"),
-                },
+                end_params,
                 response_id=platform_response_ids.get(session_id),
+                connection_id=connection_id,
             )
 
     async def send_platform_error_end(session_id: str, request_id: JsonRpcId, message: str) -> None:
@@ -309,6 +351,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 "session.response_chunk",
                 {"chunk": {"content": f"请求处理失败：{message}"}},
                 response_id=platform_response_ids.get(session_id),
+                connection_id=connection_id,
             )
             await _send_platform_event(
                 websocket,
@@ -320,6 +363,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     "error": message,
                 },
                 response_id=platform_response_ids.get(session_id),
+                connection_id=connection_id,
             )
 
     try:
@@ -333,7 +377,9 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             method = message.get("method")
             params = _params(message.get("params"))
             logger.info(
-                "acp ws received client=%s method=%s request_id=%s session_id=%s param_keys=%s bridge_container_keys=%s active_sessions=%s",
+                "acp ws received connection_id=%s client=%s method=%s request_id=%s session_id=%s param_keys=%s "
+                "bridge_container_keys=%s active_sessions=%s",
+                connection_id,
                 client_label,
                 method,
                 request_id,
@@ -342,7 +388,14 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 _bridge_container_key_summary(params),
                 sorted(sessions.keys()),
             )
-            _log_ws_trace("recv", message, client=client_label, method=method, request_id=request_id)
+            _log_ws_trace(
+                "recv",
+                message,
+                client=client_label,
+                connection_id=connection_id,
+                method=method,
+                request_id=request_id,
+            )
 
             if not isinstance(method, str) or not method:
                 await send_error(request_id, -32600, "JSON-RPC method is required")
@@ -417,27 +470,56 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
 
             if request_id is not None:
                 await send_result(request_id, result)
-    except WebSocketDisconnect:
-        logger.info("acp ws disconnected client=%s active_sessions=%s", client_label, sorted(sessions.keys()))
+    except WebSocketDisconnect as exc:
+        logger.info(
+            "acp ws disconnected connection_id=%s client=%s code=%s reason=%s active_sessions=%s",
+            connection_id,
+            client_label,
+            exc.code,
+            exc.reason,
+            sorted(sessions.keys()),
+        )
         return
     finally:
+        active_sessions = sorted(sessions.keys())
+        pending_prompt_count = sum(1 for task in prompt_tasks.values() if not task.done())
         for task in prompt_tasks.values():
             if not task.done():
                 task.cancel()
         if prompt_tasks:
             await asyncio.gather(*prompt_tasks.values(), return_exceptions=True)
         await active_dispatcher.close(sessions)
+        logger.info(
+            "acp ws cleanup complete connection_id=%s client=%s duration_ms=%s closed_sessions=%s "
+            "cancelled_prompt_tasks=%s platform_sessions=%s keepalive_sessions=%s",
+            connection_id,
+            client_label,
+            int((time.monotonic() - connected_at) * 1000),
+            active_sessions,
+            pending_prompt_count,
+            sorted(platform_sessions),
+            sorted(keepalive_sessions),
+        )
 
 
-async def _send_session_update(websocket: WebSocket, session_id: str, update: dict[str, Any]) -> None:
+async def _send_session_update(
+    websocket: WebSocket,
+    session_id: str,
+    update: dict[str, Any],
+    *,
+    connection_id: str | None = None,
+) -> None:
+    update_text = _content_text(update)
     logger.info(
-        "acp ws send update session_id=%s session_update=%s runtime_event=%s tool_call_id=%s status=%s content_text_chars=%s",
+        "acp ws send update session_id=%s session_update=%s runtime_event=%s tool_call_id=%s status=%s "
+        "content_text_chars=%s content_preview=%s",
         session_id,
         update.get("sessionUpdate"),
         _runtime_event_type(update),
         update.get("toolCallId"),
         update.get("status"),
-        _content_text_chars(update),
+        len(update_text),
+        _preview_log_text(update_text, max_chars=ACP_WS_RESULT_PREVIEW_MAX_CHARS),
     )
     payload = {
         "jsonrpc": "2.0",
@@ -447,8 +529,14 @@ async def _send_session_update(websocket: WebSocket, session_id: str, update: di
             "update": update,
         },
     }
-    _log_ws_trace("send", payload, method="session/update", session_id=session_id)
-    await websocket.send_json(payload)
+    _log_ws_trace("send", payload, connection_id=connection_id, method="session/update", session_id=session_id)
+    await _safe_send_json(
+        websocket,
+        payload,
+        connection_id=connection_id,
+        method="session/update",
+        session_id=session_id,
+    )
 
 
 async def _send_platform_update(
@@ -457,6 +545,7 @@ async def _send_platform_update(
     update: dict[str, Any],
     *,
     response_id: str | None = None,
+    connection_id: str | None = None,
 ) -> None:
     event_type = _platform_type_for_update(update)
     if event_type is None:
@@ -467,6 +556,7 @@ async def _send_platform_update(
         event_type,
         {"chunk": {"content": _platform_update_content(update)}},
         response_id=response_id,
+        connection_id=connection_id,
     )
 
 
@@ -477,6 +567,7 @@ async def _send_platform_event(
     params: dict[str, Any] | None = None,
     *,
     response_id: str | None = None,
+    connection_id: str | None = None,
 ) -> None:
     event_params = params or {}
     resolved_response_id = response_id or _platform_response_id(session_id, None)
@@ -487,11 +578,12 @@ async def _send_platform_event(
         "provider": "jetlinks-agent-runtime-v2",
     }
     logger.info(
-        "acp ws send platform event session_id=%s type=%s response_id=%s content_text_chars=%s",
+        "acp ws send platform event session_id=%s type=%s response_id=%s content_text_chars=%s content_preview=%s",
         session_id,
         event_type,
         resolved_response_id,
         _platform_event_content_chars(event_params),
+        _preview_log_text(_platform_event_content(event_params), max_chars=ACP_WS_RESULT_PREVIEW_MAX_CHARS),
     )
     session_event_payload = {
         "jsonrpc": "2.0",
@@ -513,21 +605,51 @@ async def _send_platform_event(
             "headers": headers,
         },
     }
-    _log_ws_trace("send", session_event_payload, method="session.event", session_id=session_id)
-    await websocket.send_json(session_event_payload)
-    _log_ws_trace("send", agent_message_payload, method="agent.message", session_id=session_id)
-    await websocket.send_json(agent_message_payload)
+    _log_ws_trace("send", session_event_payload, connection_id=connection_id, method="session.event", session_id=session_id)
+    if not await _safe_send_json(
+        websocket,
+        session_event_payload,
+        connection_id=connection_id,
+        method="session.event",
+        session_id=session_id,
+    ):
+        return
+    _log_ws_trace("send", agent_message_payload, connection_id=connection_id, method="agent.message", session_id=session_id)
+    await _safe_send_json(
+        websocket,
+        agent_message_payload,
+        connection_id=connection_id,
+        method="agent.message",
+        session_id=session_id,
+    )
 
 
-async def _send_result(websocket: WebSocket, request_id: JsonRpcId, result: dict[str, Any]) -> None:
+async def _send_result(
+    websocket: WebSocket,
+    request_id: JsonRpcId,
+    result: dict[str, Any],
+    *,
+    connection_id: str | None = None,
+) -> None:
     result_payload = result.get("result")
     result_data = result_payload if isinstance(result_payload, dict) else {}
     reply = result_data.get("reply")
     metadata = result_data.get("metadata")
     metadata_data = metadata if isinstance(metadata, dict) else {}
     logger.info(
-        "acp ws send result request_id=%s stop_reason=%s thread_id=%s run_id=%s result_status=%s "
-        "reply_chars=%s content_items=%s",
+        "\n===== ACP WebSocket 最终返回 | ws jsonrpc result =====\n"
+        "连接ID: %s\n"
+        "请求ID: %s\n"
+        "停止原因: %s\n"
+        "线程ID: %s\n"
+        "运行ID: %s\n"
+        "运行状态: %s\n"
+        "回复字符数: %s\n"
+        "内容项数: %s\n"
+        "回复内容(最多 %s 字符):\n%s\n"
+        "完整结果预览:\n%s\n"
+        "===== ACP WebSocket 最终返回结束 =====",
+        connection_id,
         request_id,
         result.get("stopReason"),
         result.get("threadId"),
@@ -535,13 +657,29 @@ async def _send_result(websocket: WebSocket, request_id: JsonRpcId, result: dict
         result_data.get("status"),
         len(reply) if isinstance(reply, str) else 0,
         len(result.get("content") or []) if isinstance(result.get("content"), list) else 0,
+        ACP_WS_RESULT_PREVIEW_MAX_CHARS,
+        _preview_log_text(_string_or_empty(reply), max_chars=ACP_WS_RESULT_PREVIEW_MAX_CHARS),
+        diagnostic_json(result, max_chars=ACP_WS_RESULT_PREVIEW_MAX_CHARS),
     )
     payload = {"jsonrpc": "2.0", "id": request_id, "result": result}
-    _log_ws_trace("send", payload, method="result", request_id=request_id)
-    await websocket.send_json(payload)
+    _log_ws_trace("send", payload, connection_id=connection_id, method="result", request_id=request_id)
+    await _safe_send_json(
+        websocket,
+        payload,
+        connection_id=connection_id,
+        method="result",
+        request_id=request_id,
+    )
 
 
-async def _send_error(websocket: WebSocket, request_id: JsonRpcId, code: int, message: str) -> None:
+async def _send_error(
+    websocket: WebSocket,
+    request_id: JsonRpcId,
+    code: int,
+    message: str,
+    *,
+    connection_id: str | None = None,
+) -> None:
     logger.info("acp ws send error request_id=%s code=%s message=%s", request_id, code, message)
     payload = {
         "jsonrpc": "2.0",
@@ -551,8 +689,40 @@ async def _send_error(websocket: WebSocket, request_id: JsonRpcId, code: int, me
             "message": message,
         },
     }
-    _log_ws_trace("send", payload, method="error", request_id=request_id)
-    await websocket.send_json(payload)
+    _log_ws_trace("send", payload, connection_id=connection_id, method="error", request_id=request_id)
+    await _safe_send_json(
+        websocket,
+        payload,
+        connection_id=connection_id,
+        method="error",
+        request_id=request_id,
+    )
+
+
+async def _safe_send_json(
+    websocket: WebSocket,
+    payload: dict[str, Any],
+    *,
+    connection_id: str | None = None,
+    method: str | None = None,
+    request_id: JsonRpcId | None = None,
+    session_id: str | None = None,
+) -> bool:
+    try:
+        await websocket.send_json(payload)
+        return True
+    except RuntimeError as exc:
+        message = str(exc)
+        if "websocket.close" not in message and "response already completed" not in message:
+            raise
+        logger.info(
+            "acp ws send skipped connection_id=%s method=%s request_id=%s session_id=%s reason=websocket_closed",
+            connection_id,
+            method,
+            request_id,
+            session_id,
+        )
+        return False
 
 
 def _user_visible_error_message(exc: Exception) -> str:
@@ -659,6 +829,7 @@ def _log_ws_trace(
     payload: dict[str, Any],
     *,
     client: str | None = None,
+    connection_id: str | None = None,
     method: object = None,
     request_id: JsonRpcId = None,
     session_id: str | None = None,
@@ -667,8 +838,9 @@ def _log_ws_trace(
         return
     serialized = diagnostic_json(payload, max_chars=ACP_WS_TRACE_MAX_CHARS)
     logger.info(
-        "acp ws trace direction=%s client=%s method=%s request_id=%s session_id=%s payload=%s",
+        "acp ws trace direction=%s connection_id=%s client=%s method=%s request_id=%s session_id=%s payload=%s",
         direction,
+        connection_id,
         client,
         method,
         request_id,
@@ -689,11 +861,15 @@ def _runtime_event_type(update: dict[str, Any]) -> str | None:
 
 
 def _content_text_chars(update: dict[str, Any]) -> int:
+    return len(_content_text(update))
+
+
+def _content_text(update: dict[str, Any]) -> str:
     content = update.get("content")
     if not isinstance(content, dict):
-        return 0
+        return ""
     text = content.get("text")
-    return len(text) if isinstance(text, str) else 0
+    return text if isinstance(text, str) else ""
 
 
 def _platform_type_for_update(update: dict[str, Any]) -> str | None:
@@ -713,6 +889,15 @@ def _platform_update_content(update: dict[str, Any]) -> str:
     return ""
 
 
+def _platform_event_content(params: dict[str, Any]) -> str:
+    chunk = params.get("chunk")
+    if isinstance(chunk, dict):
+        content = chunk.get("content")
+        return content if isinstance(content, str) else ""
+    reply = params.get("reply")
+    return reply if isinstance(reply, str) else ""
+
+
 def _platform_chunks_from_result(result: dict[str, Any]) -> list[str]:
     chunks: list[str] = []
     raw_result = result.get("result")
@@ -729,9 +914,48 @@ def _platform_chunks_from_result(result: dict[str, Any]) -> list[str]:
     return chunks
 
 
+def _platform_response_end_params(request_id: JsonRpcId, result: dict[str, Any]) -> dict[str, Any]:
+    raw_result = result.get("result")
+    result_data = raw_result if isinstance(raw_result, dict) else {}
+    reply = result_data.get("reply")
+    content = result.get("content")
+    if not isinstance(content, list):
+        content = result_data.get("content")
+    params = {
+        "requestId": request_id,
+        "stopReason": result.get("stopReason"),
+        "threadId": result.get("threadId"),
+        "agentName": result.get("agentName"),
+        "status": result_data.get("status"),
+        "reply": reply if isinstance(reply, str) else "",
+        "content": content if isinstance(content, list) else [],
+        "metadata": result_data.get("metadata") if isinstance(result_data.get("metadata"), dict) else {},
+        "result": raw_result,
+    }
+    return params
+
+
+def _platform_result_run_id(params: dict[str, Any]) -> object:
+    result = params.get("result")
+    if not isinstance(result, dict):
+        return None
+    metadata = result.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    return metadata.get("run_id")
+
+
+def _string_or_empty(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _preview_log_text(value: str, *, max_chars: int) -> str:
+    if not value:
+        return ""
+    if len(value) <= max_chars:
+        return value
+    return f"{value[:max_chars]}...<truncated chars={len(value) - max_chars}>"
+
+
 def _platform_event_content_chars(params: dict[str, Any]) -> int:
-    chunk = params.get("chunk")
-    if not isinstance(chunk, dict):
-        return 0
-    content = chunk.get("content")
-    return len(content) if isinstance(content, str) else 0
+    return len(_platform_event_content(params))

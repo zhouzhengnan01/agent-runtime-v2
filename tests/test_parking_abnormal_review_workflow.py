@@ -202,6 +202,106 @@ def test_review_skill_candidates_expand_composite_and_score_objective() -> None:
     assert candidates[0].score > candidates[1].score
 
 
+def test_review_objective_and_skill_score_use_task_target_payload() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = """
+    请复判下面事件：
+    {
+      "id": "abf26546-03e4-495a-bc92-fa68c3287c3b",
+      "modelId": "CustomerBehaviorDetection",
+      "modelName": "顾客行为监管",
+      "taskName": "顾客行为检测",
+      "taskTarget": {
+        "value": "FallDetection",
+        "text": "人员跌倒/倒地检测"
+      }
+    }
+    """
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "behavior-group": SkillDefinition(
+                    name="behavior-group",
+                    description="组合行为识别",
+                    output_kind="json",
+                    skill_type="composite",
+                    child_skills=("smoking-review", "fall-review"),
+                ),
+                "smoking-review": SkillDefinition(
+                    name="smoking-review",
+                    description="抽烟 SmokingDetection 复判",
+                    output_kind="json",
+                    routing={"keywords": ["抽烟", "SmokingDetection"]},
+                ),
+                "fall-review": SkillDefinition(
+                    name="fall-review",
+                    description="跌倒 FallDetection 复判，人员跌倒/倒地检测",
+                    output_kind="json",
+                    routing={"keywords": ["跌倒", "FallDetection", "人员跌倒/倒地检测"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+    candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["behavior-group"],
+        objective=workflow._objective(prompt_text),
+        prompt_text=prompt_text,
+    )
+
+    assert workflow._objective(prompt_text) == "FallDetection"
+    assert [candidate.skill.name for candidate in candidates] == ["smoking-review", "fall-review"]
+    assert candidates[1].score > candidates[0].score
+    assert "keyword=人员跌倒/倒地检测" in candidates[1].score_reasons
+
+
+def test_review_objective_prefers_fall_target_over_smoking_summary_text() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = """
+    人员跌倒/倒地检测
+    置信度
+    fall
+    85%
+    告警摘要
+    基于所附3张监控图片复判，未见明显手持香烟、手口吸食动作、烟雾扩散轨迹或暗光火点等抽烟特征。
+    """
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "smoking-review": SkillDefinition(
+                    name="smoking-review",
+                    description="抽烟 SmokingDetection 复判",
+                    output_kind="json",
+                    routing={"keywords": ["抽烟", "SmokingDetection"]},
+                ),
+                "fall-review": SkillDefinition(
+                    name="fall-review",
+                    description="跌倒 FallDetection 复判，人员跌倒/倒地检测",
+                    output_kind="json",
+                    routing={"keywords": ["跌倒", "FallDetection", "人员跌倒/倒地检测"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+    objective = workflow._objective(prompt_text)
+    candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["smoking-review", "fall-review"],
+        objective=objective,
+        prompt_text=prompt_text,
+    )
+
+    assert objective == "FallDetection"
+    assert candidates[1].skill.name == "fall-review"
+    assert candidates[1].score > candidates[0].score
+
+
 def test_parking_review_invokes_one_selected_skill_and_injects_result(
     tmp_path: Path,
     monkeypatch: Any,
@@ -296,3 +396,138 @@ def test_parking_review_invokes_one_selected_skill_and_injects_result(
     event_types = [event.type for event in events]
     assert "review.skill_selection.completed" in event_types
     assert "review.skill_invocation.completed" in event_types
+
+
+def test_parking_review_logs_llm_raw_reply_and_normalized_result(
+    tmp_path: Path,
+    monkeypatch: Any,
+    caplog: Any,
+) -> None:
+    workflow = _load_workflow_module()
+
+    def fake_complete_review(
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions,
+        prompt_text: str,
+        image_attachments: list[Attachment],
+        paths: Any,
+        review_source_id: str,
+        objective: str,
+        skill_selection: Any,
+        skill_result: SkillRunResult | None,
+        skill_error: str,
+    ) -> str:
+        return '[{"reviewSourceId":"source-log","reviewEventId":"event-log","hit":1,"result":"模型判定命中"}]'
+
+    monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(fake_complete_review))
+
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("thread-log")
+    image = paths.uploads / "image.jpg"
+    image.write_bytes(b"fake-image")
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(store)
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        result, events = review_workflow.run_with_events(
+            AgentConfig(name="default", display_name="Default"),
+            [
+                Message(
+                    role="user",
+                    content=(
+                        "当前复判事件来源reviewSourceId为[source-log]。\n"
+                        "本次复判的识别目标为[ClutterDetection]"
+                    ),
+                )
+            ],
+            [Attachment(name="image.jpg", path="/mnt/user-data/uploads/image.jpg", mime_type="image/jpeg")],
+            "thread-log",
+            runtime_options=RuntimeOptions(),
+        )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert result.reply == '[{"reviewSourceId":"source-log","reviewEventId":"event-log","hit":1,"result":"模型判定命中"}]'
+    assert "parking review llm raw reply review_source_id=source-log" in logs
+    assert "raw_chars=" in logs
+    assert "模型判定命中" in logs
+    assert "复判归一化结果 | parking review normalized result" in logs
+    assert "复判最终结果 | parking review final result" in logs
+    assert "reviewSourceId: source-log" in logs
+    assert '"result": "模型判定命中"' in logs
+    assert "结果字符数:" in logs
+    event_payloads = {event.type: event.data for event in events}
+    assert event_payloads["review.llm.raw_reply"]["raw_reply"] == (
+        '[{"reviewSourceId":"source-log","reviewEventId":"event-log","hit":1,"result":"模型判定命中"}]'
+    )
+    assert event_payloads["review.normalized_result"]["result"] == result.reply
+
+
+def test_parking_review_logs_image_sources(
+    tmp_path: Path,
+    monkeypatch: Any,
+    caplog: Any,
+) -> None:
+    workflow = _load_workflow_module()
+
+    def fake_complete_review(
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions,
+        prompt_text: str,
+        image_attachments: list[Attachment],
+        paths: Any,
+        review_source_id: str,
+        objective: str,
+        skill_selection: Any,
+        skill_result: SkillRunResult | None,
+        skill_error: str,
+    ) -> str:
+        return '[{"reviewSourceId":"source-image","reviewEventId":"event-image","hit":0,"result":"未命中"}]'
+
+    monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(fake_complete_review))
+
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("thread-image")
+    image = paths.uploads / "image-remote.jpg"
+    image.write_bytes(b"fake-image")
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(store)
+    image_url = "https://example.test/api/ai/task/history/_read/image.jpg?accessKey=abc"
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        result, events = review_workflow.run_with_events(
+            AgentConfig(name="default", display_name="Default"),
+            [
+                Message(
+                    role="user",
+                    content=(
+                        "当前复判事件来源reviewSourceId为[source-image]。\n"
+                        "本次复判的识别目标为[ParkingAbnormalDetection]"
+                    ),
+                )
+            ],
+            [
+                Attachment(
+                    name="image.jpg",
+                    path="/mnt/user-data/uploads/image-remote.jpg",
+                    mime_type="image/jpeg",
+                    metadata={
+                        "original_uri": image_url,
+                        "dataId": "data-1",
+                        "sourceId": "source-camera-1",
+                        "timestamp": 1780656596708,
+                        "sha1": "sha1-value",
+                    },
+                )
+            ],
+            "thread-image",
+            runtime_options=RuntimeOptions(),
+        )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert result.reply == '[{"reviewSourceId":"source-image","reviewEventId":"event-image","hit":0,"result":"未命中"}]'
+    assert "复判图片来源 | parking review image sources" in logs
+    assert "图片链接/路径:" in logs
+    assert image_url in logs
+    assert '"dataId": "data-1"' in logs
+    assert "复判最终结果 | parking review final result" in logs
+    event_payloads = {event.type: event.data for event in events}
+    assert event_payloads["review.input"]["image_sources"][0]["url"] == image_url
+    assert event_payloads["review.input"]["image_sources"][0]["dataId"] == "data-1"
