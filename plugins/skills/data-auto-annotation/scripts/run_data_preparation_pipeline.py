@@ -217,22 +217,34 @@ def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str],
     if fmt == "unlabeled":
         if not task_labels:
             raise ValueError("Unlabeled datasets require labels, for example: labels=person,bottle")
-        _run([
-            sys.executable,
-            str(AUTO_ANNOTATION_SCRIPT),
-            "--input-dir",
-            str(images_dir),
-            "--text-prompts",
-            *task_labels,
-            "--source",
-            "real",
-            "--per-image-output-dir",
-            str(images_dir),
-            "--per-image-base-dir",
-            str(images_dir),
-            "--output",
-            str(real_coco),
-        ], dry_run)
+        try:
+            _run([
+                sys.executable,
+                str(AUTO_ANNOTATION_SCRIPT),
+                "--input-dir",
+                str(images_dir),
+                "--text-prompts",
+                *task_labels,
+                "--source",
+                "real",
+                "--per-image-output-dir",
+                str(images_dir),
+                "--per-image-base-dir",
+                str(images_dir),
+                "--output",
+                str(real_coco),
+            ], dry_run)
+        except subprocess.CalledProcessError as exc:
+            stdout_tail = _decode_bytes(exc.output)[-2000:]
+            stderr_tail = _decode_bytes(exc.stderr)[-2000:]
+            raise RuntimeError(
+                "Real dataset auto-annotation failed while preparing COCO. "
+                "Check the SAM3 service, uploaded dataset images, and labels.\n"
+                f"labels={task_labels}\n"
+                f"images_dir={images_dir}\n"
+                f"stdout_tail:\n{stdout_tail}\n"
+                f"stderr_tail:\n{stderr_tail}"
+            ) from exc
         return real_coco
 
     raise ValueError(f"Unsupported dataset format: {fmt}. Convert labels to COCO or YOLO first.")
@@ -556,11 +568,11 @@ def _fallback_prompt_sequence(
     labels: List[str],
     total_count: int,
     planner_llm: Dict[str, Any] | None = None,
-) -> List[str]:
+) -> tuple[List[str], str]:
     prompts = _llm_image_dataset_produce_prompts(plan, labels, total_count, planner_llm or {})
     if prompts:
-        return prompts
-    return _heuristic_image_dataset_produce_prompts(plan, labels, total_count)
+        return prompts, "llm"
+    return _heuristic_image_dataset_produce_prompts(plan, labels, total_count), "heuristic_reference_anchored"
 
 
 def _llm_image_dataset_produce_prompts(
@@ -584,7 +596,10 @@ def _llm_image_dataset_produce_prompts(
                     "You are a senior computer vision synthetic-data prompt planner. "
                     "Create prompts for the image-dataset-produce skill, which uses one image1 reference image as a visual reference. "
                     "The prompt must be suitable for image-to-image generation with flux2. "
-                    "It must create a new realistic training image for object detection, not copy the input image. "
+                    "You cannot see the reference image, so do not invent a specific unrelated scene, location, identity, or background. "
+                    "Every prompt must explicitly tell flux2 to use the provided input/reference image as the primary visual reference, "
+                    "preserve its scene category, camera angle, background layout, lighting direction, and visual style, "
+                    "and create a realistic variant for object detection rather than an identical copy. "
                     "Do not mention image2.zip, compositing, pasted objects, cutouts, extraction, or overlaying one image onto another. "
                     "Return JSON only: {\"prompts\":[\"...\"]}."
                 ),
@@ -599,8 +614,10 @@ def _llm_image_dataset_produce_prompts(
                         "difficulty_signals": plan.get("difficulty_signals", []),
                         "prompt_count": count,
                         "requirements": [
-                            "Use the input image only as loose scene/camera/style reference.",
-                            "Generate a visibly new image with changed identities, positions, poses, lighting, and background details.",
+                            "Each prompt must include the phrase provided input image or reference image.",
+                            "Preserve the reference image scene type, background layout, camera angle, composition, lighting, and visual style.",
+                            "Do not invent a new unrelated environment such as a city street, garden, rooftop bar, living room, or parking garage unless the reference image already shows it.",
+                            "Generate a visibly new but scene-consistent variant with small natural changes in target pose, placement, visibility, and local lighting.",
                             "Ensure target classes are clear and annotatable with bounding boxes.",
                             "Avoid exact duplication of the reference image.",
                             "Synthetic images are for training only.",
@@ -659,7 +676,7 @@ def _validated_image_dataset_produce_prompts(
     prompts: List[str] = []
     for item in raw_prompts:
         prompt = str(item or "").strip()
-        if not prompt or _looks_like_composite_prompt(prompt):
+        if not prompt or _looks_like_composite_prompt(prompt) or not _is_reference_anchored_prompt(prompt):
             continue
         prompts.append(_ensure_image_dataset_produce_constraints(prompt, plan, labels))
     if not prompts:
@@ -668,6 +685,21 @@ def _validated_image_dataset_produce_prompts(
     while len(prompts) < min(count, 12):
         prompts.append(prompts[len(prompts) % len(prompts)])
     return prompts
+
+
+def _is_reference_anchored_prompt(prompt: str) -> bool:
+    lowered = prompt.lower()
+    markers = (
+        "input image",
+        "reference image",
+        "provided image",
+        "source image",
+        "given image",
+        "参考图",
+        "输入图",
+        "原图",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 def _looks_like_composite_prompt(prompt: str) -> bool:
@@ -692,11 +724,13 @@ def _looks_like_composite_prompt(prompt: str) -> bool:
 def _ensure_image_dataset_produce_constraints(prompt: str, plan: Dict[str, Any], labels: List[str]) -> str:
     label_text = ", ".join(labels or [str(item).strip() for item in plan.get("class_names", []) if str(item).strip()]) or "target objects"
     return (
+        "Use the provided input image as the primary visual reference. "
+        "Preserve its scene category, background layout, camera angle, composition, lighting direction, and visual style. "
+        "Do not replace the scene with an unrelated location or invented environment. "
         f"{prompt.strip()} "
         f"Target classes for object detection: {label_text}. "
-        "Use the input image only as loose visual reference for camera angle, scene type, and lighting. "
-        "Generate a new realistic image, not an identical copy of the reference. "
-        "Change identities, positions, poses, scale, background details, and lighting while keeping targets clearly visible and annotatable. "
+        "Generate a realistic variant of the same referenced scene, not an identical copy. "
+        "Keep target objects clearly visible and annotatable while allowing small natural changes in pose, scale, occlusion, and object placement. "
         "No text, watermark, logo, collage, pasted object, or obvious image editing artifact."
     )
 
@@ -706,18 +740,18 @@ def _heuristic_image_dataset_produce_prompts(plan: Dict[str, Any], labels: List[
     label_text = ", ".join(class_names) if class_names else "target objects"
     task = str(plan.get("task_description") or "object detection training").strip()
     base = (
-        f"Create a new realistic image for this YOLO object detection task: {task}. "
+        f"Create a realistic variant of the provided input image for this YOLO object detection task: {task}. "
         f"The image must contain clearly annotatable target classes: {label_text}. "
-        "Use the input image only as loose visual reference for scene type, camera angle, resolution, and lighting; "
-        "do not duplicate the input image. "
+        "Use the input image as the primary reference for scene type, camera angle, composition, background layout, resolution, and lighting; "
+        "do not invent a different location, and do not duplicate the input image exactly. "
     )
     variations = [
-        "surveillance-style view with different people or objects, changed positions, natural scale variation, and clear bounding-box targets",
-        "indoor public scene with realistic lighting changes, different identities or instances, mild occlusion, and visible target objects",
-        "natural background with changed composition, varied distance from camera, target remains sharp and labelable",
-        "more complex scene with clutter and partial occlusion, but every requested target remains recognizable",
-        "different viewpoint or camera height, altered background details, realistic shadows, and non-identical target placement",
-        "hard training sample with motion blur or low light, still suitable for precise object-detection annotation",
+        "preserve the original scene and camera framing while slightly changing target pose, hand position, and object visibility",
+        "preserve the original background and lighting while adding mild occlusion and natural scale variation for the target classes",
+        "preserve the original environment while changing only small details such as posture, target placement, and local shadows",
+        "preserve the original camera angle and composition while making target objects clearer and easier to annotate",
+        "preserve the original scene type while introducing realistic clutter near the target without hiding it",
+        "preserve the original visual style while creating a harder but still labelable sample with slight blur or lighting variation",
     ]
     prompts = [
         _ensure_image_dataset_produce_constraints(base + f"Scene variation: {variation}.", plan, class_names)
@@ -755,7 +789,17 @@ def _generate_and_annotate_synthetic_with_produce(
     produce_total = _produce_synthetic_count(plan, len(reference_images), produce_count_button, fixed_produce_synthetic_count)
     if produce_total <= 0:
         raise ValueError("image-dataset-produce fallback requested 0 synthetic images")
-    prompts = _fallback_prompt_sequence(plan, labels, produce_total, planner_llm)
+    prompts, prompt_source = _fallback_prompt_sequence(plan, labels, produce_total, planner_llm)
+    _write_json(
+        output_dir / "generation_inputs" / "produce_prompts.json",
+        {
+            "prompt_source": prompt_source,
+            "prompt_count": produce_total,
+            "reference_image_root": str(image1),
+            "labels": labels,
+            "prompts": prompts,
+        },
+    )
     rng = random.Random(random_seed)
 
     for generation_index in range(1, produce_total + 1):

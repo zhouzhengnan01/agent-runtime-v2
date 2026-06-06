@@ -6,17 +6,18 @@ import sys
 import time
 from pathlib import Path
 
-# --- Configurable: set this to the location of your image-genereate.py ---
-# Default: look for image-genereate.py in the same parent directory as this skill.
-IMAGE_GENERATE_SCRIPT = str(Path(__file__).resolve().parents[3] / "image-genereate.py")
-# Override via env var: IMAGE_GENERATE_SCRIPT=/path/to/image-genereate.py
-IMAGE_GENERATE_SCRIPT = sys.modules[__name__].__dict__.setdefault(
-    "_env", ""
-) or IMAGE_GENERATE_SCRIPT
 import os
+
+# Resolve image-genereate.py: env var > same dir > sibling image-dataset-produce script.
+_SAME_DIR = Path(__file__).resolve().parent / "image-genereate.py"
+_PRODUCE_SCRIPT = Path(__file__).resolve().parents[1].parent / "image-dataset-produce" / "scripts" / "image-genereate.py"
+IMAGE_GENERATE_SCRIPT = str(_SAME_DIR if _SAME_DIR.is_file() else _PRODUCE_SCRIPT)
+# Override via env var: IMAGE_GENERATE_SCRIPT=/path/to/image-genereate.py
 _env_val = os.environ.get("IMAGE_GENERATE_SCRIPT", "")
 if _env_val:
     IMAGE_GENERATE_SCRIPT = _env_val
+
+DEFAULT_API_URL = "http://218.67.242.10:58801/v1/flux2/generate"
 
 
 def _require_abs_path(path_str: str, field_name: str) -> Path:
@@ -43,8 +44,12 @@ def _normalize_runtime_payload(payload: dict) -> dict:
     spec = payload.get("spec") if isinstance(payload.get("spec"), dict) else payload
     outputs_dir = str(payload.get("outputs_dir") or "").strip()
     model = {
-        "api_url": spec.get("api_url") or "http://192.168.33.25:8801/flux2/generate",
-        "token": spec.get("token") or os.environ.get("IMAGE_GEN_TOKEN", ""),
+        "api_url": spec.get("api_url") or DEFAULT_API_URL,
+        "token": spec.get("token") or os.environ.get("IMAGE_GEN_TOKEN", "") or "abc@123",
+        "model": spec.get("model") or "flux2",
+        "width": spec.get("width") or 640,
+        "height": spec.get("height") or 640,
+        "steps": spec.get("steps") or 8,
         "timeout": spec.get("timeout") or 120,
     }
     task = {
@@ -97,6 +102,10 @@ def main():
     api_url = str(model.get("api_url", "")).strip()
     token = str(model.get("token", "")).strip()
     timeout = int(model.get("timeout", 120))
+    model_name = str(model.get("model", "") or "flux2").strip()
+    width = int(model.get("width", 640) or 640)
+    height = int(model.get("height", 640) or 640)
+    steps = int(model.get("steps", 8) or 8)
 
     input_image = str(task.get("input_image", "")).strip()
     prompt = str(task.get("prompt", "")).strip()
@@ -136,6 +145,10 @@ def main():
         "--prompt", prompt,
         "--output-dir", str(output_dir_path),
         "--timeout", str(timeout),
+        "--model", model_name,
+        "--width", str(width),
+        "--height", str(height),
+        "--steps", str(steps),
     ]
 
     print("[image-dataset-generation] Starting image generation task...")
@@ -156,6 +169,9 @@ def main():
 
     print("\n--- summary ---")
     print(f"api_url: {api_url}")
+    print(f"model: {model_name}")
+    print(f"size: {width}x{height}")
+    print(f"steps: {steps}")
     print(f"input_image: {input_image_path}")
     print(f"prompt: {prompt}")
     print(f"output_dir: {output_dir_path}")

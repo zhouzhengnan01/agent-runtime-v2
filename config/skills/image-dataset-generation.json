@@ -54,10 +54,27 @@
       },
       "api_url": {
         "type": "string",
-        "default": "http://192.168.33.25:8801/flux2/generate"
+        "default": "http://218.67.242.10:58801/v1/flux2/generate"
       },
       "token": {
-        "type": "string"
+        "type": "string",
+        "default": "abc@123"
+      },
+      "model": {
+        "type": "string",
+        "default": "flux2"
+      },
+      "width": {
+        "type": "integer",
+        "default": 640
+      },
+      "height": {
+        "type": "integer",
+        "default": 640
+      },
+      "steps": {
+        "type": "integer",
+        "default": 8
       },
       "timeout": {
         "type": "integer",

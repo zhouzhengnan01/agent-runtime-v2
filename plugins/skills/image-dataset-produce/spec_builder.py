@@ -48,7 +48,11 @@ def build_spec(
     image_path = _first_image_path(attachments)
     if image_path and not spec.get("input_image"):
         spec["input_image"] = image_path
-    spec.setdefault("api_url", "http://218.67.242.10:58801/flux2/generate")
+    spec.setdefault("api_url", "http://218.67.242.10:58801/v1/flux2/generate")
+    spec.setdefault("model", "flux2")
+    spec.setdefault("width", 640)
+    spec.setdefault("height", 640)
+    spec.setdefault("steps", 8)
     spec.setdefault("timeout", 120)
     spec["attachments"] = [_attachment_payload(item) for item in attachments]
     return spec

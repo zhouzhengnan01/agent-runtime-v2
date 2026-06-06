@@ -97,13 +97,34 @@ def _is_synthetic_image(image_obj: Dict, synthetic_policy: Dict) -> bool:
     return source in synthetic_values
 
 
+def _holdout_counts(total: int, split: Dict[str, float]) -> Tuple[int, int]:
+    val_ratio = max(0.0, float(split["val"]))
+    test_ratio = max(0.0, float(split["test"]))
+    n_val = int(total * val_ratio)
+    n_test = int(total * test_ratio)
+
+    if test_ratio > 0 and n_test == 0 and total >= 2:
+        n_test = 1
+    if val_ratio > 0 and n_val == 0 and total - n_test >= 2:
+        n_val = 1
+
+    while n_val + n_test >= total and total > 0:
+        if n_val >= n_test and n_val > 0:
+            n_val -= 1
+        elif n_test > 0:
+            n_test -= 1
+        else:
+            break
+    return n_val, n_test
+
+
 def _split_image_ids(image_ids: List[int], split: Dict[str, float], seed: int) -> Dict[str, List[int]]:
     random.seed(seed)
     ids = image_ids[:]
     random.shuffle(ids)
     total = len(ids)
-    n_train = int(total * float(split["train"]))
-    n_val = int(total * float(split["val"]))
+    n_val, n_test = _holdout_counts(total, split)
+    n_train = total - n_val - n_test
     return {"train": ids[:n_train], "val": ids[n_train:n_train + n_val], "test": ids[n_train + n_val:]}
 
 
@@ -124,8 +145,7 @@ def _split_image_ids_with_source(coco: Dict, split: Dict[str, float], seed: int,
     random.shuffle(real_ids)
     random.shuffle(synthetic_ids)
     real_total = len(real_ids)
-    n_val = int(real_total * float(split["val"]))
-    n_test = int(real_total * float(split["test"]))
+    n_val, n_test = _holdout_counts(real_total, split)
     val_ids = real_ids[:n_val]
     test_ids = real_ids[n_val:n_val + n_test]
     train_real_ids = real_ids[n_val + n_test:]

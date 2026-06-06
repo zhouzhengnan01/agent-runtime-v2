@@ -3,6 +3,11 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+from app.core.agent.input_required import required_inputs_for_request
+from app.core.artifacts import ArtifactStore
+from app.core.config.agent_config import AgentConfig
+from app.schemas import ChatRequest, Message, RuntimeOptions
+
 
 def _load_yolo_training_flow_module():
     path = Path("plugins/workflows/builtin-artifact-workflows/yolo_training_flow.py").resolve()
@@ -59,3 +64,70 @@ def test_yolo_training_flow_normalizes_llm_extracted_spec() -> None:
     assert training_cfg["training"]["task"] == "detect"
     assert training_cfg["training"]["batch"] == 8
     assert training_cfg["split"]["test"] == 0.1
+
+
+def test_yolo_training_flow_rejects_zero_test_split_from_model_spec() -> None:
+    module = _load_yolo_training_flow_module()
+    spec = {
+        "training": {
+            "task": "detect",
+            "model": "yolov8n.pt",
+            "epochs": 100,
+            "imgsz": 640,
+            "batch": 4,
+            "device": "0",
+            "workers": 4,
+            "patience": 20,
+        },
+        "runtime": {"conda_env_name": "", "enforce_conda_env": False},
+        "split": {"train": 0.8, "val": 0.2, "test": 0.0},
+    }
+
+    training_cfg = module._spec_training_config(spec)
+
+    assert training_cfg["split"] == {"train": 0.7, "val": 0.2, "test": 0.1}
+
+
+def test_yolo_training_flow_fallback_keeps_test_split_for_small_dataset() -> None:
+    module = _load_yolo_training_flow_module()
+
+    training_cfg = module._fallback_training_from_dataset_facts({"image_count": 14})
+
+    assert training_cfg["split"]["test"] == 0.1
+
+
+def test_yolo_training_flow_owns_three_zip_input_contract(tmp_path: Path) -> None:
+    module = _load_yolo_training_flow_module()
+    request = ChatRequest(
+        messages=[Message(role="user", content="帮我训练一个YOLO抽烟检测模型")],
+        runtime_options=RuntimeOptions(
+            thread_id="postman-yolo-test-inputs",
+            workflow="yolo_training_flow",
+            selected_skills=[
+                "data-auto-annotation",
+                "image-dataset-generation",
+                "image-dataset-produce",
+                "gpu-training-orchestrator",
+            ],
+            skill_parameters={"yolo_training_flow": {"auto_generate_missing_spec": True}},
+        ),
+    )
+
+    assert required_inputs_for_request(request) == []
+
+    workflow = module.YoloTrainingWorkflow(ArtifactStore(root_dir=tmp_path))
+    result, _events = workflow.run_with_events(
+        agent_config=AgentConfig(name="default", display_name="Default"),
+        messages=request.messages,
+        attachments=[],
+        thread_id=request.runtime_options.thread_id or "postman-yolo-test-inputs",
+        runtime_options=request.runtime_options,
+        workflow_name="yolo_training_flow",
+    )
+
+    required_inputs = result.metadata["required_inputs"]
+    assert result.metadata["requires_input"] is True
+    assert [item["type"] for item in required_inputs] == ["dataset", "image", "image"]
+    assert "数据集" in required_inputs[0]["reason"]
+    assert "image1" in required_inputs[1]["reason"]
+    assert "image2" in required_inputs[2]["reason"]

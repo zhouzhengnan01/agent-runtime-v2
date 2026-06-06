@@ -49,6 +49,10 @@ def required_inputs_for_result(result: AgentRunResult, request: ChatRequest) -> 
 def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
     # Preflight guards catch common long-running flows before the agent spends
     # tool rounds only to discover that basic files were never provided.
+    # Named workflows can have their own multi-turn input contract. YOLO
+    # training, for example, asks for dataset/image1/image2 together.
+    if _workflow_owns_input_contract(request):
+        return []
     selected_skills = {name.strip() for name in request.runtime_options.selected_skills if name.strip()}
     if _requires_clutter_review_image(request, selected_skills) and not _has_attachment(request.attachments, "image"):
         return [_requirement("image", reason="Clutter review requires an uploaded image.")]
@@ -65,6 +69,11 @@ def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
     if _requires_data_auto_annotation(request, selected_skills) and not _has_attachment(request.attachments, "image"):
         return [_requirement("image", reason="Data auto annotation requires an uploaded image.")]
     return []
+
+
+def _workflow_owns_input_contract(request: ChatRequest) -> bool:
+    workflow = str(request.runtime_options.workflow or "").strip()
+    return workflow in {"yolo_training_flow", "smoking_detection_training_flow"}
 
 
 def _requires_clutter_review_image(request: ChatRequest, selected_skills: set[str]) -> bool:

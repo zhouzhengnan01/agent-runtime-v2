@@ -19,8 +19,12 @@ Use this skill to create synthetic images for detection training. In the full YO
 
 Optional:
 
-- `api_url`, default `http://218.67.242.10:58801/flux2/generate`
+- `api_url`, default `http://218.67.242.10:58801/v1/flux2/generate`
 - `token`, default `abc@123`
+- `model`, default `flux2`
+- `width`, default `640`
+- `height`, default `640`
+- `steps`, default `8`
 - `timeout`, default `120`
 
 ## CLI
@@ -34,7 +38,7 @@ Input JSON:
 ```json
 {
   "model": {
-    "api_url": "http://192.168.33.25:8801/flux2/generate",
+    "api_url": "http://218.67.242.10:58801/v1/flux2/generate",
     "token": "abc@123",
     "timeout": 120
   },

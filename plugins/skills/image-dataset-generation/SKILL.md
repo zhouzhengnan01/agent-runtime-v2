@@ -26,8 +26,10 @@ description: >
 - **output_dir**：保存生成图片的本地绝对路径目录。
 
 ### 可选（带默认值）
-- **api_url**：`http://192.168.33.25:8801/flux2/generate`
+- **api_url**：`http://218.67.242.10:58801/v1/flux2/generate`
 - **token**：API 的 Bearer token（无需包含 `Bearer ` 前缀）。
+- **model**：默认 `flux2`。
+- **width/height/steps**：默认 `640/640/8`。
 - **timeout**：请求超时时间，单位为秒（默认 `120`）。
 
 ## input.json 结构
@@ -37,7 +39,7 @@ description: >
 ```json
 {
   "model": {
-    "api_url": "http://192.168.33.25:8801/flux2/generate",
+    "api_url": "http://218.67.242.10:58801/v1/flux2/generate",
     "token": "abc@123",
     "timeout": 120
   },
