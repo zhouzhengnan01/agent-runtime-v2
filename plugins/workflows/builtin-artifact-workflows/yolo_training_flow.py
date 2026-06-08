@@ -33,6 +33,7 @@ FIXED_SYNTHETIC_COUNT = 5
 button_produce = True
 FIXED_PRODUCE_SYNTHETIC_COUNT = 5
 AUTO_GENERATE_MISSING_SPEC = True
+MODEL_THINKING_FIXED_EPOCHS = 50
 
 
 class YoloTrainingWorkflow:
@@ -1219,9 +1220,10 @@ def _generate_dataset_aware_yolo_training_request_spec(
         "training 必须含 task, model, epochs, imgsz, batch, device, workers, patience。"
         "runtime 必须含 enforce_conda_env=false；不要指定 conda_env_name，或置为空字符串。"
         "split 必须含 train, val, test，三项相加约等于 1。"
+        "training.epochs 必须固定为 50，不要根据数据规模调整 epochs。"
         "决策规则："
         "根据 image_count、format、label_count、category_counts、bbox_size_summary、image_size_summary 判断训练强度；"
-        "小目标多时提高 imgsz；图片少或类别不均衡时增加 epochs/patience 并启用合成；"
+        "小目标多时提高 imgsz；图片少或类别不均衡时保持 epochs=50、增加 patience 并启用合成；"
         "val/test 必须优先使用真实图，合成图只能进入 train；"
         "如果数据规模很小，test 比例要保守，避免每类在验证集缺失；"
         "labels 必须是英文 ASCII 类名，使用小写英文、数字、下划线，禁止中文和泛化 object/target。"
@@ -1250,6 +1252,7 @@ def _generate_dataset_aware_yolo_training_request_spec(
         payload = _parse_json_object(raw)
         generated = payload if isinstance(payload, dict) else {}
         merged = _merge_request_specs(base_spec, generated)
+        _force_model_thinking_epochs(merged)
         recorder.emit(
             "llm.completed",
             {
@@ -1292,7 +1295,9 @@ def _fallback_model_managed_yolo_training_request_spec(
         "runtime": {"conda_env_name": "", "enforce_conda_env": False},
         "split": fallback_training["split"],
     }
-    return _merge_request_specs(fallback, spec)
+    merged = _merge_request_specs(fallback, spec)
+    _force_model_thinking_epochs(merged)
+    return merged
 
 
 def _complete_yolo_training_request_spec(
@@ -1327,7 +1332,7 @@ def _complete_yolo_training_request_spec(
         "合成提示词要适合 image2 目标自然合成到 image1 场景，并强调真实监控画面、可标注；"
         "训练参数必须由你根据任务目标、YOLO 训练常识和快速验证需求自行选择，不要照抄用户未提供的固定模板；"
         "训练必须使用当前运行环境，不要推理或指定 Conda 环境；runtime.enforce_conda_env 必须为 false；"
-        "split 比例、模型大小、epochs、batch、patience 也必须由你合理选择。"
+        "epochs 必须固定为 50；split 比例、模型大小、batch、patience 由你合理选择。"
         "如果用户提供了 image1/image2 或上下文暗示需要合成数据，use_synthetic_generation 必须为 true。"
     )
     messages = [
@@ -1345,6 +1350,7 @@ def _complete_yolo_training_request_spec(
         payload = _parse_json_object(raw)
         completed = payload if isinstance(payload, dict) else {}
         merged = _merge_request_specs(spec, completed)
+        _force_model_thinking_epochs(merged)
         recorder.emit(
             "llm.completed",
             {
@@ -1868,6 +1874,14 @@ def _align_spec_text_with_labels(spec: dict[str, Any], labels: list[str]) -> Non
         if re.search(r"\bdefect\b|缺陷|异物", value, flags=re.IGNORECASE):
             spec[key] = re.sub(r"\bdefect\b", label_text, value, flags=re.IGNORECASE)
             spec[key] = str(spec[key]).replace("缺陷/异物", label_text).replace("缺陷", label_text).replace("异物", label_text)
+
+
+def _force_model_thinking_epochs(spec: dict[str, Any]) -> None:
+    if MODEL_THINKING_FIXED_EPOCHS is None:
+        return
+    training = spec.get("training")
+    if isinstance(training, dict):
+        training["epochs"] = MODEL_THINKING_FIXED_EPOCHS
 
 
 def _spec_training_config(spec: dict[str, Any]) -> dict[str, Any]:
