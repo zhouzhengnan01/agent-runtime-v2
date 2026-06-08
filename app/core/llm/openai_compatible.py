@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -22,6 +23,9 @@ logger = logging.getLogger("uvicorn.error")
 LLM_TRACE_PAYLOADS = env_flag("LLM_TRACE_PAYLOADS", "1")
 LLM_TRACE_MAX_CHARS = env_int("LLM_TRACE_MAX_CHARS", 100)
 LLM_REPLY_TRACE_MAX_CHARS = env_int("LLM_REPLY_TRACE_MAX_CHARS", 4000)
+LLM_UPSTREAM_RETRIES = max(0, env_int("LLM_UPSTREAM_RETRIES", 2))
+LLM_UPSTREAM_RETRY_DELAY_MS = max(0, env_int("LLM_UPSTREAM_RETRY_DELAY_MS", 300))
+LLM_UPSTREAM_RETRY_STATUS_CODES = {500, 502, 503, 504}
 
 
 @dataclass(frozen=True)
@@ -74,12 +78,7 @@ class OpenAICompatibleClient:
         self.temperature = runtime_options.temperature if runtime_options.temperature is not None else model_config.temperature
         self.top_p = runtime_options.top_p if runtime_options.top_p is not None else model_config.top_p
         self.max_tokens = runtime_options.max_tokens if runtime_options.max_tokens is not None else model_config.max_tokens
-        raw_timeout = (
-            runtime_options.request_timeout_seconds
-            if runtime_options.request_timeout_seconds is not None
-            else model_config.request_timeout_seconds
-        )
-        self.request_timeout_seconds = _bounded_timeout(raw_timeout)
+        self.request_timeout_seconds: float | None = None
         selected_tools = any(name.strip() for name in runtime_options.selected_mcp_tools) or any(
             name.strip() for name in runtime_options.selected_skills
         )
@@ -120,10 +119,8 @@ class OpenAICompatibleClient:
 
         payload = self._chat_payload(system_prompt, messages)
         self._log_request("complete", payload)
-        started_at = time.perf_counter()
         async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
-            response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
-            self._log_http_response("complete", response, started_at)
+            response = await self._post_chat_completion(client, "complete", payload)
             self._raise_for_status(response)
             data = response.json()
         self._log_response_data("complete", data)
@@ -148,10 +145,8 @@ class OpenAICompatibleClient:
 
         payload = self._chat_payload(system_prompt, messages, tools=tools)
         self._log_request("complete_with_tools", payload)
-        started_at = time.perf_counter()
         async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
-            response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
-            self._log_http_response("complete_with_tools", response, started_at)
+            response = await self._post_chat_completion(client, "complete_with_tools", payload)
             if tools and self._is_auto_tool_choice_unsupported(response):
                 fallback_payload = self._chat_payload(system_prompt, messages)
                 logger.info(
@@ -160,13 +155,7 @@ class OpenAICompatibleClient:
                     response.text[:2000],
                 )
                 self._log_request("complete_with_tools.fallback", fallback_payload)
-                fallback_started_at = time.perf_counter()
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    json=fallback_payload,
-                    headers=self._headers(),
-                )
-                self._log_http_response("complete_with_tools.fallback", response, fallback_started_at)
+                response = await self._post_chat_completion(client, "complete_with_tools.fallback", fallback_payload)
             self._raise_for_status(response)
             data = response.json()
         self._log_response_data("complete_with_tools", data)
@@ -181,10 +170,8 @@ class OpenAICompatibleClient:
 
         payload = self._chat_payload(system_prompt, messages)
         self._log_request("complete_sync", payload)
-        started_at = time.perf_counter()
         with httpx.Client(timeout=self.request_timeout_seconds) as client:
-            response = client.post(f"{self.base_url}/chat/completions", json=payload, headers=self._headers())
-            self._log_http_response("complete_sync", response, started_at)
+            response = self._post_chat_completion_sync(client, "complete_sync", payload)
             self._raise_for_status(response)
             data = response.json()
         self._log_response_data("complete_sync", data)
@@ -317,6 +304,91 @@ class OpenAICompatibleClient:
             _pretty_json(diagnostic_json(response.usage, max_chars=LLM_TRACE_MAX_CHARS)),
             LLM_TRACE_MAX_CHARS,
             _pretty_json(diagnostic_json(data, max_chars=LLM_TRACE_MAX_CHARS)) if LLM_TRACE_PAYLOADS else "<disabled>",
+        )
+
+    async def _post_chat_completion(
+        self,
+        client: httpx.AsyncClient,
+        operation: str,
+        payload: dict[str, Any],
+    ) -> httpx.Response:
+        url = self._chat_completions_url()
+        headers = self._headers()
+        attempts = LLM_UPSTREAM_RETRIES + 1
+        for attempt in range(1, attempts + 1):
+            started_at = time.perf_counter()
+            try:
+                response = await client.post(url, json=payload, headers=headers)
+            except httpx.TransportError as exc:
+                if attempt >= attempts:
+                    raise
+                self._log_retry(operation, attempt, attempts, reason=exc.__class__.__name__)
+                await self._sleep_before_retry()
+                continue
+            self._log_http_response(operation, response, started_at)
+            if not self._should_retry_response(response) or attempt >= attempts:
+                return response
+            self._log_retry(operation, attempt, attempts, status_code=response.status_code)
+            await self._sleep_before_retry()
+        raise RuntimeError("unreachable llm retry state")
+
+    def _post_chat_completion_sync(
+        self,
+        client: httpx.Client,
+        operation: str,
+        payload: dict[str, Any],
+    ) -> httpx.Response:
+        url = self._chat_completions_url()
+        headers = self._headers()
+        attempts = LLM_UPSTREAM_RETRIES + 1
+        for attempt in range(1, attempts + 1):
+            started_at = time.perf_counter()
+            try:
+                response = client.post(url, json=payload, headers=headers)
+            except httpx.TransportError as exc:
+                if attempt >= attempts:
+                    raise
+                self._log_retry(operation, attempt, attempts, reason=exc.__class__.__name__)
+                self._sleep_before_retry_sync()
+                continue
+            self._log_http_response(operation, response, started_at)
+            if not self._should_retry_response(response) or attempt >= attempts:
+                return response
+            self._log_retry(operation, attempt, attempts, status_code=response.status_code)
+            self._sleep_before_retry_sync()
+        raise RuntimeError("unreachable llm retry state")
+
+    @staticmethod
+    def _should_retry_response(response: httpx.Response) -> bool:
+        return response.status_code in LLM_UPSTREAM_RETRY_STATUS_CODES
+
+    async def _sleep_before_retry(self) -> None:
+        if LLM_UPSTREAM_RETRY_DELAY_MS > 0:
+            await asyncio.sleep(LLM_UPSTREAM_RETRY_DELAY_MS / 1000)
+
+    def _sleep_before_retry_sync(self) -> None:
+        if LLM_UPSTREAM_RETRY_DELAY_MS > 0:
+            time.sleep(LLM_UPSTREAM_RETRY_DELAY_MS / 1000)
+
+    def _log_retry(
+        self,
+        operation: str,
+        attempt: int,
+        attempts: int,
+        *,
+        status_code: int | None = None,
+        reason: str | None = None,
+    ) -> None:
+        logger.info(
+            "llm upstream retry operation=%s model=%s attempt=%s/%s next_attempt=%s status_code=%s reason=%s delay_ms=%s",
+            operation,
+            self.model,
+            attempt,
+            attempts,
+            attempt + 1,
+            status_code,
+            reason or "",
+            LLM_UPSTREAM_RETRY_DELAY_MS,
         )
 
     def _log_reply_content(self, operation: str, content: str) -> None:
@@ -514,16 +586,6 @@ class OpenAICompatibleClient:
                 return content
 
         return None
-
-
-def _bounded_timeout(value: str | int | float | None) -> float:
-    if value is None:
-        return 120.0
-    try:
-        timeout = float(value)
-    except (TypeError, ValueError):
-        return 120.0
-    return max(1.0, min(3600.0, timeout))
 
 
 def _first_defined(*values: str | None) -> str:

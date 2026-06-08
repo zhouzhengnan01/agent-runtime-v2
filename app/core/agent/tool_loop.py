@@ -922,7 +922,11 @@ class ToolCallingAgentLoop:
         for failure in runtime_mcp_discovery.failures:
             if recorder is not None:
                 recorder.emit("mcp.discovery.failed", failure.to_event_data())
-        runtime_mcp_tools = [*runtime_mcp_discovery.tools, *runtime_client_tools]
+        runtime_mcp_tools = [
+            tool
+            for tool in [*runtime_mcp_discovery.tools, *runtime_client_tools]
+            if not self._shadowed_runtime_mcp_tool(tool)
+        ]
         if runtime_mcp_tools:
             if runtime_options is not None:
                 runtime_options.config_options["runtime_mcp_tools"] = [tool.to_payload() for tool in runtime_mcp_tools]
@@ -1054,6 +1058,9 @@ class ToolCallingAgentLoop:
             "local_read_file",
             "local_download_url",
             "local_file_to_base64",
+            "visual_bigscreen_upload_file",
+            "visualization_bigscreen_upload_file",
+            "visualization_bigscreen_save_resource",
             "local_search_text",
             "local_patch_file",
             "local_write_file",
@@ -1079,6 +1086,14 @@ class ToolCallingAgentLoop:
         if not isinstance(raw_servers, list):
             return []
         return [dict(server) for server in raw_servers if isinstance(server, dict)]
+
+    @staticmethod
+    def _shadowed_runtime_mcp_tool(tool: ToolDefinition) -> bool:
+        server_tool = str(tool.source.get("server_tool") or "")
+        return server_tool in {
+            "visual-bigscreen_Add",
+            "visual-bigscreen_UploadFile",
+        } or tool.name.endswith(("__visual-bigscreen_Add", "__visual-bigscreen_UploadFile"))
 
     @staticmethod
     def _runtime_client_tools(runtime_options: RuntimeOptions | None) -> list[ToolDefinition]:

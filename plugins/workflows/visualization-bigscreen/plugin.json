@@ -1,0 +1,9 @@
+{
+  "id": "visualization-bigscreen",
+  "name": "Visualization Bigscreen Workflows",
+  "version": "1.0.0",
+  "description": "Deterministic visualization bigscreen workflow for Java-orchestrated page generation.",
+  "workflows": [
+    "workflows/*/workflow.json"
+  ]
+}

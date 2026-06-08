@@ -67,11 +67,7 @@ class AppTemplateRegistry:
         raw_templates = data.get("templates")
         if not isinstance(raw_templates, list):
             raise ValueError(f"App template collection must contain templates list: {path}")
-        return [
-            _normalize_template(AppTemplate.model_validate(item), self.root_dir)
-            for item in raw_templates
-            if isinstance(item, dict)
-        ]
+        return [_normalize_template(AppTemplate.model_validate(item), self.root_dir) for item in raw_templates if isinstance(item, dict)]
 
     def validate_references(self) -> builtins.list[str]:
         """Return template reference problems without failing template loading."""

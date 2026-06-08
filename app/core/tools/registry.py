@@ -13,6 +13,7 @@ from app.core.tools.providers.local import local_tool_definitions
 from app.core.tools.providers.markdown_memory import markdown_memory_tool_definitions
 from app.core.tools.providers.memory import memory_tool_definitions
 from app.core.tools.providers.skill import SkillToolProvider
+from app.core.tools.providers.visualization import bigscreen_tool_definitions
 from app.core.tools.schemas import ToolDefinition
 
 
@@ -72,6 +73,7 @@ class ToolRegistry:
     def _builtin_tools() -> List[ToolDefinition]:
         return (
             local_tool_definitions()
+            + bigscreen_tool_definitions()
             + artifact_workspace_tool_definitions()
             + delegate_tool_definitions()
             + memory_tool_definitions()

@@ -1058,6 +1058,8 @@ class AgentRuntime:
             mime_type = (attachment.mime_type or "").split(";", 1)[0].strip().lower()
             if not mime_type.startswith("image/"):
                 continue
+            if mime_type == "image/svg+xml":
+                continue
             payload = attachment.model_dump(mode="python")
             local_path = cls._attachment_local_path(attachment.path or "", paths)
             if local_path is not None:

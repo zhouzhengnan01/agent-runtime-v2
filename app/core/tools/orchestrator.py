@@ -149,6 +149,30 @@ class ToolOrchestrator:
             runtime_mcp_tools = runtime_options.config_options.get("runtime_mcp_tools")
             if isinstance(runtime_mcp_tools, list):
                 arguments["_runtime_mcp_tools"] = runtime_mcp_tools
+            runtime_mcp_servers = (
+                runtime_options.config_options.get("mcpServers")
+                or runtime_options.config_options.get("mcp_servers")
+            )
+            if isinstance(runtime_mcp_servers, list):
+                arguments["_runtime_mcp_servers"] = runtime_mcp_servers
+            upload_url = self._runtime_config_string(
+                runtime_options,
+                "visualBigscreenUploadUrl",
+                "visual_bigscreen_upload_url",
+                "fileUploadUrl",
+                "file_upload_url",
+            )
+            if upload_url:
+                arguments["_visual_bigscreen_upload_url"] = upload_url
+            upload_path = self._runtime_config_string(
+                runtime_options,
+                "visualBigscreenUploadPath",
+                "visual_bigscreen_upload_path",
+                "fileUploadPath",
+                "file_upload_path",
+            )
+            if upload_path:
+                arguments["_visual_bigscreen_upload_path"] = upload_path
             skill_roots = self._selected_skill_roots(runtime_options)
             if skill_roots:
                 arguments["_skill_roots"] = skill_roots
@@ -199,6 +223,14 @@ class ToolOrchestrator:
         if "arguments" in message and "json" in message:
             return "TOOL_ARGUMENTS_INVALID"
         return "TOOL_EXECUTION_FAILED"
+
+    @staticmethod
+    def _runtime_config_string(runtime_options: RuntimeOptions, *keys: str) -> str:
+        for key in keys:
+            value = runtime_options.config_options.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
 
     def _selected_skill_roots(self, runtime_options: RuntimeOptions) -> list[str]:
         roots: list[str] = []
