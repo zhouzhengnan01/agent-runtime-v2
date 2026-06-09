@@ -13,6 +13,11 @@
     "smoking-review"
   ],
   "selected_mcp_tools": [],
+  "runtime_options": {
+    "config_options": {
+      "force_model_config": true
+    }
+  },
   "prompt_examples": [
     "请判断后厨通道是否存在杂物堆放、通行受阻或卫生不达标问题，并给出视觉证据。",
     "识别厨房过道、操作间通道是否有垃圾、积水、物品乱放或阻塞风险。",

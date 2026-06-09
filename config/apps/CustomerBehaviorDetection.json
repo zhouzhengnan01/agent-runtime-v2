@@ -12,6 +12,11 @@
     "fight-review"
   ],
   "selected_mcp_tools": [],
+  "runtime_options": {
+    "config_options": {
+      "force_model_config": true
+    }
+  },
   "prompt_examples": [
     "人员翻越围栏进入禁区，请按证据优先模式判断",
     "老人摔倒，需要区分文本规则判断和视觉证据确认",

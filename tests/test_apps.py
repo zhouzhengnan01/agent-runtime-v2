@@ -360,7 +360,12 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 16
         elif template.name == "reference-image-yolo-training":
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
-        elif template.name == "ParkingAbnormalEventMonitoring":
+        elif template.name in {
+            "CustomerBehaviorDetection",
+            "FireLaneComplianceDetection",
+            "KitchenAisleHygieneDetection",
+            "ParkingAbnormalEventMonitoring",
+        }:
             assert template.runtime_options == {"config_options": {"force_model_config": True}}
         elif template.name in {
             "70aaee52-99c2-49f5-a9c7-fb746821d3df",

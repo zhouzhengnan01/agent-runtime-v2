@@ -13,6 +13,11 @@
     "smoking-review"
   ],
   "selected_mcp_tools": [],
+  "runtime_options": {
+    "config_options": {
+      "force_model_config": true
+    }
+  },
   "prompt_examples": [
     "请判断消防通道是否被车辆或杂物占用，并给出视觉证据。",
     "识别消防通道堵塞、违规停放或通行受阻风险。",
