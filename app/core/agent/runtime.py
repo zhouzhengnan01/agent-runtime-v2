@@ -801,7 +801,7 @@ class AgentRuntime:
             return None
         if not any(keyword in normalized for keyword in ("生成", "创建", "写", "保存", "输出", "create", "generate", "write", "save")):
             return None
-        if not any(keyword in normalized for keyword in ("emoji", "emo", "emajl", "表情")):
+        if not cls._has_explicit_emoji_intent(normalized):
             return None
 
         payload = {"emoji": "😊"}
@@ -811,6 +811,10 @@ class AgentRuntime:
             content=content,
             reason="json_emoji_file_intent",
         )
+
+    @staticmethod
+    def _has_explicit_emoji_intent(normalized_text: str) -> bool:
+        return re.search(r"(?i)(?<![a-z0-9_])(emoji|emo|emajl)(?![a-z0-9_])|表情", normalized_text) is not None
 
     @staticmethod
     def _json_artifact_filename(text: str) -> str:
@@ -1547,7 +1551,8 @@ class AgentRuntime:
             metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
             size = metadata.get("size")
             size_text = f", size={size}" if isinstance(size, int | float | str) and str(size) else ""
-            path_text = f", path={attachment.path}" if attachment.path else ""
+            display_path = cls._attachment_context_path(attachment.path)
+            path_text = f", path={display_path}" if display_path else ""
             mime_text = f", mime_type={attachment.mime_type}" if attachment.mime_type else ""
             original_uri = metadata.get("original_uri")
             source_id = metadata.get("sourceId") or metadata.get("source_id")
@@ -1583,6 +1588,16 @@ class AgentRuntime:
                 updated[index] = message.model_copy(update={"content": message.content + context})
                 return updated
         return messages
+
+    @staticmethod
+    def _attachment_context_path(path: str | None) -> str:
+        if not path:
+            return ""
+        value = path.strip()
+        if value.lower().startswith("data:"):
+            header = value.split(",", 1)[0]
+            return f"{header},<inline data>"
+        return value
 
     def _effective_runtime_options(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
         updates = self._app_model_runtime_option_updates(runtime_options)

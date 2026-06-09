@@ -690,6 +690,8 @@ def _attachment_image_url(attachment: dict[str, Any], mime_type: str) -> str:
     if not isinstance(path, str) or not path.strip():
         return ""
     clean_path = path.strip()
+    if _is_data_uri(clean_path):
+        return clean_path
     if _is_http_url(clean_path):
         logger.warning("llm image attachment skipped because remote url was not materialized url=%s", clean_path[:500])
         return ""
@@ -715,6 +717,10 @@ def _data_uri(mime_type: str, encoded: str) -> str:
 def _is_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_data_uri(value: str) -> bool:
+    return value.lower().startswith("data:")
 
 
 def _local_attachment_path(path: str) -> Path | None:

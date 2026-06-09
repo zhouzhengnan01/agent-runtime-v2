@@ -237,6 +237,40 @@ def test_runtime_direct_json_emoji_generation_returns_resource_link_without_llm(
     assert events[-1].data["result"]["content"][-1]["type"] == "resource_link"
 
 
+def test_direct_json_emoji_generation_does_not_match_memory_substring() -> None:
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content="Use explicitly injected memories. 输出 JSON，evidenceRefs 是文件 ID。",
+            )
+        ],
+        runtime_options=RuntimeOptions(thread_id="no-direct-json-emoji"),
+    )
+
+    assert AgentRuntime._direct_json_artifact_intent(request) is None
+
+
+def test_attachment_context_summarizes_data_uri_path() -> None:
+    messages = [
+        Message(role="user", content="请复判图片"),
+    ]
+    updated = AgentRuntime._messages_with_attachment_context(
+        messages,
+        [
+            Attachment(
+                name="scene.jpg",
+                path="data:image/jpeg;base64,anBlZw==",
+                mime_type="image/jpeg",
+            )
+        ],
+    )
+
+    assert len(updated) == 1
+    assert "path=data:image/jpeg;base64,<inline data>" in updated[0].content
+    assert "anBlZw==" not in updated[0].content
+
+
 def test_runtime_streams_direct_json_emoji_generation_resource_link(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
