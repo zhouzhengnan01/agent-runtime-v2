@@ -525,6 +525,19 @@ def _last_user_text(messages: list[Message]) -> str:
 
 
 def _review_source_id(text: str) -> str:
+    payload = _parse_json_object(text)
+    if payload:
+        for path in (
+            ("reviewSourceId",),
+            ("review_source_id",),
+            ("sourceId",),
+            ("source_id",),
+            ("headers", "reviewSourceId"),
+            ("headers", "review_source_id"),
+        ):
+            value = _nested_string(payload, path)
+            if value:
+                return value
     patterns = [
         r"reviewSourceId为\[([^\]]+)\]",
         r"复判事件来源reviewSourceId为\[([^\]]+)\]",

@@ -20,12 +20,21 @@
       "TrafficCongestion",
       "TrafficCongestionDetection",
       "ParkingCongestion",
-      "ParkingCongestionDetection"
+      "ParkingCongestionDetection",
+      "道路拥堵",
+      "场区车辆拥堵状况",
+      "车辆排队",
+      "低速停滞",
+      "通行受阻",
+      "VehicleCongestionDetection",
+      "RoadCongestionDetection"
     ],
     "examples": [
       "复判停车场通道是否拥堵",
       "判断车道中是否有多车排队堵塞",
-      "检查出入口或通道是否发生车辆拥堵"
+      "检查出入口或通道是否发生车辆拥堵",
+      "判断停车场通道是否出现车辆拥堵",
+      "检查通行车道内车辆是否排队停滞造成通行受阻"
     ]
   },
   "quality_template": [

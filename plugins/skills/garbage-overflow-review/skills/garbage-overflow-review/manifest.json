@@ -13,12 +13,21 @@
       "垃圾堆积",
       "后厨通道卫生",
       "GarbageOverflowDetection",
-      "GarbageOverflow"
+      "GarbageOverflow",
+      "垃圾满溢监测",
+      "垃圾桶垃圾超出容量",
+      "垃圾超出桶口",
+      "垃圾袋破裂",
+      "垃圾散落",
+      "TrashOverflowDetection",
+      "BinOverflowDetection"
     ],
     "examples": [
       "复判垃圾桶是否满溢",
       "判断后厨通道是否存在垃圾外溢",
-      "检查垃圾是否堆积到影响卫生或通行"
+      "检查垃圾是否堆积到影响卫生或通行",
+      "判断垃圾桶垃圾是否超出容量",
+      "检查垃圾是否外溢或散落影响通行"
     ]
   },
   "quality_template": [

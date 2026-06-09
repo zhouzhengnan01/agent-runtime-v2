@@ -253,9 +253,10 @@ def test_review_objective_and_skill_score_use_task_target_payload() -> None:
     )
 
     assert workflow._objective(prompt_text) == "FallDetection"
-    assert [candidate.skill.name for candidate in candidates] == ["smoking-review", "fall-review"]
-    assert candidates[1].score > candidates[0].score
-    assert "keyword=人员跌倒/倒地检测" in candidates[1].score_reasons
+    by_name = {candidate.skill.name: candidate for candidate in candidates}
+    assert candidates[0].skill.name == "fall-review"
+    assert by_name["fall-review"].score > by_name["smoking-review"].score
+    assert "keyword=人员跌倒/倒地检测" in by_name["fall-review"].score_reasons
 
 
 def test_review_objective_prefers_fall_target_over_smoking_summary_text() -> None:
@@ -298,8 +299,9 @@ def test_review_objective_prefers_fall_target_over_smoking_summary_text() -> Non
     )
 
     assert objective == "FallDetection"
-    assert candidates[1].skill.name == "fall-review"
-    assert candidates[1].score > candidates[0].score
+    by_name = {candidate.skill.name: candidate for candidate in candidates}
+    assert candidates[0].skill.name == "fall-review"
+    assert by_name["fall-review"].score > by_name["smoking-review"].score
 
 
 def test_parking_review_skill_score_routes_parking_violation_and_congestion_targets() -> None:
@@ -583,7 +585,7 @@ def test_parking_review_logs_image_sources(
     assert "parking review input summary review_source_id=source-image" in logs
     assert "link_count=1" in logs
     assert "remote_link_count=1" in logs
-    assert "https://example.test/image.jpg" in logs
+    assert "https://example.test/api/ai/task/history/_read/image.jpg?..." in logs
     assert '"dataId":"data-1"' in logs
     assert "parking review final result review_source_id=source-image" in logs
     event_payloads = {event.type: event.data for event in events}

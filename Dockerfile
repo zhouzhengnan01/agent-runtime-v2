@@ -1,4 +1,5 @@
-ARG BASE_IMAGE=python:3.12-slim
+# syntax=docker/dockerfile:1.7
+ARG BASE_IMAGE=ghcr.io/jetlinks-v2/jetlinks-agent-runtime:base-agent-v2
 FROM ${BASE_IMAGE}
 
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
@@ -13,15 +14,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /workspace/code/jetlinks-agent-runtime-agent-v2
 
-COPY README.md pyproject.toml ./
+COPY README.md pyproject.toml uv.lock ./
 COPY runtime-env.sh up.sh status.sh stop.sh sync-image-code.sh docker-entrypoint.sh ./
 COPY app ./app
 COPY config ./config
 COPY plugins ./plugins
 COPY static ./static
 
-RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir -e . \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --no-deps -e . \
     && mkdir -p /opt/jetlinks-agent-runtime-agent-v2-defaults \
     && cp -a config plugins static /opt/jetlinks-agent-runtime-agent-v2-defaults/ \
     && cp docker-entrypoint.sh /usr/local/bin/jetlinks-agent-runtime-v2-entrypoint \

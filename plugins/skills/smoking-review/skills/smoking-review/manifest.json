@@ -14,12 +14,22 @@
       "持烟",
       "SmokingDetection",
       "Smoking",
-      "Smoke"
+      "Smoke",
+      "抽烟监测",
+      "吸烟行为",
+      "现场人员吸烟行为",
+      "香烟",
+      "电子烟",
+      "SmokerDetection",
+      "CigaretteDetection",
+      "SmokingBehaviorDetection"
     ],
     "examples": [
       "复判画面中人员是否抽烟",
       "判断消防通道里是否有人吸烟",
-      "检查后厨通道是否存在抽烟行为"
+      "检查后厨通道是否存在抽烟行为",
+      "判断现场人员是否存在吸烟行为",
+      "检查暗光画面中是否有烟头火星或持烟吸食动作"
     ]
   },
   "quality_template": [

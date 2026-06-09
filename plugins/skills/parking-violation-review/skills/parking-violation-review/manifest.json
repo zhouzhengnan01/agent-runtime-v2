@@ -21,12 +21,21 @@
       "ParkingViolationDetection",
       "IllegalParking",
       "IllegalParkingDetection",
-      "ParkingAbnormalDetection"
+      "ParkingAbnormalDetection",
+      "判定车辆是否在禁停区域停放",
+      "禁停区域停放",
+      "长时间静止",
+      "车轮压线",
+      "装卸货影响通行",
+      "VehicleParkingViolationDetection",
+      "ViolationParkingDetection"
     ],
     "examples": [
       "复判车辆是否存在违规停车",
       "判断车场画面中车辆是否违停或占用通道",
-      "检查车辆是否停在禁停区域、出入口或通行通道上"
+      "检查车辆是否停在禁停区域、出入口或通行通道上",
+      "判断车辆是否在禁停区域长时间停放",
+      "检查车辆是否占用通行车道或关键区域"
     ]
   },
   "quality_template": [
