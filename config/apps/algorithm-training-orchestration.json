@@ -5,7 +5,7 @@
   "category": "algorithm-training",
   "icon": "package",
   "agent_name": "default",
-  "workflow": null,
+  "workflow": "agent_loop",
   "selected_skills": [
     "image-composite-generation",
     "data-auto-annotation",

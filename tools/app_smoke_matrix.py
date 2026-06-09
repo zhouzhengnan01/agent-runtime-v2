@@ -42,6 +42,7 @@ SKILL_ARTIFACT_PATTERNS = {
     "emoji": ["*.md"],
     "excel-generation": ["*.xlsx"],
     "generate-screen-skill": ["generate-screen-skill-prompt.md"],
+    "jetlinks-ai-component": ["*/component.vue", "*/config.mjs", "*/README.md"],
     "markdown-rendering": ["*.md"],
     "pptx-generation": ["*.pptx"],
     "reference-image-yolo-trainer": [
