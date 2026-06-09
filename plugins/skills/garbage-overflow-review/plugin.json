@@ -1,0 +1,9 @@
+{
+  "id": "garbage-overflow-review",
+  "name": "垃圾满溢检测",
+  "version": "0.1.0",
+  "description": "用于机器视觉复判垃圾桶满溢、垃圾外溢、垃圾堆积等后厨通道卫生事件。",
+  "skills": [
+    "skills/garbage-overflow-review/manifest.json"
+  ]
+}

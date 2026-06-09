@@ -1,0 +1,72 @@
+{
+  "name": "fall-review",
+  "description": "用于机器视觉复判人员跌倒、倒地、摔倒等客户行为安全事件。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于商场、园区、后场、通道等监控画面中人员跌倒、倒地、摔倒事件复判。",
+    "keywords": [
+      "人员跌倒/倒地检测",
+      "人员跌倒",
+      "人员倒地",
+      "跌倒",
+      "倒地",
+      "摔倒",
+      "FallDetection",
+      "Fall",
+      "Fallen"
+    ],
+    "examples": [
+      "复判画面中人员是否跌倒或倒地",
+      "判断顾客行为监管里的人员跌倒/倒地检测是否命中",
+      "检查人员是否躺倒在地面且需要处置"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "person_posture",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "fall-review"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  }
+}

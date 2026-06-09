@@ -6,7 +6,8 @@
   "description": "",
   "workflow": "parking_abnormal_review",
   "selected_skills": [
-    "17803963378248hh02dvt"
+    "parking-violation-review",
+    "parking-congestion-review"
   ],
   "runtime_options": {
     "config_options": {
@@ -23,7 +24,7 @@
       "priority": 0,
       "provider": "openai-compatible",
       "model": "Qwen3.6-35B-A3B",
-      "base_url": "http://124.132.152.75:62092/v1",
+      "base_url": "http://218.67.242.10:59202/v1",
       "default_model": "Qwen3.6-35B-A3B",
       "api_key": "abc@123",
       "tool_choice": "auto",

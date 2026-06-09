@@ -1,0 +1,77 @@
+{
+  "name": "garbage-overflow-review",
+  "description": "用于机器视觉复判垃圾桶满溢、垃圾外溢、垃圾堆积等后厨通道卫生事件。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于后厨、通道、垃圾桶点位中垃圾满溢、垃圾外溢、垃圾堆积、卫生不达标事件复判。",
+    "keywords": [
+      "垃圾满溢检测",
+      "垃圾满溢",
+      "垃圾桶满溢",
+      "垃圾外溢",
+      "垃圾堆积",
+      "后厨通道卫生",
+      "GarbageOverflowDetection",
+      "GarbageOverflow"
+    ],
+    "examples": [
+      "复判垃圾桶是否满溢",
+      "判断后厨通道是否存在垃圾外溢",
+      "检查垃圾是否堆积到影响卫生或通行"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "garbage_state",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "garbage-overflow-review"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "metadata": {
+    "developerCenter": {
+      "domain": "general"
+    }
+  }
+}

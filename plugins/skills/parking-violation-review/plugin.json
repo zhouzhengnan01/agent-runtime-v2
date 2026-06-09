@@ -1,0 +1,9 @@
+{
+  "id": "parking-violation-review",
+  "name": "违规停车",
+  "version": "0.1.0",
+  "description": "用于机器视觉复判车辆违规停车、违停、占用禁停区域等车场异常事件。",
+  "skills": [
+    "skills/parking-violation-review/manifest.json"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "fire-lane-compliance-review",
+  "name": "消防通道合规检测",
+  "version": "0.1.0",
+  "description": "用于机器视觉复判消防通道占用、堵塞、违规停放和通行受阻等合规事件。",
+  "skills": [
+    "skills/fire-lane-compliance-review/manifest.json"
+  ]
+}
