@@ -1346,8 +1346,20 @@ class AgentRuntime:
                     exc,
                 )
                 metadata = dict(attachment.metadata)
-                metadata["download_error"] = str(exc)
-                materialized.append(attachment.model_copy(update={"metadata": metadata}, deep=True))
+                metadata["download_error"] = self._redacted_remote_attachment_error(str(exc), attachment.path)
+                metadata["original_uri"] = metadata.get("uri") or attachment.path
+                metadata["remote_download_failed"] = True
+                materialized.append(
+                    attachment.model_copy(
+                        update={
+                            "path": None,
+                            "data_base64": None,
+                            "metadata": metadata,
+                        },
+                        deep=True,
+                    )
+                )
+                changed = True
                 continue
             materialized.append(updated)
             changed = True
@@ -1474,6 +1486,17 @@ class AgentRuntime:
         return name[:180]
 
     @staticmethod
+    def _redacted_remote_attachment_error(error: str, raw_url: str | None) -> str:
+        redacted = error
+        if raw_url:
+            clean_url = raw_url.strip()
+            if clean_url:
+                parsed = urlparse(clean_url)
+                safe_url = parsed._replace(query="", fragment="").geturl() if parsed.scheme and parsed.netloc else "<remote-url>"
+                redacted = redacted.replace(clean_url, safe_url)
+        return redacted[:1000]
+
+    @staticmethod
     def _fingerprinted_remote_attachment_filename(filename: str, fingerprint: str) -> str:
         path = Path(filename)
         stem = path.stem or "attachment"
@@ -1531,9 +1554,15 @@ class AgentRuntime:
             data_id = metadata.get("dataId") or metadata.get("data_id")
             timestamp = metadata.get("timestamp")
             sha1 = metadata.get("sha1")
+            remote_download_failed = metadata.get("remote_download_failed")
+            download_error = metadata.get("download_error")
             metadata_parts = []
-            if isinstance(original_uri, str) and original_uri:
+            if isinstance(original_uri, str) and original_uri and not remote_download_failed:
                 metadata_parts.append(f"original_uri={original_uri}")
+            if remote_download_failed:
+                metadata_parts.append("remote_download_failed=true")
+            if isinstance(download_error, str) and download_error:
+                metadata_parts.append(f"download_error={download_error[:200]}")
             if isinstance(source_id, str) and source_id:
                 metadata_parts.append(f"sourceId={source_id}")
             if isinstance(data_id, str) and data_id:

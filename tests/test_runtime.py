@@ -867,6 +867,100 @@ def test_agent_runtime_downloads_remote_video_attachment_without_explicit_mime_t
     assert "mime_type=video/mp4" in history_text
 
 
+def test_agent_runtime_drops_remote_attachment_url_after_download_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://example.test/file.mp4?accessKey=bad"
+        return httpx.Response(500, text="remote storage error")
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del system_prompt, tools
+        payload = self._chat_payload("system", messages)
+        seen_messages.append(payload["messages"])
+        return LlmChatResponse(content="未收到可用画面", finish_reason="stop")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="remote-failed-agent",
+        display_name="Remote Failed Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="请复判视频")],
+                attachments=[
+                    Attachment(
+                        name="file.mp4",
+                        path="https://example.test/file.mp4?accessKey=bad",
+                        mime_type="image/jpeg",
+                        metadata={"acp_type": "resource_link", "uri": "https://example.test/file.mp4?accessKey=bad"},
+                    )
+                ],
+                runtime_options=RuntimeOptions(thread_id="remote-download-failed"),
+            ),
+        )
+    )
+
+    assert result.reply == "未收到可用画面"
+    user_content = seen_messages[0][1]["content"]
+    assert isinstance(user_content, str)
+    assert "https://example.test/file.mp4?accessKey=bad" not in user_content
+    history_text = (tmp_path / "threads" / "remote-download-failed" / "memory" / "conversation.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "remote_download_failed" in history_text
+    assert "download_error" in history_text
+
+
+def test_llm_client_does_not_forward_remote_image_urls() -> None:
+    agent = AgentConfig(
+        name="remote-url-agent",
+        display_name="Remote URL Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+    )
+    client = OpenAICompatibleClient(agent)
+
+    payload = client._chat_payload(
+        "system",
+        [
+            {
+                "role": "user",
+                "content": "请复判图片",
+                "_attachments": [
+                    {
+                        "name": "file.mp4",
+                        "path": "https://example.test/file.mp4?accessKey=bad",
+                        "mime_type": "image/jpeg",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert payload["messages"][1]["content"] == "请复判图片"
+
+
 def test_parking_abnormal_review_workflow_returns_final_json_with_image(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

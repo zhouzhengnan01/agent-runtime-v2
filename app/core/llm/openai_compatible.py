@@ -705,7 +705,8 @@ def _attachment_image_url(attachment: dict[str, Any], mime_type: str) -> str:
         return ""
     clean_path = path.strip()
     if _is_http_url(clean_path):
-        return clean_path
+        logger.warning("llm image attachment skipped because remote url was not materialized url=%s", clean_path[:500])
+        return ""
     local_path = _local_attachment_path(clean_path)
     if local_path is None or not local_path.is_file():
         return ""
