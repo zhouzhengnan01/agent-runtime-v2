@@ -316,6 +316,40 @@ def test_chat_payload_keeps_http_image_attachment_as_image_url(monkeypatch: Monk
     }
 
 
+def test_chat_payload_keeps_data_uri_image_path_as_image_url(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    agent = AgentConfig(
+        name="vision-data-uri-agent",
+        display_name="Vision Data URI Agent",
+        model=ModelConfig(model="vision-model", base_url="http://llm.local/v1", api_key="key"),
+    )
+    client = OpenAICompatibleClient(agent)
+
+    payload = client._chat_payload(
+        "system",
+        [
+            {
+                "role": "user",
+                "content": "看内联图片",
+                "_attachments": [
+                    {
+                        "name": "image.jpg",
+                        "path": "data:image/jpeg;base64,anBlZw==",
+                        "mime_type": "image/jpeg",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert payload["messages"][1]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/jpeg;base64,anBlZw=="},
+    }
+
+
 def test_model_manager_normalizes_model_tags_for_public_payload() -> None:
     manager = ModelManager(
         [
