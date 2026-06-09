@@ -1,9 +1,10 @@
 import argparse
+import ast
 import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, List
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -16,6 +17,7 @@ except Exception:
     pass
 
 _log_file = None
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
 class _TeeWriter:
@@ -73,6 +75,223 @@ def _safe_results_dict(results: object) -> Dict[str, object]:
         except (TypeError, ValueError):
             safe[str(key)] = str(value)
     return safe
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float_list(value: object) -> List[float]:
+    if value is None:
+        return []
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, dict):
+        return []
+    if isinstance(value, (list, tuple)):
+        values = value
+    else:
+        try:
+            values = list(value)  # type: ignore[arg-type]
+        except TypeError:
+            return []
+    result: List[float] = []
+    for item in values:
+        number = _safe_float(item)
+        if number is not None:
+            result.append(number)
+    return result
+
+
+def _safe_int_list(value: object) -> List[int]:
+    if value is None:
+        return []
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, dict):
+        return []
+    if isinstance(value, (list, tuple)):
+        values = value
+    else:
+        try:
+            values = list(value)  # type: ignore[arg-type]
+        except TypeError:
+            return []
+    result: List[int] = []
+    for item in values:
+        try:
+            result.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _metric_value_for_class(values: List[float], class_index: int, class_count: int, ap_class_indices: List[int]) -> float | None:
+    if not values:
+        return None
+    if len(values) == class_count and 0 <= class_index < len(values):
+        return values[class_index]
+    if ap_class_indices and len(ap_class_indices) == len(values):
+        for pos, metric_class_index in enumerate(ap_class_indices):
+            if metric_class_index == class_index:
+                return values[pos]
+        return None
+    if 0 <= class_index < len(values):
+        return values[class_index]
+    return None
+
+
+def _class_metric_analysis(class_name: str, precision: float | None, recall: float | None, map50: float | None, map50_95: float | None) -> str:
+    if precision is None and recall is None and map50 is None and map50_95 is None:
+        return "未获取到该类别的评估指标，建议检查 test split 是否包含该类别实例或当前 Ultralytics 版本是否返回类别级指标。"
+    if recall == 0:
+        return f"{class_name} 在当前测试集上召回率为 0，模型没有成功检出该类别；若精确率较高，通常表示误报少但漏检严重。"
+    if recall is not None and recall >= 0.95 and map50 is not None and map50 >= 0.9:
+        return f"{class_name} 表现优异，召回率和 mAP50 都很高，当前测试集上识别稳定。"
+    if map50 is not None and map50 < 0.3:
+        return f"{class_name} 的 mAP50 较低，当前测试集上的定位或识别效果较弱，建议补充更多该类别样本并检查标注质量。"
+    if recall is not None and recall < 0.5:
+        return f"{class_name} 召回率偏低，存在明显漏检风险，建议增加该类别训练样本、困难样本和小目标样本。"
+    if precision is not None and precision < 0.5:
+        return f"{class_name} 精确率偏低，误报较多，建议加入更多负样本或相似干扰类别。"
+    return f"{class_name} 指标处于可用但仍需关注的水平，建议结合更多测试图像继续验证泛化表现。"
+
+
+def _extract_per_class_metrics(results: object, class_names: List[str], test_set_summary: Dict[str, Any]) -> List[Dict[str, object]]:
+    if results is None or not class_names:
+        return []
+    box = getattr(results, "box", None)
+    if box is None:
+        return []
+    ap_class_indices = _safe_int_list(
+        getattr(box, "ap_class_index", None)
+        if getattr(box, "ap_class_index", None) is not None
+        else getattr(box, "ap_class", None)
+    )
+    metric_values = {
+        "precision": _safe_float_list(getattr(box, "p", None)),
+        "recall": _safe_float_list(getattr(box, "r", None)),
+        "mAP50": _safe_float_list(getattr(box, "ap50", None)),
+        "mAP50-95": _safe_float_list(getattr(box, "maps", None) if getattr(box, "maps", None) is not None else getattr(box, "ap", None)),
+    }
+    instance_counts = test_set_summary.get("instances_per_class", {})
+    if not isinstance(instance_counts, dict):
+        instance_counts = {}
+
+    metrics: List[Dict[str, object]] = []
+    class_count = len(class_names)
+    for class_index, class_name in enumerate(class_names):
+        precision = _metric_value_for_class(metric_values["precision"], class_index, class_count, ap_class_indices)
+        recall = _metric_value_for_class(metric_values["recall"], class_index, class_count, ap_class_indices)
+        map50 = _metric_value_for_class(metric_values["mAP50"], class_index, class_count, ap_class_indices)
+        map50_95 = _metric_value_for_class(metric_values["mAP50-95"], class_index, class_count, ap_class_indices)
+        metrics.append(
+            {
+                "class_id": class_index,
+                "class_name": class_name,
+                "instances": int(instance_counts.get(class_name, 0) or 0),
+                "precision": precision,
+                "recall": recall,
+                "mAP50": map50,
+                "mAP50-95": map50_95,
+                "analysis": _class_metric_analysis(class_name, precision, recall, map50, map50_95),
+            }
+        )
+    return metrics
+
+
+def _build_class_performance_analysis(test_set_summary: Dict[str, Any], per_class_metrics: List[Dict[str, object]]) -> Dict[str, object]:
+    if not per_class_metrics:
+        return {
+            "summary": "未获取到类别级指标；请确认 test split 中存在标注实例，且当前 Ultralytics 版本返回 per-class metrics。",
+            "classes": [],
+        }
+    image_count = int(test_set_summary.get("images", 0) or 0)
+    instance_count = int(test_set_summary.get("instances", 0) or 0)
+    return {
+        "summary": f"从测试集（{image_count} 张图像，{instance_count} 个实例）的细粒度结果来看，各类别表现如下。",
+        "classes": [
+            {
+                "class_name": item.get("class_name"),
+                "precision": item.get("precision"),
+                "recall": item.get("recall"),
+                "mAP50": item.get("mAP50"),
+                "mAP50-95": item.get("mAP50-95"),
+                "analysis": item.get("analysis"),
+            }
+            for item in per_class_metrics
+        ],
+    }
+
+
+def _parse_simple_dataset_yaml(dataset_yaml: Path) -> Dict[str, object]:
+    data: Dict[str, object] = {}
+    for raw_line in dataset_yaml.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key == "names":
+            try:
+                parsed = ast.literal_eval(value)
+                if isinstance(parsed, list):
+                    data[key] = [str(item) for item in parsed]
+                elif isinstance(parsed, dict):
+                    data[key] = [str(parsed[item]) for item in sorted(parsed)]
+            except Exception:
+                data[key] = []
+        else:
+            data[key] = value
+    return data
+
+
+def _class_names_from_dataset_yaml(dataset_yaml: Path) -> List[str]:
+    data = _parse_simple_dataset_yaml(dataset_yaml)
+    names = data.get("names")
+    return [str(item) for item in names] if isinstance(names, list) else []
+
+
+def _summarize_dataset_yaml_split(dataset_yaml: Path, split_name: str, class_names: List[str]) -> Dict[str, object]:
+    data = _parse_simple_dataset_yaml(dataset_yaml)
+    root = Path(str(data.get("path") or dataset_yaml.parent)).expanduser()
+    split_value = data.get(split_name)
+    images_dir = Path(str(split_value)).expanduser() if split_value else root / "images" / split_name
+    if not images_dir.is_absolute():
+        images_dir = root / images_dir
+    if "images" in images_dir.parts:
+        parts = list(images_dir.parts)
+        parts[parts.index("images")] = "labels"
+        labels_dir = Path(*parts)
+    else:
+        labels_dir = root / "labels" / split_name
+
+    image_count = len([path for path in images_dir.glob("*") if path.suffix.lower() in IMAGE_EXTS]) if images_dir.exists() else 0
+    instances_per_class = {name: 0 for name in class_names}
+    instance_count = 0
+    if labels_dir.exists():
+        for label_path in labels_dir.glob("*.txt"):
+            for line in label_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                try:
+                    class_index = int(float(parts[0]))
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= class_index < len(class_names):
+                    instances_per_class[class_names[class_index]] += 1
+                    instance_count += 1
+    return {
+        "split": split_name,
+        "images": image_count,
+        "instances": instance_count,
+        "instances_per_class": instances_per_class,
+    }
 
 
 def _project_root() -> Path:
@@ -195,6 +414,10 @@ def run(config_path: Path) -> None:
     dataset_yaml = Path(str(dataset_cfg.get("data_yaml") or dataset_cfg.get("dataset_yaml") or "")).expanduser()
     if not dataset_yaml.exists():
         raise FileNotFoundError(f"Prepared dataset yaml not found: {dataset_yaml}")
+    class_names = [str(item) for item in dataset_cfg.get("class_names", [])] if isinstance(dataset_cfg.get("class_names"), list) else []
+    if not class_names:
+        class_names = _class_names_from_dataset_yaml(dataset_yaml)
+    test_set_summary = _summarize_dataset_yaml_split(dataset_yaml, "test", class_names)
 
     project_dir = Path(str(output_cfg.get("project_dir") or "")).expanduser()
     run_name = str(output_cfg.get("run_name", "exp"))
@@ -277,6 +500,9 @@ def run(config_path: Path) -> None:
         eval_error = str(exc)
         log_warn(f"test split evaluation failed, training outputs are preserved: {eval_error}")
 
+    eval_results_dict = _safe_results_dict(eval_results)
+    per_class_metrics = _extract_per_class_metrics(eval_results, class_names, test_set_summary)
+    class_performance_analysis = _build_class_performance_analysis(test_set_summary, per_class_metrics)
     summary = {
         "config_path": str(config_path),
         "conda_env_name": conda_env_name,
@@ -286,11 +512,16 @@ def run(config_path: Path) -> None:
         "model": model_name,
         "model_fallback_used": model_fallback_used,
         "model_load_error": model_load_error,
+        "num_categories": len(class_names),
+        "class_names": class_names,
+        "test_set_summary": test_set_summary,
         "run_root": str(run_root),
         "runs_dir": str(run_root),
         "train_save_dir": str(getattr(train_results, "save_dir", "")),
         "eval_results": str(eval_results) if eval_results is not None else "",
-        "results_dict": _safe_results_dict(eval_results),
+        "results_dict": eval_results_dict,
+        "per_class_metrics": per_class_metrics,
+        "class_performance_analysis": class_performance_analysis,
         "eval_error": eval_error,
     }
     summary_path = run_root / "run_summary.json"

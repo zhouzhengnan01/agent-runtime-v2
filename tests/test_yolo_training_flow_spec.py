@@ -96,6 +96,35 @@ def test_yolo_training_flow_fallback_keeps_test_split_for_small_dataset() -> Non
     assert training_cfg["split"]["test"] == 0.1
 
 
+def test_yolo_training_flow_infers_multiple_intent_labels() -> None:
+    module = _load_yolo_training_flow_module()
+    helmet_text = "\u5e2e\u6211\u8bad\u7ec3\u4e00\u4e2aYOLO\u4eba\u8138\u68c0\u6d4b\u548c\u5934\u76d4\u68c0\u6d4b\u6a21\u578b"
+    shoe_text = "\u5e2e\u6211\u8bad\u7ec3\u4e00\u4e2aYOLO\u4eba\u8138\u68c0\u6d4b\u548c\u978b\u5b50\u68c0\u6d4b\u6a21\u578b"
+
+    assert module._infer_labels_from_training_intent(helmet_text) == ["face", "hard_hat"]
+    assert module._infer_labels_from_training_intent(shoe_text) == ["face", "shoe"]
+    model_spec = module._ensure_intent_labels({"labels": ["face"]}, shoe_text)
+    empty_spec = module._ensure_intent_labels({}, shoe_text)
+    generic_spec = module._ensure_intent_labels({"labels": ["object"]}, shoe_text)
+    model_path_empty_spec = module._ensure_intent_labels({}, shoe_text, allow_rule_fallback=False)
+    model_path_generic_spec = module._ensure_intent_labels({"labels": ["object"]}, shoe_text, allow_rule_fallback=False)
+
+    assert model_spec["labels"] == ["face"]
+    assert empty_spec["labels"] == ["face", "shoe"]
+    assert generic_spec["labels"] == ["face", "shoe"]
+    assert "labels" not in model_path_empty_spec
+    assert "labels" not in model_path_generic_spec
+
+
+def test_yolo_training_flow_accepts_dataset_aware_model_label_repair() -> None:
+    module = _load_yolo_training_flow_module()
+    spec = {"labels": ["face"]}
+
+    module._apply_model_generated_labels(spec, {"labels": ["face", "shoe"]})
+
+    assert spec["labels"] == ["face", "shoe"]
+
+
 def test_yolo_training_flow_owns_three_zip_input_contract(tmp_path: Path) -> None:
     module = _load_yolo_training_flow_module()
     request = ChatRequest(

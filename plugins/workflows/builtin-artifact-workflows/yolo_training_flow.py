@@ -153,7 +153,7 @@ class YoloTrainingWorkflow:
                 runtime_options=runtime_options,
                 recorder=recorder,
             )
-            request_spec = _ensure_intent_labels(request_spec, spec_user_text)
+            request_spec = _ensure_intent_labels(request_spec, spec_user_text, allow_rule_fallback=not bool(request_spec))
             if _spec_string(request_spec, "generation_prompt"):
                 request_spec["use_synthetic_generation"] = True
         else:
@@ -329,7 +329,7 @@ class YoloTrainingWorkflow:
                 recorder=recorder,
             )
             request_spec = _fallback_model_managed_yolo_training_request_spec(request_spec, spec_user_text, dataset_facts)
-            request_spec = _ensure_intent_labels(request_spec, spec_user_text)
+            request_spec = _ensure_intent_labels(request_spec, spec_user_text, allow_rule_fallback=False)
             synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
             if synthetic_generation is not None:
                 generation_enabled = synthetic_generation
@@ -1166,6 +1166,8 @@ def _generate_model_managed_yolo_training_intent_spec(
         "合成目的必须是把 image2 中目标自然合成到 image1 场景中，形成真实、可标注的训练图片。"
         "generation_prompt 必须包含上述 image1/image2 角色、自然融合、光照/尺度/遮挡一致、适合检测标注等要求。"
         "labels 必须围绕用户要训练的检测目标，不要固定套用示例类别；"
+        "必须从用户的自然语言目标中自主理解所有需要检测的具体对象，不要求用户使用固定格式；"
+        "当用户表达多个检测目标时，labels 必须完整包含每一个具体对象，禁止只输出其中一部分。"
         "labels 必须是 YOLO 训练可直接使用的英文 ASCII 类名，只能使用小写英文、数字和下划线，"
         "禁止输出中文、空格或自然语言短语；例如人脸检测输出 face，不要输出 人脸；"
         "严禁返回 object、target、thing、foreground、目标、物体、对象 等泛化类别；"
@@ -1221,6 +1223,7 @@ def _generate_dataset_aware_yolo_training_request_spec(
         "runtime 必须含 enforce_conda_env=false；不要指定 conda_env_name，或置为空字符串。"
         "split 必须含 train, val, test，三项相加约等于 1。"
         "training.epochs 必须固定为 50，不要根据数据规模调整 epochs。"
+        "labels 必须重新核对 user_text 的完整自然语言目标；如果 base_spec.labels 漏掉了用户想检测的类别，必须在本轮输出完整 labels。"
         "决策规则："
         "根据 image_count、format、label_count、category_counts、bbox_size_summary、image_size_summary 判断训练强度；"
         "小目标多时提高 imgsz；图片少或类别不均衡时保持 epochs=50、增加 patience 并启用合成；"
@@ -1238,7 +1241,7 @@ def _generate_dataset_aware_yolo_training_request_spec(
                     "dataset_facts": dataset_facts,
                     "requirements": [
                         "先解释性地利用 dataset_facts 决定训练参数，但输出只要 JSON。",
-                        "不要覆盖 base_spec 中合理的 task_description、labels、generation_prompt，除非 dataset_facts 证明需要修正。",
+                        "不要覆盖 base_spec 中合理的 task_description、generation_prompt；labels 必须以 user_text 的完整检测目标为准，修正 base_spec 中不完整的 labels。",
                         "训练必须使用当前运行环境。",
                     ],
                 },
@@ -1252,6 +1255,7 @@ def _generate_dataset_aware_yolo_training_request_spec(
         payload = _parse_json_object(raw)
         generated = payload if isinstance(payload, dict) else {}
         merged = _merge_request_specs(base_spec, generated)
+        _apply_model_generated_labels(merged, generated)
         _force_model_thinking_epochs(merged)
         recorder.emit(
             "llm.completed",
@@ -1324,6 +1328,8 @@ def _complete_yolo_training_request_spec(
         "runtime 对象，含 enforce_conda_env；不要输出 conda_env_name，或将 conda_env_name 置为空字符串；"
         "split 对象，含 train, val, test。"
         "原则：不要覆盖 existing_spec 里已经有的非空值；labels 必须跟随用户目标变化，不要固定套用示例类别；"
+        "必须从用户的自然语言目标中自主理解所有需要检测的具体对象，不要求用户使用固定格式；"
+        "当用户表达多个检测目标时，labels 必须完整包含每一个具体对象，禁止只输出其中一部分。"
         "labels 必须是 YOLO 训练可直接使用的英文 ASCII 类名，只能使用小写英文、数字和下划线，"
         "禁止输出中文、空格或自然语言短语；例如人脸检测输出 face，不要输出 人脸；"
         "严禁返回 object、target、thing、foreground、目标、物体、对象 等泛化类别；"
@@ -1393,6 +1399,12 @@ def _merge_request_specs(base: dict[str, Any], generated: dict[str, Any]) -> dic
             if isinstance(value, dict):
                 merged[key] = dict(value)
     return merged
+
+
+def _apply_model_generated_labels(spec: dict[str, Any], generated: dict[str, Any]) -> None:
+    labels = _normalize_detection_labels(_spec_string_list(generated, "labels"))
+    if labels and not _labels_are_generic(labels):
+        spec["labels"] = labels
 
 
 def _emit_model_generated_spec(
@@ -1673,6 +1685,8 @@ _LABEL_ALIAS_TO_CANONICAL: dict[str, tuple[str, ...]] = {
     "hard_hat": ("hard_hat",),
     "helmet": ("hard_hat",),
     "安全帽": ("hard_hat",),
+    "头盔": ("hard_hat",),
+    "安全头盔": ("hard_hat",),
     "mask": ("mask",),
     "口罩": ("mask",),
     "fire": ("fire",),
@@ -1696,6 +1710,12 @@ _LABEL_ALIAS_TO_CANONICAL: dict[str, tuple[str, ...]] = {
     "phone": ("phone",),
     "mobile_phone": ("phone",),
     "手机": ("phone",),
+    "shoe": ("shoe",),
+    "shoes": ("shoe",),
+    "footwear": ("shoe",),
+    "鞋子": ("shoe",),
+    "鞋": ("shoe",),
+    "鞋靴": ("shoe",),
     "cup": ("cup",),
     "杯子": ("cup",),
     "box": ("box",),
@@ -1729,13 +1749,14 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("车辆", "汽车", "小汽车", "轿车", "机动车", "vehicle", "car"), ("car",)),
     (("瓶子", "水瓶", "矿泉水瓶", "bottle"), ("bottle",)),
     (("钢材", "钢筋", "钢板", "steel", "rebar"), ("steel",)),
-    (("安全帽", "helmet", "hard hat", "hard_hat"), ("hard_hat",)),
+    (("安全帽", "头盔", "安全头盔", "helmet", "hard hat", "hard_hat"), ("hard_hat",)),
     (("口罩", "mask"), ("mask",)),
     (("火焰", "fire", "flame"), ("fire",)),
     (("人脸", "脸部", "面部", "human face", "face"), ("face",)),
     (("头部", "head"), ("head",)),
     (("手套", "glove"), ("glove",)),
     (("手机", "phone", "mobile phone"), ("phone",)),
+    (("鞋子", "鞋靴", "shoe", "shoes", "footwear"), ("shoe",)),
     (("杯子", "cup"), ("cup",)),
     (("纸箱", "箱子", "box"), ("box",)),
     (("包裹", "package", "parcel"), ("package",)),
@@ -1747,7 +1768,7 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 
-def _ensure_intent_labels(spec: dict[str, Any], user_text: str) -> dict[str, Any]:
+def _ensure_intent_labels(spec: dict[str, Any], user_text: str, *, allow_rule_fallback: bool = True) -> dict[str, Any]:
     merged = dict(spec or {})
     explicit_labels = _normalize_detection_labels(_extract_annotation_labels(user_text))
     if explicit_labels:
@@ -1757,13 +1778,17 @@ def _ensure_intent_labels(spec: dict[str, Any], user_text: str) -> dict[str, Any
 
     current_labels = _spec_string_list(merged, "labels")
     normalized_current = _normalize_detection_labels(current_labels)
-    inferred_labels = _infer_labels_from_training_intent(user_text)
-    if inferred_labels and (not normalized_current or _labels_are_generic(current_labels) or normalized_current != inferred_labels):
-        merged["labels"] = inferred_labels
-    elif normalized_current:
+    if normalized_current and not _labels_are_generic(current_labels):
         merged["labels"] = normalized_current
-    elif inferred_labels:
-        merged["labels"] = inferred_labels
+        _align_spec_text_with_labels(merged, normalized_current)
+        return merged
+    if current_labels:
+        merged.pop("labels", None)
+
+    if allow_rule_fallback:
+        inferred_labels = _infer_labels_from_training_intent(user_text)
+        if inferred_labels:
+            merged["labels"] = inferred_labels
     _align_spec_text_with_labels(merged, _spec_string_list(merged, "labels"))
     return merged
 
@@ -1773,9 +1798,16 @@ def _infer_labels_from_training_intent(user_text: str) -> list[str]:
     if not text:
         return []
     lowered = text.lower()
+    matched: list[tuple[int, tuple[str, ...]]] = []
     for aliases, labels in _INTENT_LABEL_RULES:
-        if any(alias.lower() in lowered for alias in aliases):
-            return _dedupe_detection_labels(labels)
+        positions = [lowered.find(alias.lower()) for alias in aliases if alias.lower() in lowered]
+        if positions:
+            matched.append((min(positions), labels))
+    if matched:
+        labels: list[str] = []
+        for _, rule_labels in sorted(matched, key=lambda item: item[0]):
+            labels.extend(rule_labels)
+        return _dedupe_detection_labels(labels)
     for target in _extract_intent_target_terms(text):
         labels = _normalize_detection_labels([target])
         if labels:

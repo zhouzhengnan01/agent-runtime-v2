@@ -10,6 +10,7 @@ You can also pass JSON input for compatibility:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import mimetypes
 import os
@@ -21,7 +22,7 @@ from typing import Any
 import requests
 from PIL import Image
 
-DEFAULT_URL = "http://218.67.242.10:58800/sam3/predict"
+DEFAULT_URL = "http://218.67.242.10:58800/v1/sam3/predict"
 URL_ENV_NAMES = ("SAM3_PREDICT_URL", "SAM3_URL")
 DEFAULT_TOKEN = "abc@123"
 DEFAULT_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -374,21 +375,37 @@ def save_per_image_coco(
     return sidecar
 
 
-def post_image(args: argparse.Namespace, headers: dict[str, str], data: dict[str, str], image_path: Path) -> Any:
+def image_to_data_url(image_path: Path) -> str:
     content_type = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def build_sam3_payload(image_path: Path, prompts: list[str], conf: float, iou: float) -> dict[str, Any]:
+    return {
+        "model": "sam3",
+        "input": {
+            "image": image_to_data_url(image_path),
+            "text_prompts": prompts,
+        },
+        "parameters": {
+            "conf": float(conf),
+            "iou": float(iou),
+        },
+    }
+
+
+def post_image(args: argparse.Namespace, headers: dict[str, str], prompts: list[str], image_path: Path) -> Any:
     attempts = max(1, int(args.retries) + 1)
     last_error: requests.exceptions.RequestException | None = None
     for attempt in range(1, attempts + 1):
         try:
-            with image_path.open("rb") as f:
-                files = {"file": (image_path.name, f, content_type)}
-                response = requests.post(
-                    effective_url(args.url),
-                    headers=headers,
-                    data=data,
-                    files=files,
-                    timeout=(args.connect_timeout, args.timeout),
-                )
+            response = requests.post(
+                effective_url(args.url),
+                headers=headers,
+                json=build_sam3_payload(image_path, prompts, args.conf, args.iou),
+                timeout=(args.connect_timeout, args.timeout),
+            )
             if response.status_code in RETRYABLE_HTTP_STATUS and attempt < attempts:
                 print(
                     f"[sam3-predict] transient HTTP {response.status_code} for {image_path.name}; retry {attempt}/{attempts - 1}",
@@ -464,8 +481,7 @@ def main() -> int:
             raise FileNotFoundError(f"Image file not found: {image_path}")
 
     prompts = resolve_prompts(args)
-    headers = {"Authorization": f"Bearer {args.token}"}
-    data = {"text_prompts": json.dumps(prompts, ensure_ascii=False), "conf": str(args.conf), "iou": str(args.iou)}
+    headers = {"Authorization": f"Bearer {args.token}", "Content-Type": "application/json"}
 
     images: list[dict[str, Any]] = []
     annotations: list[dict[str, Any]] = []
@@ -486,7 +502,7 @@ def main() -> int:
                 payload["image"] = {"path": str(image_path), "width": width, "height": height}
                 _print_error(payload)
                 return 2
-            payload = post_image(args, headers, data, image_path)
+            payload = post_image(args, headers, prompts, image_path)
             image_info, image_annotations = response_to_coco(
                 payload,
                 image_path,
