@@ -508,7 +508,6 @@ def test_parking_review_logs_llm_raw_reply_and_normalized_result(
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert result.reply == '[{"reviewSourceId":"source-log","reviewEventId":"event-log","hit":1,"result":"模型判定命中"}]'
-    assert "parking review input summary review_source_id=source-log" in logs
     assert "parking review final result review_source_id=source-log" in logs
     assert "模型判定命中" in logs
     assert "result_chars=" in logs
@@ -525,6 +524,7 @@ def test_parking_review_logs_image_sources(
     caplog: Any,
 ) -> None:
     workflow = _load_workflow_module()
+    monkeypatch.setattr(workflow, "PARKING_REVIEW_LOG_INPUT_SUMMARY", True)
 
     def fake_complete_review(
         agent_config: AgentConfig,
@@ -599,6 +599,7 @@ def test_parking_review_logs_and_passes_visual_regions(
     caplog: Any,
 ) -> None:
     workflow = _load_workflow_module()
+    monkeypatch.setattr(workflow, "PARKING_REVIEW_LOG_INPUT_SUMMARY", True)
     captured: dict[str, Any] = {}
 
     class FakeRegistry:

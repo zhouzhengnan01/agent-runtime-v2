@@ -313,9 +313,8 @@ def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
     root = Path(__file__).resolve().parents[1] / "plugins" / "skills" / "builtin-artifact-skills" / "skills"
     package_names = {package.name for package in root.iterdir() if package.is_dir()}
     assert "deliverables-export" in package_names
-    complete_package_names = package_names - {"behavior-review"}
     for package in root.iterdir():
-        if not package.is_dir() or package.name not in complete_package_names:
+        if not package.is_dir():
             continue
         assert (package / "SKILL.md").is_file()
         assert (package / "manifest.json").is_file()
@@ -326,7 +325,6 @@ def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
         assert (package / "sandbox.yml").is_file()
         assert (package / "runner.py").is_file()
         assert (package / "spec_builder.py").is_file()
-
 
 def test_tianjin_park_skill_defaults_to_local_generation_without_backend(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path / "runtime")
@@ -806,63 +804,6 @@ def test_image_composite_spec_builder_uses_two_image_attachments() -> None:
     assert built["model"] == "wan2.7-image-pro"
 
 
-def test_behavior_review_outputs_second_pass_logic_and_continuous_state(tmp_path: Path) -> None:
-    store = ArtifactStore(root_dir=tmp_path / "runtime")
-    paths = store.prepare_thread("behavior-review-continuous")
-
-    result = SkillRunner(store).run(
-        "behavior-review",
-        {
-            "event_id": "alarm-1",
-            "batch_id": "batch-1",
-            "review_round": 3,
-            "text_rule_candidates": ["翻越进入禁区"],
-            "has_visual_evidence": True,
-            "detector_confidence": 0.91,
-            "rule_confidence": 0.8,
-            "continuous_review": True,
-            "poll_interval_seconds": 3,
-        },
-        paths,
-    )
-
-    assert result.data["review_decision"] == "confirm_incident"
-    assert result.data["risk_level"] == "high"
-    assert result.data["risk_score"] >= 0.87
-    assert result.data["continuous_review"]["enabled"] is True
-    assert result.data["continuous_review"]["next_action"] == "poll_next_batch"
-    assert [step["stage"] for step in result.data["second_review_logic"]] == [
-        "文本规则初筛",
-        "证据完整性检查",
-        "模型/规则一致性",
-        "误报抑制",
-        "二次研判结论",
-    ]
-    report = (paths.outputs / "behavior-review.md").read_text(encoding="utf-8")
-    assert "## 二次研判链路" in report
-    assert "## 连续复判" in report
-
-
-def test_behavior_review_suppresses_visual_confirmation_without_evidence(tmp_path: Path) -> None:
-    store = ArtifactStore(root_dir=tmp_path / "runtime")
-    paths = store.prepare_thread("behavior-review-no-evidence")
-
-    result = SkillRunner(store).run(
-        "behavior-review",
-        {
-            "text_rule_candidates": ["老人摔倒"],
-            "has_visual_evidence": False,
-            "continuous_review": True,
-        },
-        paths,
-    )
-
-    assert result.data["review_decision"] == "need_more_evidence"
-    assert result.data["risk_score"] == 0.0
-    assert result.data["manual_review_required"] is True
-    assert result.data["second_review_logic"][1]["decision"] == "evidence_missing"
-
-
 def test_drawio_generation_escapes_attribute_quotes(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path / "runtime")
     paths = store.prepare_thread("drawio-quotes")
@@ -891,7 +832,7 @@ def test_skill_registry_uses_config_skills_as_entity_catalog() -> None:
     assert names == config_names
     assert "public-skill-demo" not in names
     assert "algorithm-engineer-app" not in names
-    assert "behavior-review" in names
+    assert "behavior-review" not in names
     assert "deliverables-export" in names
     for skill in skills:
         assert skill.manifest_path is not None
@@ -1395,6 +1336,81 @@ def test_prompt_only_plugin_skill_is_registered_and_callable_without_runner_or_e
     content = (paths.outputs / "prompt-only-skill-prompt.md").read_text(encoding="utf-8")
     assert "给我生成一个智慧大屏" in content
     assert "Follow these instructions." in content
+
+
+def test_uploaded_skill_plugin_and_config_override_builtin_skill(tmp_path: Path) -> None:
+    builtin_plugin_root = tmp_path / "plugins" / "skills" / "shared-plugin"
+    builtin_plugin_root.mkdir(parents=True)
+    (builtin_plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "shared-plugin",
+  "name": "Shared Plugin",
+  "version": "1.0.0",
+  "skills": ["manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (builtin_plugin_root / "manifest.json").write_text(
+        """
+{
+  "name": "shared-review",
+  "description": "builtin description",
+  "output_kind": "markdown",
+  "generation": true,
+  "quality_template": []
+}
+""",
+        encoding="utf-8",
+    )
+    upload_plugin_root = tmp_path / "plugins" / "upload" / "skills" / "shared-plugin"
+    upload_plugin_root.mkdir(parents=True)
+    (upload_plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "shared-plugin",
+  "name": "Shared Plugin Upload",
+  "version": "2.0.0",
+  "skills": ["manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (upload_plugin_root / "manifest.json").write_text(
+        """
+{
+  "name": "shared-review",
+  "description": "upload plugin description",
+  "output_kind": "json",
+  "generation": true,
+  "quality_template": [],
+  "execution": {"type": "template", "template": "upload"}
+}
+""",
+        encoding="utf-8",
+    )
+    upload_config_root = tmp_path / "config" / "upload" / "skills"
+    upload_config_root.mkdir(parents=True)
+    (upload_config_root / "shared-review.json").write_text(
+        """
+{
+  "name": "shared-review",
+  "description": "upload config description",
+  "output_kind": "json",
+  "generation": true,
+  "quality_template": []
+}
+""",
+        encoding="utf-8",
+    )
+
+    loaded = SkillPluginManager(tmp_path).get_loaded_skill("shared-review")
+
+    assert loaded.plugin is not None
+    assert loaded.plugin.root == upload_plugin_root
+    assert loaded.definition.description == "upload config description"
+    assert loaded.definition.execution == {"type": "template", "template": "upload"}
 
 
 def test_public_template_skill_is_discoverable_and_executes(tmp_path: Path) -> None:

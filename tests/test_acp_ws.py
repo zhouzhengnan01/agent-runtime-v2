@@ -2112,6 +2112,101 @@ def test_acp_websocket_session_new_uses_app_model_from_config(
     assert options.max_tokens == 128
 
 
+def test_acp_websocket_prompt_infers_upload_app_model_from_review_source_id(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents_dir = tmp_path / "config" / "agents"
+    apps_dir = tmp_path / "config" / "upload" / "apps"
+    agents_dir.mkdir(parents=True)
+    apps_dir.mkdir(parents=True)
+    (agents_dir / "default.json").write_text(
+        json.dumps(
+            {
+                "name": "default",
+                "display_name": "Default",
+                "model": {
+                    "model": "agent-model",
+                    "base_url": "http://agent.local/v1",
+                    "api_key": "agent-key",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (apps_dir / "uploaded-review-app.json").write_text(
+        json.dumps(
+            {
+                "name": "uploaded-review-app",
+                "title": "Uploaded Review App",
+                "agent_name": "default",
+                "runtime_options": {"config_options": {"force_model_config": True}},
+                "models": [
+                    {
+                        "name": "uploaded-model",
+                        "model": "uploaded-model",
+                        "default_model": "uploaded-model",
+                        "base_url": "http://uploaded.local/v1",
+                        "api_key": "uploaded-key",
+                        "temperature": 0.2,
+                        "max_tokens": 321,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "loader", AgentConfigLoader(tmp_path))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    monkeypatch.setattr(acp_api, "model_manager", ModelManager())
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(thread_id="acp-upload-app-inferred", cwd=str(tmp_path)),
+            }
+        )
+        created = websocket.receive_json()["result"]
+        assert created["appTemplateName"] is None
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": created["sessionId"],
+                    "prompt": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "当前复判事件来源reviewSourceId为"
+                                "[uploaded-review-app_source-123]。请执行复判。"
+                            ),
+                        }
+                    ],
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.app_template_name == "uploaded-review-app"
+    assert options.model_name == "uploaded-model"
+    assert options.base_url == "http://uploaded.local/v1"
+    assert options.api_key == "uploaded-key"
+    assert options.temperature == 0.2
+    assert options.max_tokens == 321
+    assert options.config_options["force_model_config"] is True
+
+
 def test_acp_websocket_session_update_applies_app_model_from_config(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

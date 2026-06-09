@@ -1,6 +1,8 @@
 import asyncio
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 import json
+import logging
 from pathlib import Path
 import time
 import xml.etree.ElementTree as ET
@@ -1684,6 +1686,69 @@ def test_sync_workflow_run_with_events_does_not_block_event_loop(tmp_path: Path)
     assert probe_completed_before_workflow is True
 
 
+def test_workflow_executor_logs_queue_wait(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    class BlockingWorkflow:
+        def run_with_events(
+            self,
+            agent_config: AgentConfig,
+            messages: list[Message],
+            attachments: list[Attachment],
+            thread_id: str | None,
+            on_event=None,
+            workflow_name: str | None = None,
+            runtime_options: RuntimeOptions | None = None,
+        ) -> tuple[AgentRunResult, list[ChatEvent]]:
+            del messages, attachments, on_event, runtime_options
+            time.sleep(0.05)
+            event = ChatEvent(
+                type="run.started",
+                data={
+                    "run_id": f"run-{thread_id}",
+                    "agent": agent_config.name,
+                    "thread_id": thread_id or "",
+                    "workflow": workflow_name or "blocking_workflow",
+                },
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=thread_id or "",
+                reply=f"done-{thread_id}",
+                metadata={"workflow": workflow_name or "blocking_workflow"},
+            )
+            return result, [event]
+
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        workflow_registry=WorkflowRegistry({"blocking_workflow": BlockingWorkflow()}),
+    )
+    runtime.workflow_executor.shutdown(wait=False, cancel_futures=True)
+    runtime.workflow_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-workflow")
+    agent = AgentConfig(name="workflow-queue-agent", display_name="Workflow Queue Agent")
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+
+    async def run_two_workflows() -> list[AgentRunResult]:
+        requests = [
+            ChatRequest(
+                messages=[Message(role="user", content=f"run blocking workflow {index}")],
+                runtime_options=RuntimeOptions(thread_id=f"workflow-queue-{index}", workflow="blocking_workflow"),
+            )
+            for index in range(2)
+        ]
+        return await asyncio.gather(*(runtime.run(agent, request) for request in requests))
+
+    results = asyncio.run(run_two_workflows())
+
+    runtime.workflow_executor.shutdown(wait=False, cancel_futures=True)
+    assert [result.reply for result in results] == ["done-workflow-queue-0", "done-workflow-queue-1"]
+    queue_logs = [
+        record
+        for record in caplog.records
+        if record.name == "uvicorn.error" and record.getMessage().startswith("workflow queue acquired")
+    ]
+    assert len(queue_logs) == 2
+    assert all("wait_ms=" in record.getMessage() for record in queue_logs)
+
+
 def test_runtime_init_skills_replace_agent_json_default_skills(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2304,7 +2369,7 @@ def test_agent_runtime_recovers_selected_skill_from_workbench_message_context(
     assert "data-auto-annotation" in seen_tools
 
 
-def test_agent_runtime_infers_behavior_review_skill_from_routing_text(tmp_path: Path) -> None:
+def test_agent_runtime_infers_specific_review_skill_from_review_routing_text(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfig(
         name="routing-selected-skill-agent",
@@ -2331,13 +2396,13 @@ def test_agent_runtime_infers_behavior_review_skill_from_routing_text(tmp_path: 
                 metadata={"sourceId": "a4502e03485d35bd9957ed811623cb9c"},
             )
         ],
-        runtime_options=RuntimeOptions(thread_id="routing-behavior-review"),
+        runtime_options=RuntimeOptions(thread_id="routing-clutter-review"),
     )
 
     effective_agent, effective_request = runtime._prepare_execution(agent, request)
 
-    assert effective_request.runtime_options.selected_skills == ["behavior-review"]
-    assert "behavior-review" in effective_agent.skills
+    assert effective_request.runtime_options.selected_skills == ["17803963378248hh02dvt"]
+    assert "17803963378248hh02dvt" in effective_agent.skills
 
 
 def test_agent_runtime_does_not_infer_skill_for_explicit_artifact_workflow(tmp_path: Path) -> None:

@@ -7,7 +7,9 @@ import logging
 import mimetypes
 import os
 import re
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -45,6 +47,8 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 logger = logging.getLogger("uvicorn.error")
 REMOTE_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
 REMOTE_ATTACHMENT_TIMEOUT_SECONDS = 30.0
+WORKFLOW_THREAD_WORKERS = max(1, int(os.getenv("JETLINKS_WORKFLOW_THREAD_WORKERS", "8") or "8"))
+WORKFLOW_QUEUE_WARN_SECONDS = max(0.0, float(os.getenv("JETLINKS_WORKFLOW_QUEUE_WARN_SECONDS", "1") or "1"))
 FIXED_REPLY_ENV = "JETLINKS_AGENT_FIXED_REPLY"
 FIXED_REPLY_ENABLED_ENV = "JETLINKS_AGENT_FIXED_REPLY_ENABLED"
 FIXED_REPLY_FOREVER_ENV = "JETLINKS_AGENT_FIXED_REPLY_FOREVER"
@@ -96,6 +100,10 @@ class AgentRuntime:
         self.session_manager = session_manager or AgentSessionManager()
         self.workflow_registry = workflow_registry or WorkflowRegistry.builtin(self.artifact_store)
         self.workflow_router = workflow_router
+        self.workflow_executor = ThreadPoolExecutor(
+            max_workers=WORKFLOW_THREAD_WORKERS,
+            thread_name_prefix="jetlinks-workflow",
+        )
         self.model_config, self._model_config_fields = self._normalize_model_config(model_config)
         self.app_template_registry = app_template_registry or AppTemplateRegistry()
         self.secret_codec = SecretCodec(self.app_template_registry.root_dir)
@@ -166,7 +174,10 @@ class AgentRuntime:
         if execution.workflow_name is not None:
             # Workflow path: a named workflow owns the full execution instead of
             # the generic tool-calling loop.
-            return await asyncio.to_thread(self._run_workflow_with_events_sync, execution)
+            return await self._run_workflow_in_executor(
+                lambda: self._run_workflow_with_events_sync(execution),
+                execution,
+            )
 
         # Default path: merge thread history and let the agent loop decide when
         # to answer directly versus when to call tools.
@@ -290,7 +301,7 @@ class AgentRuntime:
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
-        task = asyncio.create_task(asyncio.to_thread(run_workflow))
+        task = asyncio.create_task(self._run_workflow_in_executor(run_workflow, execution))
         try:
             while True:
                 item = await queue.get()
@@ -317,6 +328,47 @@ class AgentRuntime:
                         run_id=self._run_id(captured_events),
                     )
                 self._persist_events(execution.agent_config, execution.request, thread_id, captured_events, final_result)
+
+    async def _run_workflow_in_executor(self, func: Callable[[], Any], execution: ExecutionContext) -> Any:
+        loop = asyncio.get_running_loop()
+        queued_at = time.monotonic()
+        logger.info(
+            "workflow queue submitted workflow=%s thread_id=%s workers=%s",
+            execution.workflow_name,
+            execution.paths.thread_id,
+            WORKFLOW_THREAD_WORKERS,
+        )
+
+        def wrapped() -> Any:
+            wait_seconds = time.monotonic() - queued_at
+            log = logger.warning if wait_seconds >= WORKFLOW_QUEUE_WARN_SECONDS else logger.info
+            log(
+                "workflow queue acquired workflow=%s thread_id=%s wait_ms=%.1f workers=%s",
+                execution.workflow_name,
+                execution.paths.thread_id,
+                wait_seconds * 1000,
+                WORKFLOW_THREAD_WORKERS,
+            )
+            started_at = time.monotonic()
+            try:
+                return func()
+            except Exception:
+                logger.exception(
+                    "workflow execution failed workflow=%s thread_id=%s elapsed_ms=%.1f",
+                    execution.workflow_name,
+                    execution.paths.thread_id,
+                    (time.monotonic() - started_at) * 1000,
+                )
+                raise
+            finally:
+                logger.info(
+                    "workflow execution finished workflow=%s thread_id=%s elapsed_ms=%.1f",
+                    execution.workflow_name,
+                    execution.paths.thread_id,
+                    (time.monotonic() - started_at) * 1000,
+                )
+
+        return await loop.run_in_executor(self.workflow_executor, wrapped)
 
     def _run_workflow_with_events_sync(self, execution: ExecutionContext) -> tuple[AgentRunResult, list[ChatEvent]]:
         workflow = self.workflow_registry.get(execution.workflow_name or "")

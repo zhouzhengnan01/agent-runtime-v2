@@ -21,6 +21,7 @@ from app.schemas import Message, RuntimeOptions
 
 logger = logging.getLogger("uvicorn.error")
 LLM_TRACE_PAYLOADS = env_flag("LLM_TRACE_PAYLOADS", "0")
+LLM_REPLY_TRACE_ENABLED = env_flag("LLM_REPLY_TRACE_ENABLED", "0")
 LLM_TRACE_MAX_CHARS = env_int("LLM_TRACE_MAX_CHARS", 100)
 LLM_ERROR_TRACE_MAX_CHARS = env_int("LLM_ERROR_TRACE_MAX_CHARS", 1200)
 LLM_REPLY_TRACE_MAX_CHARS = env_int("LLM_REPLY_TRACE_MAX_CHARS", 4000)
@@ -384,6 +385,8 @@ class OpenAICompatibleClient:
         )
 
     def _log_reply_content(self, operation: str, content: str) -> None:
+        if not LLM_REPLY_TRACE_ENABLED:
+            return
         max_chars = LLM_REPLY_TRACE_MAX_CHARS if LLM_TRACE_PAYLOADS else min(500, LLM_REPLY_TRACE_MAX_CHARS)
         logger.info(
             "llm reply content operation=%s model=%s reply_chars=%s reply_preview=%s",

@@ -35,6 +35,7 @@ SKILL_AUTO_CANDIDATE_MIN_SCORE = 2.0
 REVIEW_SKILL_EXCLUDED_NAMES = frozenset({"behavior-detection"})
 REVIEW_LLM_REPLY_LOG_MAX_CHARS = max(200, env_int("PARKING_REVIEW_REPLY_LOG_MAX_CHARS", 1200))
 PARKING_REVIEW_TRACE_DETAILS = env_flag("PARKING_REVIEW_TRACE_DETAILS", "0")
+PARKING_REVIEW_LOG_INPUT_SUMMARY = env_flag("PARKING_REVIEW_LOG_INPUT_SUMMARY", "0")
 PARKING_REVIEW_LOG_LINK_LIMIT = max(0, env_int("PARKING_REVIEW_LOG_LINK_LIMIT", 5))
 OBJECTIVE_LABEL_ALIASES = frozenset(
     _normalize
@@ -238,25 +239,26 @@ class ParkingAbnormalReviewWorkflow:
         )
         link_summary = _attachment_link_summary(image_sources)
         error_summary = _review_error_summary(skill_error, video_frame_reports)
-        logger.info(
-            "parking review input summary review_source_id=%s objective=%s objective_source=%s skill_name=%s "
-            "attachments=%s image_inputs=%s video_inputs=%s video_frames=%s link_count=%s "
-            "remote_link_count=%s local_path_count=%s region_count=%s links=%s errors=%s",
-            review_source_id,
-            objective,
-            objective_source,
-            skill_selection.skill_name if skill_selection is not None else "",
-            len(attachments),
-            len(image_attachments),
-            len(video_attachments),
-            len(video_frame_attachments),
-            link_summary["link_count"],
-            link_summary["remote_link_count"],
-            link_summary["local_path_count"],
-            len(visual_regions),
-            _compact_payload_json(link_summary["links"]),
-            _compact_payload_json(error_summary),
-        )
+        if PARKING_REVIEW_LOG_INPUT_SUMMARY:
+            logger.info(
+                "parking review input summary review_source_id=%s objective=%s objective_source=%s skill_name=%s "
+                "attachments=%s image_inputs=%s video_inputs=%s video_frames=%s link_count=%s "
+                "remote_link_count=%s local_path_count=%s region_count=%s links=%s errors=%s",
+                review_source_id,
+                objective,
+                objective_source,
+                skill_selection.skill_name if skill_selection is not None else "",
+                len(attachments),
+                len(image_attachments),
+                len(video_attachments),
+                len(video_frame_attachments),
+                link_summary["link_count"],
+                link_summary["remote_link_count"],
+                link_summary["local_path_count"],
+                len(visual_regions),
+                _compact_payload_json(link_summary["links"]),
+                _compact_payload_json(error_summary),
+            )
         if PARKING_REVIEW_TRACE_DETAILS:
             logger.info(
                 "parking review input details review_source_id=%s image_sources=%s visual_regions=%s video_frame_reports=%s",

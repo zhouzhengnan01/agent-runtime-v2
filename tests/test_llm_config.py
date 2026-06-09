@@ -578,6 +578,7 @@ def test_llm_client_logs_request_and_response_details_redacted(
     import app.core.llm.openai_compatible as llm_module
 
     monkeypatch.setattr(llm_module, "LLM_TRACE_PAYLOADS", True)
+    monkeypatch.setattr(llm_module, "LLM_REPLY_TRACE_ENABLED", True)
     monkeypatch.setattr(llm_module, "LLM_TRACE_MAX_CHARS", 0)
 
     async def fake_post(
@@ -639,6 +640,9 @@ def test_complete_sync_logs_model_reply_content(monkeypatch: MonkeyPatch, caplog
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
+    import app.core.llm.openai_compatible as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_REPLY_TRACE_ENABLED", True)
 
     def fake_post(
         self: httpx.Client,

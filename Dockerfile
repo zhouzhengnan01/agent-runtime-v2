@@ -14,7 +14,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /workspace/code/jetlinks-agent-runtime-agent-v2
 
-COPY README.md pyproject.toml uv.lock ./
+COPY README.md pyproject.toml uv.lock requirements.txt ./
 COPY runtime-env.sh up.sh status.sh stop.sh sync-image-code.sh docker-entrypoint.sh ./
 COPY app ./app
 COPY config ./config
@@ -22,7 +22,8 @@ COPY plugins ./plugins
 COPY static ./static
 
 RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m pip install --no-deps -e . \
+    python -m pip install -r requirements.txt \
+    && python -m pip install --no-deps -e . \
     && mkdir -p /opt/jetlinks-agent-runtime-agent-v2-defaults \
     && cp -a config plugins static /opt/jetlinks-agent-runtime-agent-v2-defaults/ \
     && cp docker-entrypoint.sh /usr/local/bin/jetlinks-agent-runtime-v2-entrypoint \
