@@ -246,7 +246,14 @@ class VisualizationBigscreenWorkflow:
         recorder: EventRecorder,
     ) -> tuple[str, dict[str, Any]]:
         recorder.emit("llm.started", _llm_event_payload(agent_config, runtime_options))
-        llm_reply = self._complete_json(agent_config, runtime_options, _initialization_system_prompt(), messages, recorder)
+        llm_reply = self._complete_json(
+            agent_config,
+            runtime_options,
+            _initialization_system_prompt(),
+            messages,
+            recorder,
+            stage="initialization",
+        )
         payload = _loads_json_object(llm_reply)
         page_json = _dict(payload.get("pageJson"))
         blueprint = _dict(payload.get("blueprint")) or _default_blueprint()
@@ -281,7 +288,14 @@ class VisualizationBigscreenWorkflow:
         prompt_text = _last_user_text(messages)
         requested_region_id = _requested_region_id(prompt_text)
         recorder.emit("llm.started", _llm_event_payload(agent_config, runtime_options))
-        llm_reply = self._complete_json(agent_config, runtime_options, _region_system_prompt(requested_region_id), messages, recorder)
+        llm_reply = self._complete_json(
+            agent_config,
+            runtime_options,
+            _region_system_prompt(requested_region_id),
+            messages,
+            recorder,
+            stage="region",
+        )
         payload = _loads_json_object(llm_reply)
         region_id = _string(payload.get("regionId")) or requested_region_id
         if requested_region_id and region_id != requested_region_id:
@@ -335,6 +349,7 @@ class VisualizationBigscreenWorkflow:
         system_prompt: str,
         messages: list[Message],
         recorder: EventRecorder,
+        stage: str,
     ) -> str:
         llm_options = runtime_options.model_copy(
             update={
@@ -356,10 +371,11 @@ class VisualizationBigscreenWorkflow:
                 {
                     "reason": "upstream_http_error",
                     "status_code": exc.response.status_code if exc.response is not None else None,
-                    "strategy": "compact_visualization_context",
+                    "strategy": "stage_aware_context_retry",
+                    "stage": stage,
                 },
             )
-            compact_prompt = self._prompt_with_compact_skill_context(system_prompt, llm_options, recorder)
+            compact_prompt = self._prompt_with_stage_context(system_prompt, llm_options, recorder, stage)
             reply = client.complete_sync(compact_prompt, messages)
         if not reply.strip():
             raise RuntimeError("模型返回为空。")
@@ -411,7 +427,8 @@ class VisualizationBigscreenWorkflow:
         recorder.emit(
             "skill.context.loaded",
             {
-                "skill_name": skill_name,
+                "skill_name": skill.name,
+                "requested_skill_name": skill_name,
                 "found": True,
                 "skill_md_found": True,
                 "skill_md_path": context.skill_md_path,
@@ -448,8 +465,53 @@ class VisualizationBigscreenWorkflow:
         recorder.emit(
             "skill.context.loaded",
             {
-                "skill_name": skill_name,
+                "skill_name": skill.name,
+                "requested_skill_name": skill_name,
                 "compact": True,
+                "chars": len(context),
+            },
+        )
+        if not context:
+            return system_prompt
+        return f"{system_prompt}\n\n{context}"
+
+    def _prompt_with_stage_context(
+        self,
+        system_prompt: str,
+        runtime_options: RuntimeOptions,
+        recorder: EventRecorder,
+        stage: str,
+    ) -> str:
+        skill_name = next((name.strip() for name in runtime_options.selected_skills if name.strip()), "")
+        if not skill_name:
+            return system_prompt
+        try:
+            skill = SkillRegistry(self.tool_service.root_dir).get(skill_name)
+        except KeyError:
+            recorder.emit(
+                "skill.context.loaded",
+                {
+                    "skill_name": skill_name,
+                    "found": False,
+                    "reason": "skill_not_found",
+                    "stage_aware": True,
+                    "stage": stage,
+                },
+            )
+            return system_prompt
+        package_root = _skill_package_root(skill)
+        if package_root is None:
+            return system_prompt
+        context = _stage_aware_visualization_context(package_root, stage)
+        recorder.emit(
+            "skill.context.loaded",
+            {
+                "skill_name": skill.name,
+                "requested_skill_name": skill_name,
+                "found": True,
+                "compact": True,
+                "stage_aware": True,
+                "stage": stage,
                 "chars": len(context),
             },
         )
@@ -745,6 +807,59 @@ def _compact_visualization_context(package_root: Path) -> str:
         except OSError:
             continue
         limit = 6000 if relative.endswith(".md") else 8000
+        lines.extend(["", f"### {relative}", "", _truncate_text(content, limit)])
+    return "\n".join(lines).strip()
+
+
+def _stage_aware_visualization_context(package_root: Path, stage: str) -> str:
+    normalized_stage = stage if stage in {"initialization", "region"} else "unknown"
+    if normalized_stage == "initialization":
+        paths = [
+            "references/component-registry.json",
+            "references/blueprint-standard.md",
+        ]
+        rules = [
+            "Stage-aware visualization skill context is active after an upstream LLM 500 retry.",
+            'Current stage: "initialization".',
+            "Return only JSON with pageJson, blueprint, and backgroundSvg.",
+            "pageJson.canvas must use the platform canvas structure and components must be empty.",
+            "backgroundSvg must be a complete 1920x1080 SVG background with region metadata only.",
+            "Do not include business values, table rows, alarms, or interactive controls in backgroundSvg.",
+        ]
+    else:
+        paths = [
+            "references/components/text.json",
+            "references/components/dateTime.json",
+            "references/components/table.json",
+            "references/components/video.json",
+            "references/components/pseudo.json",
+            "references/components/custom-chart.json",
+            "references/components/custom-component.json",
+            "references/resources/echarts-resource.json",
+            "references/resources/custom-resource.json",
+            "references/advanced-component-standard.md",
+        ]
+        rules = [
+            "Stage-aware visualization skill context is active after an upstream LLM 500 retry.",
+            f'Current stage: "{normalized_stage}".',
+            "Return only JSON with regionId and components; resources and advancedComponents are optional.",
+            "Built-in components: text, dateTime, table, video, pseudo. tabs is forbidden.",
+            "Map/geography/spatial distribution uses pseudo.",
+            "pseudo must clone references/components/pseudo.json; point data only belongs in dataSourceProps.defaultValue.",
+            "pseudo point fields must be exactly name, longitude, dimension, value; dimension is latitude.",
+            "Non-map charts use resourceComponentEcharts/custom-chart and must include a matching ECharts resource in resources[].",
+            "Complex non-chart visuals use remote advanced Vue component in advancedComponents[].",
+        ]
+    lines = [*rules, "", "## Stage Reference Files"]
+    for relative in paths:
+        path = package_root / relative
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        limit = 4000 if relative.endswith(".md") else 6000
         lines.extend(["", f"### {relative}", "", _truncate_text(content, limit)])
     return "\n".join(lines).strip()
 

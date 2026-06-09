@@ -22,6 +22,7 @@ PLATFORM_SKILL_ALIASES: dict[str, list[str]] = {
         "deployment-candidate-reviewer",
         "experiment-ledger",
     ],
+    "1780988275767z1lxtrd1": ["generate-screen-skill"],
 }
 
 

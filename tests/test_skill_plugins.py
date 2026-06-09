@@ -13,15 +13,20 @@ from typing import Any
 from urllib.parse import urlparse
 from xml.etree import ElementTree
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api import skills as skills_api
 from app.core.artifacts import ArtifactStore
+from app.core.config import AgentConfig
+from app.core.llm import OpenAICompatibleClient
 from app.core.skills.aliases import expand_skill_aliases, invalidate_skill_alias_cache
 from app.core.skills import SkillRegistry, SkillRunner
 from app.core.skills.plugins import SkillPluginManager
+from app.core.tools.schemas import ToolInvocationResult
 from app.main import create_app
+from app.schemas import Message, RuntimeOptions
 
 
 def test_skill_plugin_upload_registers_and_executes_uploaded_skill(
@@ -98,6 +103,87 @@ def test_generate_screen_skill_executes_quick_local_bigscreen_generator(tmp_path
     assert page["components"]
     assert len(resource_paths) >= 3
     assert any(artifact.name == "page.json" for artifact in result.outputs)
+
+
+def test_visualization_bigscreen_retry_uses_stage_aware_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_module = _load_visualization_bigscreen_module()
+    workflow_class = workflow_module.VisualizationBigscreenWorkflow
+    prompts: list[str] = []
+
+    def fake_complete_sync(self: OpenAICompatibleClient, system_prompt: str, messages: list[Message]) -> str:
+        prompts.append(system_prompt)
+        if len(prompts) == 1:
+            request = httpx.Request("POST", "http://llm.local/v1/chat/completions")
+            response = httpx.Response(500, request=request)
+            raise httpx.HTTPStatusError("upstream 500", request=request, response=response)
+        return json.dumps(
+            {
+                "pageJson": {"canvas": {"backgroundImage": {"fileId": ""}}, "components": []},
+                "blueprint": {},
+                "backgroundSvg": "<svg viewBox=\"0 0 1920 1080\"></svg>",
+            }
+        )
+
+    def fake_upload_background(
+        self: Any,
+        paths: Any,
+        runtime_options: RuntimeOptions,
+        recorder: Any,
+    ) -> ToolInvocationResult:
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": "uploaded"}],
+            structured_content={"fileId": "background-file-id"},
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setattr(workflow_class, "_upload_background", fake_upload_background)
+
+    workflow = workflow_class(ArtifactStore(root_dir=tmp_path / "runtime"))
+    result, events = workflow.run_with_events(
+        AgentConfig(name="default", display_name="Default"),
+        messages=[Message(role="user", content="当前阶段：initialization\n生成园区可视化大屏初始化画布")],
+        attachments=[],
+        thread_id="stage-aware-retry",
+        runtime_options=RuntimeOptions(
+            thread_id="stage-aware-retry",
+            selected_skills=["1780988275767z1lxtrd1"],
+        ),
+    )
+
+    assert result.status == "completed", result.metadata
+    assert len(prompts) == 2
+    assert '"stage": "initialization"' not in prompts[0]
+    assert 'Current stage: "initialization".' in prompts[1]
+    assert "references/blueprint-standard.md" in prompts[1]
+    assert "references/components/custom-chart.json" not in prompts[1]
+    retry_event = next(event for event in events if event.type == "llm.request.retry")
+    assert retry_event.data["strategy"] == "stage_aware_context_retry"
+    assert retry_event.data["stage"] == "initialization"
+    context_event = next(
+        event for event in events if event.type == "skill.context.loaded" and event.data.get("stage_aware") is True
+    )
+    assert context_event.data["skill_name"] == "generate-screen-skill"
+    assert context_event.data["stage"] == "initialization"
+    assert context_event.data["chars"] > 0
+
+
+def _load_visualization_bigscreen_module() -> Any:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "workflows"
+        / "visualization-bigscreen"
+        / "visualization_bigscreen.py"
+    )
+    spec = importlib.util.spec_from_file_location("visualization_bigscreen_test_module", path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_skill_plugin_upload_can_replace_existing_plugin(tmp_path: Path) -> None:

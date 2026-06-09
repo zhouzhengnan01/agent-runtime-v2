@@ -221,6 +221,17 @@ def test_app_runtime_options_expand_platform_skill_aliases() -> None:
     ]
 
 
+def test_visualization_platform_skill_alias_expands_to_generate_screen_skill() -> None:
+    template = AppTemplateRegistry().get("general-jetlinks-assistant")
+
+    options = merge_runtime_options_with_template(
+        RuntimeOptions(app_template_name="general-jetlinks-assistant", selected_skills=["1780988275767z1lxtrd1"]),
+        template,
+    )
+
+    assert options.selected_skills == ["generate-screen-skill"]
+
+
 def test_request_selected_skills_expand_platform_skill_aliases(tmp_path: Path) -> None:
     apps_dir = tmp_path / "config" / "apps"
     apps_dir.mkdir(parents=True)
