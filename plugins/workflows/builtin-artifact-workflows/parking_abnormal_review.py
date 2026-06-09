@@ -499,6 +499,7 @@ class ParkingAbnormalReviewWorkflow:
         evidence_context = _attachment_evidence_context(image_attachments)
         visual_region_context = _visual_region_prompt_context(visual_regions)
         skill_context = _review_skill_prompt_context(skill_selection, skill_result, skill_error)
+        objective_rule_context = _objective_review_prompt_context(objective, skill_selection)
         system_prompt = (
             "你是机器视觉异常事件复判工作流。"
             "必须只基于用户文本和随附图片中可直接看见的内容判断识别目标是否命中。"
@@ -520,6 +521,7 @@ class ParkingAbnormalReviewWorkflow:
             "- 如存在已调用的复判 skill，必须优先遵循该 skill 的规则、判定边界和返回数据。\n"
             "- 不要使用“空旷路面”“停车位”“商场通道”“墙边堆放”等场景描述，除非这些内容在图片中清晰可见。\n"
             f"- 本次目标：{objective}\n"
+            f"{objective_rule_context}"
             f"{skill_context}"
             f"{evidence_context}"
             f"{visual_region_context}"
@@ -1084,21 +1086,23 @@ def _review_skill_candidates(
             score=score,
             score_reasons=tuple((*reasons, "template_candidate")),
         )
-    for skill in skill_registry.list(executable_only=True):
-        if skill.name in REVIEW_SKILL_EXCLUDED_NAMES:
-            continue
-        if skill.name in candidates:
-            continue
-        context = _skill_context(skill)
-        score, reasons = _score_review_skill(skill, context, objective=objective, prompt_text=prompt_text)
-        if score < SKILL_AUTO_CANDIDATE_MIN_SCORE:
-            continue
-        candidates[skill.name] = ReviewSkillCandidate(
-            skill=skill,
-            context=context,
-            score=score,
-            score_reasons=tuple((*reasons, "auto_candidate")),
-        )
+    list_skills = getattr(skill_registry, "list", None)
+    if callable(list_skills):
+        for skill in list_skills(executable_only=True):
+            if skill.name in REVIEW_SKILL_EXCLUDED_NAMES:
+                continue
+            if skill.name in candidates:
+                continue
+            context = _skill_context(skill)
+            score, reasons = _score_review_skill(skill, context, objective=objective, prompt_text=prompt_text)
+            if score < SKILL_AUTO_CANDIDATE_MIN_SCORE:
+                continue
+            candidates[skill.name] = ReviewSkillCandidate(
+                skill=skill,
+                context=context,
+                score=score,
+                score_reasons=tuple((*reasons, "auto_candidate")),
+            )
     return sorted(candidates.values(), key=lambda item: item.score, reverse=True)
 
 
@@ -1442,6 +1446,29 @@ def _review_skill_prompt_context(
     elif skill_error:
         parts.extend(["\n该 skill 调用失败：", skill_error[:1000]])
     return "\n".join(parts) + "\n"
+
+
+def _objective_review_prompt_context(
+    objective: str,
+    selection: ReviewSkillSelection | None,
+) -> str:
+    selected_skill_name = selection.skill_name if selection is not None else ""
+    if (
+        _normalize_match_text(objective) != "parkingviolationdetection"
+        and selected_skill_name != "parking-violation-review"
+    ):
+        return ""
+    return (
+        "\n车辆违停专项硬规则：\n"
+        "- 只有能清楚看到车辆停放在禁止停车区域、通行车道、出入口、消防通道、坡道口、转弯口，"
+        "或明确阻碍车辆/人员通行时，hit 才能为 1。\n"
+        "- 如果车辆位于正常停车位、停车线内、划定停车区域内，必须判定 hit=0；"
+        "即使上游目标为“车辆违停”或存在告警框，也不能判定命中。\n"
+        "- 告警框、检测框、bbox 通常只是车辆检测框；ROI/area 可能只是算法识别范围。"
+        "除非区域信息或画面清晰表明该区域是禁停区/通行通道，否则不能把框内有车当作违停证据。\n"
+        "- 如果无法确认车辆是否越出车位、占用通道、位于禁停区或阻碍通行，必须判定 hit=0，"
+        "result 写“未发现明确违规停车证据”。\n"
+    )
 
 
 def _video_frame_attachments(

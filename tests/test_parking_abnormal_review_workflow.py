@@ -302,6 +302,64 @@ def test_review_objective_prefers_fall_target_over_smoking_summary_text() -> Non
     assert candidates[1].score > candidates[0].score
 
 
+def test_parking_review_skill_score_routes_parking_violation_and_congestion_targets() -> None:
+    workflow = _load_workflow_module()
+
+    violation_skill = SkillDefinition(
+        name="parking-violation-review",
+        description="车辆违停 违规停车 ParkingViolationDetection",
+        output_kind="markdown",
+        routing={"keywords": ["违规停车", "车辆违停", "车辆违停检测", "ParkingViolationDetection"]},
+    )
+    congestion_skill = SkillDefinition(
+        name="parking-congestion-review",
+        description="停车场通道拥堵检测 车辆拥堵 ParkingCongestionDetection",
+        output_kind="markdown",
+        routing={"keywords": ["停车场通道拥堵检测", "车辆拥堵", "ParkingCongestionDetection"]},
+    )
+    violation_prompt = (
+        '{"taskTarget":{"value":"ParkingViolationDetection","text":"车辆违停检测"},'
+        '"modelName":"车场异常事件监控"}'
+    )
+    congestion_prompt = (
+        '{"taskTarget":{"value":"ParkingCongestionDetection","text":"停车场通道拥堵检测"},'
+        '"modelName":"车场异常事件监控"}'
+    )
+
+    assert workflow._objective(violation_prompt) == "ParkingViolationDetection"
+    assert workflow._objective(congestion_prompt) == "ParkingCongestionDetection"
+
+    violation_score, violation_reasons = workflow._score_review_skill(
+        violation_skill,
+        workflow._skill_context(violation_skill),
+        objective=workflow._objective(violation_prompt),
+        prompt_text=violation_prompt,
+    )
+    wrong_violation_score, _ = workflow._score_review_skill(
+        congestion_skill,
+        workflow._skill_context(congestion_skill),
+        objective=workflow._objective(violation_prompt),
+        prompt_text=violation_prompt,
+    )
+    congestion_score, congestion_reasons = workflow._score_review_skill(
+        congestion_skill,
+        workflow._skill_context(congestion_skill),
+        objective=workflow._objective(congestion_prompt),
+        prompt_text=congestion_prompt,
+    )
+    wrong_congestion_score, _ = workflow._score_review_skill(
+        violation_skill,
+        workflow._skill_context(violation_skill),
+        objective=workflow._objective(congestion_prompt),
+        prompt_text=congestion_prompt,
+    )
+
+    assert violation_score > wrong_violation_score
+    assert congestion_score > wrong_congestion_score
+    assert "keyword=车辆违停检测" in violation_reasons
+    assert "keyword=停车场通道拥堵检测" in congestion_reasons
+
+
 def test_parking_review_invokes_one_selected_skill_and_injects_result(
     tmp_path: Path,
     monkeypatch: Any,
@@ -349,6 +407,7 @@ def test_parking_review_invokes_one_selected_skill_and_injects_result(
         paths: Any,
         review_source_id: str,
         objective: str,
+        visual_regions: list[dict[str, Any]],
         skill_selection: Any,
         skill_result: SkillRunResult | None,
         skill_error: str,
@@ -413,6 +472,7 @@ def test_parking_review_logs_llm_raw_reply_and_normalized_result(
         paths: Any,
         review_source_id: str,
         objective: str,
+        visual_regions: list[dict[str, Any]],
         skill_selection: Any,
         skill_result: SkillRunResult | None,
         skill_error: str,
@@ -476,6 +536,7 @@ def test_parking_review_logs_image_sources(
         paths: Any,
         review_source_id: str,
         objective: str,
+        visual_regions: list[dict[str, Any]],
         skill_selection: Any,
         skill_result: SkillRunResult | None,
         skill_error: str,
@@ -531,3 +592,158 @@ def test_parking_review_logs_image_sources(
     event_payloads = {event.type: event.data for event in events}
     assert event_payloads["review.input"]["image_sources"][0]["url"] == image_url
     assert event_payloads["review.input"]["image_sources"][0]["dataId"] == "data-1"
+
+
+def test_parking_review_logs_and_passes_visual_regions(
+    tmp_path: Path,
+    monkeypatch: Any,
+    caplog: Any,
+) -> None:
+    workflow = _load_workflow_module()
+    captured: dict[str, Any] = {}
+
+    class FakeRegistry:
+        def get(self, name: str) -> SkillDefinition:
+            if name == "parking-violation-review":
+                return SkillDefinition(
+                    name="parking-violation-review",
+                    description="违规停车 车辆违停",
+                    output_kind="markdown",
+                    routing={"keywords": ["违规停车", "车辆违停"]},
+                )
+            raise KeyError(name)
+
+    class FakeRunner:
+        def run(self, skill_name: str, spec: dict[str, Any], paths: Any, on_event: Any = None) -> SkillRunResult:
+            captured["skill_name"] = skill_name
+            captured["spec"] = spec
+            return SkillRunResult(skill_name=skill_name, data={"review_decision": "needs_model"})
+
+    def fake_complete_review(
+        *,
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions,
+        prompt_text: str,
+        image_attachments: list[Attachment],
+        paths: Any,
+        review_source_id: str,
+        objective: str,
+        visual_regions: list[dict[str, Any]],
+        skill_selection: Any,
+        skill_result: SkillRunResult | None,
+        skill_error: str,
+    ) -> str:
+        captured["visual_regions"] = visual_regions
+        return '[{"reviewSourceId":"source-region","reviewEventId":"event-region","hit":0,"result":"未命中"}]'
+
+    monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(fake_complete_review))
+
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("thread-region")
+    image = paths.uploads / "image-region.jpg"
+    image.write_bytes(b"fake-image")
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(
+        store,
+        skill_registry=FakeRegistry(),
+        skill_runner=FakeRunner(),
+    )
+    prompt_text = (
+        '{"reviewSourceId":"source-region","taskTarget":{"value":"ParkingViolationDetection","text":"车辆违停检测"},'
+        '"schemaResults":{"roi":[[0,0],[100,0],[100,100],[0,100]],"alarmBox":[10,20,80,90]}}'
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        result, events = review_workflow.run_with_events(
+            AgentConfig(name="default", display_name="Default"),
+            [Message(role="user", content=prompt_text)],
+            [
+                Attachment(
+                    name="image.jpg",
+                    path="/mnt/user-data/uploads/image-region.jpg",
+                    mime_type="image/jpeg",
+                    metadata={
+                        "original_uri": "https://example.test/image.jpg",
+                        "dataId": "data-region",
+                        "bbox": [11, 22, 33, 44],
+                        "roi": {"points": [[1, 2], [3, 4], [5, 6]]},
+                    },
+                )
+            ],
+            "thread-region",
+            runtime_options=RuntimeOptions(selected_skills=["parking-violation-review"]),
+        )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    event_payloads = {event.type: event.data for event in events}
+    assert result.reply == '[{"reviewSourceId":"source-region","reviewEventId":"event-region","hit":0,"result":"未命中"}]'
+    assert captured["skill_name"] == "parking-violation-review"
+    assert captured["spec"]["visual_regions"] == captured["visual_regions"]
+    assert captured["visual_regions"][0]["source"] == "attachment_metadata"
+    assert captured["visual_regions"][0]["regions"]["bbox"] == [11, 22, 33, 44]
+    assert captured["visual_regions"][1]["source"] == "prompt_json"
+    assert captured["visual_regions"][1]["regions"]["alarm_box"] == [10, 20, 80, 90]
+    assert "复判视觉区域 | parking review visual regions" in logs
+    assert '"bbox": [' in logs
+    assert '"alarm_box": [' in logs
+    assert event_payloads["review.input"]["visual_regions"] == captured["visual_regions"]
+
+
+def test_parking_violation_review_prompt_rejects_marked_parking_spaces(monkeypatch: Any) -> None:
+    workflow = _load_workflow_module()
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, agent_config: AgentConfig, runtime_options: RuntimeOptions | None = None) -> None:
+            pass
+
+        def complete_sync(self, system_prompt: str, messages: list[dict[str, Any]]) -> str:
+            captured["system_prompt"] = system_prompt
+            captured["user_prompt"] = messages[0]["content"]
+            return '[{"reviewSourceId":"source-parking","reviewEventId":"event-parking","hit":0,"result":"未发现明确违规停车证据"}]'
+
+    monkeypatch.setattr(workflow, "OpenAICompatibleClient", FakeClient)
+    selection = workflow.ReviewSkillSelection(
+        skill_name="parking-violation-review",
+        method="single_candidate",
+        confidence=1.0,
+        reason="test",
+        candidates=(),
+        selected_context=(
+            "skill_name: parking-violation-review\n"
+            "如果车辆停在正常车位、停车线内、划定停车区域内，应判定为不命中。"
+        ),
+    )
+
+    reply = workflow.ParkingAbnormalReviewWorkflow._complete_review(
+        agent_config=AgentConfig(name="default", display_name="Default"),
+        runtime_options=RuntimeOptions(),
+        prompt_text=(
+            '{"reviewSourceId":"source-parking",'
+            '"taskTarget":{"value":"ParkingViolationDetection","text":"车辆违停检测"},'
+            '"schemaResults":{"alarmBox":[10,20,80,90],"area":[[0,0],[100,0],[100,100],[0,100]]}}'
+        ),
+        image_attachments=[Attachment(name="parking.jpg", mime_type="image/jpeg")],
+        paths=None,
+        review_source_id="source-parking",
+        objective="ParkingViolationDetection",
+        visual_regions=[
+            {
+                "source": "prompt_json",
+                "regions": {
+                    "alarm_box": [10, 20, 80, 90],
+                    "area": [[0, 0], [100, 0], [100, 100], [0, 100]],
+                },
+            }
+        ],
+        skill_selection=selection,
+        skill_result=SkillRunResult(skill_name="parking-violation-review", data={"review_decision": "needs_model"}),
+        skill_error="",
+    )
+
+    assert '"hit":0' in reply
+    assert "车辆违停专项硬规则" in captured["user_prompt"]
+    assert "正常停车位、停车线内、划定停车区域内，必须判定 hit=0" in captured["user_prompt"]
+    assert "告警框、检测框、bbox 通常只是车辆检测框" in captured["user_prompt"]
+    assert "ROI/area 可能只是算法识别范围" in captured["user_prompt"]
+    assert "不能把框内有车当作违停证据" in captured["user_prompt"]
+    assert "未发现明确违规停车证据" in captured["user_prompt"]
