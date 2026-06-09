@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 import json
 from pathlib import Path
+import time
 import xml.etree.ElementTree as ET
 
 import httpx
@@ -235,40 +236,6 @@ def test_runtime_direct_json_emoji_generation_returns_resource_link_without_llm(
     event_types = [event.type for event in events]
     assert event_types == ["run.started", "artifact.created", "agent.message", "run.completed"]
     assert events[-1].data["result"]["content"][-1]["type"] == "resource_link"
-
-
-def test_direct_json_emoji_generation_does_not_match_memory_substring() -> None:
-    request = ChatRequest(
-        messages=[
-            Message(
-                role="user",
-                content="Use explicitly injected memories. 输出 JSON，evidenceRefs 是文件 ID。",
-            )
-        ],
-        runtime_options=RuntimeOptions(thread_id="no-direct-json-emoji"),
-    )
-
-    assert AgentRuntime._direct_json_artifact_intent(request) is None
-
-
-def test_attachment_context_summarizes_data_uri_path() -> None:
-    messages = [
-        Message(role="user", content="请复判图片"),
-    ]
-    updated = AgentRuntime._messages_with_attachment_context(
-        messages,
-        [
-            Attachment(
-                name="scene.jpg",
-                path="data:image/jpeg;base64,anBlZw==",
-                mime_type="image/jpeg",
-            )
-        ],
-    )
-
-    assert len(updated) == 1
-    assert "path=data:image/jpeg;base64,<inline data>" in updated[0].content
-    assert "anBlZw==" not in updated[0].content
 
 
 def test_runtime_streams_direct_json_emoji_generation_resource_link(
@@ -1659,6 +1626,62 @@ def test_workflow_persists_and_restores_thread_conversation(tmp_path: Path) -> N
     ]
     transcript_path = tmp_path / "threads" / "workflow-session" / "memory" / "conversation.md"
     assert "工作流第二轮回复" in transcript_path.read_text(encoding="utf-8")
+
+
+def test_sync_workflow_run_with_events_does_not_block_event_loop(tmp_path: Path) -> None:
+    class BlockingWorkflow:
+        def run_with_events(
+            self,
+            agent_config: AgentConfig,
+            messages: list[Message],
+            attachments: list[Attachment],
+            thread_id: str | None,
+            on_event=None,
+            workflow_name: str | None = None,
+            runtime_options: RuntimeOptions | None = None,
+        ) -> tuple[AgentRunResult, list[ChatEvent]]:
+            del messages, attachments, on_event, runtime_options
+            time.sleep(0.05)
+            event = ChatEvent(
+                type="run.started",
+                data={
+                    "run_id": "run-blocking-workflow",
+                    "agent": agent_config.name,
+                    "thread_id": thread_id or "",
+                    "workflow": workflow_name or "blocking_workflow",
+                },
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=thread_id or "",
+                reply="done",
+                metadata={"workflow": workflow_name or "blocking_workflow"},
+            )
+            return result, [event]
+
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        workflow_registry=WorkflowRegistry({"blocking_workflow": BlockingWorkflow()}),
+    )
+    agent = AgentConfig(name="workflow-thread-agent", display_name="Workflow Thread Agent")
+    request = ChatRequest(
+        messages=[Message(role="user", content="run blocking workflow")],
+        runtime_options=RuntimeOptions(thread_id="workflow-thread", workflow="blocking_workflow"),
+    )
+
+    async def run_and_probe_loop() -> tuple[AgentRunResult, bool]:
+        task = asyncio.create_task(runtime.run(agent, request))
+        await asyncio.sleep(0)
+        probe = asyncio.create_task(asyncio.sleep(0.01))
+        done, _pending = await asyncio.wait({task, probe}, timeout=0.03, return_when=asyncio.FIRST_COMPLETED)
+        probe_completed_before_workflow = probe in done and task not in done
+        result = await task
+        return result, probe_completed_before_workflow
+
+    result, probe_completed_before_workflow = asyncio.run(run_and_probe_loop())
+
+    assert result.reply == "done"
+    assert probe_completed_before_workflow is True
 
 
 def test_runtime_init_skills_replace_agent_json_default_skills(

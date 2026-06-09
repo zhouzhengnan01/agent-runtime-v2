@@ -323,7 +323,6 @@ def test_acp_websocket_prompt_sends_keepalive_during_long_runtime(
     runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"), block=True)
     monkeypatch.setattr(acp_api, "runtime", runtime)
     monkeypatch.setattr(acp_transport_ws, "ACP_PROMPT_KEEPALIVE_SECONDS", 0.01)
-    monkeypatch.setattr(acp_transport_ws, "ACP_PROMPT_KEEPALIVE_ENABLED", True)
     client = TestClient(create_app())
 
     with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:

@@ -18,9 +18,9 @@ from app.protocols.acp.schemas import AcpWebSocketSession, JsonRpcId
 
 ACP_PROMPT_KEEPALIVE_SECONDS = max(
     1.0,
-    float(os.getenv("ACP_PROMPT_KEEPALIVE_SECONDS", "10") or "10"),
+    float(os.getenv("ACP_PROMPT_KEEPALIVE_SECONDS", "5") or "5"),
 )
-ACP_PROMPT_KEEPALIVE_ENABLED = env_flag("ACP_PROMPT_KEEPALIVE_ENABLED", "0")
+ACP_PROMPT_KEEPALIVE_ENABLED = env_flag("ACP_PROMPT_KEEPALIVE_ENABLED", "1")
 ACP_PROMPT_KEEPALIVE_TOOL_CALL_ID = "acp-prompt-keepalive"
 ACP_PROMPT_PROGRESS_TEXT = "正在处理，请等待..."
 ACP_PROMPT_WAITING_TEXT = "已收到请求，正在处理，请等待..."

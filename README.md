@@ -1562,6 +1562,12 @@ session 扩展方法，并提供 `session/cancel`。取消是 best-effort：协�
 并向 external ACP backend 转发 cancel；已经进入同步线程、沙箱或远端 provider 的底层操作可能不会瞬时停止，
 但协议响应会返回 `stopReason=cancelled`，客户端不会再被正在执行的 prompt 阻塞。
 
+ACP WebSocket 默认启用 prompt keepalive。`session/prompt` 运行期间，服务端会先通过
+`session/update` 发送 `agent_thought_chunk`，提示“正在处理，请等待...”和“已收到请求，正在处理，请等待...”；
+随后默认每 5 秒发送一次 `acp.prompt.keepalive` / `acp.prompt.wait_message` 更新，前端可用这些非最终
+`result` 的消息展示“处理中”状态。可通过 `ACP_PROMPT_KEEPALIVE_ENABLED=0` 关闭，或用
+`ACP_PROMPT_KEEPALIVE_SECONDS` 调整间隔。
+
 ### ACP 支持矩阵
 
 当前实现是面向 JetLinks Workbench、服务端 Agent Runtime 和外部 ACP stdio backend 的 ACP 兼容实现。
