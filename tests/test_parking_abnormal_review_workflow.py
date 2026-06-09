@@ -506,14 +506,10 @@ def test_parking_review_logs_llm_raw_reply_and_normalized_result(
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert result.reply == '[{"reviewSourceId":"source-log","reviewEventId":"event-log","hit":1,"result":"模型判定命中"}]'
-    assert "parking review llm raw reply review_source_id=source-log" in logs
-    assert "raw_chars=" in logs
+    assert "parking review input summary review_source_id=source-log" in logs
+    assert "parking review final result review_source_id=source-log" in logs
     assert "模型判定命中" in logs
-    assert "复判归一化结果 | parking review normalized result" in logs
-    assert "复判最终结果 | parking review final result" in logs
-    assert "reviewSourceId: source-log" in logs
-    assert '"result": "模型判定命中"' in logs
-    assert "结果字符数:" in logs
+    assert "result_chars=" in logs
     event_payloads = {event.type: event.data for event in events}
     assert event_payloads["review.llm.raw_reply"]["raw_reply"] == (
         '[{"reviewSourceId":"source-log","reviewEventId":"event-log","hit":1,"result":"模型判定命中"}]'
@@ -584,11 +580,12 @@ def test_parking_review_logs_image_sources(
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert result.reply == '[{"reviewSourceId":"source-image","reviewEventId":"event-image","hit":0,"result":"未命中"}]'
-    assert "复判图片来源 | parking review image sources" in logs
-    assert "图片链接/路径:" in logs
-    assert image_url in logs
-    assert '"dataId": "data-1"' in logs
-    assert "复判最终结果 | parking review final result" in logs
+    assert "parking review input summary review_source_id=source-image" in logs
+    assert "link_count=1" in logs
+    assert "remote_link_count=1" in logs
+    assert "https://example.test/image.jpg" in logs
+    assert '"dataId":"data-1"' in logs
+    assert "parking review final result review_source_id=source-image" in logs
     event_payloads = {event.type: event.data for event in events}
     assert event_payloads["review.input"]["image_sources"][0]["url"] == image_url
     assert event_payloads["review.input"]["image_sources"][0]["dataId"] == "data-1"
@@ -682,9 +679,9 @@ def test_parking_review_logs_and_passes_visual_regions(
     assert captured["visual_regions"][0]["regions"]["bbox"] == [11, 22, 33, 44]
     assert captured["visual_regions"][1]["source"] == "prompt_json"
     assert captured["visual_regions"][1]["regions"]["alarm_box"] == [10, 20, 80, 90]
-    assert "复判视觉区域 | parking review visual regions" in logs
-    assert '"bbox": [' in logs
-    assert '"alarm_box": [' in logs
+    assert "parking review input summary review_source_id=source-region" in logs
+    assert "region_count=2" in logs
+    assert "parking review final result review_source_id=source-region" in logs
     assert event_payloads["review.input"]["visual_regions"] == captured["visual_regions"]
 
 

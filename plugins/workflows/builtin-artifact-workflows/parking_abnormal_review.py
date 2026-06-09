@@ -10,10 +10,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.config import AgentConfig
-from app.core.diagnostics import diagnostic_json
+from app.core.diagnostics import diagnostic_json, env_flag, env_int
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import OpenAICompatibleClient
 from app.core.skills import SkillDefinition, SkillRegistry, SkillRunner
@@ -32,7 +33,9 @@ SKILL_CONTEXT_MAX_CHARS = 6000
 SKILL_LLM_SELECTION_SCORE_GAP = 3.0
 SKILL_AUTO_CANDIDATE_MIN_SCORE = 2.0
 REVIEW_SKILL_EXCLUDED_NAMES = frozenset({"behavior-detection"})
-REVIEW_LLM_REPLY_LOG_MAX_CHARS = 4000
+REVIEW_LLM_REPLY_LOG_MAX_CHARS = max(200, env_int("PARKING_REVIEW_REPLY_LOG_MAX_CHARS", 1200))
+PARKING_REVIEW_TRACE_DETAILS = env_flag("PARKING_REVIEW_TRACE_DETAILS", "0")
+PARKING_REVIEW_LOG_LINK_LIMIT = max(0, env_int("PARKING_REVIEW_LOG_LINK_LIMIT", 5))
 OBJECTIVE_LABEL_ALIASES = frozenset(
     _normalize
     for _normalize in (
@@ -233,34 +236,35 @@ class ParkingAbnormalReviewWorkflow:
                 "video_frame_reports": video_frame_reports,
             },
         )
+        link_summary = _attachment_link_summary(image_sources)
+        error_summary = _review_error_summary(skill_error, video_frame_reports)
         logger.info(
-            "\n===== 复判图片来源 | parking review image sources =====\n"
-            "reviewSourceId: %s\n"
-            "识别目标: %s\n"
-            "目标来源: %s\n"
-            "图片数量: %s\n"
-            "图片链接/路径:\n%s\n"
-            "===== 复判图片来源结束 =====",
+            "parking review input summary review_source_id=%s objective=%s objective_source=%s skill_name=%s "
+            "attachments=%s image_inputs=%s video_inputs=%s video_frames=%s link_count=%s "
+            "remote_link_count=%s local_path_count=%s region_count=%s links=%s errors=%s",
             review_source_id,
             objective,
             objective_source,
-            len(image_sources),
-            _pretty_payload_json(image_sources),
-        )
-        logger.info(
-            "\n===== 复判视觉区域 | parking review visual regions =====\n"
-            "reviewSourceId: %s\n"
-            "识别目标: %s\n"
-            "目标来源: %s\n"
-            "区域数量: %s\n"
-            "告警框/ROI/区域:\n%s\n"
-            "===== 复判视觉区域结束 =====",
-            review_source_id,
-            objective,
-            objective_source,
+            skill_selection.skill_name if skill_selection is not None else "",
+            len(attachments),
+            len(image_attachments),
+            len(video_attachments),
+            len(video_frame_attachments),
+            link_summary["link_count"],
+            link_summary["remote_link_count"],
+            link_summary["local_path_count"],
             len(visual_regions),
-            _pretty_payload_json(visual_regions),
+            _compact_payload_json(link_summary["links"]),
+            _compact_payload_json(error_summary),
         )
+        if PARKING_REVIEW_TRACE_DETAILS:
+            logger.info(
+                "parking review input details review_source_id=%s image_sources=%s visual_regions=%s video_frame_reports=%s",
+                review_source_id,
+                _pretty_payload_json(image_sources),
+                _pretty_payload_json(visual_regions),
+                _pretty_payload_json(video_frame_reports),
+            )
 
         if not review_attachments:
             reply = _json_reply(
@@ -287,16 +291,17 @@ class ParkingAbnormalReviewWorkflow:
                 skill_result=skill_result,
                 skill_error=skill_error,
             )
-            logger.info(
-                "parking review llm raw reply review_source_id=%s objective=%s attachment_count=%s "
-                "skill_name=%s raw_chars=%s raw_reply=%s",
-                review_source_id,
-                objective,
-                len(review_attachments),
-                skill_selection.skill_name if skill_selection is not None else "",
-                len(raw_reply),
-                diagnostic_json({"reply": raw_reply}, max_chars=REVIEW_LLM_REPLY_LOG_MAX_CHARS),
-            )
+            if PARKING_REVIEW_TRACE_DETAILS:
+                logger.info(
+                    "parking review llm raw reply review_source_id=%s objective=%s attachment_count=%s "
+                    "skill_name=%s raw_chars=%s raw_reply=%s",
+                    review_source_id,
+                    objective,
+                    len(review_attachments),
+                    skill_selection.skill_name if skill_selection is not None else "",
+                    len(raw_reply),
+                    diagnostic_json({"reply": raw_reply}, max_chars=REVIEW_LLM_REPLY_LOG_MAX_CHARS),
+                )
             recorder.emit(
                 "review.llm.raw_reply",
                 {
@@ -309,18 +314,6 @@ class ParkingAbnormalReviewWorkflow:
                 },
             )
             reply = _normalize_json_reply(raw_reply, review_source_id=review_source_id, objective=objective)
-            logger.info(
-                "\n===== 复判归一化结果 | parking review normalized result =====\n"
-                "reviewSourceId: %s\n"
-                "识别目标: %s\n"
-                "结果字符数: %s\n"
-                "复判结果:\n%s\n"
-                "===== 复判归一化结果结束 =====",
-                review_source_id,
-                objective,
-                len(reply),
-                _pretty_review_json(reply),
-            )
             recorder.emit(
                 "review.normalized_result",
                 {
@@ -332,26 +325,16 @@ class ParkingAbnormalReviewWorkflow:
             )
 
         logger.info(
-            "\n===== 复判最终结果 | parking review final result =====\n"
-            "reviewSourceId: %s\n"
-            "识别目标: %s\n"
-            "选中技能: %s\n"
-            "图片数量: %s\n"
-            "图片链接/路径:\n%s\n"
-            "区域数量: %s\n"
-            "告警框/ROI/区域:\n%s\n"
-            "结果字符数: %s\n"
-            "复判结果:\n%s\n"
-            "===== 复判最终结果结束 =====",
+            "parking review final result review_source_id=%s objective=%s skill_name=%s attachments=%s "
+            "link_count=%s region_count=%s result_chars=%s result=%s",
             review_source_id,
             objective,
             skill_selection.skill_name if skill_selection is not None else "",
-            len(image_sources),
-            _pretty_payload_json(image_sources),
+            len(review_attachments),
+            link_summary["link_count"],
             len(visual_regions),
-            _pretty_payload_json(visual_regions),
             len(reply),
-            _pretty_review_json(reply),
+            _compact_review_json(reply),
         )
 
         artifact = self.artifact_store.write_text_artifact(paths, OUTPUT_NAME, reply)
@@ -927,6 +910,77 @@ def _attachment_source_payloads(attachments: list[Attachment]) -> list[dict[str,
                 payload[key] = value
         payloads.append(payload)
     return payloads
+
+
+def _attachment_link_summary(sources: list[dict[str, Any]]) -> dict[str, Any]:
+    remote_count = 0
+    local_count = 0
+    links: list[dict[str, Any]] = []
+    for source in sources:
+        ref = _first_non_empty(source.get("url"), source.get("path"))
+        if not ref:
+            continue
+        is_remote = _is_http_url(ref)
+        if is_remote:
+            remote_count += 1
+        else:
+            local_count += 1
+        if len(links) < PARKING_REVIEW_LOG_LINK_LIMIT:
+            links.append(
+                {
+                    "index": source.get("index"),
+                    "name": source.get("name"),
+                    "mime_type": source.get("mime_type"),
+                    "source": source.get("source") or "attachment",
+                    "ref": _redacted_log_ref(ref),
+                    "dataId": _first_non_empty(source.get("dataId"), source.get("data_id")),
+                    "sourceId": _first_non_empty(source.get("sourceId"), source.get("source_id")),
+                    "frame_index": source.get("frame_index"),
+                    "timestamp_ms": source.get("timestamp_ms"),
+                }
+            )
+    return {
+        "link_count": remote_count + local_count,
+        "remote_link_count": remote_count,
+        "local_path_count": local_count,
+        "links": links,
+        "omitted": max(0, remote_count + local_count - len(links)),
+    }
+
+
+def _review_error_summary(skill_error: str, video_frame_reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    if skill_error:
+        errors.append({"type": "skill_error", "error": skill_error[:500]})
+    for report in video_frame_reports:
+        if report.get("status") == "completed" and report.get("frame_count"):
+            continue
+        errors.append(
+            {
+                "type": "video_frame",
+                "name": report.get("name"),
+                "status": report.get("status"),
+                "error_code": report.get("error_code") or report.get("status") or "unknown",
+                "error": str(report.get("error") or "")[:500],
+            }
+        )
+    return errors
+
+
+def _is_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _redacted_log_ref(value: str) -> str:
+    text = str(value or "").strip()
+    parsed = urlparse(text)
+    if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+        redacted = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if parsed.query:
+            redacted += "?..."
+        return redacted[:240]
+    return text[:240] + ("..." if len(text) > 240 else "")
 
 
 _VISUAL_REGION_FIELD_ALIASES: dict[str, str] = {
@@ -1863,6 +1917,21 @@ def _pretty_review_json(value: str) -> str:
             return text
         return f"{text[:REVIEW_LLM_REPLY_LOG_MAX_CHARS]}...<truncated chars={len(text) - REVIEW_LLM_REPLY_LOG_MAX_CHARS}>"
     return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+
+def _compact_review_json(value: str) -> str:
+    parsed = _parse_json_array(value)
+    text = json.dumps(parsed, ensure_ascii=False, separators=(",", ":")) if parsed is not None else value.strip()
+    if len(text) <= REVIEW_LLM_REPLY_LOG_MAX_CHARS:
+        return text
+    return f"{text[:REVIEW_LLM_REPLY_LOG_MAX_CHARS]}...<truncated chars={len(text) - REVIEW_LLM_REPLY_LOG_MAX_CHARS}>"
+
+
+def _compact_payload_json(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if len(text) <= REVIEW_LLM_REPLY_LOG_MAX_CHARS:
+        return text
+    return f"{text[:REVIEW_LLM_REPLY_LOG_MAX_CHARS]}...<truncated chars={len(text) - REVIEW_LLM_REPLY_LOG_MAX_CHARS}>"
 
 
 def _pretty_payload_json(value: Any) -> str:

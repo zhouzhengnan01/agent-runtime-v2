@@ -588,11 +588,13 @@ def test_llm_client_logs_request_and_response_details_redacted(
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert response.content == "ok"
-    assert "llm request operation=complete_with_tools" in logs
-    assert "llm http response operation=complete_with_tools" in logs
+    assert "llm request summary operation=complete_with_tools" in logs
+    assert "llm request payload operation=complete_with_tools" in logs
+    assert "llm http response summary operation=complete_with_tools" in logs
+    assert "llm http response body operation=complete_with_tools" in logs
     assert "llm response data operation=complete_with_tools" in logs
     assert "llm reply content operation=complete_with_tools" in logs
-    assert "回复内容(最多 4000 字符):\nok" in logs
+    assert "reply_preview=ok" in logs
     assert '"content": "hi"' in logs
     assert '"max_tokens": 128' in logs
     assert '"Authorization": "********"' in logs
@@ -639,7 +641,7 @@ def test_complete_sync_logs_model_reply_content(monkeypatch: MonkeyPatch, caplog
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert response == '[{"reviewResult":"不匹配","reason":"画面未见目标"}]'
     assert "llm reply content operation=complete_sync" in logs
-    assert "回复内容(最多 4000 字符):\n[{\"reviewResult\":\"不匹配\",\"reason\":\"画面未见目标\"}]" in logs
+    assert 'reply_preview=[{"reviewResult":"不匹配","reason":"画面未见目标"}]' in logs
 
 
 def test_http_status_error_includes_upstream_response_body(monkeypatch: MonkeyPatch) -> None:
