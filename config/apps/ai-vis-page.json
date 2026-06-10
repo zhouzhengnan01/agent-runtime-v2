@@ -11,7 +11,7 @@
   "runtime_options": {
     "config_options": {
       "visualBigscreenMode": "full",
-      "visualBigscreenRegionConcurrency": 3
+      "visualBigscreenRegionConcurrency": 5
     }
   },
   "models": [

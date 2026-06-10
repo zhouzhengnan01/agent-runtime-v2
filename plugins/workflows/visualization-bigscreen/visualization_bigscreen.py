@@ -28,7 +28,7 @@ BACKGROUND_PATH = f"{BIGSCREEN_OUTPUT_DIR}/background.svg"
 RESOURCE_DIR = f"{BIGSCREEN_OUTPUT_DIR}/resources"
 ADVANCED_COMPONENT_DIR = f"{BIGSCREEN_OUTPUT_DIR}/advanced-components"
 DEFAULT_RESOURCE_GROUP = "[\"vis_oneself_dimension_line-chart\"]"
-DEFAULT_FULL_REGION_CONCURRENCY = 4
+DEFAULT_FULL_REGION_CONCURRENCY = 5
 REGION_TITLE_FONT: dict[str, Any] = {
     "colorType": "default",
     "color": "rgba(114,232,255,1)",
@@ -469,6 +469,8 @@ class VisualizationBigscreenWorkflow:
         )
 
         generated_by_region: dict[str, dict[str, Any]] = {}
+        finalized_by_region: dict[str, dict[str, Any]] = {}
+        region_errors: dict[str, str] = {}
         region_durations_ms: dict[str, float] = {}
         completed_count = 0
 
@@ -508,6 +510,14 @@ class VisualizationBigscreenWorkflow:
                 try:
                     completed_region_id, payload, duration_ms = future.result()
                 except Exception as exc:
+                    completed_count += 1
+                    duration_ms = round((time.perf_counter() - region_generation_started_at) * 1000, 3)
+                    error = str(exc)
+                    payload = _failed_region_payload(region_id, error)
+                    generated_by_region[region_id] = payload
+                    finalized_by_region[region_id] = {"resource_save_count": 0, "advanced_component_count": 0}
+                    region_durations_ms[region_id] = duration_ms
+                    region_errors[region_id] = error
                     recorder.emit(
                         "visualization.region.concurrent.failed",
                         {
@@ -515,13 +525,25 @@ class VisualizationBigscreenWorkflow:
                             "region_id": region_id,
                             "completed_count": completed_count,
                             "region_count": len(regions),
-                            "duration_ms": round((time.perf_counter() - region_generation_started_at) * 1000, 3),
-                            "error": str(exc),
+                            "duration_ms": duration_ms,
+                            "phase": "generate",
+                            "error": error,
                         },
                     )
-                    raise RuntimeError(f"region {region_id} generation failed: {exc}") from exc
+                    recorder.emit(
+                        "visualization.region.ready",
+                        _region_ready_event_data(
+                            region_id=region_id,
+                            components=[],
+                            completed_count=completed_count,
+                            region_count=len(regions),
+                            duration_ms=duration_ms,
+                            status="failed",
+                            error=error,
+                        ),
+                    )
+                    continue
                 completed_count += 1
-                generated_by_region[completed_region_id] = payload
                 region_durations_ms[completed_region_id] = duration_ms
                 recorder.emit(
                     "visualization.region.concurrent.completed",
@@ -534,49 +556,95 @@ class VisualizationBigscreenWorkflow:
                         "duration_ms": duration_ms,
                     },
                 )
+                try:
+                    finalize_metadata = self._finalize_region_payload(payload, paths, runtime_options, recorder)
+                except Exception as exc:
+                    error = str(exc)
+                    payload = _failed_region_payload(completed_region_id, error)
+                    finalize_metadata = {"resource_save_count": 0, "advanced_component_count": 0}
+                    region_errors[completed_region_id] = error
+                    recorder.emit(
+                        "visualization.region.concurrent.failed",
+                        {
+                            "stage": "full",
+                            "region_id": completed_region_id,
+                            "completed_count": completed_count,
+                            "region_count": len(regions),
+                            "duration_ms": duration_ms,
+                            "phase": "finalize",
+                            "error": error,
+                        },
+                    )
+                generated_by_region[completed_region_id] = payload
+                finalized_by_region[completed_region_id] = finalize_metadata
+                region_components = _list(payload.get("components"))
+                recorder.emit(
+                    "visualization.region.finalized",
+                    {
+                        "stage": "full",
+                        "region_id": completed_region_id,
+                        "component_count": len(region_components),
+                        "resource_save_count": finalize_metadata.get("resource_save_count"),
+                        "advanced_component_count": finalize_metadata.get("advanced_component_count"),
+                    },
+                )
+                recorder.emit(
+                    "visualization.region.ready",
+                    _region_ready_event_data(
+                        region_id=completed_region_id,
+                        components=region_components,
+                        completed_count=completed_count,
+                        region_count=len(regions),
+                        duration_ms=duration_ms,
+                        status="failed" if completed_region_id in region_errors else "completed",
+                        error=region_errors.get(completed_region_id, ""),
+                        resource_save_count=int(finalize_metadata.get("resource_save_count") or 0),
+                        advanced_component_count=int(finalize_metadata.get("advanced_component_count") or 0),
+                    ),
+                )
 
         region_generation_wall_ms = round((time.perf_counter() - region_generation_started_at) * 1000, 3)
         region_results: list[dict[str, Any]] = []
-        all_components: list[Any] = []
+        total_component_count = 0
         resource_save_count = 0
         advanced_component_count = 0
         for region in regions:
             region_id = _string(region.get("id"))
-            payload = generated_by_region.get(region_id)
-            if payload is None:
-                raise RuntimeError(f"region {region_id} did not return a payload")
-            finalize_metadata = self._finalize_region_payload(payload, paths, runtime_options, recorder)
+            payload = generated_by_region.get(region_id) or _failed_region_payload(region_id, "region did not return a payload")
+            finalize_metadata = finalized_by_region.get(region_id) or {"resource_save_count": 0, "advanced_component_count": 0}
             region_components = _list(payload.get("components"))
-            region_results.append({"regionId": region_id, "components": region_components})
-            all_components.extend(region_components)
+            region_result = {
+                "regionId": region_id,
+                "status": "failed" if region_id in region_errors else "completed",
+                "componentCount": len(region_components),
+            }
+            if region_id in region_errors:
+                region_result["error"] = region_errors[region_id]
+            region_results.append(region_result)
+            total_component_count += len(region_components)
             resource_save_count += int(finalize_metadata.get("resource_save_count") or 0)
             advanced_component_count += int(finalize_metadata.get("advanced_component_count") or 0)
-            recorder.emit(
-                "visualization.region.finalized",
-                {
-                    "stage": "full",
-                    "region_id": region_id,
-                    "component_count": len(region_components),
-                    "resource_save_count": finalize_metadata.get("resource_save_count"),
-                    "advanced_component_count": finalize_metadata.get("advanced_component_count"),
-                },
-            )
 
         final_page_json = copy.deepcopy(page_json)
-        final_page_json["components"] = all_components
+        final_page_json["components"] = []
         full_duration_ms = round((time.perf_counter() - full_started_at) * 1000, 3)
         reply_payload = {
+            "_visualizationStage": "completed",
+            "streamed": True,
             "pageJson": final_page_json,
             "blueprint": blueprint,
             "regions": region_results,
-            "components": all_components,
+            "components": [],
+            "componentCount": total_component_count,
+            "failedRegionCount": len(region_errors),
         }
         recorder.emit(
             "visualization.full.completed",
             {
                 "stage": "full",
                 "region_count": len(region_results),
-                "component_count": len(all_components),
+                "component_count": total_component_count,
+                "failed_region_count": len(region_errors),
                 "resource_save_count": resource_save_count,
                 "advanced_component_count": advanced_component_count,
                 "max_workers": max_workers,
@@ -588,7 +656,8 @@ class VisualizationBigscreenWorkflow:
         metadata = {
             **initialization_metadata,
             "region_count": len(region_results),
-            "component_count": len(all_components),
+            "component_count": total_component_count,
+            "failed_region_count": len(region_errors),
             "resource_save_count": resource_save_count,
             "advanced_component_count": advanced_component_count,
             "max_workers": max_workers,
@@ -1369,6 +1438,46 @@ def _full_region_prompt(original_prompt: str, region: dict[str, Any], blueprint:
             json.dumps(overview, ensure_ascii=False),
         ]
     )
+
+
+def _failed_region_payload(region_id: str, error: str) -> dict[str, Any]:
+    return {
+        "regionId": region_id,
+        "components": [],
+        "advancedComponents": [],
+        "resources": [],
+        "error": error,
+    }
+
+
+def _region_ready_event_data(
+    *,
+    region_id: str,
+    components: list[Any],
+    completed_count: int,
+    region_count: int,
+    duration_ms: float,
+    status: str,
+    error: str = "",
+    resource_save_count: int = 0,
+    advanced_component_count: int = 0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "stage": "full",
+        "region_id": region_id,
+        "regionId": region_id,
+        "status": status,
+        "components": components,
+        "component_count": len(components),
+        "completed_count": completed_count,
+        "region_count": region_count,
+        "duration_ms": duration_ms,
+        "resource_save_count": resource_save_count,
+        "advanced_component_count": advanced_component_count,
+    }
+    if error:
+        payload["error"] = error
+    return payload
 
 
 def _advanced_components_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
