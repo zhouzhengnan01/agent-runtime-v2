@@ -1462,12 +1462,13 @@ def _review_source_id_from_params(params: dict[str, Any]) -> str | None:
     for container in _bridge_payload_containers(params):
         sources.extend([container.get("reviewSourceId"), container.get("review_source_id")])
 
+    prompt_sources: list[object] = []
     prompt_text, _attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
     if prompt_text:
-        sources.append(prompt_text)
+        prompt_sources.append(prompt_text)
     for message in params.get("messages") if isinstance(params.get("messages"), list) else []:
         if isinstance(message, dict):
-            sources.append(message.get("content"))
+            prompt_sources.append(message.get("content"))
 
     for source in sources:
         text = _string(source)
@@ -1481,6 +1482,15 @@ def _review_source_id_from_params(params: dict[str, Any]) -> str | None:
                     return value
         elif "_" in text:
             return text
+    for source in prompt_sources:
+        text = _string(source)
+        if text is None or "reviewSourceId" not in text:
+            continue
+        match = _REVIEW_SOURCE_ID_RE.search(text)
+        if match:
+            value = match.group(1).strip()
+            if value:
+                return value
     return None
 
 

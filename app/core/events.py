@@ -118,10 +118,33 @@ class RunEventStore:
             request_snapshot=request_snapshot,
         )
         self.root_dir.mkdir(parents=True, exist_ok=True)
-        target = self._run_path(run_id).with_suffix(".json.tmp")
-        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        target.replace(self._run_path(run_id))
+        self._write_json_file(self._run_path(run_id), payload)
         return payload
+
+    @staticmethod
+    def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+        content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        tmp_file = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        tmp_file.write_text(content, encoding="utf-8")
+        last_error: PermissionError | None = None
+        for attempt in range(5):
+            try:
+                tmp_file.replace(path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+        try:
+            path.write_text(content, encoding="utf-8")
+        except PermissionError:
+            if last_error is not None:
+                raise last_error
+            raise
+        finally:
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def get(self, run_id: str) -> dict[str, Any]:
         path = self._run_path(self._safe_run_id(run_id))

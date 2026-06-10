@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.core.artifacts.store import ThreadPaths
 from app.schemas import Message
@@ -80,7 +82,6 @@ class SessionConversationStore:
 
         timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         history_file = paths.memory / "conversation.jsonl"
-        tmp_file = history_file.with_suffix(".jsonl.tmp")
         lines = [
             json.dumps(
                 {
@@ -92,11 +93,35 @@ class SessionConversationStore:
             )
             for message in normalized
         ]
-        tmp_file.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-        tmp_file.replace(history_file)
+        self._write_text_file(history_file, "\n".join(lines) + ("\n" if lines else ""))
 
         transcript_file = paths.memory / "conversation.md"
-        transcript_file.write_text(self._transcript(normalized), encoding="utf-8")
+        self._write_text_file(transcript_file, self._transcript(normalized))
+
+    @staticmethod
+    def _write_text_file(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_file = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        tmp_file.write_text(content, encoding="utf-8")
+        last_error: PermissionError | None = None
+        for attempt in range(5):
+            try:
+                tmp_file.replace(path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+        try:
+            path.write_text(content, encoding="utf-8")
+        except PermissionError:
+            if last_error is not None:
+                raise last_error
+            raise
+        finally:
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     @classmethod
     def _normalize_message(cls, message: ChatHistoryMessage) -> dict[str, Any]:

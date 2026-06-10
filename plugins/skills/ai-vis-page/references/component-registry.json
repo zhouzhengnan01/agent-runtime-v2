@@ -1,0 +1,1013 @@
+{
+    "registryVersion": "1.0.0",
+    "name": "bigscreen-platform-component-registry",
+    "description": "Real platform component registry for AI-generated visualization big screens.",
+    "componentFilesBasePath": "references/components",
+    "resourceFilesBasePath": "references/resources",
+    "output": {
+        "backgroundSvgRequiredFile": false,
+        "backgroundSvgUpload": "fileService / UploadFile",
+        "backgroundImageFileIdPath": "pageJson.canvas.backgroundImage.fileId",
+        "pageJson": "progressive initialization response pageJson",
+        "generatedResourcesDir": "generated-bigscreen/resources",
+        "initializationResponse": {
+            "pageJson": {
+                "canvas": {},
+                "components": []
+            },
+            "blueprint": {}
+        },
+        "regionComponentResponse": {
+            "regionId": "__REGION_ID__",
+            "components": []
+        }
+    },
+    "pageJsonRules": {
+        "rootStructure": "platform-canvas-json",
+        "mustUseCanvasRoot": true,
+        "mustUseComponentsRoot": true,
+        "mustNotWrapWithPageObject": true,
+        "canvasPath": "canvas",
+        "componentArrayPath": "components",
+        "progressiveMode": true,
+        "initializationResponseRoot": "pageJson",
+        "regionResponseRoot": "components"
+    },
+    "commandIntegration": {
+        "enabled": true,
+        "commands": {
+            "uploadBackgroundSvg": {
+                "serviceId": "fileService",
+                "commandId": "UploadFile",
+                "usedBy": [
+                    "pageJson.canvas.backgroundImage.fileId"
+                ],
+                "parameters": {
+                    "fileName": "background.svg",
+                    "contentType": "image/svg+xml;charset=UTF-8",
+                    "content": "base64-utf8-svg"
+                },
+                "contentEncoding": "base64",
+                "resultFileIdPath": "id",
+                "writeResultTo": "pageJson.canvas.backgroundImage.fileId"
+            },
+            "createVisualizationResource": {
+                "serviceId": "visualizationService:resource",
+                "commandId": "Add",
+                "usedBy": [
+                    "custom-chart"
+                ],
+                "parameters": {
+                    "data": [
+                        "resource-entity-json"
+                    ]
+                },
+                "bodySource": "generated-bigscreen/resources/{resourceId}.resource.json",
+                "resourceIdSource": "generated-before-save",
+                "doNotUseResultAsResourceId": true
+            }
+        }
+    },
+    "allowedComponentKeys": [
+        "text",
+        "table",
+        "dateTime",
+        "video",
+        "pseudo",
+        "custom-chart",
+        "custom-component"
+    ],
+    "currentWorkflowOverride": {
+        "tabsForbidden": true,
+        "mapIntentComponentKey": "pseudo",
+        "mapIntentStrategy": "deep-clone components/pseudo.json and patch allowed paths only",
+        "mapTemplate": "components/pseudo.json",
+        "mapMustNotUse": [
+            "custom-chart",
+            "resourceComponentEcharts",
+            "echarts",
+            "series",
+            "geo",
+            "option",
+            "echartsOption",
+            "markers",
+            "points"
+        ],
+        "pseudoPointSchema": [
+            "name",
+            "longitude",
+            "dimension",
+            "value"
+        ],
+        "pseudoLatitudeField": "dimension",
+        "pseudoAllowedPatchPaths": [
+            "id",
+            "name",
+            "componentProps.style.x",
+            "componentProps.style.y",
+            "componentProps.style.width",
+            "componentProps.style.height",
+            "componentProps.style.rotate.angle",
+            "dataSourceProps.defaultValue",
+            "componentProps.basicMap.bgColor",
+            "componentProps.basicMap.boundaryLinColor",
+            "componentProps.basicMap.interactionEffect",
+            "componentProps.basicMap.mouseHover",
+            "componentProps.basicMap.mouseClick",
+            "componentProps.basicMap.coordinateColor",
+            "componentProps.basicMap.coordinateSize",
+            "componentProps.basicMap.NfontSize",
+            "componentProps.basicMap.NfontColor",
+            "componentProps.basicMap.Nblod",
+            "componentProps.basicMap.Nitalic",
+            "componentProps.basicMap.seat",
+            "componentProps.basicMap.FfontSize",
+            "componentProps.basicMap.FfontColor",
+            "componentProps.basicMap.Fblod",
+            "componentProps.basicMap.Fitalic",
+            "componentProps.basicMap.suspendedBabel",
+            "componentProps.basicMap.flash",
+            "componentProps.basicMap.flashTime"
+        ]
+    },
+    "globalPatchRules": {
+        "componentId": {
+            "mode": "replace",
+            "path": "id",
+            "pattern": "{platformType}_{role}_{random}"
+        },
+        "componentName": {
+            "mode": "replace",
+            "path": "name"
+        },
+        "positionAndSize": {
+            "mode": "replace",
+            "paths": {
+                "x": "componentProps.style.x",
+                "y": "componentProps.style.y",
+                "width": "componentProps.style.width",
+                "height": "componentProps.style.height"
+            }
+        },
+        "rotate": {
+            "mode": "keep",
+            "path": "componentProps.style.rotate"
+        },
+        "unknownFields": {
+            "mode": "keep"
+        }
+    },
+    "resourceRules": {
+        "enabled": true,
+        "resourceIdGeneration": {
+            "mode": "random-before-save",
+            "description": "Generate resourceId before calling the save command. The same resourceId must be written into both the resource entity JSON and the page component JSON.",
+            "prefix": "component_",
+            "pattern": "component_{timestamp}_{random4}",
+            "example": "component_1779881457212_4829",
+            "doNotWaitForSaveResult": true
+        },
+        "resourceVersion": {
+            "mode": "fixed",
+            "value": 0
+        },
+        "customChartResourceBinding": {
+            "componentKey": "custom-chart",
+            "resourceEntityIdPath": "resourceId",
+            "resourceEntityVersionPath": "version",
+            "resourceScriptPath": "configuration.javaScript",
+            "componentResourceIdPath": "componentProps.resource.id",
+            "componentResourceVersionPath": "componentProps.resource.version",
+            "mustUseSameResourceId": true,
+            "mustUseVersionZero": true,
+            "doNotWaitForSaveResult": true,
+            "mustCallSaveCommand": true,
+            "saveCommandName": "createVisualizationResource"
+        }
+    },
+    "businessMapping": {
+        "title": "text",
+        "subtitle": "text",
+        "label": "text",
+        "metric-text": "text",
+        "kpi": "text",
+        "description": "text",
+        "panel-title": "text",
+        "current-time": "dateTime",
+        "date-time": "dateTime",
+        "system-time": "dateTime",
+        "ranking": "table",
+        "alarm-list": "table",
+        "event-list": "table",
+        "device-list": "table",
+        "status-table": "table",
+        "top-list": "table",
+        "bar-chart": "custom-chart",
+        "line-chart": "custom-chart",
+        "area-chart": "custom-chart",
+        "pie-chart": "custom-chart",
+        "gauge": "custom-chart",
+        "map-visual": "pseudo",
+        "main-visual": "pseudo",
+        "geo-map": "pseudo",
+        "spatial-distribution": "pseudo",
+        "point-map": "pseudo",
+        "city-map": "pseudo",
+        "park-map": "pseudo",
+        "province-map": "pseudo",
+        "china-map": "pseudo",
+        "trend": "custom-chart",
+        "distribution": "custom-chart",
+        "comparison": "custom-chart",
+        "video": "video",
+        "camera": "video",
+        "monitoring": "video",
+        "category-switch": "custom-component",
+        "panel-switch": "custom-component",
+        "chart-switch": "custom-component",
+        "data-view-switch": "custom-component"
+    },
+    "chartGroupMapping": {
+        "line": "line-chart",
+        "bar": "bar-chart",
+        "area": "line-chart",
+        "pie": "pie-chart",
+        "gauge": "gauge"
+    },
+    "components": [
+        {
+            "key": "text",
+            "name": "文本框",
+            "platformType": "text",
+            "file": "components/text.json",
+            "requiresResourceEntity": false,
+            "usage": [
+                "title",
+                "subtitle",
+                "label",
+                "metric-text",
+                "kpi",
+                "description",
+                "panel-title"
+            ],
+            "preferredRegions": [
+                "header",
+                "global_metrics"
+            ],
+            "preferredSlots": [
+                "header_left",
+                "header_title",
+                "metric_1",
+                "metric_2",
+                "metric_3",
+                "metric_4",
+                "metric_5"
+            ],
+            "cloneStrategy": {
+                "mode": "deep-clone-template",
+                "keepUnknownFields": true,
+                "doNotSimplifyTemplate": true
+            },
+            "patchRules": {
+                "id": "replace",
+                "name": "replace",
+                "type": "keep",
+                "visible": "keep",
+                "isLocked": "keep",
+                "componentProps.style.x": "replace",
+                "componentProps.style.y": "replace",
+                "componentProps.style.width": "replace",
+                "componentProps.style.height": "replace",
+                "componentProps.style.rotate": "keep",
+                "dataSourceProps.mode": "keep",
+                "dataSourceProps.type": "keep",
+                "dataSourceProps.defaultValue[0].text": "replace",
+                "dataSourceProps.sourceId": "keep",
+                "dataSourceProps.mapping": "keep",
+                "componentProps.font.fontSize": "replace-if-needed",
+                "componentProps.font.fontWeight": "replace-if-needed",
+                "componentProps.font.color": "replace-if-needed",
+                "componentProps.font.horizontalAlign": "replace-if-needed",
+                "componentProps.font.verticalAlign": "replace-if-needed",
+                "componentProps.font.isTextShadow": "replace-if-needed",
+                "componentProps.font.textShadow": "replace-if-needed",
+                "componentProps.text.sweepLight": "replace-if-needed"
+            },
+            "contentRules": {
+                "textPath": "dataSourceProps.defaultValue[0].text",
+                "titleText": {
+                    "recommendedFontSize": 34,
+                    "recommendedFontWeight": "bold",
+                    "recommendedHorizontalAlign": "center",
+                    "recommendedVerticalAlign": "center"
+                },
+                "metricText": {
+                    "recommendedFontSize": 18,
+                    "recommendedFontWeight": "bold",
+                    "recommendedHorizontalAlign": "center",
+                    "recommendedVerticalAlign": "center"
+                },
+                "labelText": {
+                    "recommendedFontSize": 14,
+                    "recommendedFontWeight": "normal",
+                    "recommendedHorizontalAlign": "center",
+                    "recommendedVerticalAlign": "center"
+                }
+            }
+        },
+        {
+            "key": "table",
+            "name": "表格组件",
+            "platformType": "read-from-template.type",
+            "file": "components/table.json",
+            "requiresResourceEntity": false,
+            "usage": [
+                "ranking",
+                "alarm-list",
+                "event-list",
+                "device-list",
+                "status-table",
+                "top-list"
+            ],
+            "preferredRegions": [
+                "left_bottom_panel",
+                "right_middle_panel"
+            ],
+            "preferredSlots": [
+                "left_bottom_body",
+                "right_middle_body"
+            ],
+            "cloneStrategy": {
+                "mode": "deep-clone-template",
+                "keepUnknownFields": true,
+                "doNotSimplifyTemplate": true
+            },
+            "patchRules": {
+                "id": "replace",
+                "name": "replace",
+                "type": "keep",
+                "visible": "keep",
+                "isLocked": "keep",
+                "componentProps.style.x": "replace",
+                "componentProps.style.y": "replace",
+                "componentProps.style.width": "replace",
+                "componentProps.style.height": "replace",
+                "componentProps.style.rotate": "keep",
+                "dataSourceProps.mode": "keep-if-exists",
+                "dataSourceProps.type": "keep-if-exists",
+                "dataSourceProps.defaultValue": "replace-if-exists",
+                "dataSourceProps.sourceId": "keep-if-exists",
+                "dataSourceProps.mapping": "keep-if-exists"
+            },
+            "contentRules": {
+                "ranking": {
+                    "dataPatchTarget": "dataSourceProps.defaultValue",
+                    "mockDataShape": "array-of-objects",
+                    "recommendedFields": [
+                        "rank",
+                        "name",
+                        "value",
+                        "unit"
+                    ]
+                },
+                "alarmList": {
+                    "dataPatchTarget": "dataSourceProps.defaultValue",
+                    "mockDataShape": "array-of-objects",
+                    "recommendedFields": [
+                        "time",
+                        "level",
+                        "message",
+                        "status"
+                    ]
+                },
+                "deviceList": {
+                    "dataPatchTarget": "dataSourceProps.defaultValue",
+                    "mockDataShape": "array-of-objects",
+                    "recommendedFields": [
+                        "name",
+                        "status",
+                        "value",
+                        "time"
+                    ]
+                }
+            }
+        },
+        {
+            "key": "dateTime",
+            "name": "时间框",
+            "platformType": "read-from-template.type",
+            "file": "components/dateTime.json",
+            "requiresResourceEntity": false,
+            "usage": [
+                "current-time",
+                "date-time",
+                "system-time"
+            ],
+            "preferredRegions": [
+                "header"
+            ],
+            "preferredSlots": [
+                "header_time"
+            ],
+            "cloneStrategy": {
+                "mode": "deep-clone-template",
+                "keepUnknownFields": true,
+                "doNotSimplifyTemplate": true
+            },
+            "patchRules": {
+                "id": "replace",
+                "name": "replace",
+                "type": "keep",
+                "visible": "keep",
+                "isLocked": "keep",
+                "componentProps.style.x": "replace",
+                "componentProps.style.y": "replace",
+                "componentProps.style.width": "replace",
+                "componentProps.style.height": "replace",
+                "componentProps.style.rotate": "keep",
+                "dataSourceProps.mode": "keep-if-exists",
+                "dataSourceProps.type": "keep-if-exists",
+                "componentProps.font.fontSize": "replace-if-exists",
+                "componentProps.font.color": "replace-if-exists",
+                "componentProps.font.horizontalAlign": "replace-if-exists",
+                "componentProps.time.format": "replace-if-exists",
+                "componentProps.format": "replace-if-exists"
+            },
+            "contentRules": {
+                "defaultFormat": "YYYY-MM-DD HH:mm:ss",
+                "recommendedFontSize": 18,
+                "recommendedHorizontalAlign": "right",
+                "recommendedColor": "rgba(210,238,255,0.82)"
+            }
+        },
+        {
+            "key": "video",
+            "name": "视频组件",
+            "platformType": "video",
+            "file": "components/video.json",
+            "requiresResourceEntity": false,
+            "usage": [
+                "video",
+                "camera",
+                "monitoring",
+                "live",
+                "playback"
+            ],
+            "preferredRegions": [
+                "center_main_panel",
+                "left_top_panel",
+                "right_top_panel"
+            ],
+            "preferredSlots": [
+                "center_main_visual",
+                "left_top_body",
+                "right_top_body"
+            ],
+            "cloneStrategy": {
+                "mode": "deep-clone-template",
+                "keepUnknownFields": true,
+                "doNotSimplifyTemplate": true
+            },
+            "patchRules": {
+                "id": "replace",
+                "name": "replace",
+                "type": "keep",
+                "visible": "keep",
+                "isLocked": "keep",
+                "componentProps.style.x": "replace",
+                "componentProps.style.y": "replace",
+                "componentProps.style.width": "replace",
+                "componentProps.style.height": "replace",
+                "componentProps.style.rotate": "keep",
+                "componentProps.video.videoAddress": "replace-if-needed",
+                "componentProps.video.fileList": "replace-if-needed",
+                "componentProps.video.deviceId": "replace-if-needed",
+                "componentProps.video.channelId": "replace-if-needed",
+                "componentProps.video.live": "replace-if-needed",
+                "componentProps.video.autoplay": "replace-if-needed",
+                "componentProps.video.loop": "replace-if-needed"
+            }
+        },
+        {
+            "key": "pseudo",
+            "name": "系列分布地图",
+            "platformType": "pseudo",
+            "file": "components/pseudo.json",
+            "requiresResourceEntity": false,
+            "usage": [
+                "map-visual",
+                "main-visual",
+                "geo-map",
+                "spatial-distribution",
+                "point-map",
+                "city-map",
+                "park-map",
+                "province-map",
+                "china-map"
+            ],
+            "preferredRegions": [
+                "center_main_panel"
+            ],
+            "preferredSlots": [
+                "center_main_visual"
+            ],
+            "cloneStrategy": {
+                "mode": "deep-clone-template",
+                "keepUnknownFields": true,
+                "doNotSimplifyTemplate": true
+            },
+            "patchRules": {
+                "id": "replace",
+                "name": "replace",
+                "type": "keep",
+                "visible": "keep",
+                "isLocked": "keep",
+                "componentProps.style.x": "replace",
+                "componentProps.style.y": "replace",
+                "componentProps.style.width": "replace",
+                "componentProps.style.height": "replace",
+                "componentProps.style.rotate.angle": "replace-if-needed",
+                "dataSourceProps.defaultValue": "replace",
+                "dataSourceProps.mode": "keep",
+                "dataSourceProps.type": "keep",
+                "dataSourceProps.sourceId": "keep",
+                "dataSourceProps.action": "keep",
+                "dataSourceProps.mapping": "keep",
+                "componentProps.background": "keep",
+                "componentProps.basicMap.bgColor": "replace-if-needed",
+                "componentProps.basicMap.boundaryLinColor": "replace-if-needed",
+                "componentProps.basicMap.interactionEffect": "replace-if-needed",
+                "componentProps.basicMap.mouseHover": "replace-if-needed",
+                "componentProps.basicMap.mouseClick": "replace-if-needed",
+                "componentProps.basicMap.coordinateColor": "replace-if-needed",
+                "componentProps.basicMap.coordinateSize": "replace-if-needed",
+                "componentProps.basicMap.NfontSize": "replace-if-needed",
+                "componentProps.basicMap.NfontColor": "replace-if-needed",
+                "componentProps.basicMap.Nblod": "replace-if-needed",
+                "componentProps.basicMap.Nitalic": "replace-if-needed",
+                "componentProps.basicMap.seat": "replace-if-needed",
+                "componentProps.basicMap.FfontSize": "replace-if-needed",
+                "componentProps.basicMap.FfontColor": "replace-if-needed",
+                "componentProps.basicMap.Fblod": "replace-if-needed",
+                "componentProps.basicMap.Fitalic": "replace-if-needed",
+                "componentProps.basicMap.suspendedBabel": "replace-if-needed",
+                "componentProps.basicMap.flash": "replace-if-needed",
+                "componentProps.basicMap.flashTime": "replace-if-needed"
+            },
+            "contentRules": {
+                "defaultValuePath": "dataSourceProps.defaultValue",
+                "pointSchema": [
+                    "name",
+                    "longitude",
+                    "dimension",
+                    "value"
+                ],
+                "latitudeFieldName": "dimension",
+                "forbiddenFields": [
+                    "latitude",
+                    "lat",
+                    "lng",
+                    "componentType",
+                    "series",
+                    "geo",
+                    "geoJson",
+                    "map",
+                    "option",
+                    "echartsOption",
+                    "chart",
+                    "markers",
+                    "points",
+                    "x",
+                    "y",
+                    "width",
+                    "height",
+                    "rotate",
+                    "locked",
+                    "hidden",
+                    "layer",
+                    "animations",
+                    "events",
+                    "dataSources"
+                ],
+                "mustNotGenerateResourceEntity": true,
+                "mustNotUseCustomChartForMap": true
+            }
+        },
+        {
+            "key": "custom-chart",
+            "name": "图表类自定义组件",
+            "platformType": "resourceComponentEcharts",
+            "file": "components/custom-chart.json",
+            "requiresResourceEntity": true,
+            "resourceTemplate": "resources/echarts-resource.json",
+            "resourceOutputFilePattern": "generated-bigscreen/resources/{resourceId}.resource.json",
+            "resourceEntityIdPath": "resourceId",
+            "resourceEntityVersionPath": "version",
+            "resourceScriptPath": "configuration.javaScript",
+            "componentResourceIdPath": "componentProps.resource.id",
+            "componentResourceVersionPath": "componentProps.resource.version",
+            "resourceVersion": 0,
+            "saveCommand": {
+                "enabled": true,
+                "commandName": "createVisualizationResource",
+                "serviceId": "visualizationService:resource",
+                "commandId": "Add",
+                "bodySource": "generated-bigscreen/resources/{resourceId}.resource.json",
+                "bodyType": "resource-entity-json",
+                "parameters": {
+                    "data": [
+                        "resource-entity-json"
+                    ]
+                },
+                "doNotUseResultAsResourceId": true
+            },
+            "usage": [
+                "bar-chart",
+                "line-chart",
+                "area-chart",
+                "pie-chart",
+                "gauge",
+                "trend",
+                "distribution",
+                "comparison"
+            ],
+            "preferredRegions": [
+                "left_top_panel",
+                "left_middle_panel",
+                "center_bottom_panel",
+                "right_top_panel",
+                "right_bottom_panel"
+            ],
+            "preferredSlots": [
+                "left_top_body",
+                "left_middle_body",
+                "center_bottom_body",
+                "right_top_body",
+                "right_bottom_body"
+            ],
+            "cloneStrategy": {
+                "mode": "deep-clone-template",
+                "keepUnknownFields": true,
+                "doNotSimplifyTemplate": true
+            },
+            "resourceIdGeneration": {
+                "mode": "random-before-save",
+                "prefix": "component_",
+                "pattern": "component_{timestamp}_{random4}",
+                "example": "component_1779881457212_4829",
+                "doNotWaitForSaveResult": true
+            },
+            "generationFlow": [
+                "choose-chart-business-role",
+                "generate-random-resource-id",
+                "generate-resource-entity-json-with-resource-id",
+                "write-echarts-script-to-configuration-javaScript",
+                "write-resource-entity-json-file",
+                "call-create-visualization-resource-command",
+                "clone-custom-chart-component-template",
+                "patch-component-resource-id-with-same-resource-id",
+                "set-component-resource-version-to-0",
+                "patch-component-position-size",
+                "append-component-to-page-json"
+            ],
+            "resourceEntityRules": {
+                "generateBeforePageComponent": true,
+                "resourceIdMode": "random-before-save",
+                "resourceIdPrefix": "component_",
+                "resourceIdPath": "resourceId",
+                "resourceVersionPath": "version",
+                "resourceVersion": 0,
+                "scriptPath": "configuration.javaScript",
+                "groupPath": "group",
+                "componentTypePath": "configuration.componentType",
+                "componentTypeValue": "echarts",
+                "provider": "local",
+                "type": "component",
+                "writeResourceIdToResourceJson": true,
+                "writeSameResourceIdToComponentJson": true,
+                "doNotWaitForSaveResult": true,
+                "scriptBelongsToResourceEntity": true,
+                "pageComponentOnlyReferencesResourceId": true,
+                "mustCallSaveCommand": true,
+                "saveCommandName": "createVisualizationResource"
+            },
+            "patchRules": {
+                "id": "replace",
+                "name": "replace",
+                "type": "keep",
+                "visible": "keep",
+                "isLocked": "keep",
+                "componentProps.style.x": "replace",
+                "componentProps.style.y": "replace",
+                "componentProps.style.width": "replace",
+                "componentProps.style.height": "replace",
+                "componentProps.style.rotate": "keep",
+                "componentProps.resource.id": "set-from-generated-resource-id",
+                "componentProps.resource.version": "set-to-0",
+                "dataSourceProps.mode": "keep",
+                "dataSourceProps.type": "keep",
+                "dataSourceProps.defaultValue": "keep-or-replace-if-needed",
+                "dataSourceProps.sourceId": "keep",
+                "dataSourceProps.propertyId": "keep",
+                "dataSourceProps.mapping": "keep",
+                "animationProps": "keep"
+            },
+            "contentRules": {
+                "resourceJsonContains": [
+                    "resourceId",
+                    "name",
+                    "version",
+                    "thumbnailUrl",
+                    "provider",
+                    "type",
+                    "group",
+                    "configuration.componentType",
+                    "configuration.javaScript"
+                ],
+                "pageComponentMustNotContain": [
+                    "script",
+                    "echartsOption",
+                    "option",
+                    "code",
+                    "javaScript"
+                ],
+                "scriptFunctionName": "defaultFunc",
+                "scriptFunctionSignature": "function defaultFunc(_getflag, _setdata, echarts, chartInstance)",
+                "lineChart": {
+                    "chartType": "line",
+                    "group": "line-chart",
+                    "recommendedRoles": [
+                        "trend",
+                        "time-series"
+                    ],
+                    "dataBindingShape": [
+                        {
+                            "label": "时间",
+                            "value": "string[]"
+                        },
+                        {
+                            "label": "数据",
+                            "value": "number[]"
+                        }
+                    ]
+                },
+                "barChart": {
+                    "chartType": "bar",
+                    "group": "bar-chart",
+                    "recommendedRoles": [
+                        "comparison",
+                        "ranking"
+                    ],
+                    "dataBindingShape": [
+                        {
+                            "label": "分类",
+                            "value": "string[]"
+                        },
+                        {
+                            "label": "数据",
+                            "value": "number[]"
+                        }
+                    ]
+                },
+                "areaChart": {
+                    "chartType": "area",
+                    "group": "line-chart",
+                    "recommendedRoles": [
+                        "trend",
+                        "load"
+                    ],
+                    "dataBindingShape": [
+                        {
+                            "label": "时间",
+                            "value": "string[]"
+                        },
+                        {
+                            "label": "数据",
+                            "value": "number[]"
+                        }
+                    ]
+                },
+                "pieChart": {
+                    "chartType": "pie",
+                    "group": "pie-chart",
+                    "recommendedRoles": [
+                        "distribution",
+                        "proportion"
+                    ],
+                    "dataBindingShape": [
+                        {
+                            "label": "名称",
+                            "value": "string[]"
+                        },
+                        {
+                            "label": "数值",
+                            "value": "number[]"
+                        }
+                    ]
+                },
+                "gauge": {
+                    "chartType": "gauge",
+                    "group": "gauge",
+                    "recommendedRoles": [
+                        "rate",
+                        "utilization",
+                        "score"
+                    ],
+                    "dataBindingShape": [
+                        {
+                            "label": "指标",
+                            "value": "string"
+                        },
+                        {
+                            "label": "数值",
+                            "value": "number"
+                        }
+                    ]
+                },
+                "mapVisual": "forbidden-use-pseudo-component-instead"
+            }
+        }
+    ],
+    "scenePresets": {
+        "智慧园区能耗": {
+            "header": {
+                "title": "智慧园区能耗监测大屏",
+                "timeComponent": "dateTime"
+            },
+            "metrics": [
+                {
+                    "slot": "metric_1",
+                    "componentKey": "text",
+                    "name": "今日能耗",
+                    "text": "今日能耗 128,430 kWh"
+                },
+                {
+                    "slot": "metric_2",
+                    "componentKey": "text",
+                    "name": "本月能耗",
+                    "text": "本月能耗 3,862,900 kWh"
+                },
+                {
+                    "slot": "metric_3",
+                    "componentKey": "text",
+                    "name": "碳排放",
+                    "text": "碳排放 842.6 t"
+                },
+                {
+                    "slot": "metric_4",
+                    "componentKey": "text",
+                    "name": "节能率",
+                    "text": "节能率 12.8%"
+                },
+                {
+                    "slot": "metric_5",
+                    "componentKey": "text",
+                    "name": "异常设备",
+                    "text": "异常设备 7 台"
+                }
+            ],
+            "panels": [
+                {
+                    "regionId": "left_top_panel",
+                    "slot": "left_top_body",
+                    "componentKey": "custom-chart",
+                    "chartType": "pie",
+                    "name": "能耗结构"
+                },
+                {
+                    "regionId": "left_middle_panel",
+                    "slot": "left_middle_body",
+                    "componentKey": "custom-chart",
+                    "chartType": "line",
+                    "name": "能耗趋势"
+                },
+                {
+                    "regionId": "left_bottom_panel",
+                    "slot": "left_bottom_body",
+                    "componentKey": "table",
+                    "name": "楼宇能耗排行"
+                },
+                {
+                    "regionId": "center_main_panel",
+                    "slot": "center_main_visual",
+                    "componentKey": "pseudo",
+                    "name": "园区能耗分布"
+                },
+                {
+                    "regionId": "center_bottom_panel",
+                    "slot": "center_bottom_body",
+                    "componentKey": "custom-chart",
+                    "chartType": "area",
+                    "name": "分时负载趋势"
+                },
+                {
+                    "regionId": "right_top_panel",
+                    "slot": "right_top_body",
+                    "componentKey": "custom-chart",
+                    "chartType": "gauge",
+                    "name": "设备在线率"
+                },
+                {
+                    "regionId": "right_middle_panel",
+                    "slot": "right_middle_body",
+                    "componentKey": "table",
+                    "name": "实时告警"
+                },
+                {
+                    "regionId": "right_bottom_panel",
+                    "slot": "right_bottom_body",
+                    "componentKey": "custom-chart",
+                    "chartType": "bar",
+                    "name": "区域能耗对比"
+                }
+            ]
+        },
+        "城市运行": {
+            "metrics": [
+                "今日事件",
+                "在线设备",
+                "处理效率",
+                "拥堵指数",
+                "告警数量"
+            ],
+            "recommendedComponents": [
+                "text",
+                "dateTime",
+                "custom-chart",
+                "table"
+            ],
+            "mainVisual": "pseudo"
+        },
+        "工业生产": {
+            "metrics": [
+                "今日产量",
+                "设备稼动率",
+                "良品率",
+                "能耗",
+                "告警数"
+            ],
+            "recommendedComponents": [
+                "text",
+                "dateTime",
+                "custom-chart",
+                "table"
+            ],
+            "mainVisual": "pseudo"
+        },
+        "水务环保": {
+            "metrics": [
+                "总流量",
+                "水质指数",
+                "泵站在线率",
+                "告警数",
+                "处理效率"
+            ],
+            "recommendedComponents": [
+                "text",
+                "dateTime",
+                "custom-chart",
+                "table"
+            ],
+            "mainVisual": "pseudo"
+        }
+    },
+    "validationRules": {
+        "componentTemplate": {
+            "mustCloneFromRegistryTemplate": true,
+            "mustKeepUnknownFields": true,
+            "mustNotGenerateUnregisteredComponent": true
+        },
+        "position": {
+            "stylePath": "componentProps.style",
+            "mustStayInsideRegionContentBox": true,
+            "mustStayInsideSlotWhenSlotIsUsed": true
+        },
+        "background": {
+            "mustUploadBackgroundSvgCommand": true,
+            "uploadBackgroundSvgCommand": "fileService / UploadFile",
+            "backgroundUploadParameterShape": "{\"fileName\":\"background.svg\",\"contentType\":\"image/svg+xml;charset=UTF-8\",\"content\":\"base64-utf8-svg\"}",
+            "backgroundFileIdPath": "pageJson.canvas.backgroundImage.fileId"
+        },
+        "customChart": {
+            "mustGenerateResourceEntity": true,
+            "mustUseRandomResourceIdBeforeSave": true,
+            "resourceIdPrefix": "component_",
+            "resourceEntityIdPath": "resourceId",
+            "resourceScriptPath": "configuration.javaScript",
+            "componentResourceIdPath": "componentProps.resource.id",
+            "componentResourceVersionPath": "componentProps.resource.version",
+            "mustUseSameResourceIdInResourceAndComponent": true,
+            "mustUseVersionZero": true,
+            "mustNotWriteScriptIntoPageComponent": true,
+            "mustUseDefaultFuncSignature": true,
+            "mustCallCreateVisualizationResourceCommand": true,
+            "createVisualizationResourceCommand": "visualizationService:resource / Add",
+            "resourceCommandParameterShape": "{\"data\":[resourceEntityJson]}",
+            "mustReturnGeneratedPageJson": false,
+            "mustReturnRegionComponentResponse": true,
+            "mustNotCallCreateVisualizationProjectCommand": true,
+            "pageJsonReturnShape": "progressiveRegionResponse",
+            "mustNotUseCommandResultAsResourceId": true
+        }
+    }
+}

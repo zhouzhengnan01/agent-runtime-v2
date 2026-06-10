@@ -1,0 +1,44 @@
+{
+  "type": "visualization-component-0mv7k-01",
+  "name": "AI Ant Design 复杂表格",
+  "visible": true,
+  "isLocked": false,
+  "dataSourceProps": {
+    "mode": "static",
+    "type": "array",
+    "defaultValue": []
+  },
+  "animationProps": [],
+  "configuration": {
+    "componentType": "remote",
+    "fileId": "http://192.168.32.7:9100/api/file/aJ6m4nKq28uazegVg7tyAoM2hJuEn1WI.zip?accessKey=c848a5e214d0f3d00406aa53d66f013a",
+    "zipUrl": "http://192.168.32.7:9100/api/file/aJ6m4nKq28uazegVg7tyAoM2hJuEn1WI.zip?accessKey=c848a5e214d0f3d00406aa53d66f013a"
+  },
+  "componentProps": {
+    "style": {
+      "x": 457.6428571428572,
+      "y": 227.8571428571429,
+      "width": 980,
+      "height": 560,
+      "rotate": {
+        "angle": 0
+      }
+    },
+    "background": {
+      "backgroundColor": "rgba(245, 247, 251, 1)",
+      "imgField": "",
+      "opacity": 1,
+      "borderColor": "#000",
+      "borderType": "solid",
+      "borderWidth": 0,
+      "borderRadius": 8,
+      "shadowColor": "#0000",
+      "shadowBlur": 0,
+      "shadowX": 0,
+      "shadowY": 0,
+      "shadowDiff": 0
+    },
+    "theme": {}
+  },
+  "id": "visualization-component-0mv7k-01_vlOEbUupaRv1ZMc3"
+}
