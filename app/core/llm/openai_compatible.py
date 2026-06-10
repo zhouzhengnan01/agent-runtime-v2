@@ -81,6 +81,13 @@ class OpenAICompatibleClient:
         self.top_p = runtime_options.top_p if runtime_options.top_p is not None else model_config.top_p
         self.max_tokens = runtime_options.max_tokens if runtime_options.max_tokens is not None else model_config.max_tokens
         self.request_timeout_seconds: float | None = None
+        self.reasoning_effort = _config_string(
+            runtime_options.config_options,
+            "reasoning_effort",
+            "reasoningEffort",
+            "model_reasoning_effort",
+            "modelReasoningEffort",
+        )
         selected_tools = any(name.strip() for name in runtime_options.selected_mcp_tools) or any(
             name.strip() for name in runtime_options.selected_skills
         )
@@ -121,7 +128,7 @@ class OpenAICompatibleClient:
 
         payload = self._chat_payload(system_prompt, messages)
         self._log_request("complete", payload)
-        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
             response = await self._post_chat_completion(client, "complete", payload)
             self._raise_for_status(response)
             data = response.json()
@@ -147,7 +154,7 @@ class OpenAICompatibleClient:
 
         payload = self._chat_payload(system_prompt, messages, tools=tools)
         self._log_request("complete_with_tools", payload)
-        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
             response = await self._post_chat_completion(client, "complete_with_tools", payload)
             if tools and self._is_auto_tool_choice_unsupported(response):
                 fallback_payload = self._chat_payload(system_prompt, messages)
@@ -172,7 +179,7 @@ class OpenAICompatibleClient:
 
         payload = self._chat_payload(system_prompt, messages)
         self._log_request("complete_sync", payload)
-        with httpx.Client(timeout=self.request_timeout_seconds) as client:
+        with httpx.Client(timeout=self.request_timeout_seconds, trust_env=False) as client:
             response = self._post_chat_completion_sync(client, "complete_sync", payload)
             self._raise_for_status(response)
             data = response.json()
@@ -197,7 +204,7 @@ class OpenAICompatibleClient:
         started_at = time.perf_counter()
         chunk_count = 0
         content_chars = 0
-        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
             async with client.stream(
                 "POST",
                 f"{self.base_url}/chat/completions",
@@ -412,6 +419,8 @@ class OpenAICompatibleClient:
         }
         if self.top_p is not None:
             payload["top_p"] = self.top_p
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
         if tools and self.tool_choice == "auto":
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -581,6 +590,14 @@ def _first_defined(*values: str | None) -> str:
     for value in values:
         if value is not None:
             return value
+    return ""
+
+
+def _config_string(config: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return ""
 
 

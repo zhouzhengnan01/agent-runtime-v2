@@ -1433,7 +1433,7 @@ class AgentRuntime:
 
     def _download_remote_attachment(self, attachment: Attachment, paths: ThreadPaths) -> Attachment:
         url = str(attachment.path or "").strip()
-        with httpx.Client(timeout=REMOTE_ATTACHMENT_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        with httpx.Client(timeout=REMOTE_ATTACHMENT_TIMEOUT_SECONDS, follow_redirects=True, trust_env=False) as client:
             with client.stream("GET", url) as response:
                 response.raise_for_status()
                 content_length = self._remote_content_length(response.headers.get("content-length"))

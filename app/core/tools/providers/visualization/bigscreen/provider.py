@@ -78,7 +78,9 @@ class BigscreenToolset:
         )
         content = base64.b64encode(target.read_bytes()).decode("ascii")
         mcp_sources = self._platform_mcp_sources(arguments)
-        if mcp_sources:
+        upload_urls = self._platform_upload_urls(arguments)
+        prefer_rest_upload = bool(upload_urls) and self._prefer_rest_upload(arguments)
+        if mcp_sources and not prefer_rest_upload:
             return self._call_upload_file_via_mcp(
                 paths,
                 arguments,
@@ -90,23 +92,34 @@ class BigscreenToolset:
                 mcp_sources=mcp_sources,
             )
 
-        upload_urls = self._platform_upload_urls(arguments)
         if not upload_urls:
+            if mcp_sources:
+                return self._call_upload_file_via_mcp(
+                    paths,
+                    arguments,
+                    target=target,
+                    file_name=file_name,
+                    content_type=content_type,
+                    content=content,
+                    file_size=file_size,
+                    mcp_sources=mcp_sources,
+                )
             raise ValueError(
                 "platform upload MCP server is missing. Pass mcpServers in runtime config, or provide "
                 "visualBigscreenUploadUrl/fileUploadUrl for the legacy REST upload fallback."
             )
         headers = self._platform_upload_headers(arguments)
+        file_field = self._platform_upload_file_field(arguments)
         timeout_seconds = self._bounded_int(arguments.get("timeout_seconds"), default=30, minimum=1, maximum=180)
         errors: list[str] = []
         for upload_url in upload_urls:
             try:
-                with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
+                with httpx.Client(timeout=timeout_seconds, follow_redirects=True, trust_env=False) as client:
                     with target.open("rb") as handle:
                         response = client.post(
                             upload_url,
                             headers=headers,
-                            files={"file": (file_name, handle, content_type)},
+                            files={file_field: (file_name, handle, content_type)},
                         )
                 if response.status_code >= 400:
                     errors.append(f"{self._redacted_url(upload_url)} returned HTTP {response.status_code}: {response.text[:300]}")
@@ -188,8 +201,14 @@ class BigscreenToolset:
         if not all(isinstance(item, dict) for item in data):
             raise ValueError("data must contain resource entity objects")
         mcp_sources = self._platform_mcp_sources(arguments)
+        resource_save_urls = self._platform_resource_save_urls(arguments)
+        if resource_save_urls and (not mcp_sources or self._prefer_rest_resource_save(arguments)):
+            return self._save_resource_via_rest(data, arguments, resource_save_urls)
         if not mcp_sources:
-            raise ValueError("platform MCP server is missing. Pass mcpServers in runtime config.")
+            raise ValueError(
+                "platform MCP server is missing. Pass mcpServers in runtime config, or provide "
+                "visualBigscreenResourceSaveUrl for the REST save fallback."
+            )
         server_tool = self._configured_mcp_tool_name(
             arguments,
             "mcp_tool",
@@ -213,6 +232,48 @@ class BigscreenToolset:
             },
             is_error=False,
         )
+
+    def _save_resource_via_rest(
+        self,
+        data: list[Any],
+        arguments: dict[str, Any],
+        resource_save_urls: list[str],
+    ) -> ToolInvocationResult:
+        headers = {"Content-Type": "application/json", **self._platform_upload_headers(arguments)}
+        timeout_seconds = self._bounded_int(arguments.get("timeout_seconds"), default=30, minimum=1, maximum=180)
+        payload: object = (
+            data
+            if self._truthy(arguments.get("_visual_bigscreen_resource_save_raw_array"))
+            else {"data": data}
+        )
+        errors: list[str] = []
+        for resource_save_url in resource_save_urls:
+            try:
+                with httpx.Client(timeout=timeout_seconds, follow_redirects=True, trust_env=False) as client:
+                    response = client.post(resource_save_url, headers=headers, json=payload)
+                if response.status_code >= 400:
+                    redacted_url = self._redacted_url(resource_save_url)
+                    errors.append(
+                        f"{redacted_url} returned HTTP {response.status_code}: {response.text[:300]}"
+                    )
+                    continue
+                response_payload = self._response_payload(response)
+                entities = self._saved_entities(response_payload, [])
+                saved = entities if entities else [dict(item) for item in data if isinstance(item, dict)]
+                return ToolInvocationResult(
+                    content=[{"type": "text", "text": f"Saved {len(data)} visualization resource entries via REST."}],
+                    structured_content={
+                        "tool_name": "visualization_bigscreen_save_resource",
+                        "data": saved,
+                        "saved": saved,
+                        "save_url": self._redacted_url(resource_save_url),
+                        "response": response_payload,
+                    },
+                    is_error=False,
+                )
+            except Exception as exc:
+                errors.append(f"{self._redacted_url(resource_save_url)} failed: {exc}")
+        raise RuntimeError("platform resource save failed: " + "; ".join(errors[:5]))
 
     def _call_mcp_tool(
         self,
@@ -258,6 +319,23 @@ class BigscreenToolset:
             cls._first_string(arguments, "upload_url", "uploadUrl", "_visual_bigscreen_upload_url", "_file_upload_url")
             or os.getenv("VISUAL_BIGSCREEN_UPLOAD_URL", "").strip()
             or os.getenv("JETLINKS_FILE_UPLOAD_URL", "").strip()
+        )
+        if configured:
+            return [configured]
+        return []
+
+    @classmethod
+    def _platform_resource_save_urls(cls, arguments: dict[str, Any]) -> list[str]:
+        configured = (
+            cls._first_string(
+                arguments,
+                "resource_save_url",
+                "resourceSaveUrl",
+                "_visual_bigscreen_resource_save_url",
+                "_visual_bigscreen_save_resource_url",
+            )
+            or os.getenv("VISUAL_BIGSCREEN_RESOURCE_SAVE_URL", "").strip()
+            or os.getenv("JETLINKS_RESOURCE_SAVE_URL", "").strip()
         )
         if configured:
             return [configured]
@@ -343,10 +421,105 @@ class BigscreenToolset:
             for item in raw_servers:
                 if isinstance(item, dict):
                     cls._merge_headers(headers, item.get("headers"))
+        cls._merge_headers(headers, arguments.get("_visual_bigscreen_upload_headers"))
+        tenant_domain = cls._first_string(
+            arguments,
+            "upload_tenant_domain",
+            "uploadTenantDomain",
+            "_visual_bigscreen_upload_tenant_domain",
+            "_visual_bigscreen_tenant_domain",
+        )
+        if tenant_domain:
+            headers["x-tenant-domain"] = tenant_domain
         authorization = os.getenv("VISUAL_BIGSCREEN_UPLOAD_AUTHORIZATION", "").strip()
+        configured_authorization = cls._first_string(
+            arguments,
+            "upload_authorization",
+            "uploadAuthorization",
+            "_visual_bigscreen_upload_authorization",
+            "_visual_bigscreen_authorization",
+        )
+        if configured_authorization:
+            authorization = configured_authorization
         if authorization:
             headers["Authorization"] = authorization
+            return headers
+        token = (
+            cls._first_string(
+                arguments,
+                "upload_token",
+                "uploadToken",
+                "_visual_bigscreen_upload_token",
+                "_visual_bigscreen_token",
+            )
+            or os.getenv("VISUAL_BIGSCREEN_UPLOAD_TOKEN", "").strip()
+            or os.getenv("JETLINKS_FILE_UPLOAD_TOKEN", "").strip()
+        )
+        if token:
+            token_header = (
+                cls._first_string(
+                    arguments,
+                    "upload_token_header",
+                    "uploadTokenHeader",
+                    "_visual_bigscreen_upload_token_header",
+                    "_visual_bigscreen_token_header",
+                )
+                or os.getenv("VISUAL_BIGSCREEN_UPLOAD_TOKEN_HEADER", "").strip()
+                or "Authorization"
+            )
+            if token_header.lower() == "authorization":
+                headers["Authorization"] = cls._authorization_header_value(token)
+            else:
+                headers[token_header] = token
         return headers
+
+    @classmethod
+    def _prefer_rest_upload(cls, arguments: dict[str, Any]) -> bool:
+        for key in ("_visual_bigscreen_upload_prefer_rest", "prefer_rest_upload", "preferRestUpload"):
+            if key in arguments:
+                return cls._truthy(arguments.get(key))
+        env_value = os.getenv("VISUAL_BIGSCREEN_UPLOAD_PREFER_REST", "").strip()
+        if env_value:
+            return cls._truthy(env_value)
+        return True
+
+    @classmethod
+    def _prefer_rest_resource_save(cls, arguments: dict[str, Any]) -> bool:
+        for key in (
+            "_visual_bigscreen_resource_save_prefer_rest",
+            "prefer_rest_resource_save",
+            "preferRestResourceSave",
+        ):
+            if key in arguments:
+                return cls._truthy(arguments.get(key))
+        return cls._truthy(os.getenv("VISUAL_BIGSCREEN_RESOURCE_SAVE_PREFER_REST", ""))
+
+    @classmethod
+    def _platform_upload_file_field(cls, arguments: dict[str, Any]) -> str:
+        field = (
+            cls._first_string(arguments, "file_field", "fileField", "_visual_bigscreen_upload_field")
+            or os.getenv("VISUAL_BIGSCREEN_UPLOAD_FIELD", "").strip()
+            or "file"
+        )
+        return field or "file"
+
+    @staticmethod
+    def _authorization_header_value(token: str) -> str:
+        stripped = token.strip()
+        lowered = stripped.lower()
+        if lowered.startswith("bearer ") or lowered.startswith("basic "):
+            return stripped
+        return f"Bearer {stripped}"
+
+    @staticmethod
+    def _truthy(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int | float):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on", "y"}
+        return False
 
     @classmethod
     def _headers_dict(cls, raw_headers: object) -> dict[str, str]:
