@@ -603,10 +603,12 @@ def _initialization_system_prompt() -> str:
         "pageJson.canvas 使用平台结构，components 必须为空数组。\n"
         "backgroundSvg 必须是完整 SVG 字符串，viewBox 为 0 0 1920 1080，包含固定区域背景和 data-region-id 元数据。\n"
         "backgroundSvg 不要包含真实业务值、表格行、告警文本或交互按钮。\n"
-        "backgroundSvg 面板样式必须采用深蓝渐变面板、蓝青色发光边框、标题下划线、右上轻装饰、四角强调和底部微光。\n"
+        "backgroundSvg 面板样式必须采用深蓝渐变面板、蓝青色发光边框、四角短线强调和底部微光；装饰必须克制，不要堆叠多层杂线。\n"
         "backgroundSvg 只负责面板外框和标题安全区装饰，不要在 SVG 里写面板标题文字；标题文字由后续 region 阶段的 text 组件生成。\n"
-        "所有 contentBox 内部必须保持干净，只允许 fill=none 的低透明边界矩形；禁止在 contentBox 内画网格、纹理线、分割线、路径线、径向光斑、图表占位或地图引导线。\n"
+        "标题安全区必须保持可读：每个非 header/metrics 面板左侧从 x+18 到 x+min(width*0.62, 300)、从 y+8 到 contentBox.y-6 是标题 text 组件保留区，禁止任何 path/polyline/line/rect 装饰穿过；标题下划线只能放在 contentBox.y-10 到 contentBox.y-4 之间。\n"
+        "所有 contentBox 内部必须完全干净，默认不要画 contentBox 边界；禁止在 contentBox 内画网格、纹理线、分割线、路径线、径向光斑、图表占位、地图引导线或任何会压住后续组件的装饰。\n"
         "center_main_panel.contentBox 尤其不能出现任何背景线条或中心装饰，避免遮挡后续平台组件。\n"
+        "边框必须有可见但轻量的动效：每个面板外框至少包含一个 class=border-flow 的 stroke-dasharray 流光层，并使用 SVG <animate> 动画 stroke-dashoffset 或 opacity；不要只依赖静态边框。\n"
         "blueprint 使用 fixed standard-1920x1080-v1，区域坐标必须和约定一致。\n"
         f"固定 blueprint JSON：{json.dumps(_default_blueprint(), ensure_ascii=False)}"
     )
@@ -690,10 +692,12 @@ def _stage_aware_visualization_context(
             "pageJson.canvas must use the platform canvas structure and components must be empty.",
             "backgroundSvg must be a complete 1920x1080 SVG background with region metadata only.",
             "Do not include business values, table rows, alarms, or interactive controls in backgroundSvg.",
-            "Use clean cyber panel chrome: dark blue gradient panel fill, cyan/blue glowing border, title underline, lightweight top-right decoration, corner accents, and subtle bottom glow.",
+            "Use clean cyber panel chrome: dark blue gradient panel fill, cyan/blue glowing border, corner accents, and subtle bottom glow. Keep decoration sparse; avoid stacked ornamental lines.",
             "The SVG background must not write literal panel title text. Reserve title safe space only; the region stage returns title text as platform text components.",
-            "Keep every contentBox clean for later components. Do not draw grids, texture lines, divider lines, route lines, radial glows, chart placeholders, map guide marks, or center visual decoration inside any contentBox.",
+            "Keep title text safe areas clean. For non-header/non-metrics panels, the left title zone from x+18 to x+min(width*0.62, 300), y+8 to contentBox.y-6 must not be crossed by path/polyline/line/rect decoration. Put the optional title underline only between contentBox.y-10 and contentBox.y-4.",
+            "Keep every contentBox completely clean for later components. Prefer no contentBox boundary. Do not draw grids, texture lines, divider lines, route lines, radial glows, chart placeholders, map guide marks, or center visual decoration inside any contentBox.",
             "center_main_panel.contentBox must have no background lines or center decoration.",
+            "Every panel border must include a lightweight animated flow highlight: use a border-flow stroke layer with SVG <animate> on stroke-dashoffset or opacity. Do not rely on a static border only.",
         ]
     else:
         paths = _region_reference_paths(prompt_text, requested_region_id)
@@ -919,7 +923,7 @@ def _fallback_background_svg() -> str:
         ch = int(content_box["height"])
         radius = 20 if height >= 180 else 16
         title_x = x + 24
-        title_line_y = min(cy - 18, y + 48)
+        title_line_y = max(y + 18, cy - 8)
         title_line_width = max(90, min(190, width // 3))
         deco_x = max(x + width - 136, title_x + title_line_width + 48)
         deco_y = y + 34
@@ -928,21 +932,18 @@ def _fallback_background_svg() -> str:
         bottom_x = x + (width - bottom_width) / 2
         bottom_y = y + height - 3
         title_chrome = ""
-        content_boundary = ""
         if region["role"] not in {"header", "metrics"}:
             title_chrome = (
                 f'<rect x="{title_x}" y="{title_line_y}" width="{title_line_width}" height="3" rx="1.5" '
-                'fill="url(#titleLine)" class="title-breath" filter="url(#softGlow)"/>'
+                'fill="url(#titleLine)" class="title-breath" filter="url(#softGlow)">'
+                '<animate attributeName="opacity" values="0.55;0.95;0.55" dur="2.8s" repeatCount="indefinite"/>'
+                '</rect>'
                 f'<path d="M{deco_x} {deco_y}H{min(deco_x + 52, x + width - 80)}'
                 f'L{min(deco_x + 64, x + width - 64)} {deco_y + 8}H{x + width - 36}" '
                 'stroke="#59DFFF" stroke-opacity="0.34" stroke-width="1.2" stroke-linecap="round"/>'
                 f'<rect x="{x + width - 66}" y="{dot_y}" width="8" height="2" rx="1" fill="#59DFFF" class="dot-float"/>'
                 f'<rect x="{x + width - 52}" y="{dot_y}" width="8" height="2" rx="1" fill="#59DFFF" opacity="0.65" class="dot-float"/>'
                 f'<rect x="{x + width - 38}" y="{dot_y}" width="8" height="2" rx="1" fill="#59DFFF" opacity="0.35" class="dot-float"/>'
-            )
-            content_boundary = (
-                f'<rect x="{cx}" y="{cy}" width="{cw}" height="{ch}" rx="10" fill="none" '
-                'stroke="#54BDF0" stroke-opacity="0.16" stroke-width="1"/>'
             )
         panels.append(
             f'<g id="region-{region["id"]}" data-region-id="{region["id"]}" data-role="{region["role"]}" '
@@ -952,11 +953,16 @@ def _fallback_background_svg() -> str:
             f'<rect x="{x}" y="{y}" width="{width}" height="{height}" rx="{radius}" '
             'fill="none" stroke="#2D7FBE" stroke-opacity="0.52" stroke-width="1.2"/>'
             f'<rect class="border-base" x="{x}" y="{y}" width="{width}" height="{height}" rx="{radius}" '
-            'fill="none" stroke="url(#strokeGlow)" stroke-width="1.2"/>'
+            'fill="none" stroke="url(#strokeGlow)" stroke-width="1.2">'
+            '<animate attributeName="opacity" values="0.26;0.52;0.26" dur="3.2s" repeatCount="indefinite"/>'
+            '</rect>'
             f'<rect class="border-flow" x="{x}" y="{y}" width="{width}" height="{height}" rx="{radius}" '
-            'fill="none" stroke="#65E4FF" stroke-width="2" filter="url(#softGlow)" stroke-linecap="round"/>'
+            'fill="none" stroke="#65E4FF" stroke-width="2" filter="url(#softGlow)" stroke-linecap="round" '
+            'stroke-dasharray="90 520" stroke-dashoffset="0">'
+            '<animate attributeName="stroke-dashoffset" from="0" to="-610" dur="5s" repeatCount="indefinite"/>'
+            '<animate attributeName="opacity" values="0.3;0.85;0.3" dur="2.8s" repeatCount="indefinite"/>'
+            '</rect>'
             f"{title_chrome}"
-            f"{content_boundary}"
             f'<path d="M{x} {y + 40}V{y + radius}C{x} {y + 7} {x + 7} {y} {x + radius} {y}H{x + 58}" '
             'stroke="#64E6FF" stroke-width="1.5" stroke-opacity="0.78" class="corner-blink" fill="none"/>'
             f'<path d="M{x + width - 58} {y}H{x + width - radius}C{x + width - 7} {y} {x + width} {y + 7} {x + width} {y + radius}V{y + 40}" '

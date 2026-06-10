@@ -190,6 +190,15 @@ The background SVG is only the decorative and structural layer.
 
 It must not contain real business values, chart data, ranking rows, alarm text, interactive buttons, or table content.
 
+Background SVG decoration must stay sparse and must never visually compete with later platform components:
+
+- Keep every `contentBox` completely clean. Do not draw grids, texture lines, divider lines, route lines, radial glows, chart placeholders, map guide marks, or contentBox decoration inside it.
+- Prefer no `contentBox` boundary. If a boundary is unavoidable, use only a nearly invisible `fill="none"` stroke and keep it outside the component's visual focus.
+- For non-header/non-metrics panels, reserve the title text safe zone from `x + 18` to `x + min(width * 0.62, 300)` and from `y + 8` to `contentBox.y - 6`. No `path`, `polyline`, `line`, or decorative `rect` may cross this zone.
+- Optional title underline must be placed only between `contentBox.y - 10` and `contentBox.y - 4`, below the title text safe zone.
+- Top-right decoration must be short and lightweight, placed near the right edge only, and must not cross title text.
+- Panel borders must include a visible lightweight animation layer. Use a `border-flow` stroke layer with SVG `<animate>` on `stroke-dashoffset` or `opacity`, so the border still animates when the SVG is loaded as an image.
+
 ---
 
 ## 5. Real Platform Component Files
