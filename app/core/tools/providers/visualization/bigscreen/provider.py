@@ -7,7 +7,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 import httpx
 
@@ -202,7 +202,7 @@ class BigscreenToolset:
             raise ValueError("data must contain resource entity objects")
         mcp_sources = self._platform_mcp_sources(arguments)
         resource_save_urls = self._platform_resource_save_urls(arguments)
-        if resource_save_urls and (not mcp_sources or self._prefer_rest_resource_save(arguments)):
+        if resource_save_urls and self._prefer_rest_resource_save(arguments):
             return self._save_resource_via_rest(data, arguments, resource_save_urls)
         if not mcp_sources:
             raise ValueError(
@@ -241,20 +241,17 @@ class BigscreenToolset:
     ) -> ToolInvocationResult:
         headers = {"Content-Type": "application/json", **self._platform_upload_headers(arguments)}
         timeout_seconds = self._bounded_int(arguments.get("timeout_seconds"), default=30, minimum=1, maximum=180)
-        payload: object = (
-            data
-            if self._truthy(arguments.get("_visual_bigscreen_resource_save_raw_array"))
-            else {"data": data}
-        )
         errors: list[str] = []
         for resource_save_url in resource_save_urls:
             try:
+                method = self._platform_resource_save_method(arguments, resource_save_url)
+                payload = self._platform_resource_save_payload(data, arguments, resource_save_url, method)
                 with httpx.Client(timeout=timeout_seconds, follow_redirects=True, trust_env=False) as client:
-                    response = client.post(resource_save_url, headers=headers, json=payload)
+                    response = client.request(method, resource_save_url, headers=headers, json=payload)
                 if response.status_code >= 400:
                     redacted_url = self._redacted_url(resource_save_url)
                     errors.append(
-                        f"{redacted_url} returned HTTP {response.status_code}: {response.text[:300]}"
+                        f"{method} {redacted_url} returned HTTP {response.status_code}: {response.text[:300]}"
                     )
                     continue
                 response_payload = self._response_payload(response)
@@ -267,6 +264,7 @@ class BigscreenToolset:
                         "data": saved,
                         "saved": saved,
                         "save_url": self._redacted_url(resource_save_url),
+                        "method": method,
                         "response": response_payload,
                     },
                     is_error=False,
@@ -336,10 +334,30 @@ class BigscreenToolset:
             )
             or os.getenv("VISUAL_BIGSCREEN_RESOURCE_SAVE_URL", "").strip()
             or os.getenv("JETLINKS_RESOURCE_SAVE_URL", "").strip()
+            or cls._default_resource_save_url_from_upload_url(arguments)
         )
         if configured:
             return [configured]
         return []
+
+    @classmethod
+    def _default_resource_save_url_from_upload_url(cls, arguments: dict[str, Any]) -> str:
+        upload_url = cls._first_string(arguments, "upload_url", "uploadUrl", "_visual_bigscreen_upload_url", "_file_upload_url")
+        if not upload_url:
+            upload_url = os.getenv("VISUAL_BIGSCREEN_UPLOAD_URL", "").strip() or os.getenv("JETLINKS_FILE_UPLOAD_URL", "").strip()
+        if not upload_url:
+            return ""
+        parsed = urlparse(upload_url)
+        path = parsed.path.rstrip("/")
+        replacements = (
+            ("/api/file/upload", "/api/visualization/resource"),
+            ("/file/upload", "/visualization/resource"),
+        )
+        for suffix, replacement in replacements:
+            if path.endswith(suffix):
+                new_path = path[: -len(suffix)] + replacement
+                return urlunparse(parsed._replace(path=new_path, params="", query="", fragment=""))
+        return ""
 
     @classmethod
     def _platform_mcp_sources(cls, arguments: dict[str, Any]) -> list[dict[str, Any]]:
@@ -492,7 +510,43 @@ class BigscreenToolset:
         ):
             if key in arguments:
                 return cls._truthy(arguments.get(key))
-        return cls._truthy(os.getenv("VISUAL_BIGSCREEN_RESOURCE_SAVE_PREFER_REST", ""))
+        env_value = os.getenv("VISUAL_BIGSCREEN_RESOURCE_SAVE_PREFER_REST", "").strip()
+        if env_value:
+            return cls._truthy(env_value)
+        return True
+
+    @classmethod
+    def _platform_resource_save_method(cls, arguments: dict[str, Any], resource_save_url: str) -> str:
+        configured = (
+            cls._first_string(
+                arguments,
+                "resource_save_method",
+                "resourceSaveMethod",
+                "_visual_bigscreen_resource_save_method",
+            )
+            or os.getenv("VISUAL_BIGSCREEN_RESOURCE_SAVE_METHOD", "").strip()
+        )
+        method = configured.upper() if configured else ""
+        if method in {"POST", "PUT", "PATCH"}:
+            return method
+        return "PATCH" if cls._is_visualization_resource_url(resource_save_url) else "POST"
+
+    @classmethod
+    def _platform_resource_save_payload(
+        cls,
+        data: list[Any],
+        arguments: dict[str, Any],
+        resource_save_url: str,
+        method: str,
+    ) -> object:
+        raw_array = cls._truthy(arguments.get("_visual_bigscreen_resource_save_raw_array"))
+        if raw_array or method == "PATCH" or cls._is_visualization_resource_url(resource_save_url):
+            return data
+        return {"data": data}
+
+    @classmethod
+    def _is_visualization_resource_url(cls, resource_save_url: str) -> bool:
+        return urlparse(resource_save_url).path.rstrip("/").endswith("/visualization/resource")
 
     @classmethod
     def _platform_upload_file_field(cls, arguments: dict[str, Any]) -> str:
