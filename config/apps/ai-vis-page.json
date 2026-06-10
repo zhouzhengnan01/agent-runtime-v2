@@ -11,6 +11,8 @@
   "runtime_options": {
     "config_options": {
       "force_model_config": true,
+      "visualBigscreenMode": "full",
+      "visualBigscreenRegionConcurrency": 3,
       "visualBigscreenDirectLlmBaseUrl": "",
       "visualBigscreenDirectLlmApiKey": "",
       "visualBigscreenDirectLlmModel": "",
@@ -25,19 +27,26 @@
   },
   "models": [
     {
-      "name" : "gpt-5.5",
-      "features" : [ "vision", "reasoning", "chat" ],
-      "priority_features" : [ "chat", "reasoning" ],
-      "priority" : 0,
-      "provider" : "openai-compatible",
-      "model" : "",
-      "base_url" : "",
-      "default_model" : "gpt-5.5",
-      "api_key" : "",
-      "model_provider" : "custom",
-      "tool_choice" : "auto",
-      "temperature" : 0.4,
-      "max_tokens" : 2048
+      "name": "gpt-5.5",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "",
+      "base_url": "",
+      "default_model": "gpt-5.5",
+      "api_key": "",
+      "model_provider": "custom",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048
     }
   ]
 }

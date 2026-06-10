@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
+import threading
 import time
 from typing import Any
 import uuid
@@ -52,6 +53,14 @@ _LOGGED_EVENT_TYPES = {
     "verifier.completed",
     "verifier.failed",
     "verifier.started",
+    "visualization.full.completed",
+    "visualization.full.initialization.completed",
+    "visualization.initialization.ready",
+    "visualization.region.concurrent.batch_started",
+    "visualization.region.concurrent.completed",
+    "visualization.region.concurrent.failed",
+    "visualization.region.concurrent.submitted",
+    "visualization.region.finalized",
 }
 
 
@@ -65,28 +74,30 @@ class EventRecorder:
     on_emit: Callable[[ChatEvent], None] | None = None
     _started_at: float = field(default_factory=time.perf_counter)
     _sequence: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     events: list[ChatEvent] = field(default_factory=list)
 
     def emit(self, event_type: str, data: dict[str, Any] | None = None, message: str | None = None) -> ChatEvent:
-        payload: dict[str, Any] = {
-            "run_id": self.run_id,
-            "agent": self.agent,
-            "thread_id": self.thread_id,
-            "sequence": self._sequence,
-            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            "elapsed_ms": round((time.perf_counter() - self._started_at) * 1000, 3),
-        }
-        if data:
-            payload.update(data)
-        if message is not None:
-            payload["message"] = message
+        with self._lock:
+            payload: dict[str, Any] = {
+                "run_id": self.run_id,
+                "agent": self.agent,
+                "thread_id": self.thread_id,
+                "sequence": self._sequence,
+                "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "elapsed_ms": round((time.perf_counter() - self._started_at) * 1000, 3),
+            }
+            if data:
+                payload.update(data)
+            if message is not None:
+                payload["message"] = message
 
-        event = ChatEvent(type=event_type, data=payload)
-        self.events.append(event)
+            event = ChatEvent(type=event_type, data=payload)
+            self.events.append(event)
+            self._sequence += 1
         _log_event(event)
         if self.on_emit is not None:
             self.on_emit(event)
-        self._sequence += 1
         return event
 
 
@@ -407,6 +418,18 @@ def _event_log_fields(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
         "raw_chars",
         "result_chars",
         "reason",
+        "error",
+        "stage",
+        "region_id",
+        "region_count",
+        "submitted_count",
+        "completed_count",
+        "component_count",
+        "resource_save_count",
+        "advanced_component_count",
+        "max_workers",
+        "duration_max_ms",
+        "duration_total_ms",
     ):
         if key in data:
             fields[key] = data.get(key)
