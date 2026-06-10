@@ -12,7 +12,7 @@
     "config_options": {
       "force_model_config": true,
       "visualBigscreenMode": "full",
-      "visualBigscreenRegionConcurrency": 3,
+      "visualBigscreenRegionConcurrency": 5,
       "visualBigscreenDirectLlmBaseUrl": "",
       "visualBigscreenDirectLlmApiKey": "",
       "visualBigscreenDirectLlmModel": "",

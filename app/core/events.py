@@ -61,6 +61,7 @@ _LOGGED_EVENT_TYPES = {
     "visualization.region.concurrent.failed",
     "visualization.region.concurrent.submitted",
     "visualization.region.finalized",
+    "visualization.region.ready",
 }
 
 
@@ -425,9 +426,11 @@ def _event_log_fields(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
         "submitted_count",
         "completed_count",
         "component_count",
+        "failed_region_count",
         "resource_save_count",
         "advanced_component_count",
         "max_workers",
+        "status",
         "duration_max_ms",
         "duration_total_ms",
     ):

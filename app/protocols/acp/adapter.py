@@ -1684,6 +1684,12 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
             "sessionUpdate": "agent_message_chunk",
             "content": {"type": "text", "text": _visualization_initialization_ready_text(data)},
         }
+    if event.type == "visualization.region.ready":
+        return {
+            **base,
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": _visualization_region_ready_text(data)},
+        }
     if event.type == "tool.started":
         tool_name = _string(data.get("tool_name")) or "tool"
         return {
@@ -1764,6 +1770,30 @@ def _visualization_initialization_ready_text(data: dict[str, Any]) -> str:
         "backgroundFileId": _string(data.get("background_file_id")) or "",
         "regionCount": data.get("region_count") if isinstance(data.get("region_count"), int) else 0,
     }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _visualization_region_ready_text(data: dict[str, Any]) -> str:
+    region_id = _string(data.get("regionId")) or _string(data.get("region_id"))
+    components = data.get("components") if isinstance(data.get("components"), list) else []
+    status = _string(data.get("status")) or "completed"
+    payload = {
+        "_visualizationStage": "region_ready",
+        "regionId": region_id,
+        "status": status,
+        "components": components,
+        "region": {
+            "regionId": region_id,
+            "components": components,
+        },
+        "componentCount": len(components),
+        "completedCount": data.get("completed_count") if isinstance(data.get("completed_count"), int) else 0,
+        "regionCount": data.get("region_count") if isinstance(data.get("region_count"), int) else 0,
+        "durationMs": data.get("duration_ms") if isinstance(data.get("duration_ms"), int | float) else 0,
+    }
+    error = _string(data.get("error"))
+    if error:
+        payload["error"] = error
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
