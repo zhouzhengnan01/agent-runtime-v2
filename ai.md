@@ -80,3 +80,13 @@ Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8000/health' -TimeoutS
 - `WinError 10061 由于目标计算机积极拒绝，无法连接` 发生在 LLM 请求阶段，日志表现为 `llm upstream retry ... reason=ConnectError`，请求地址是 `http://192.168.32.7:9200/.../chat/completions`。这说明当次请求时 Java/LLM 网关 9200 没有可用连接，和 skill 注入大小不是同一个问题。
 - 本地当前配置里 LLM `base_url` 和 MCP server 都走 Java 9200，因此发起测试前必须保证 Java 9200 已启动且模型代理路径可用。Python 可先启动，但只要请求发生时 Java 9200 不可达，工作流就会失败；如果 Java 是进程管理方，推荐顺序是 Java/LLM 网关 ready 后再启动或重启 Python。
 - `WinError 5 拒绝访问：*.tmp -> conversation.jsonl / run-*.json` 是 Windows 文件替换问题。已对 `SessionConversationStore` 和 `RunEventStore` 改成唯一 tmp 文件 + 多次重试 + 直接写入兜底，避免失败结果保存时二次报错覆盖原始异常。
+
+## 2026-06-10 演示兜底通道
+
+- 已在 `plugins/workflows/visualization-bigscreen/visualization_bigscreen.py` 增加可视化工作流直连 LLM override：配置了 `visualBigscreenDirectLlmBaseUrl` / `visualBigscreenDirectLlmChatUrl`、`visualBigscreenDirectLlmApiKey`、`visualBigscreenDirectLlmModel` 后，workflow 会绕开 Java LLM 网关，直接用 OpenAI-compatible `/chat/completions` 调模型。
+- 同一逻辑也支持 `directLlm*`、`openai*`、`codex*` 形式的 `runtime_options.config_options` key，兼容嵌套 `ccSwitch.openai.baseUrl/apiKey/model`，以及环境变量 `VISUAL_BIGSCREEN_DIRECT_LLM_BASE_URL`、`VISUAL_BIGSCREEN_DIRECT_LLM_CHAT_URL`、`VISUAL_BIGSCREEN_DIRECT_LLM_API_KEY`、`VISUAL_BIGSCREEN_DIRECT_LLM_MODEL`、`VISUAL_BIGSCREEN_DIRECT_LLM_TIMEOUT_SECONDS`。
+- 如果给的是完整 `.../chat/completions` 地址，workflow 会自动裁成 OpenAI-compatible `base_url`，避免二次拼接 `/chat/completions`。
+- 已在 `app/core/tools/providers/visualization/bigscreen/provider.py` 增强上传兜底：只要配置了 `visualBigscreenUploadUrl` / `fileUploadUrl` 或环境变量 `VISUAL_BIGSCREEN_UPLOAD_URL` / `JETLINKS_FILE_UPLOAD_URL`，即使 runtime 里还有 MCP server，也优先走 REST multipart 上传。
+- 永久 token 支持两种方式：完整鉴权头用 `visualBigscreenUploadAuthorization` 或 `VISUAL_BIGSCREEN_UPLOAD_AUTHORIZATION`；只有 token 值时用 `visualBigscreenUploadToken` 或 `VISUAL_BIGSCREEN_UPLOAD_TOKEN`，默认拼成 `Authorization: Bearer <token>`。如果平台要求其他 header，可配 `visualBigscreenUploadTokenHeader` 或 `VISUAL_BIGSCREEN_UPLOAD_TOKEN_HEADER`。
+- multipart 文件字段默认是 `file`，可用 `visualBigscreenUploadField` 或 `VISUAL_BIGSCREEN_UPLOAD_FIELD` 改成平台接口需要的字段名。
+- 资源保存仍默认走原 `visualization_bigscreen_save_resource` MCP。若后续也要绕开 MCP，可额外配置 `visualBigscreenResourceSaveUrl` 或 `VISUAL_BIGSCREEN_RESOURCE_SAVE_URL`，当前实现会按 `{"data": [resource...]}` POST JSON。

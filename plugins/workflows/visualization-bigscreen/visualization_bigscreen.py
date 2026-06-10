@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import httpx
 import json
+import os
 import re
 import time
 import zipfile
@@ -348,15 +349,20 @@ class VisualizationBigscreenWorkflow:
         recorder: EventRecorder,
         stage: str,
     ) -> str:
-        llm_options = runtime_options.model_copy(
+        llm_base_options, direct_llm = _direct_llm_runtime_options(runtime_options)
+        if direct_llm.get("enabled"):
+            recorder.emit("llm.direct_override.enabled", direct_llm)
+        llm_options = llm_base_options.model_copy(
             update={
                 "selected_mcp_tools": [],
                 "response_format": "json",
-                "config_options": {**runtime_options.config_options, "enableWorkspaceTools": False},
+                "config_options": {**llm_base_options.config_options, "enableWorkspaceTools": False},
             },
             deep=True,
         )
         client = OpenAICompatibleClient(agent_config, runtime_options=llm_options)
+        if llm_options.request_timeout_seconds is not None:
+            client.request_timeout_seconds = llm_options.request_timeout_seconds
         prompt_text = _last_user_text(messages)
         full_system_prompt = self._prompt_with_stage_context(
             system_prompt,
@@ -592,6 +598,71 @@ class VisualizationBigscreenWorkflow:
         upload_url = runtime_options.config_options.get("visualBigscreenUploadUrl") or runtime_options.config_options.get("fileUploadUrl")
         if isinstance(upload_url, str) and upload_url.strip():
             arguments["_visual_bigscreen_upload_url"] = upload_url.strip()
+            arguments["_visual_bigscreen_upload_prefer_rest"] = True
+        upload_authorization = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadAuthorization",
+            "visual_bigscreen_upload_authorization",
+            "fileUploadAuthorization",
+            "file_upload_authorization",
+        )
+        if upload_authorization:
+            arguments["_visual_bigscreen_upload_authorization"] = upload_authorization
+        upload_token = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadToken",
+            "visual_bigscreen_upload_token",
+            "fileUploadToken",
+            "file_upload_token",
+        )
+        if upload_token:
+            arguments["_visual_bigscreen_upload_token"] = upload_token
+        upload_token_header = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadTokenHeader",
+            "visual_bigscreen_upload_token_header",
+            "fileUploadTokenHeader",
+            "file_upload_token_header",
+        )
+        if upload_token_header:
+            arguments["_visual_bigscreen_upload_token_header"] = upload_token_header
+        upload_headers = (
+            runtime_options.config_options.get("visualBigscreenUploadHeaders")
+            or runtime_options.config_options.get("visual_bigscreen_upload_headers")
+            or runtime_options.config_options.get("fileUploadHeaders")
+            or runtime_options.config_options.get("file_upload_headers")
+        )
+        if isinstance(upload_headers, dict | list):
+            arguments["_visual_bigscreen_upload_headers"] = upload_headers
+        upload_tenant_domain = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadTenantDomain",
+            "visual_bigscreen_upload_tenant_domain",
+            "fileUploadTenantDomain",
+            "file_upload_tenant_domain",
+        )
+        if upload_tenant_domain:
+            arguments["_visual_bigscreen_upload_tenant_domain"] = upload_tenant_domain
+        upload_field = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadField",
+            "visual_bigscreen_upload_field",
+            "fileUploadField",
+            "file_upload_field",
+        )
+        if upload_field:
+            arguments["_visual_bigscreen_upload_field"] = upload_field
+        resource_save_url = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenResourceSaveUrl",
+            "visual_bigscreen_resource_save_url",
+            "visualBigscreenSaveResourceUrl",
+            "visual_bigscreen_save_resource_url",
+            "resourceSaveUrl",
+            "resource_save_url",
+        )
+        if resource_save_url:
+            arguments["_visual_bigscreen_resource_save_url"] = resource_save_url
         return arguments
 
 
@@ -1856,6 +1927,193 @@ def _tool_error_text(result: Any) -> str:
     content = getattr(result, "content", [])
     texts = [str(item.get("text")) for item in content if isinstance(item, dict) and item.get("text")]
     return "; ".join(texts) or "unknown tool error"
+
+
+def _direct_llm_runtime_options(runtime_options: RuntimeOptions) -> tuple[RuntimeOptions, dict[str, Any]]:
+    config = runtime_options.config_options
+    chat_url = _first_config_string(
+        config,
+        "visualBigscreenDirectLlmChatUrl",
+        "visual_bigscreen_direct_llm_chat_url",
+        "directLlmChatUrl",
+        "direct_llm_chat_url",
+        "openaiChatCompletionsUrl",
+        "openai_chat_completions_url",
+        "codexChatCompletionsUrl",
+        "codex_chat_completions_url",
+    ) or _first_env_string(
+        "VISUAL_BIGSCREEN_DIRECT_LLM_CHAT_URL",
+        "CC_SWITCH_OPENAI_CHAT_URL",
+        "CODEX_OPENAI_CHAT_URL",
+    )
+    base_url = _first_config_string(
+        config,
+        "visualBigscreenDirectLlmBaseUrl",
+        "visual_bigscreen_direct_llm_base_url",
+        "directLlmBaseUrl",
+        "direct_llm_base_url",
+        "openaiBaseUrl",
+        "openai_base_url",
+        "codexBaseUrl",
+        "codex_base_url",
+        "ccSwitch.openai.baseUrl",
+        "ccSwitch.openai.base_url",
+        "ccSwitch.openai.url",
+        "cc_switch.openai.base_url",
+    ) or _first_env_string(
+        "VISUAL_BIGSCREEN_DIRECT_LLM_BASE_URL",
+        "CC_SWITCH_OPENAI_BASE_URL",
+        "CODEX_OPENAI_BASE_URL",
+    )
+    if chat_url and not base_url:
+        base_url = chat_url
+    api_key = _first_config_string(
+        config,
+        "visualBigscreenDirectLlmApiKey",
+        "visual_bigscreen_direct_llm_api_key",
+        "directLlmApiKey",
+        "direct_llm_api_key",
+        "openaiApiKey",
+        "openai_api_key",
+        "codexApiKey",
+        "codex_api_key",
+        "ccSwitch.openai.apiKey",
+        "ccSwitch.openai.api_key",
+        "cc_switch.openai.api_key",
+    ) or _first_env_string(
+        "VISUAL_BIGSCREEN_DIRECT_LLM_API_KEY",
+        "CC_SWITCH_OPENAI_API_KEY",
+        "CODEX_OPENAI_API_KEY",
+    )
+    model_name = _first_config_string(
+        config,
+        "visualBigscreenDirectLlmModel",
+        "visual_bigscreen_direct_llm_model",
+        "directLlmModel",
+        "direct_llm_model",
+        "openaiModel",
+        "openai_model",
+        "codexModel",
+        "codex_model",
+        "ccSwitch.openai.model",
+        "ccSwitch.openai.modelName",
+        "ccSwitch.openai.model_name",
+        "cc_switch.openai.model",
+    ) or _first_env_string(
+        "VISUAL_BIGSCREEN_DIRECT_LLM_MODEL",
+        "CC_SWITCH_OPENAI_MODEL",
+        "CODEX_OPENAI_MODEL",
+    )
+    timeout_seconds = _first_config_number(
+        config,
+        "visualBigscreenDirectLlmTimeoutSeconds",
+        "visual_bigscreen_direct_llm_timeout_seconds",
+        "directLlmTimeoutSeconds",
+        "direct_llm_timeout_seconds",
+        "openaiTimeoutSeconds",
+        "openai_timeout_seconds",
+    )
+    if timeout_seconds is None:
+        timeout_seconds = _first_env_number(
+            "VISUAL_BIGSCREEN_DIRECT_LLM_TIMEOUT_SECONDS",
+            "CC_SWITCH_OPENAI_TIMEOUT_SECONDS",
+            "CODEX_OPENAI_TIMEOUT_SECONDS",
+        )
+
+    configured = bool(chat_url or base_url or model_name)
+    if not configured:
+        return runtime_options, {"enabled": False}
+    missing: list[str] = []
+    if not base_url:
+        missing.append("base_url")
+    if not model_name:
+        missing.append("model")
+    if missing:
+        raise RuntimeError("直连模型配置不完整，缺少 " + ", ".join(missing))
+
+    normalized_base_url = _normalize_openai_base_url(base_url)
+    update: dict[str, Any] = {
+        "base_url": normalized_base_url,
+        "api_key": api_key,
+        "model_name": model_name,
+    }
+    if timeout_seconds is not None:
+        update["request_timeout_seconds"] = max(1.0, min(float(timeout_seconds), 600.0))
+    options = runtime_options.model_copy(update=update, deep=True)
+    return options, {
+        "enabled": True,
+        "model": model_name,
+        "base_url": normalized_base_url,
+        "chat_url_configured": bool(chat_url),
+        "api_key_configured": bool(api_key),
+        "timeout_seconds": options.request_timeout_seconds,
+    }
+
+
+def _normalize_openai_base_url(value: str) -> str:
+    url = value.strip().rstrip("/")
+    suffix = "/chat/completions"
+    if url.lower().endswith(suffix):
+        url = url[: -len(suffix)].rstrip("/")
+    return url
+
+
+def _first_config_string(config: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = _config_value(config, key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _first_env_string(*keys: str) -> str:
+    for key in keys:
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _first_config_number(config: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        parsed = _number_or_none(_config_value(config, key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _first_env_number(*keys: str) -> float | None:
+    for key in keys:
+        parsed = _number_or_none(os.getenv(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _config_value(config: dict[str, Any], key: str) -> Any:
+    if key in config:
+        return config.get(key)
+    if "." not in key:
+        return None
+    current: Any = config
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
 
 
 def _llm_event_payload(agent_config: AgentConfig, runtime_options: RuntimeOptions) -> dict[str, Any]:
