@@ -8,17 +8,23 @@
   "selected_skills": [
     "ai-vis-page"
   ],
+  "runtime_options": {
+    "config_options": {
+      "visualBigscreenMode": "full",
+      "visualBigscreenRegionConcurrency": 3
+    }
+  },
   "models": [
     {
       "name" : "gpt-5.4",
       "features" : [ "vision", "reasoning", "chat" ],
-      "priority_features" : [ "reasoning", "chat" ],
+      "priority_features" : [ "chat", "reasoning" ],
       "priority" : 0,
       "provider" : "openai-compatible",
       "model" : "gpt-5.4",
-      "base_url" : "http://192.168.32.7:9200/api/llm/openai/v1/providers/f3a05ffa-1122-49b8-a04b-002478205381/",
+      "base_url" : "http://192.168.32.7:9200/api/llm/openai/v1/providers/cff547cb-f940-4f94-bf73-3c7741eb8e0f/",
       "default_model" : "gpt-5.4",
-      "api_key" : "94lOPPpITT3RrkSgSponTizZX6LETp7W8ozmskGOXSh0DIduPSHJRFr0qdTfKUl0LiGe7Ys7AIciYWxHTJXJAOXFRUPSXwjeDZdeza71muC7YwJP0VbxjWxPj6FNs6NASYVBVL7o8uZPDPtHvt9qdbXyzpL00iSoNxWQm3ty6WeWZOT0FiHQL93Q0x56lIRMVDAe8YpaVWnX4cpZpj94t20K",
+      "api_key" : "OTACu5ikmX18Skrxwe64jvE8043a72CA7pCUBMdImWjGnmE9JffsaFn5PYO7TApPUedvHKXbRCMDzN2pEAfba1dNqOHYSXmrNoWZioMfHnUgypaJpnWipZdAQsTLf60OWbaiptaw4yup0uUl5W0ysTWKCpXIQmKfjdGGjAVrubb4bmWNk5SRWV",
       "tool_choice" : "auto",
       "temperature" : 0.4,
       "max_tokens" : 2048

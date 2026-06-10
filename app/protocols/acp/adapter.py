@@ -1678,6 +1678,12 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
             "sessionUpdate": "agent_message_chunk",
             "content": {"type": "text", "text": text},
         }
+    if event.type == "visualization.initialization.ready":
+        return {
+            **base,
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": _visualization_initialization_ready_text(data)},
+        }
     if event.type == "tool.started":
         tool_name = _string(data.get("tool_name")) or "tool"
         return {
@@ -1744,6 +1750,21 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
         "sessionUpdate": "agent_thought_chunk",
         "content": {"type": "text", "text": _runtime_event_summary(event)},
     }
+
+
+def _visualization_initialization_ready_text(data: dict[str, Any]) -> str:
+    page_json = data.get("pageJson") if isinstance(data.get("pageJson"), dict) else {}
+    blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
+    payload = {
+        "_visualizationStage": "initialization_ready",
+        "pageJson": page_json,
+        "blueprint": blueprint,
+        "regions": [],
+        "components": [],
+        "backgroundFileId": _string(data.get("background_file_id")) or "",
+        "regionCount": data.get("region_count") if isinstance(data.get("region_count"), int) else 0,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _resource_content_updates(event: ChatEvent, content: list[dict[str, Any]]) -> list[dict[str, Any]]:
