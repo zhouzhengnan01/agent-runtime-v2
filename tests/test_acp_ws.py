@@ -229,8 +229,6 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
         assert "agent_message" not in session_update_types
 
 
-<<<<<<< HEAD
-=======
 def test_acp_websocket_prompt_sends_keepalive_during_long_runtime(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -378,7 +376,6 @@ def test_acp_websocket_prompt_emits_visible_model_error_chunk(
     assert "http://model.example/v1/chat/completions" in final_reply
 
 
->>>>>>> agent-v2
 def test_acp_websocket_new_session_defaults_session_id_to_thread_id() -> None:
     client = TestClient(create_app())
     thread_id = f"acp-same-id-{uuid.uuid4().hex}"
@@ -965,8 +962,6 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
     assert second.max_tokens == 2000
 
 
-<<<<<<< HEAD
-=======
 def test_acp_websocket_top_level_app_template_preserves_template_config_options(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1534,7 +1529,6 @@ def test_acp_websocket_prompt_bridge_container_can_switch_app_template(
     assert options.config_options["auto_execute_primary_skill"] is True
 
 
->>>>>>> agent-v2
 def test_acp_websocket_session_new_accepts_standard_meta_extensions(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
