@@ -1,0 +1,72 @@
+{
+  "name": "ai-vis-page",
+  "description": "渐进式可视化大屏生成流程契约，由 workflow 按阶段注入平台 JSON 规则。",
+  "generation": true,
+  "auto_execute": true,
+  "output_kind": "json",
+  "routing": {
+    "summary": "Use for platform visualization bigscreen and ai-vis-page generation requests.",
+    "keywords": [
+      "大屏",
+      "智慧大屏",
+      "可视化大屏",
+      "数据大屏",
+      "ai-vis-page",
+      "page.json",
+      "ECharts",
+      "resourceComponentEcharts"
+    ],
+    "examples": [
+      "生成一个可视化大屏",
+      "给我生成智慧园区运营大屏",
+      "输出平台 ai-vis-page page.json"
+    ]
+  },
+  "quality_template": [
+    "page_json",
+    "echarts_resources",
+    "platform_commands"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "ai-vis-page"
+      },
+      "objective": {
+        "type": "string",
+        "description": "The natural-language visualization bigscreen generation objective."
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "tool_call"
+  ]
+}

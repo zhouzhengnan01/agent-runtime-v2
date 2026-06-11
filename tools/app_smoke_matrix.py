@@ -40,6 +40,7 @@ SKILL_ARTIFACT_PATTERNS = {
     "drawio-generation": ["*.drawio", "*.png"],
     "emoji": ["*.md"],
     "excel-generation": ["*.xlsx"],
+    "ai-vis-page": ["generated-bigscreen/page.json"],
     "generate-screen-skill": ["generate-screen-skill-prompt.md"],
     "jetlinks-ai-component": ["*/component.vue", "*/config.mjs", "*/README.md"],
     "markdown-rendering": ["*.md"],

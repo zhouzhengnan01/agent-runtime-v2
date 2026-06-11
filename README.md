@@ -231,7 +231,8 @@ APP_PORT=8010 ./stop.sh
 - `APP_HOST`：监听地址，默认 `0.0.0.0`
 - `APP_PORT`：监听端口，默认 `8000`
 - `APP_MODULE`：ASGI 应用，默认 `app.main:app`
-- `APP_WORKERS`：uvicorn workers，默认 `1`
+- `APP_WORKERS`：uvicorn workers，默认 `auto`
+- `APP_WORKERS_AUTO_MAX`：`APP_WORKERS=auto` 时的上限，默认 `4`
 - `APP_LOG_LEVEL`：uvicorn 日志级别，默认 `info`
 - `PYTHON_BIN`：Python 解释器，默认优先 `.venv/bin/python`
 - `RUNTIME_DIR`：PID 和日志目录，默认 `.runtime/server`

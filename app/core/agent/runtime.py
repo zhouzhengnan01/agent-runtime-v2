@@ -7,9 +7,10 @@ import logging
 import mimetypes
 import os
 import re
+import threading
 import time
 from collections.abc import AsyncIterator, Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -47,8 +48,26 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 logger = logging.getLogger("uvicorn.error")
 REMOTE_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
 REMOTE_ATTACHMENT_TIMEOUT_SECONDS = 30.0
-WORKFLOW_THREAD_WORKERS = max(1, int(os.getenv("JETLINKS_WORKFLOW_THREAD_WORKERS", "8") or "8"))
+WORKFLOW_THREAD_WORKERS = max(1, int(os.getenv("JETLINKS_WORKFLOW_THREAD_WORKERS", "16") or "16"))
+PARKING_REVIEW_THREAD_WORKERS = max(
+    1,
+    int(os.getenv("JETLINKS_PARKING_REVIEW_THREAD_WORKERS", "4") or "4"),
+)
 WORKFLOW_QUEUE_WARN_SECONDS = max(0.0, float(os.getenv("JETLINKS_WORKFLOW_QUEUE_WARN_SECONDS", "1") or "1"))
+PARKING_REVIEW_MAX_QUEUE_BACKLOG = max(0, int(os.getenv("PARKING_REVIEW_MAX_QUEUE_BACKLOG", "16") or "16"))
+PARKING_REVIEW_DEDUP_ENABLED = os.getenv("PARKING_REVIEW_DEDUP_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+PARKING_REVIEW_DEDUP_TTL_SECONDS = max(
+    0.0,
+    float(os.getenv("PARKING_REVIEW_DEDUP_TTL_SECONDS", "120") or "120"),
+)
+_WORKFLOW_QUEUE_LOCK = threading.Lock()
+_WORKFLOW_QUEUE_PENDING = 0
+_PARKING_REVIEW_QUEUE_PENDING = 0
 FIXED_REPLY_ENV = "JETLINKS_AGENT_FIXED_REPLY"
 FIXED_REPLY_ENABLED_ENV = "JETLINKS_AGENT_FIXED_REPLY_ENABLED"
 FIXED_REPLY_FOREVER_ENV = "JETLINKS_AGENT_FIXED_REPLY_FOREVER"
@@ -61,11 +80,201 @@ DEFAULT_FIXED_REPLY = (
 )
 
 
+@dataclass
+class RuntimeQueueSnapshot:
+    name: str
+    pending: int
+    workers: int
+    max_backlog: int | None
+    overloaded: bool
+    rejected_total: int
+    last_overloaded_at: float | None
+    last_rejected_at: float | None
+    last_reject_reason: str | None
+
+
+class RuntimeQueueState:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending_by_queue: dict[str, int] = {}
+        self._rejected_total_by_queue: dict[str, int] = {}
+        self._last_overloaded_at_by_queue: dict[str, float] = {}
+        self._last_rejected_at_by_queue: dict[str, float] = {}
+        self._last_reject_reason_by_queue: dict[str, str] = {}
+
+    def increment(self, queue_name: str) -> int:
+        with self._lock:
+            backlog = self._pending_by_queue.get(queue_name, 0)
+            self._pending_by_queue[queue_name] = backlog + 1
+            return backlog
+
+    def backlog(self, queue_name: str) -> int:
+        with self._lock:
+            return self._pending_by_queue.get(queue_name, 0)
+
+    def decrement(self, queue_name: str) -> int:
+        with self._lock:
+            backlog = max(0, self._pending_by_queue.get(queue_name, 0) - 1)
+            self._pending_by_queue[queue_name] = backlog
+            return backlog
+
+    def record_rejection(self, queue_name: str, *, reason: str) -> None:
+        now = time.time()
+        with self._lock:
+            self._rejected_total_by_queue[queue_name] = self._rejected_total_by_queue.get(queue_name, 0) + 1
+            self._last_rejected_at_by_queue[queue_name] = now
+            self._last_reject_reason_by_queue[queue_name] = reason
+
+    def rejected_total(self, queue_name: str) -> int:
+        with self._lock:
+            return self._rejected_total_by_queue.get(queue_name, 0)
+
+    def last_overloaded_at(self, queue_name: str) -> float | None:
+        with self._lock:
+            return self._last_overloaded_at_by_queue.get(queue_name)
+
+    def last_rejected_at(self, queue_name: str) -> float | None:
+        with self._lock:
+            return self._last_rejected_at_by_queue.get(queue_name)
+
+    def last_reject_reason(self, queue_name: str) -> str | None:
+        with self._lock:
+            return self._last_reject_reason_by_queue.get(queue_name)
+
+    def snapshot(
+        self,
+        *,
+        queue_name: str,
+        workers: int,
+        max_backlog: int | None = None,
+    ) -> RuntimeQueueSnapshot:
+        with self._lock:
+            pending = self._pending_by_queue.get(queue_name, 0)
+            overloaded = max_backlog is not None and max_backlog > 0 and pending >= max_backlog
+            if overloaded:
+                self._last_overloaded_at_by_queue[queue_name] = time.time()
+        return RuntimeQueueSnapshot(
+            name=queue_name,
+            pending=pending,
+            workers=workers,
+            max_backlog=max_backlog,
+            overloaded=overloaded,
+            rejected_total=self.rejected_total(queue_name),
+            last_overloaded_at=self.last_overloaded_at(queue_name),
+            last_rejected_at=self.last_rejected_at(queue_name),
+            last_reject_reason=self.last_reject_reason(queue_name),
+        )
+
+
+RUNTIME_QUEUE_STATE = RuntimeQueueState()
+
+
+def _extract_review_source_id_for_overload(text: str) -> str:
+    payload = _parse_json_object_for_overload(text)
+    if isinstance(payload, dict):
+        for key in ("reviewSourceId", "review_source_id", "sourceId", "source_id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        headers = payload.get("headers")
+        if isinstance(headers, dict):
+            for key in ("reviewSourceId", "review_source_id"):
+                value = headers.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    for pattern in (
+        r"reviewSourceId为\[([^\]]+)\]",
+        r"复判事件来源reviewSourceId为\[([^\]]+)\]",
+        r"复判事件来源id为\[([^\]]+)\]",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _parse_json_object_for_overload(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        value = json.loads(stripped)
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _workflow_queue_increment() -> int:
+    global _WORKFLOW_QUEUE_PENDING
+    backlog = RUNTIME_QUEUE_STATE.increment("default_workflow")
+    with _WORKFLOW_QUEUE_LOCK:
+        _WORKFLOW_QUEUE_PENDING = RUNTIME_QUEUE_STATE.backlog("default_workflow")
+    return backlog
+
+
+def _workflow_queue_backlog() -> int:
+    backlog = RUNTIME_QUEUE_STATE.backlog("default_workflow")
+    with _WORKFLOW_QUEUE_LOCK:
+        _WORKFLOW_QUEUE_PENDING = backlog
+    return backlog
+
+
+def _workflow_queue_decrement() -> int:
+    global _WORKFLOW_QUEUE_PENDING
+    backlog = RUNTIME_QUEUE_STATE.decrement("default_workflow")
+    with _WORKFLOW_QUEUE_LOCK:
+        _WORKFLOW_QUEUE_PENDING = backlog
+    return backlog
+
+
+def _parking_review_queue_increment() -> int:
+    global _PARKING_REVIEW_QUEUE_PENDING
+    backlog = RUNTIME_QUEUE_STATE.increment("parking_review")
+    with _WORKFLOW_QUEUE_LOCK:
+        _PARKING_REVIEW_QUEUE_PENDING = RUNTIME_QUEUE_STATE.backlog("parking_review")
+    return backlog
+
+
+def _parking_review_queue_backlog() -> int:
+    backlog = RUNTIME_QUEUE_STATE.backlog("parking_review")
+    with _WORKFLOW_QUEUE_LOCK:
+        _PARKING_REVIEW_QUEUE_PENDING = backlog
+    return backlog
+
+
+def _parking_review_queue_decrement() -> int:
+    global _PARKING_REVIEW_QUEUE_PENDING
+    backlog = RUNTIME_QUEUE_STATE.decrement("parking_review")
+    with _WORKFLOW_QUEUE_LOCK:
+        _PARKING_REVIEW_QUEUE_PENDING = backlog
+    return backlog
+
+
 @dataclass(frozen=True)
 class _DirectJsonArtifactIntent:
     filename: str
     content: str
     reason: str
+
+
+@dataclass(frozen=True)
+class _WorkflowDedupEntry:
+    workflow_name: str
+    dedup_key: str
+    reply: str
+    status: str
+    metadata: dict[str, Any]
+    cached_at: float
+
+
+@dataclass(frozen=True)
+class _WorkflowDedupDecision:
+    workflow_name: str
+    dedup_key: str
+    source: str
+    owner_future: Future[_WorkflowDedupEntry] | None = None
+    wait_future: Future[_WorkflowDedupEntry] | None = None
+    cache_entry: _WorkflowDedupEntry | None = None
 
 
 class AgentRuntime:
@@ -104,6 +313,17 @@ class AgentRuntime:
             max_workers=WORKFLOW_THREAD_WORKERS,
             thread_name_prefix="jetlinks-workflow",
         )
+        self.parking_review_executor = ThreadPoolExecutor(
+            max_workers=PARKING_REVIEW_THREAD_WORKERS,
+            thread_name_prefix="jetlinks-parking-review",
+        )
+        self._workflow_dedup_lock = threading.Lock()
+        self._workflow_inflight: dict[tuple[str, str], Future[_WorkflowDedupEntry]] = {}
+        self._workflow_cache: dict[tuple[str, str], _WorkflowDedupEntry] = {}
+        self.workflow_executors: dict[str, str] = {
+            "default_workflow": "workflow_executor",
+            "parking_review": "parking_review_executor",
+        }
         self.model_config, self._model_config_fields = self._normalize_model_config(model_config)
         self.app_template_registry = app_template_registry or AppTemplateRegistry()
         self.secret_codec = SecretCodec(self.app_template_registry.root_dir)
@@ -172,16 +392,33 @@ class AgentRuntime:
             )
             return result, events
         if execution.workflow_name is not None:
+            overload_result = self._parking_review_queue_overload_result(execution)
+            if overload_result is not None:
+                return overload_result
+            dedup_decision = self._workflow_dedup_decision(execution)
+            if dedup_decision is not None and dedup_decision.cache_entry is not None:
+                return self._workflow_dedup_materialize_result(execution, dedup_decision)
+            if dedup_decision is not None and dedup_decision.wait_future is not None:
+                return await self._workflow_dedup_wait_result(execution, dedup_decision)
             # Workflow path: a named workflow owns the full execution instead of
             # the generic tool-calling loop.
-            return await self._run_workflow_in_executor(
-                lambda: self._run_workflow_with_events_sync(execution),
-                execution,
-            )
+            try:
+                result, events = await self._run_workflow_in_executor(
+                    lambda: self._run_workflow_with_events_sync(execution),
+                    execution,
+                )
+            except BaseException as exc:
+                if dedup_decision is not None:
+                    self._workflow_dedup_fail(dedup_decision, exc)
+                raise
+            if dedup_decision is not None:
+                self._workflow_dedup_complete(dedup_decision, result)
+            return result, events
 
         # Default path: merge thread history and let the agent loop decide when
         # to answer directly versus when to call tools.
         conversation = self._conversation_with_vision_attachments(execution.conversation, execution.request.attachments, execution.paths)
+        conversation = self._mark_conversation_has_attachments(conversation, execution.request.attachments)
         recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
         recorder.emit(
             "run.started",
@@ -262,9 +499,35 @@ class AgentRuntime:
         if execution.workflow_name is not None:
             if self.workflow_registry.get(execution.workflow_name) is None:
                 raise ValueError(f"Workflow is not registered: {execution.workflow_name}")
-            async for event in self._stream_workflow_events(execution):
-                yield event
-            return
+            overload_result = self._parking_review_queue_overload_result(execution)
+            if overload_result is not None:
+                _result, events = overload_result
+                for event in events:
+                    yield event
+                return
+            dedup_decision = self._workflow_dedup_decision(execution)
+            if dedup_decision is not None and dedup_decision.cache_entry is not None:
+                _result, events = self._workflow_dedup_materialize_result(execution, dedup_decision)
+                for event in events:
+                    yield event
+                return
+            if dedup_decision is not None and dedup_decision.wait_future is not None:
+                _result, events = await self._workflow_dedup_wait_result(execution, dedup_decision)
+                for event in events:
+                    yield event
+                return
+            try:
+                async for event in self._stream_workflow_events(execution):
+                    yield event
+            except BaseException as exc:
+                if dedup_decision is not None:
+                    self._workflow_dedup_fail(dedup_decision, exc)
+                raise
+            else:
+                result = getattr(execution, "_workflow_final_result", None)
+                if dedup_decision is not None and isinstance(result, AgentRunResult):
+                    self._workflow_dedup_complete(dedup_decision, result)
+                return
 
         async for event in self._stream_agent_loop_events(execution):
             yield event
@@ -276,6 +539,16 @@ class AgentRuntime:
         final_result: AgentRunResult | None = None
 
         def on_event(event: ChatEvent) -> None:
+            if event.type == "run.started":
+                queue_metrics = getattr(execution, "_workflow_queue_metrics", None)
+                if isinstance(queue_metrics, dict):
+                    event.data.update(queue_metrics)
+            if event.type in {"run.completed", "run.failed"}:
+                raw_result = event.data.get("result")
+                if isinstance(raw_result, dict):
+                    event_result = AgentRunResult.model_validate(raw_result)
+                    self._enrich_required_inputs(event_result, execution.request)
+                    event.data["result"] = event_result.model_dump()
             captured_events.append(event)
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
@@ -296,6 +569,7 @@ class AgentRuntime:
                 )
                 if not captured_events:
                     captured_events = list(returned_events)
+                    self._apply_workflow_queue_metrics(captured_events, execution)
             except BaseException as exc:
                 loop.call_soon_threadsafe(queue.put_nowait, exc)
             finally:
@@ -328,26 +602,46 @@ class AgentRuntime:
                         run_id=self._run_id(captured_events),
                     )
                 self._persist_events(execution.agent_config, execution.request, thread_id, captured_events, final_result)
+                if final_result is not None:
+                    object.__setattr__(execution, "_workflow_final_result", final_result)
 
     async def _run_workflow_in_executor(self, func: Callable[[], Any], execution: ExecutionContext) -> Any:
         loop = asyncio.get_running_loop()
         queued_at = time.monotonic()
+        queue_name = self._workflow_queue_name(execution)
+        queued_backlog = self._workflow_queue_increment(execution)
+        queue_workers = self._workflow_queue_workers(execution)
         logger.info(
-            "workflow queue submitted workflow=%s thread_id=%s workers=%s",
+            "workflow queue submitted workflow=%s thread_id=%s queue=%s workers=%s queue_backlog=%s",
             execution.workflow_name,
             execution.paths.thread_id,
-            WORKFLOW_THREAD_WORKERS,
+            queue_name,
+            queue_workers,
+            queued_backlog,
         )
 
         def wrapped() -> Any:
             wait_seconds = time.monotonic() - queued_at
+            start_backlog = self._workflow_queue_decrement(execution)
+            object.__setattr__(
+                execution,
+                "_workflow_queue_metrics",
+                {
+                    "queue_backlog": start_backlog,
+                    "queue_wait_ms": round(wait_seconds * 1000, 1),
+                    "queue_workers": queue_workers,
+                    "queue_name": queue_name,
+                },
+            )
             log = logger.warning if wait_seconds >= WORKFLOW_QUEUE_WARN_SECONDS else logger.info
             log(
-                "workflow queue acquired workflow=%s thread_id=%s wait_ms=%.1f workers=%s",
+                "workflow queue acquired workflow=%s thread_id=%s queue=%s wait_ms=%.1f workers=%s queue_backlog=%s",
                 execution.workflow_name,
                 execution.paths.thread_id,
+                queue_name,
                 wait_seconds * 1000,
-                WORKFLOW_THREAD_WORKERS,
+                queue_workers,
+                start_backlog,
             )
             started_at = time.monotonic()
             try:
@@ -362,13 +656,14 @@ class AgentRuntime:
                 raise
             finally:
                 logger.info(
-                    "workflow execution finished workflow=%s thread_id=%s elapsed_ms=%.1f",
+                    "workflow execution finished workflow=%s thread_id=%s queue=%s elapsed_ms=%.1f",
                     execution.workflow_name,
                     execution.paths.thread_id,
+                    queue_name,
                     (time.monotonic() - started_at) * 1000,
                 )
 
-        return await loop.run_in_executor(self.workflow_executor, wrapped)
+        return await loop.run_in_executor(self._workflow_executor_for(execution), wrapped)
 
     def _run_workflow_with_events_sync(self, execution: ExecutionContext) -> tuple[AgentRunResult, list[ChatEvent]]:
         workflow = self.workflow_registry.get(execution.workflow_name or "")
@@ -382,6 +677,7 @@ class AgentRuntime:
             workflow_name=execution.workflow_name,
             runtime_options=execution.request.runtime_options,
         )
+        self._apply_workflow_queue_metrics(events, execution)
         self.session_store.save(
             execution.paths,
             self._conversation_with_result(execution.conversation, result),
@@ -390,7 +686,365 @@ class AgentRuntime:
         self._enrich_required_inputs(result, execution.request)
         self._replace_final_result_event(events, result)
         self._persist_events(execution.agent_config, execution.request, result.thread_id, events, result)
+        object.__setattr__(execution, "_workflow_final_result", result)
         return result, events
+
+    @staticmethod
+    def _apply_workflow_queue_metrics(events: list[ChatEvent], execution: ExecutionContext) -> None:
+        queue_metrics = getattr(execution, "_workflow_queue_metrics", None)
+        if not isinstance(queue_metrics, dict):
+            return
+        for event in events:
+            if event.type == "run.started":
+                event.data.update(queue_metrics)
+                return
+
+    def _parking_review_queue_overload_result(
+        self,
+        execution: ExecutionContext,
+    ) -> tuple[AgentRunResult, list[ChatEvent]] | None:
+        if execution.workflow_name != "parking_abnormal_review":
+            return None
+        if PARKING_REVIEW_MAX_QUEUE_BACKLOG <= 0:
+            return None
+        queue_backlog = _parking_review_queue_backlog()
+        if queue_backlog < PARKING_REVIEW_MAX_QUEUE_BACKLOG:
+            return None
+        self.queue_state().record_rejection("parking_review", reason="parking_review_queue_overloaded")
+
+        recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
+        workflow = execution.workflow_name
+        recorder.emit(
+            "run.started",
+            {
+                "run_id": recorder.run_id,
+                "workflow": workflow,
+                "execution_mode": workflow,
+                "queue_backlog": queue_backlog,
+                "queue_wait_ms": 0.0,
+                "queue_workers": PARKING_REVIEW_THREAD_WORKERS,
+                "queue_name": "parking_review",
+                "queue_rejected": True,
+                "queue_reject_reason": "parking_review_queue_overloaded",
+            },
+        )
+        reply = self._parking_review_overload_reply(execution)
+        recorder.emit(
+            "review.skill_invocation.failed",
+            {
+                "skill_name": "",
+                "reason": "parking_review_queue_overloaded",
+                "queue_backlog": queue_backlog,
+                "queue_workers": PARKING_REVIEW_THREAD_WORKERS,
+            },
+        )
+        artifact = self.artifact_store.write_text_artifact(
+            execution.paths,
+            "parking_abnormal_review_result.json",
+            reply,
+        )
+        recorder.emit(
+            "artifact.created",
+            {"path": f"outputs/{artifact.name}", "name": artifact.name, "mime_type": artifact.mime_type},
+        )
+        recorder.emit("agent.message", {"text": reply})
+        result = AgentRunResult(
+            agent=execution.agent_config.name,
+            thread_id=execution.paths.thread_id,
+            status="completed",
+            reply=reply,
+            artifacts=[artifact],
+            metadata={
+                "workflow": workflow,
+                "queue_backlog": queue_backlog,
+                "queue_workers": PARKING_REVIEW_THREAD_WORKERS,
+                "queue_name": "parking_review",
+                "queue_rejected": True,
+                "artifact_path": f"outputs/{artifact.name}",
+            },
+        )
+        recorder.emit("run.completed", {"result": result.model_dump()})
+        self.session_store.save(
+            execution.paths,
+            self._conversation_with_result(execution.conversation, result),
+            run_id=recorder.run_id,
+        )
+        self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, recorder.events, result)
+        logger.warning(
+            "parking review queue overloaded thread_id=%s queue_backlog=%s workers=%s max_queue_backlog=%s",
+            execution.paths.thread_id,
+            queue_backlog,
+            PARKING_REVIEW_THREAD_WORKERS,
+            PARKING_REVIEW_MAX_QUEUE_BACKLOG,
+        )
+        return result, recorder.events
+
+    def _workflow_dedup_decision(self, execution: ExecutionContext) -> _WorkflowDedupDecision | None:
+        if not PARKING_REVIEW_DEDUP_ENABLED:
+            return None
+        if execution.workflow_name != "parking_abnormal_review":
+            return None
+        workflow = self.workflow_registry.get(execution.workflow_name or "")
+        if workflow is None:
+            return None
+        dedup_key = self._workflow_dedup_key(workflow, execution)
+        if dedup_key is None:
+            return None
+        registry_key = (execution.workflow_name, dedup_key)
+        now = time.monotonic()
+        with self._workflow_dedup_lock:
+            cache_entry = self._workflow_cache.get(registry_key)
+            if cache_entry is not None and now - cache_entry.cached_at <= PARKING_REVIEW_DEDUP_TTL_SECONDS:
+                logger.info(
+                    "workflow dedup cache hit workflow=%s dedup_key=%s thread_id=%s ttl_seconds=%.1f",
+                    execution.workflow_name,
+                    dedup_key,
+                    execution.paths.thread_id,
+                    PARKING_REVIEW_DEDUP_TTL_SECONDS,
+                )
+                return _WorkflowDedupDecision(
+                    workflow_name=execution.workflow_name,
+                    dedup_key=dedup_key,
+                    source="cache",
+                    cache_entry=cache_entry,
+                )
+            if cache_entry is not None:
+                self._workflow_cache.pop(registry_key, None)
+            wait_future = self._workflow_inflight.get(registry_key)
+            if wait_future is not None:
+                logger.info(
+                    "workflow dedup wait workflow=%s dedup_key=%s thread_id=%s",
+                    execution.workflow_name,
+                    dedup_key,
+                    execution.paths.thread_id,
+                )
+                return _WorkflowDedupDecision(
+                    workflow_name=execution.workflow_name,
+                    dedup_key=dedup_key,
+                    source="inflight",
+                    wait_future=wait_future,
+                )
+            owner_future: Future[_WorkflowDedupEntry] = Future()
+            self._workflow_inflight[registry_key] = owner_future
+            logger.info(
+                "workflow dedup owner workflow=%s dedup_key=%s thread_id=%s",
+                execution.workflow_name,
+                dedup_key,
+                execution.paths.thread_id,
+            )
+            return _WorkflowDedupDecision(
+                workflow_name=execution.workflow_name,
+                dedup_key=dedup_key,
+                source="owner",
+                owner_future=owner_future,
+            )
+
+    def _workflow_dedup_key(self, workflow: object, execution: ExecutionContext) -> str | None:
+        dedup_key = getattr(workflow, "dedup_key", None)
+        if not callable(dedup_key):
+            return None
+        try:
+            value = dedup_key(
+                self._workflow_messages(execution.conversation),
+                execution.request.attachments,
+                execution.request.runtime_options,
+            )
+        except Exception:
+            logger.exception(
+                "workflow dedup key failed workflow=%s thread_id=%s",
+                execution.workflow_name,
+                execution.paths.thread_id,
+            )
+            return None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    async def _workflow_dedup_wait_result(
+        self,
+        execution: ExecutionContext,
+        decision: _WorkflowDedupDecision,
+    ) -> tuple[AgentRunResult, list[ChatEvent]]:
+        if decision.wait_future is None:
+            raise RuntimeError("workflow dedup wait requires an inflight future")
+        entry = await asyncio.wrap_future(decision.wait_future)
+        return self._workflow_dedup_materialize_result(
+            execution,
+            _WorkflowDedupDecision(
+                workflow_name=decision.workflow_name,
+                dedup_key=decision.dedup_key,
+                source="inflight",
+                cache_entry=entry,
+            ),
+        )
+
+    def _workflow_dedup_materialize_result(
+        self,
+        execution: ExecutionContext,
+        decision: _WorkflowDedupDecision,
+    ) -> tuple[AgentRunResult, list[ChatEvent]]:
+        entry = decision.cache_entry
+        if entry is None:
+            raise RuntimeError("workflow dedup materialization requires a cached entry")
+        recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
+        workflow = execution.workflow_name or entry.workflow_name
+        recorder.emit(
+            "run.started",
+            {
+                "run_id": recorder.run_id,
+                "workflow": workflow,
+                "execution_mode": workflow,
+                "deduped": True,
+                "dedup_source": decision.source,
+                "dedup_key": entry.dedup_key,
+            },
+        )
+        artifact = self.artifact_store.write_text_artifact(
+            execution.paths,
+            "parking_abnormal_review_result.json",
+            entry.reply,
+        )
+        recorder.emit(
+            "artifact.created",
+            {"path": f"outputs/{artifact.name}", "name": artifact.name, "mime_type": artifact.mime_type},
+        )
+        recorder.emit("agent.message", {"text": entry.reply})
+        metadata = dict(entry.metadata)
+        metadata.update(
+            {
+                "workflow": workflow,
+                "artifact_path": f"outputs/{artifact.name}",
+                "deduped": True,
+                "dedup_source": decision.source,
+                "dedup_key": entry.dedup_key,
+            }
+        )
+        result = AgentRunResult(
+            agent=execution.agent_config.name,
+            thread_id=execution.paths.thread_id,
+            status=cast(Any, entry.status),
+            reply=entry.reply,
+            artifacts=[artifact],
+            metadata=metadata,
+        )
+        recorder.emit("run.completed", {"result": result.model_dump()})
+        self.session_store.save(
+            execution.paths,
+            self._conversation_with_result(execution.conversation, result),
+            run_id=recorder.run_id,
+        )
+        self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, recorder.events, result)
+        logger.info(
+            "workflow dedup materialized workflow=%s dedup_key=%s thread_id=%s source=%s",
+            workflow,
+            entry.dedup_key,
+            execution.paths.thread_id,
+            decision.source,
+        )
+        return result, recorder.events
+
+    def _workflow_dedup_complete(
+        self,
+        decision: _WorkflowDedupDecision,
+        result: AgentRunResult,
+    ) -> None:
+        if decision.owner_future is None:
+            return
+        entry = _WorkflowDedupEntry(
+            workflow_name=decision.workflow_name,
+            dedup_key=decision.dedup_key,
+            reply=result.reply,
+            status=result.status,
+            metadata={key: value for key, value in result.metadata.items() if key != "run_id"},
+            cached_at=time.monotonic(),
+        )
+        registry_key = (decision.workflow_name, decision.dedup_key)
+        with self._workflow_dedup_lock:
+            if not decision.owner_future.done():
+                decision.owner_future.set_result(entry)
+            if PARKING_REVIEW_DEDUP_TTL_SECONDS > 0:
+                self._workflow_cache[registry_key] = entry
+            self._workflow_inflight.pop(registry_key, None)
+        logger.info(
+            "workflow dedup completed workflow=%s dedup_key=%s reply_chars=%s",
+            decision.workflow_name,
+            decision.dedup_key,
+            len(result.reply),
+        )
+
+    def _workflow_dedup_fail(self, decision: _WorkflowDedupDecision, exc: BaseException) -> None:
+        if decision.owner_future is None:
+            return
+        registry_key = (decision.workflow_name, decision.dedup_key)
+        with self._workflow_dedup_lock:
+            if not decision.owner_future.done():
+                decision.owner_future.set_exception(exc)
+            self._workflow_inflight.pop(registry_key, None)
+
+    @staticmethod
+    def _workflow_queue_name(execution: ExecutionContext) -> str:
+        if execution.workflow_name == "parking_abnormal_review":
+            return "parking_review"
+        return "default_workflow"
+
+    @staticmethod
+    def _workflow_queue_workers(execution: ExecutionContext) -> int:
+        if execution.workflow_name == "parking_abnormal_review":
+            return PARKING_REVIEW_THREAD_WORKERS
+        return WORKFLOW_THREAD_WORKERS
+
+    def _workflow_queue_increment(self, execution: ExecutionContext) -> int:
+        if execution.workflow_name == "parking_abnormal_review":
+            return _parking_review_queue_increment()
+        return _workflow_queue_increment()
+
+    def _workflow_queue_decrement(self, execution: ExecutionContext) -> int:
+        if execution.workflow_name == "parking_abnormal_review":
+            return _parking_review_queue_decrement()
+        return _workflow_queue_decrement()
+
+    def _workflow_executor_for(self, execution: ExecutionContext) -> ThreadPoolExecutor:
+        executor_attr = self.workflow_executors[self._workflow_queue_name(execution)]
+        return cast(ThreadPoolExecutor, getattr(self, executor_attr))
+
+    @staticmethod
+    def queue_state() -> RuntimeQueueState:
+        return RUNTIME_QUEUE_STATE
+
+    def queue_state_snapshot(self) -> dict[str, RuntimeQueueSnapshot]:
+        return {
+            "default_workflow": self.queue_state().snapshot(
+                queue_name="default_workflow",
+                workers=WORKFLOW_THREAD_WORKERS,
+                max_backlog=None,
+            ),
+            "parking_review": self.queue_state().snapshot(
+                queue_name="parking_review",
+                workers=PARKING_REVIEW_THREAD_WORKERS,
+                max_backlog=PARKING_REVIEW_MAX_QUEUE_BACKLOG,
+            ),
+        }
+
+    @staticmethod
+    def _parking_review_overload_reply(execution: ExecutionContext) -> str:
+        prompt_text = next(
+            (message.content for message in reversed(execution.request.messages) if message.role == "user"),
+            "",
+        )
+        review_source_id = _extract_review_source_id_for_overload(prompt_text)
+        review_event_id = f"{review_source_id}_event_1" if review_source_id else "queue_overloaded_event_1"
+        return json.dumps(
+            [
+                {
+                    "reviewSourceId": review_source_id,
+                    "reviewEventId": review_event_id,
+                    "hit": 0,
+                    "result": "系统复判任务积压，已按证据不足处理，请稍后重试。",
+                }
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     async def _stream_agent_loop_events(self, execution: ExecutionContext) -> AsyncIterator[ChatEvent]:
         conversation = self._conversation_with_vision_attachments(execution.conversation, execution.request.attachments, execution.paths)
@@ -663,7 +1317,7 @@ class AgentRuntime:
             config_auto_execute
             or skill.auto_execute is True
         )
-        logger.info(
+        logger.debug(
             "primary skill auto-execute decision thread_id=%s skill=%s app_template=%s config_auto=%s skill_auto=%s executable=%s selected_skills=%s",
             execution.paths.thread_id,
             skill_name,
@@ -1106,6 +1760,20 @@ class AgentRuntime:
                 return updated
         return conversation
 
+    @staticmethod
+    def _mark_conversation_has_attachments(
+        conversation: list[dict[str, Any]],
+        attachments: list[Attachment],
+    ) -> list[dict[str, Any]]:
+        if not attachments or not conversation:
+            return conversation
+        updated = [dict(message) for message in conversation]
+        for index in range(len(updated) - 1, -1, -1):
+            if updated[index].get("role") == "user":
+                updated[index]["_has_attachments"] = True
+                return updated
+        return conversation
+
     @classmethod
     def _vision_attachment_payloads(cls, attachments: list[Attachment], paths: ThreadPaths) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
@@ -1154,6 +1822,7 @@ class AgentRuntime:
         for message in messages:
             clean = dict(message)
             clean.pop("_attachments", None)
+            clean.pop("_has_attachments", None)
             stripped.append(clean)
         return stripped
 
@@ -1275,8 +1944,15 @@ class AgentRuntime:
         if runtime_options.workflow and runtime_options.workflow not in {"agent_loop", "default"}:
             return runtime_options
         selected_skills = self._selected_skills_from_messages(messages)
-        if not selected_skills:
-            selected_skills = self._selected_skills_from_routing(messages)
+        if selected_skills:
+            # Preserve the original explicit-field set so downstream model
+            # resolution can still tell which runtime options were truly provided
+            # by the caller versus which ones are still eligible for app-template
+            # or bootstrap defaults.
+            return runtime_options.model_copy(update={"selected_skills": selected_skills}, deep=True)
+        if (runtime_options.app_template_name or "").strip():
+            return runtime_options
+        selected_skills = self._selected_skills_from_routing(messages)
         if not selected_skills:
             return runtime_options
         # Preserve the original explicit-field set so downstream model
@@ -1364,7 +2040,7 @@ class AgentRuntime:
     def _thread_file_attachments(self, thread_id: str) -> list[Attachment]:
         paths = self.artifact_store.prepare_thread(thread_id)
         attachments: list[Attachment] = []
-        for root, scope in ((paths.uploads, "uploads"), (paths.outputs, "outputs")):
+        for root, scope in ((paths.uploads, "uploads"),):
             for file_path in sorted(root.rglob("*")):
                 if not file_path.is_file():
                     continue
@@ -1379,7 +2055,7 @@ class AgentRuntime:
                         mime_type=guess_mime_type(file_path),
                         metadata={"size": file_path.stat().st_size, "scope": scope, "thread_file": True},
                     )
-                )
+                    )
         return attachments
 
     @classmethod

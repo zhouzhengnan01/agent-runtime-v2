@@ -163,6 +163,82 @@ def test_runtime_option_request_timeout_is_bounded(monkeypatch: MonkeyPatch) -> 
     assert OpenAICompatibleClient(agent).request_timeout_seconds == 120.0
 
 
+def test_complete_enforces_request_deadline(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    async def slow_post(
+        self: httpx.AsyncClient,
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        del self, json, headers
+        await asyncio.sleep(0.2)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "late"}}]},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", slow_post)
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model=ModelConfig(model="json-model-name", base_url="http://llm.local/v1"),
+    )
+
+    client = OpenAICompatibleClient(agent, runtime_options=RuntimeOptions(request_timeout_seconds=1))
+    client.request_timeout_seconds = 0.01
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(client.complete("system", [Message(role="user", content="hi")]))
+
+
+def test_complete_sync_retries_respect_request_deadline(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+
+    import app.core.llm.openai_compatible as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_UPSTREAM_RETRIES", 1)
+    monkeypatch.setattr(llm_module, "LLM_UPSTREAM_RETRY_DELAY_MS", 0)
+    posts = 0
+
+    def fake_post(
+        self: httpx.Client,
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        nonlocal posts
+        del self, json, headers
+        posts += 1
+        return httpx.Response(
+            500,
+            json={"error": {"message": "busy"}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model=ModelConfig(model="json-model-name", base_url="http://llm.local/v1"),
+    )
+    client = OpenAICompatibleClient(agent, runtime_options=RuntimeOptions(request_timeout_seconds=1))
+    client.request_timeout_seconds = 0.001
+
+    with pytest.raises(TimeoutError):
+        client.complete_sync("system", [Message(role="user", content="hi")])
+
+    assert posts == 1
+
+
 def test_model_config_can_disable_tool_choice_auto(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)

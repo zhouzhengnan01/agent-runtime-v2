@@ -1,7 +1,13 @@
 {
   "name": "KitchenAisleHygieneDetection",
   "title": "后厨通道卫生检测",
-  "description": "兼容 ACP 平台模板名 KitchenAisleHygieneDetection，使用专用视觉复判技能判断后厨通道杂物、垃圾满溢、火焰/明火、抽烟等事件。",
+  "description": "兼容 ACP 平台模板名 KitchenAisleHygieneDetection，使用专用视觉复判技能判断后厨通道杂物、垃圾满溢、火焰/明火等事件。",
+  "aliases": [
+    "后厨通道卫生安全监管",
+    "后厨通道卫生检测",
+    "后厨通道卫生监管",
+    "后厨通道卫生安全检测"
+  ],
   "category": "vision",
   "icon": "shield",
   "agent_name": "default",
@@ -9,8 +15,7 @@
   "selected_skills": [
     "17803963378248hh02dvt",
     "garbage-overflow-review",
-    "fire-flame-review",
-    "smoking-review"
+    "fire-flame-review"
   ],
   "selected_mcp_tools": [],
   "runtime_options": {

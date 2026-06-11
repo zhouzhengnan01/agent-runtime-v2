@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 import json
+import re
 from pathlib import Path
 
 from app.core.apps.models import AppTemplate
@@ -12,6 +13,9 @@ from app.core.resources import ResourceRoots, first_existing_file, merged_json_p
 from app.core.skills.aliases import expand_skill_aliases
 from app.core.skills import SkillRegistry
 from app.core.workflow import WorkflowRegistry
+
+
+_APP_TEMPLATE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 class AppTemplateRegistry:
@@ -35,6 +39,27 @@ class AppTemplateRegistry:
             if template.name == safe_name:
                 return template
         raise KeyError(f"App template not found: {safe_name}")
+
+    def find(self, name: str) -> AppTemplate | None:
+        raw_name = name.strip()
+        if not raw_name:
+            return None
+        if _APP_TEMPLATE_NAME_PATTERN.fullmatch(raw_name):
+            path = first_existing_file(self.config_dirs, f"{raw_name}.json")
+            if path is not None:
+                return self._load_template(path)
+        lowered = raw_name.casefold()
+        for template in self._read_templates():
+            aliases = [alias for alias in template.aliases if alias]
+            if template.name == raw_name or template.title == raw_name or raw_name in aliases:
+                return template
+            if (
+                template.name.casefold() == lowered
+                or template.title.casefold() == lowered
+                or any(alias.casefold() == lowered for alias in aliases)
+            ):
+                return template
+        return None
 
     def _read_templates(self) -> builtins.list[AppTemplate]:
         if not any(directory.is_dir() for directory in self.config_dirs):
@@ -97,8 +122,10 @@ class AppTemplateRegistry:
         safe_name = name.strip()
         if not safe_name:
             raise ValueError("App template name must not be empty.")
-        if any(char in safe_name for char in "/\\"):
-            raise ValueError("App template name must not contain path separators.")
+        if not _APP_TEMPLATE_NAME_PATTERN.fullmatch(safe_name):
+            raise ValueError(
+                "App template name must be 1-128 characters and contain only letters, numbers, dots, underscores, or hyphens."
+            )
         return safe_name
 
 

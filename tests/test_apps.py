@@ -197,6 +197,19 @@ def test_app_template_registry_rejects_unknown_template(tmp_path: Path) -> None:
         registry.get("missing")
 
 
+def test_app_template_registry_rejects_invalid_template_name_without_path_lookup(tmp_path: Path) -> None:
+    registry = AppTemplateRegistry(root_dir=tmp_path)
+    prompt_like_name = (
+        "Session context (JSON):\n"
+        '{"draftId":"IZ6svzP9_KmVAlpjG_VXB0Qj2UgBzRAQ"}\n\n'
+        "Original request: 2\n"
+        "Visualization type: big screen\n"
+    )
+
+    with pytest.raises(ValueError, match="App template name must be 1-128 characters"):
+        registry.get(prompt_like_name)
+
+
 def test_app_runtime_options_expand_platform_skill_aliases() -> None:
     template = AppTemplateRegistry().get("general-jetlinks-assistant")
 
@@ -221,7 +234,30 @@ def test_app_runtime_options_expand_platform_skill_aliases() -> None:
     ]
 
 
-def test_visualization_platform_skill_alias_expands_to_generate_screen_skill() -> None:
+def test_app_template_registry_finds_template_by_alias() -> None:
+    registry = AppTemplateRegistry()
+
+    expected = {
+        "顾客行为检测": "CustomerBehaviorDetection",
+        "消防通道监管": "FireLaneComplianceDetection",
+        "车场异常监控": "ParkingAbnormalEventMonitoring",
+        "车场异常事件监管": "ParkingAbnormalEventMonitoring",
+        "后厨通道卫生安全监管": "KitchenAisleHygieneDetection",
+    }
+
+    for alias, template_name in expected.items():
+        template = registry.find(alias)
+        assert template is not None
+        assert template.name == template_name
+
+    kitchen = registry.find("后厨通道卫生安全监管")
+    assert kitchen is not None
+    assert "17803963378248hh02dvt" in kitchen.selected_skills
+    assert "garbage-overflow-review" in kitchen.selected_skills
+    assert "smoking-review" not in kitchen.selected_skills
+
+
+def test_visualization_platform_skill_alias_expands_to_ai_vis_page() -> None:
     template = AppTemplateRegistry().get("general-jetlinks-assistant")
 
     options = merge_runtime_options_with_template(
@@ -229,7 +265,7 @@ def test_visualization_platform_skill_alias_expands_to_generate_screen_skill() -
         template,
     )
 
-    assert options.selected_skills == ["generate-screen-skill"]
+    assert options.selected_skills == ["ai-vis-page"]
 
 
 def test_request_selected_skills_expand_platform_skill_aliases(tmp_path: Path) -> None:
@@ -375,6 +411,10 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
             "ParkingAbnormalEventMonitoring",
         }:
             assert template.runtime_options == {"config_options": {"force_model_config": True}}
+        elif template.name == "ai-vis-page":
+            assert template.runtime_options["config_options"]["force_model_config"] is True
+            assert template.runtime_options["config_options"]["visualBigscreenMode"] == "full"
+            assert template.workflow == "visualization_bigscreen_workflow"
         elif template.name in {
             "70aaee52-99c2-49f5-a9c7-fb746821d3df",
             "0bb9536b-8a36-40fd-8c5b-ea22804b55ab",
@@ -404,19 +444,30 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         assert len(template.models) == 1, template.name
         model = template.models[0]
         assert model.name, template.name
-        assert model.model, template.name
         assert model.default_model, template.name
-        assert model.base_url, template.name
-        if template.name == "305fb466-1f7f-442b-861e-02e3246f8563":
+        if template.name == "ai-vis-page":
+            assert model.model == "", template.name
+            assert model.base_url == "", template.name
+            assert model.api_key == "", template.name
+            assert model.api_key_env is None, template.name
+        elif template.name == "305fb466-1f7f-442b-861e-02e3246f8563":
+            assert model.model, template.name
+            assert model.base_url, template.name
             assert model.api_key is None, template.name
             assert model.api_key_env == "JETLINKS_APP_305FB466_GPT54_API_KEY", template.name
         elif template.name == "8dd173d5-9ca2-4fde-9678-d5165a111cdb":
+            assert model.model, template.name
+            assert model.base_url, template.name
             assert model.api_key is None, template.name
             assert model.api_key_env == "JETLINKS_APP_8DD173D5_GPT55_API_KEY", template.name
         elif template.name == "zujiankaifa":
+            assert model.model, template.name
+            assert model.base_url, template.name
             assert model.api_key is None, template.name
             assert model.api_key_env == "ZUJIAN_KAIFA_MODEL_API_KEY", template.name
         else:
+            assert model.model, template.name
+            assert model.base_url, template.name
             assert model.api_key == "abc@123", template.name
             assert model.api_key_env is None, template.name
         assert model.api_key_enc is None, template.name

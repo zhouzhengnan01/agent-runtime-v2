@@ -10,7 +10,9 @@ import xml.etree.ElementTree as ET
 import httpx
 import pytest
 from PIL import Image
+from fastapi.testclient import TestClient
 
+from app.api import health as health_api
 from app.core.agent import AgentRuntime
 from app.core.apps import AppTemplateRegistry
 from app.core.artifacts import ArtifactStore
@@ -18,8 +20,10 @@ from app.core.config import AgentConfig, AgentConfigLoader
 from app.core.config.agent_config import ModelConfig
 from app.core.config.secrets import SecretCodec
 from app.core.agent.turn_verifier import verify_turn_completion
+from app.core.events import RunEventStore
 from app.core.llm import LlmChatResponse, OpenAICompatibleClient
 from app.core.routing import WorkflowRouter
+from app.main import create_app
 from app.core.skills.aliases import invalidate_skill_alias_cache
 from app.core.skills import SkillRegistry
 from app.core.skills.plugins import SkillPluginManager
@@ -101,6 +105,86 @@ def test_runtime_fixed_reply_bypasses_input_required_for_integration_debug(
         "agent.message",
         "run.completed",
     ]
+
+
+def test_runtime_queue_state_snapshot_reports_default_and_parking_queues(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    runtime.queue_state().increment("default_workflow")
+    runtime.queue_state().increment("parking_review")
+    runtime.queue_state().increment("parking_review")
+
+    snapshot = runtime.queue_state_snapshot()
+
+    assert snapshot["default_workflow"].name == "default_workflow"
+    assert snapshot["default_workflow"].pending == 1
+    assert snapshot["default_workflow"].workers >= 1
+    assert snapshot["default_workflow"].max_backlog is None
+    assert snapshot["default_workflow"].overloaded is False
+
+    assert snapshot["parking_review"].name == "parking_review"
+    assert snapshot["parking_review"].pending == 2
+    assert snapshot["parking_review"].workers >= 1
+    assert snapshot["parking_review"].max_backlog is not None
+
+    runtime.queue_state().decrement("default_workflow")
+    runtime.queue_state().decrement("parking_review")
+    runtime.queue_state().decrement("parking_review")
+
+
+def test_health_ready_returns_in_memory_queue_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    monkeypatch.setattr(health_api.default_container, "runtime", runtime)
+
+    runtime.queue_state().increment("parking_review")
+
+    client = TestClient(create_app())
+    response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["service"] == "jetlinks-agent-runtime-v2"
+    assert payload["queues"]["default_workflow"]["pending"] == 0
+    assert payload["queues"]["parking_review"]["pending"] == 1
+    assert payload["queues"]["parking_review"]["workers"] >= 1
+    assert payload["queues"]["parking_review"]["rejected_total"] == 0
+    assert payload["queues"]["parking_review"]["last_overloaded_at"] is None
+    assert payload["queues"]["parking_review"]["last_rejected_at"] is None
+    assert payload["queues"]["parking_review"]["last_reject_reason"] is None
+    assert "parking_review" not in payload["overloaded_queues"]
+
+    runtime.queue_state().decrement("parking_review")
+
+
+def test_health_ready_reports_queue_rejection_counters(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    monkeypatch.setattr(health_api.default_container, "runtime", runtime)
+    monkeypatch.setattr("app.core.agent.runtime.PARKING_REVIEW_MAX_QUEUE_BACKLOG", 1)
+    monkeypatch.setattr("app.core.agent.runtime._parking_review_queue_backlog", lambda: 1)
+
+    class FailingWorkflow:
+        def run_with_events(self, **kwargs: object) -> tuple[AgentRunResult, list[ChatEvent]]:
+            raise AssertionError("overloaded parking review should not enter workflow")
+
+    runtime.workflow_registry = WorkflowRegistry({"parking_abnormal_review": FailingWorkflow()})
+    agent = AgentConfig(name="parking-overload-agent", display_name="Parking Overload Agent")
+    request = ChatRequest(
+        messages=[Message(role="user", content='{"reviewSourceId":"overload-source"}')],
+        runtime_options=RuntimeOptions(thread_id="parking-overload-health", workflow="parking_abnormal_review"),
+    )
+
+    asyncio.run(runtime.run_with_events(agent, request))
+
+    client = TestClient(create_app())
+    response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    payload = response.json()
+    parking = payload["queues"]["parking_review"]
+    assert parking["rejected_total"] == 1
+    assert parking["last_rejected_at"] is not None
+    assert parking["last_reject_reason"] == "parking_review_queue_overloaded"
 
 
 def test_runtime_fixed_reply_forever_streams_same_delta_without_completion(
@@ -887,20 +971,21 @@ def test_agent_runtime_expands_attachment_record_video_before_download(
         assert url == "https://example.test/videos/record.mp4?token=abc"
         return httpx.Response(200, headers={"content-type": "video/mp4", "content-length": "7"}, content=b"mp4data")
 
-    async def fake_complete(
+    async def fake_complete_with_tools(
         self: OpenAICompatibleClient,
         system_prompt: str,
         messages: list[dict[str, object]],
-    ) -> str:
-        del self, system_prompt, messages
-        return "已看到录像资源"
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(content="已看到录像资源", finish_reason="stop")
 
     monkeypatch.setattr(
         httpx,
         "Client",
         lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
     )
-    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
     agent = AgentConfig(
         name="record-video-agent",
@@ -1012,7 +1097,7 @@ def test_agent_runtime_drops_remote_attachment_url_after_download_failure(
     assert "download_error" in history_text
 
 
-def test_llm_client_does_not_forward_remote_image_urls() -> None:
+def test_llm_client_keeps_remote_image_urls_as_vision_blocks() -> None:
     agent = AgentConfig(
         name="remote-url-agent",
         display_name="Remote URL Agent",
@@ -1037,7 +1122,13 @@ def test_llm_client_does_not_forward_remote_image_urls() -> None:
         ],
     )
 
-    assert payload["messages"][1]["content"] == "请复判图片"
+    assert payload["messages"][1]["content"] == [
+        {"type": "text", "text": "请复判图片"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "https://example.test/file.mp4?accessKey=bad"},
+        },
+    ]
 
 
 def test_parking_abnormal_review_workflow_returns_final_json_with_image(
@@ -1873,6 +1964,7 @@ def test_workflow_executor_logs_queue_wait(tmp_path: Path, caplog: pytest.LogCap
 
     runtime = AgentRuntime(
         artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        run_event_store=RunEventStore(tmp_path / "runs"),
         workflow_registry=WorkflowRegistry({"blocking_workflow": BlockingWorkflow()}),
     )
     runtime.workflow_executor.shutdown(wait=False, cancel_futures=True)
@@ -1901,6 +1993,201 @@ def test_workflow_executor_logs_queue_wait(tmp_path: Path, caplog: pytest.LogCap
     ]
     assert len(queue_logs) == 2
     assert all("wait_ms=" in record.getMessage() for record in queue_logs)
+    assert all("queue_backlog=" in record.getMessage() for record in queue_logs)
+    run_started_events = [
+        event
+        for path in (tmp_path / "runs").glob("*.json")
+        for event in json.loads(path.read_text(encoding="utf-8")).get("events", [])
+        if event.get("type") == "run.started"
+    ]
+    assert run_started_events
+    assert all("queue_backlog" in event["data"] for event in run_started_events)
+    assert all("queue_wait_ms" in event["data"] for event in run_started_events)
+
+
+def test_parking_review_queue_overload_returns_conservative_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.core.agent.runtime.PARKING_REVIEW_MAX_QUEUE_BACKLOG", 1)
+    monkeypatch.setattr("app.core.agent.runtime._parking_review_queue_backlog", lambda: 1)
+
+    class FailingWorkflow:
+        def run_with_events(self, **kwargs: object) -> tuple[AgentRunResult, list[ChatEvent]]:
+            raise AssertionError("overloaded parking review should not enter workflow")
+
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        run_event_store=RunEventStore(tmp_path / "runs"),
+        workflow_registry=WorkflowRegistry({"parking_abnormal_review": FailingWorkflow()}),
+    )
+    agent = AgentConfig(name="parking-overload-agent", display_name="Parking Overload Agent")
+    request = ChatRequest(
+        messages=[Message(role="user", content='{"reviewSourceId":"overload-source"}')],
+        runtime_options=RuntimeOptions(thread_id="parking-overload", workflow="parking_abnormal_review"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert json.loads(result.reply) == [
+        {
+            "reviewSourceId": "overload-source",
+            "reviewEventId": "overload-source_event_1",
+            "hit": 0,
+            "result": "系统复判任务积压，已按证据不足处理，请稍后重试。",
+        }
+    ]
+    assert result.metadata["queue_rejected"] is True
+    assert result.metadata["queue_backlog"] == 1
+    assert result.metadata["queue_name"] == "parking_review"
+    assert [event.type for event in events] == [
+        "run.started",
+        "review.skill_invocation.failed",
+        "artifact.created",
+        "agent.message",
+        "run.completed",
+    ]
+    assert events[0].data["queue_rejected"] is True
+    assert events[0].data["queue_backlog"] == 1
+    assert events[0].data["queue_name"] == "parking_review"
+    assert list((tmp_path / "runs").glob("*.json"))
+
+
+def test_parking_review_queue_metrics_use_dedicated_executor_label(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ParkingWorkflow:
+        def run_with_events(
+            self,
+            agent_config: AgentConfig,
+            messages: list[Message],
+            attachments: list[Attachment],
+            thread_id: str | None,
+            on_event=None,
+            workflow_name: str | None = None,
+            runtime_options: RuntimeOptions | None = None,
+        ) -> tuple[AgentRunResult, list[ChatEvent]]:
+            del messages, attachments, on_event, runtime_options
+            event = ChatEvent(
+                type="run.started",
+                data={
+                    "run_id": f"run-{thread_id}",
+                    "agent": agent_config.name,
+                    "thread_id": thread_id or "",
+                    "workflow": workflow_name or "parking_abnormal_review",
+                },
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=thread_id or "",
+                reply="done",
+                metadata={"workflow": workflow_name or "parking_abnormal_review"},
+            )
+            return result, [event]
+
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        run_event_store=RunEventStore(tmp_path / "runs"),
+        workflow_registry=WorkflowRegistry({"parking_abnormal_review": ParkingWorkflow()}),
+    )
+    runtime.parking_review_executor.shutdown(wait=False, cancel_futures=True)
+    runtime.parking_review_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-parking-review")
+    agent = AgentConfig(name="parking-metrics-agent", display_name="Parking Metrics Agent")
+    request = ChatRequest(
+        messages=[Message(role="user", content="run parking review workflow")],
+        runtime_options=RuntimeOptions(thread_id="parking-metrics", workflow="parking_abnormal_review"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    runtime.parking_review_executor.shutdown(wait=False, cancel_futures=True)
+    assert result.reply == "done"
+    run_started = next(event for event in events if event.type == "run.started")
+    assert run_started.data["queue_name"] == "parking_review"
+
+
+def test_parking_review_deduplicates_concurrent_review_source_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.core.agent.runtime.PARKING_REVIEW_DEDUP_TTL_SECONDS", 60.0)
+
+    class BlockingParkingWorkflow:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def dedup_key(
+            self,
+            messages: list[Message],
+            attachments: list[Attachment],
+            runtime_options: RuntimeOptions | None = None,
+        ) -> str | None:
+            del attachments, runtime_options
+            payload = json.loads(messages[-1].content)
+            return str(payload["reviewSourceId"])
+
+        def run_with_events(
+            self,
+            agent_config: AgentConfig,
+            messages: list[Message],
+            attachments: list[Attachment],
+            thread_id: str | None,
+            on_event=None,
+            workflow_name: str | None = None,
+            runtime_options: RuntimeOptions | None = None,
+        ) -> tuple[AgentRunResult, list[ChatEvent]]:
+            del messages, attachments, on_event, runtime_options
+            self.calls += 1
+            time.sleep(0.05)
+            event = ChatEvent(
+                type="run.started",
+                data={
+                    "run_id": "run-source-1",
+                    "agent": agent_config.name,
+                    "thread_id": thread_id or "",
+                    "workflow": workflow_name or "parking_abnormal_review",
+                },
+            )
+            reply = '[{"reviewSourceId":"source-1","reviewEventId":"event-1","hit":0,"result":"未命中"}]'
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=thread_id or "",
+                reply=reply,
+                metadata={"workflow": workflow_name or "parking_abnormal_review", "review_source_id": "source-1"},
+            )
+            return result, [event]
+
+    workflow = BlockingParkingWorkflow()
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        run_event_store=RunEventStore(tmp_path / "runs"),
+        workflow_registry=WorkflowRegistry({"parking_abnormal_review": workflow}),
+    )
+    runtime.parking_review_executor.shutdown(wait=False, cancel_futures=True)
+    runtime.parking_review_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-parking-dedup")
+    agent = AgentConfig(name="parking-dedup-agent", display_name="Parking Dedup Agent")
+
+    async def run_two_reviews() -> list[tuple[AgentRunResult, list[ChatEvent]]]:
+        requests = [
+            ChatRequest(
+                messages=[Message(role="user", content='{"reviewSourceId":"source-1"}')],
+                runtime_options=RuntimeOptions(thread_id=f"parking-dedup-{index}", workflow="parking_abnormal_review"),
+            )
+            for index in range(2)
+        ]
+        return await asyncio.gather(*(runtime.run_with_events(agent, request) for request in requests))
+
+    results = asyncio.run(run_two_reviews())
+
+    runtime.parking_review_executor.shutdown(wait=False, cancel_futures=True)
+    assert workflow.calls == 1
+    assert [result.thread_id for result, _events in results] == ["parking-dedup-0", "parking-dedup-1"]
+    assert results[0][0].reply == results[1][0].reply
+    assert results[1][0].metadata["deduped"] is True
+    assert results[1][0].metadata["dedup_source"] == "inflight"
+    assert results[1][0].metadata["dedup_key"] == "source-1"
+    assert results[1][1][0].data["deduped"] is True
 
 
 def test_runtime_init_skills_replace_agent_json_default_skills(
@@ -2084,13 +2371,12 @@ def test_agent_runtime_parking_template_without_image_returns_review_json(
     assert parsed[0]["hit"] == 0
     assert "未提供可访问的图片" in parsed[0]["result"]
     assert result.metadata["workflow"] == "parking_abnormal_review"
-    assert [event.type for event in events] == [
-        "run.started",
-        "review.input",
-        "artifact.created",
-        "agent.message",
-        "run.completed",
-    ]
+    event_types = [event.type for event in events]
+    assert event_types[0] == "run.started"
+    assert "review.input" in event_types
+    assert "review.skill_selection.completed" in event_types
+    assert "artifact.created" in event_types
+    assert event_types[-2:] == ["agent.message", "run.completed"]
 
 
 def test_agent_runtime_selected_clutter_skill_without_workflow_still_requires_image(

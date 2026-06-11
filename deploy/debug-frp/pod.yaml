@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ai-agent-debug-frp
+  namespace: vanke
+  labels:
+    app: ai-agent-debug-frp
+spec:
+  restartPolicy: Always
+  containers:
+    - name: ai-agent-debug-frp
+      image: registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:debug-frp
+      imagePullPolicy: Always
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 512Mi
+          ephemeral-storage: 1Gi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+          ephemeral-storage: 2Gi
+      volumeMounts:
+        - mountPath: /etc/debug-frp
+          name: debug-frp-secret
+          readOnly: true
+        - mountPath: /workspace/code/jetlinks-agent-runtime-agent-v2/config/upload
+          name: runtime-vanke
+          subPath: vanke/ai-service/agent/config/upload
+        - mountPath: /workspace/code/jetlinks-agent-runtime-agent-v2/plugins/upload
+          name: runtime-vanke
+          subPath: vanke/ai-service/agent/plugins/upload
+        - mountPath: /workspace/code/jetlinks-agent-runtime-agent-v2/.runtime
+          name: runtime-vanke
+          subPath: vanke/ai-service/agent/.runtime
+        - mountPath: /workspace/code/jetlinks-agent-runtime-agent-v2/static
+          name: runtime-vanke
+          subPath: vanke/ai-service/agent/static
+  volumes:
+    - name: debug-frp-secret
+      secret:
+        secretName: ai-agent-debug-frp
+        defaultMode: 0400
+    - name: runtime-vanke
+      persistentVolumeClaim:
+        claimName: runtime-vanke

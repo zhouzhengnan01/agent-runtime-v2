@@ -72,7 +72,7 @@ def test_skill_plugin_upload_registers_and_executes_uploaded_skill(
     assert (paths.outputs / "summary.txt").read_text(encoding="utf-8") == "hello plugin"
 
     saved_manifest = json.loads(
-        (tmp_path / "plugins" / "skills" / "summary-plugin" / "skills" / "uploaded-summary.json").read_text(
+        (tmp_path / "plugins" / "upload" / "skills" / "summary-plugin" / "skills" / "uploaded-summary.json").read_text(
             encoding="utf-8"
         )
     )
@@ -165,9 +165,127 @@ def test_visualization_bigscreen_retry_uses_stage_aware_context(
     context_event = next(
         event for event in events if event.type == "skill.context.loaded" and event.data.get("stage_aware") is True
     )
-    assert context_event.data["skill_name"] == "generate-screen-skill"
+    assert context_event.data["skill_name"] == "ai-vis-page"
     assert context_event.data["stage"] == "initialization"
     assert context_event.data["chars"] > 0
+
+
+def test_visualization_bigscreen_initialization_repairs_invalid_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_module = _load_visualization_bigscreen_module()
+    workflow_class = workflow_module.VisualizationBigscreenWorkflow
+    prompts: list[str] = []
+
+    broken_reply = """```json
+{
+  "pageJson": {
+    "canvas": {
+      "width": 1920,
+      "height": 1080
+    },
+    "components": []
+  },
+  "blueprint": {},
+  "backgroundSvg": "<svg viewBox=\\"0 0 1920 1080\\"></svg>"
+  "extra": true
+}
+```"""
+
+    fixed_reply = json.dumps(
+        {
+            "pageJson": {"canvas": {"width": 1920, "height": 1080}, "components": []},
+            "blueprint": {},
+            "backgroundSvg": "<svg viewBox=\"0 0 1920 1080\"></svg>",
+        }
+    )
+
+    def fake_complete_sync(self: OpenAICompatibleClient, system_prompt: str, messages: list[Message]) -> str:
+        prompts.append(system_prompt)
+        if len(prompts) == 1:
+            return broken_reply
+        return fixed_reply
+
+    def fake_upload_background(
+        self: Any,
+        paths: Any,
+        runtime_options: RuntimeOptions,
+        recorder: Any,
+    ) -> ToolInvocationResult:
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": "uploaded"}],
+            structured_content={"fileId": "background-file-id"},
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setattr(workflow_class, "_upload_background", fake_upload_background)
+
+    workflow = workflow_class(ArtifactStore(root_dir=tmp_path / "runtime"))
+    result, events = workflow.run_with_events(
+        AgentConfig(name="default", display_name="Default"),
+        messages=[Message(role="user", content="当前阶段：initialization\n生成能耗监管大屏初始化画布")],
+        attachments=[],
+        thread_id="initialization-json-repair",
+        runtime_options=RuntimeOptions(
+            thread_id="initialization-json-repair",
+            selected_skills=["1780988275767z1lxtrd1"],
+        ),
+    )
+
+    assert result.status == "completed", result.metadata
+    assert len(prompts) == 2
+    repair_event = next(event for event in events if event.type == "llm.json_repair.retry")
+    assert repair_event.data["stage"] == "initialization"
+    assert repair_event.data["reason"] == "invalid_json"
+
+
+def test_visualization_bigscreen_enforces_minimum_llm_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_module = _load_visualization_bigscreen_module()
+    workflow_class = workflow_module.VisualizationBigscreenWorkflow
+    seen_timeout: list[float] = []
+
+    def fake_complete_sync(self: OpenAICompatibleClient, system_prompt: str, messages: list[Message]) -> str:
+        seen_timeout.append(self.request_timeout_seconds)
+        return json.dumps(
+            {
+                "pageJson": {"canvas": {"backgroundImage": {"fileId": ""}}, "components": []},
+                "blueprint": {},
+                "backgroundSvg": "<svg viewBox=\"0 0 1920 1080\"></svg>",
+            }
+        )
+
+    def fake_upload_background(
+        self: Any,
+        paths: Any,
+        runtime_options: RuntimeOptions,
+        recorder: Any,
+    ) -> ToolInvocationResult:
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": "uploaded"}],
+            structured_content={"fileId": "background-file-id"},
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setattr(workflow_class, "_upload_background", fake_upload_background)
+
+    workflow = workflow_class(ArtifactStore(root_dir=tmp_path / "runtime"))
+    result, _ = workflow.run_with_events(
+        AgentConfig(name="default", display_name="Default"),
+        messages=[Message(role="user", content="当前阶段：initialization\n生成综合指挥中心大屏初始化画布")],
+        attachments=[],
+        thread_id="initialization-timeout-floor",
+        runtime_options=RuntimeOptions(
+            thread_id="initialization-timeout-floor",
+            request_timeout_seconds=180,
+        ),
+    )
+
+    assert result.status == "completed", result.metadata
+    assert seen_timeout == [300.0]
 
 
 def _load_visualization_bigscreen_module() -> Any:

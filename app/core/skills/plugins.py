@@ -118,8 +118,23 @@ class SkillPluginManager:
         self.resources = ResourceRoots.from_project_root(self.root_dir)
         self.plugin_dirs = self.resources.plugin_dirs("skills")
         self.config_dirs = self.resources.config_dirs("skills")
-        self.plugin_dir = self.root_dir / "plugins" / "skills"
-        self.config_dir = self.root_dir / "config" / "skills"
+        if self.root_dir == self.project_root:
+            self.plugin_dir = self.resources.writable_plugin_dir("skills")
+            self.config_dir = self.resources.writable_config_dir("skills")
+        else:
+            self.plugin_dir = self.resources.writable_plugin_dir("skills")
+            self.config_dir = self.root_dir / "config" / "skills"
+            self.plugin_dirs = self._unique_dirs(
+                self.plugin_dir,
+                self.root_dir / "plugins" / "skills",
+                *self.plugin_dirs,
+            )
+            self.config_dirs = self._unique_dirs(
+                self.resources.writable_config_dir("skills"),
+                self.config_dir,
+                self.root_dir / "config" / "skills",
+                *self.config_dirs,
+            )
 
     def list_plugins(self) -> list[SkillPlugin]:
         plugins: list[SkillPlugin] = []

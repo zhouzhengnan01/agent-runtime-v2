@@ -1,7 +1,14 @@
 {
   "name": "CustomerBehaviorDetection",
-  "title": "客户行为检测",
+  "title": "顾客行为监管",
   "description": "兼容 ACP 平台模板名 CustomerBehaviorDetection，使用专用视觉复判技能判断抽烟、人员跌倒/倒地、争吵等客户行为事件。",
+  "aliases": [
+    "顾客行为检测",
+    "客户行为监管",
+    "客户行为检测",
+    "顾客行为安全监管",
+    "客户行为安全监管"
+  ],
   "category": "vision",
   "icon": "shield",
   "agent_name": "default",

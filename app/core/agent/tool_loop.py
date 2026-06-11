@@ -241,7 +241,12 @@ class ToolCallingAgentLoop:
                 "tool_choice": state.llm.tool_choice,
             },
         )
-        reply = await state.llm.complete(state.system_prompt, state.conversation)
+        if self._conversation_has_attachments(state.conversation):
+            final_response = await state.llm.complete_with_tools(state.system_prompt, state.conversation, [])
+        else:
+            reply_text = await state.llm.complete(state.system_prompt, state.conversation)
+            final_response = LlmChatResponse(content=reply_text, finish_reason="stop")
+        reply = final_response.content
         reply, guard_metadata = guard_unverified_completion(
             reply,
             runtime_options,
@@ -256,9 +261,10 @@ class ToolCallingAgentLoop:
                 "round": 1,
                 "mode": "chat",
                 "duration_ms": round((time.perf_counter() - request_started_at) * 1000, 3),
-                "finish_reason": "stop",
+                "finish_reason": final_response.finish_reason or "stop",
                 "tool_call_count": 0,
                 "content_chars": len(reply),
+                "usage": final_response.usage,
             },
         )
         return self._result(
@@ -283,6 +289,14 @@ class ToolCallingAgentLoop:
                 **(state.primary_skill_context.to_metadata() if state.primary_skill_context is not None else {}),
                 **guard_metadata,
             },
+        )
+
+    @staticmethod
+    def _conversation_has_attachments(conversation: Sequence[dict[str, Any]]) -> bool:
+        return any(
+            message.get("_has_attachments") is True
+            or (isinstance(message.get("_attachments"), list) and bool(message["_attachments"]))
+            for message in conversation
         )
 
     async def _run_tool_calling_turn(

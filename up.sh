@@ -79,6 +79,7 @@ docker_run() {
     -e APP_HOST=0.0.0.0
     -e APP_PORT="${JETLINKS_AGENT_CONTAINER_PORT}"
     -e APP_WORKERS="${APP_WORKERS}"
+    -e APP_WORKERS_AUTO_MAX="${APP_WORKERS_AUTO_MAX}"
     -e APP_LOG_LEVEL="${APP_LOG_LEVEL}"
     -e APP_HEALTH_PATH="${APP_HEALTH_PATH}"
     -e JETLINKS_AGENT_FIXED_REPLY_ENABLED="${JETLINKS_AGENT_FIXED_REPLY_ENABLED}"
@@ -97,9 +98,7 @@ docker_run() {
   if [ "$#" -gt 0 ]; then
     run_args+=("$@")
   else
-    run_args+=(
-      sh -c "mkdir -p '${RUNTIME_DIR}' && exec python -m uvicorn '${APP_MODULE}' --host 0.0.0.0 --port '${JETLINKS_AGENT_CONTAINER_PORT}' --workers '${APP_WORKERS}' --log-level '${APP_LOG_LEVEL}' 2>&1 | tee -a '${LOG_FILE}'"
-    )
+    run_args+=("server")
   fi
 
   local container_id

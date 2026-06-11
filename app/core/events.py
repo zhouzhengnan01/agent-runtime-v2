@@ -21,36 +21,12 @@ RUNTIME_EVENT_TRACE_MAX_CHARS = env_int("RUNTIME_EVENT_TRACE_MAX_CHARS", 100)
 
 _LOGGED_EVENT_TYPES = {
     "agent.message",
-    "artifact.created",
-    "context.compacted",
-    "llm.empty_response",
-    "llm.request.completed",
-    "llm.request.started",
-    "llm.started",
     "mcp.discovery.failed",
-    "memory.context.loaded",
-    "review.input",
-    "review.llm.raw_reply",
-    "review.normalized_result",
-    "review.skill_invocation.completed",
     "review.skill_invocation.failed",
-    "review.skill_invocation.started",
-    "review.skill_selection.completed",
-    "run.completed",
     "run.failed",
     "run.started",
-    "skill.completed",
-    "skill.context.loaded",
     "skill.failed",
-    "skill.started",
-    "tool.calls.started",
-    "tool.completed",
     "tool.failed",
-    "tool.loop.auto_repeating",
-    "tool.loop.waiting",
-    "tool.started",
-    "tools.available",
-    "verifier.completed",
     "verifier.failed",
     "verifier.started",
     "visualization.full.completed",
@@ -341,7 +317,7 @@ def _structured_error(data: dict[str, Any]) -> str:
 
 
 def _log_event(event: ChatEvent) -> None:
-    if event.type not in _LOGGED_EVENT_TYPES:
+    if event.type not in _LOGGED_EVENT_TYPES and not RUNTIME_EVENT_TRACE_PAYLOADS:
         return
     data = event.data
     fields = _event_log_fields(event.type, data)
@@ -350,12 +326,20 @@ def _log_event(event: ChatEvent) -> None:
         if event.type.endswith(".failed") or event.type in {"run.failed", "mcp.discovery.failed"}
         else logging.INFO
     )
-    logger.log(
-        level,
-        "\n===== 运行事件 | runtime event type=%s =====\n%s\n===== 运行事件结束 =====",
-        event.type,
-        _render_multiline_fields(fields),
-    )
+    if event.type == "agent.message":
+        logger.log(
+            level,
+            "\n===== 模型回复 | runtime event type=%s =====\n%s\n===== 模型回复结束 =====",
+            event.type,
+            _render_multiline_fields(fields),
+        )
+    else:
+        logger.log(
+            level,
+            "\n===== 运行事件 | runtime event type=%s =====\n%s\n===== 运行事件结束 =====",
+            event.type,
+            _render_multiline_fields(fields),
+        )
     if RUNTIME_EVENT_TRACE_PAYLOADS:
         logger.log(
             level,
@@ -396,6 +380,10 @@ def _event_log_fields(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
         "tool_call_count",
         "duration_ms",
         "content_chars",
+        "queue_backlog",
+        "queue_wait_ms",
+        "queue_workers",
+        "queue_name",
         "tool_name",
         "tool_call_id",
         "is_error",
@@ -469,7 +457,9 @@ def _event_log_fields(event_type: str, data: dict[str, Any]) -> dict[str, Any]:
     if event_type == "mcp.discovery.failed":
         fields["error"] = data.get("error")
     if event_type == "agent.message":
-        fields["text_chars"] = len(str(data.get("text") or data.get("message") or ""))
+        text = str(data.get("text") or data.get("message") or "")
+        fields["text_chars"] = len(text)
+        fields["text"] = text
     return fields
 
 
@@ -570,6 +560,10 @@ def _field_label(key: str) -> str:
         "tool_call_count": "工具调用数",
         "duration_ms": "耗时(ms)",
         "content_chars": "内容字符数",
+        "queue_backlog": "堆积任务数",
+        "queue_wait_ms": "排队等待(ms)",
+        "queue_workers": "工作线程数",
+        "queue_name": "队列名",
         "tool_name": "工具名",
         "tool_call_id": "工具调用ID",
         "is_error": "是否错误",
@@ -600,4 +594,5 @@ def _field_label(key: str) -> str:
         "structured_keys": "结构化字段",
         "error": "错误",
         "text_chars": "文本字符数",
+        "text": "回复内容",
     }.get(key, key)

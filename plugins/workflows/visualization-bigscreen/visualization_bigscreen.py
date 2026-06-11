@@ -18,6 +18,7 @@ from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm import OpenAICompatibleClient
 from app.core.skills import SkillRegistry
+from app.core.skills.context_files import SkillMarkdownContext, load_skill_markdown_context
 from app.core.tools.invocation import ToolInvocationService
 from app.schemas import AgentRunResult, Attachment, ChatEvent, Message, RuntimeOptions
 
@@ -28,6 +29,7 @@ BACKGROUND_PATH = f"{BIGSCREEN_OUTPUT_DIR}/background.svg"
 RESOURCE_DIR = f"{BIGSCREEN_OUTPUT_DIR}/resources"
 ADVANCED_COMPONENT_DIR = f"{BIGSCREEN_OUTPUT_DIR}/advanced-components"
 DEFAULT_RESOURCE_GROUP = "[\"vis_oneself_dimension_line-chart\"]"
+MIN_WORKFLOW_LLM_TIMEOUT_SECONDS = 300.0
 DEFAULT_FULL_REGION_CONCURRENCY = 5
 REGION_TITLE_FONT: dict[str, Any] = {
     "colorType": "default",
@@ -283,7 +285,13 @@ class VisualizationBigscreenWorkflow:
             recorder,
             stage="initialization",
         )
-        payload = _loads_json_object(llm_reply)
+        payload = self._load_initialization_payload(
+            agent_config,
+            runtime_options,
+            messages,
+            recorder,
+            llm_reply,
+        )
         page_json = _dict(payload.get("pageJson"))
         blueprint = _dict(payload.get("blueprint")) or _default_blueprint()
         background_svg = _string(payload.get("backgroundSvg") or payload.get("backgroundSVG") or payload.get("svg"))
@@ -682,6 +690,10 @@ class VisualizationBigscreenWorkflow:
             update={
                 "selected_mcp_tools": [],
                 "response_format": "json",
+                "request_timeout_seconds": max(
+                    float(llm_base_options.request_timeout_seconds or 0),
+                    MIN_WORKFLOW_LLM_TIMEOUT_SECONDS,
+                ),
                 "config_options": {**llm_base_options.config_options, "enableWorkspaceTools": False},
             },
             deep=True,
@@ -715,6 +727,155 @@ class VisualizationBigscreenWorkflow:
         if not reply.strip():
             raise RuntimeError("模型返回为空。")
         return reply
+
+    def _load_initialization_payload(
+        self,
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions,
+        messages: list[Message],
+        recorder: EventRecorder,
+        llm_reply: str,
+    ) -> dict[str, Any]:
+        try:
+            return _loads_json_object(llm_reply)
+        except (json.JSONDecodeError, ValueError) as exc:
+            recorder.emit(
+                "llm.json_repair.retry",
+                {
+                    "stage": "initialization",
+                    "reason": "invalid_json",
+                    "error": str(exc),
+                },
+            )
+            repaired_reply = self._repair_initialization_json(agent_config, runtime_options, messages, recorder, llm_reply)
+            return _loads_json_object(repaired_reply)
+
+    def _repair_initialization_json(
+        self,
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions,
+        messages: list[Message],
+        recorder: EventRecorder,
+        broken_reply: str,
+    ) -> str:
+        repair_prompt = (
+            "你是 JSON 修复器。"
+            "下面给你的是 initialization 阶段模型生成的大屏 JSON，但它当前不是合法 JSON。"
+            "不要补充说明，不要 Markdown，不要改变业务语义。"
+            "只输出一个合法 JSON 对象，且必须保留 pageJson、blueprint、backgroundSvg 三个字段。"
+        )
+        repair_messages = [
+            *messages,
+            Message(
+                role="user",
+                content=(
+                    "请把下面内容修复为合法 JSON，只返回 JSON：\n"
+                    f"{broken_reply}"
+                ),
+            ),
+        ]
+        return self._complete_json(
+            agent_config,
+            runtime_options,
+            repair_prompt,
+            repair_messages,
+            recorder,
+            stage="initialization",
+        )
+
+    def _prompt_with_selected_skill_context(
+        self,
+        system_prompt: str,
+        runtime_options: RuntimeOptions,
+        recorder: EventRecorder,
+    ) -> str:
+        skill_name = next((name.strip() for name in runtime_options.selected_skills if name.strip()), "")
+        if not skill_name:
+            return system_prompt
+        try:
+            skill = SkillRegistry(self.tool_service.root_dir).get(skill_name)
+        except KeyError:
+            recorder.emit(
+                "skill.context.loaded",
+                {
+                    "skill_name": skill_name,
+                    "found": False,
+                    "reason": "skill_not_found",
+                },
+            )
+            return system_prompt
+        context = load_skill_markdown_context(skill)
+        if context is None:
+            recorder.emit(
+                "skill.context.loaded",
+                {
+                    "skill_name": skill_name,
+                    "found": True,
+                    "skill_md_found": False,
+                    "reason": "skill_md_not_found",
+                    "manifest_path": str(skill.manifest_path) if skill.manifest_path is not None else "",
+                    "plugin_root": str(skill.plugin_root) if skill.plugin_root is not None else "",
+                },
+            )
+            return system_prompt
+        references = [
+            {
+                "path": reference.path,
+                "chars": len(reference.content),
+                "truncated": reference.truncated,
+            }
+            for reference in context.references
+        ]
+        recorder.emit(
+            "skill.context.loaded",
+            {
+                "skill_name": skill.name,
+                "requested_skill_name": skill_name,
+                "found": True,
+                "skill_md_found": True,
+                "skill_md_path": context.skill_md_path,
+                "skill_md_chars": len(context.skill_md),
+                "skill_md_truncated": context.skill_md_truncated,
+                "reference_count": len(references),
+                "total_reference_chars": sum(int(item["chars"]) for item in references),
+                "reference_truncated_count": sum(1 for item in references if item["truncated"]),
+                "references": references,
+            },
+        )
+        rendered = _render_workflow_skill_context(context)
+        if not rendered:
+            return system_prompt
+        return f"{system_prompt}\n\n{rendered}"
+
+    def _prompt_with_compact_skill_context(
+        self,
+        system_prompt: str,
+        runtime_options: RuntimeOptions,
+        recorder: EventRecorder,
+    ) -> str:
+        skill_name = next((name.strip() for name in runtime_options.selected_skills if name.strip()), "")
+        if not skill_name:
+            return system_prompt
+        try:
+            skill = SkillRegistry(self.tool_service.root_dir).get(skill_name)
+        except KeyError:
+            return system_prompt
+        package_root = _skill_package_root(skill)
+        if package_root is None:
+            return system_prompt
+        context = _compact_visualization_context(package_root)
+        recorder.emit(
+            "skill.context.loaded",
+            {
+                "skill_name": skill.name,
+                "requested_skill_name": skill_name,
+                "compact": True,
+                "chars": len(context),
+            },
+        )
+        if not context:
+            return system_prompt
+        return f"{system_prompt}\n\n{context}"
 
     def _prompt_with_stage_context(
         self,
@@ -1052,6 +1213,38 @@ def _is_retryable_llm_status_error(exc: httpx.HTTPStatusError) -> bool:
     return response is not None and response.status_code in {500, 502, 503, 504}
 
 
+def _render_workflow_skill_context(context: SkillMarkdownContext | None) -> str:
+    if context is None:
+        return ""
+    lines = [
+        "Visualization workflow skill instructions are active.",
+        "Use the embedded SKILL.md and declared reference files as schema rules for JSON generation.",
+        "The workflow, not the model, performs UploadFile and visualizationService:resource/Add command calls.",
+        "Do not invent component keys such as componentType, x, y, width, height, locked, hidden, animations, events, or dataSources when the platform templates do not contain them.",
+        "Return only the JSON object required by the current workflow stage.",
+        "",
+        "## SKILL.md",
+        "",
+        context.skill_md,
+    ]
+    if context.skill_md_truncated:
+        lines.append("\n[SKILL.md truncated by runtime context limit]")
+    if context.references:
+        lines.extend(["", "## Declared Reference Files"])
+        for reference in context.references:
+            lines.extend(
+                [
+                    "",
+                    f"### {reference.path}",
+                    "",
+                    reference.content,
+                ]
+            )
+            if reference.truncated:
+                lines.append(f"\n[{reference.path} truncated by runtime context limit]")
+    return "\n".join(lines).strip()
+
+
 def _skill_package_root(skill: Any) -> Path | None:
     manifest_path = getattr(skill, "manifest_path", None)
     if isinstance(manifest_path, Path) and (manifest_path.parent / "SKILL.md").is_file():
@@ -1069,6 +1262,48 @@ def _skill_package_root(skill: Any) -> Path | None:
 def _default_visualization_package_root() -> Path | None:
     root = SKILLS_ROOT / DEFAULT_VISUALIZATION_SKILL
     return root if (root / "SKILL.md").is_file() else None
+
+
+def _compact_visualization_context(package_root: Path) -> str:
+    paths = [
+        "references/components/text.json",
+        "references/components/dateTime.json",
+        "references/components/table.json",
+        "references/components/video.json",
+        "references/components/pseudo.json",
+        "references/components/custom-chart.json",
+        "references/components/custom-component.json",
+        "references/resources/echarts-resource.json",
+        "references/resources/custom-resource.json",
+        "references/advanced-component-standard.md",
+    ]
+    lines = [
+        "Compact visualization skill context is active after an upstream LLM 500 retry.",
+        "Use only these rules:",
+        "- Return only JSON for the current stage.",
+        "- Built-in components: text, dateTime, table, video, pseudo.",
+        "- tabs is forbidden.",
+        "- Map/geography/spatial distribution uses pseudo.",
+        "- pseudo must clone references/components/pseudo.json; point data only belongs in dataSourceProps.defaultValue.",
+        "- pseudo point fields must be exactly name, longitude, dimension, value; dimension is latitude.",
+        "- pseudo must not contain latitude/lat/lng/series/geo/option/echartsOption/markers/points/componentType.",
+        "- Non-map charts use resourceComponentEcharts and an ECharts resource in resources[].",
+        "- Complex non-chart visuals use remote advanced Vue component in advancedComponents[].",
+        "- Python performs UploadFile, zip upload, fileId backfill, and resource save.",
+        "",
+        "## Compact Reference Files",
+    ]
+    for relative in paths:
+        path = package_root / relative
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        limit = 6000 if relative.endswith(".md") else 8000
+        lines.extend(["", f"### {relative}", "", _truncate_text(content, limit)])
+    return "\n".join(lines).strip()
 
 
 def _stage_aware_visualization_context(
@@ -2441,11 +2676,40 @@ def _parse_json(text: str) -> Any:
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start >= 0 and end > start:
-            return json.loads(stripped[start : end + 1])
+        extracted = _extract_balanced_json_object(stripped)
+        if extracted is not None:
+            return json.loads(extracted)
         raise
+
+
+def _extract_balanced_json_object(text: str) -> str | None:
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+            continue
+        if char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
 
 
 def _ensure_svg(value: str) -> str:

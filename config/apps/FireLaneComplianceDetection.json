@@ -2,6 +2,13 @@
   "name": "FireLaneComplianceDetection",
   "title": "消防通道合规检测",
   "description": "兼容 ACP 平台模板名 FireLaneComplianceDetection，使用专用视觉复判技能判断消防通道、杂物、火焰/明火、抽烟等事件。",
+  "aliases": [
+    "消防通道监管",
+    "消防通道检测",
+    "消防通道占用检测",
+    "消防通道堵塞检测",
+    "消防通道安全监管"
+  ],
   "category": "vision",
   "icon": "shield",
   "agent_name": "default",

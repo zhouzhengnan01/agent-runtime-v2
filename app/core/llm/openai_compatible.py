@@ -80,7 +80,6 @@ class OpenAICompatibleClient:
         self.temperature = runtime_options.temperature if runtime_options.temperature is not None else model_config.temperature
         self.top_p = runtime_options.top_p if runtime_options.top_p is not None else model_config.top_p
         self.max_tokens = runtime_options.max_tokens if runtime_options.max_tokens is not None else model_config.max_tokens
-        self.request_timeout_seconds: float | None = None
         self.reasoning_effort = _config_string(
             runtime_options.config_options,
             "reasoning_effort",
@@ -88,11 +87,19 @@ class OpenAICompatibleClient:
             "model_reasoning_effort",
             "modelReasoningEffort",
         )
+        self.request_timeout_seconds = _bounded_float(
+            runtime_options.request_timeout_seconds
+            if runtime_options.request_timeout_seconds is not None
+            else model_config.request_timeout_seconds,
+            default=model_config.request_timeout_seconds,
+            minimum=1.0,
+            maximum=3600.0,
+        )
         selected_tools = any(name.strip() for name in runtime_options.selected_mcp_tools) or any(
             name.strip() for name in runtime_options.selected_skills
         )
         self.tool_choice = "auto" if selected_tools and model_config.tool_choice == "none" else model_config.tool_choice
-        logger.info(
+        logger.debug(
             "\n===== 模型客户端配置 | llm client configured =====\n"
             "模型: %s\n"
             "Base URL: %s\n"
@@ -128,10 +135,11 @@ class OpenAICompatibleClient:
 
         payload = self._chat_payload(system_prompt, messages)
         self._log_request("complete", payload)
-        async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
-            response = await self._post_chat_completion(client, "complete", payload)
-            self._raise_for_status(response)
-            data = response.json()
+        async with self._request_deadline("complete"):
+            async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
+                response = await self._post_chat_completion(client, "complete", payload)
+                self._raise_for_status(response)
+                data = response.json()
         self._log_response_data("complete", data)
         choices = data.get("choices") or []
         if not choices:
@@ -154,19 +162,21 @@ class OpenAICompatibleClient:
 
         payload = self._chat_payload(system_prompt, messages, tools=tools)
         self._log_request("complete_with_tools", payload)
-        async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
-            response = await self._post_chat_completion(client, "complete_with_tools", payload)
-            if tools and self._is_auto_tool_choice_unsupported(response):
-                fallback_payload = self._chat_payload(system_prompt, messages)
-                logger.info(
-                    "llm request fallback operation=complete_with_tools reason=auto_tool_choice_unsupported status_code=%s body=%s",
-                    response.status_code,
-                    response.text[:2000],
-                )
-                self._log_request("complete_with_tools.fallback", fallback_payload)
-                response = await self._post_chat_completion(client, "complete_with_tools.fallback", fallback_payload)
-            self._raise_for_status(response)
-            data = response.json()
+        async with self._request_deadline("complete_with_tools"):
+            async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
+                response = await self._post_chat_completion(client, "complete_with_tools", payload)
+                if tools and self._is_auto_tool_choice_unsupported(response):
+                    fallback_payload = self._chat_payload(system_prompt, messages)
+                    logger.info(
+                        "llm request fallback operation=complete_with_tools reason=auto_tool_choice_unsupported "
+                        "status_code=%s body=%s",
+                        response.status_code,
+                        response.text[:2000],
+                    )
+                    self._log_request("complete_with_tools.fallback", fallback_payload)
+                    response = await self._post_chat_completion(client, "complete_with_tools.fallback", fallback_payload)
+                self._raise_for_status(response)
+                data = response.json()
         self._log_response_data("complete_with_tools", data)
         parsed = self._parse_chat_response(data)
         self._log_reply_content("complete_with_tools", parsed.content)
@@ -179,10 +189,10 @@ class OpenAICompatibleClient:
 
         payload = self._chat_payload(system_prompt, messages)
         self._log_request("complete_sync", payload)
-        with httpx.Client(timeout=self.request_timeout_seconds, trust_env=False) as client:
-            response = self._post_chat_completion_sync(client, "complete_sync", payload)
-            self._raise_for_status(response)
-            data = response.json()
+        deadline = self._request_deadline_at("complete_sync")
+        response = self._post_chat_completion_sync("complete_sync", payload, deadline=deadline)
+        self._raise_for_status(response)
+        data = response.json()
         self._log_response_data("complete_sync", data)
         choices = data.get("choices") or []
         if not choices:
@@ -205,29 +215,30 @@ class OpenAICompatibleClient:
         chunk_count = 0
         content_chars = 0
         async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
-            async with client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=self._headers(),
-            ) as response:
-                self._log_http_response("stream_complete", response, started_at)
-                await self._raise_stream_for_status(response)
-                async for line in response.aiter_lines():
-                    delta = self._delta_from_stream_line(line)
-                    if delta == "[DONE]":
-                        break
-                    if delta:
-                        chunk_count += 1
-                        content_chars += len(delta)
-                        if LLM_TRACE_PAYLOADS:
-                            logger.info(
-                                "llm stream delta operation=stream_complete chunk=%s chars=%s text=%s",
-                                chunk_count,
-                                len(delta),
-                                diagnostic_json({"text": delta}, max_chars=LLM_TRACE_MAX_CHARS),
-                            )
-                        yield delta
+            async with self._request_deadline("stream_complete"):
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=self._headers(),
+                ) as response:
+                    self._log_http_response("stream_complete", response, started_at)
+                    await self._raise_stream_for_status(response)
+                    async for line in response.aiter_lines():
+                        delta = self._delta_from_stream_line(line)
+                        if delta == "[DONE]":
+                            break
+                        if delta:
+                            chunk_count += 1
+                            content_chars += len(delta)
+                            if LLM_TRACE_PAYLOADS:
+                                logger.info(
+                                    "llm stream delta operation=stream_complete chunk=%s chars=%s text=%s",
+                                    chunk_count,
+                                    len(delta),
+                                    diagnostic_json({"text": delta}, max_chars=LLM_TRACE_MAX_CHARS),
+                                )
+                            yield delta
         logger.info(
             "llm stream completed operation=stream_complete model=%s chunks=%s content_chars=%s duration_ms=%s",
             self.model,
@@ -258,6 +269,15 @@ class OpenAICompatibleClient:
                 LLM_TRACE_MAX_CHARS,
                 _pretty_json(diagnostic_json(payload, max_chars=LLM_TRACE_MAX_CHARS)),
             )
+
+    def _request_deadline(self, operation: str) -> asyncio.Timeout:
+        logger.debug(
+            "llm request deadline operation=%s model=%s timeout=%s",
+            operation,
+            self.model,
+            self.request_timeout_seconds,
+        )
+        return asyncio.timeout(self.request_timeout_seconds)
 
     def _log_http_response(self, operation: str, response: httpx.Response, started_at: float) -> None:
         body = _response_json_or_text(response)
@@ -334,9 +354,10 @@ class OpenAICompatibleClient:
 
     def _post_chat_completion_sync(
         self,
-        client: httpx.Client,
         operation: str,
         payload: dict[str, Any],
+        *,
+        deadline: float | None = None,
     ) -> httpx.Response:
         url = self._chat_completions_url()
         headers = self._headers()
@@ -344,18 +365,19 @@ class OpenAICompatibleClient:
         for attempt in range(1, attempts + 1):
             started_at = time.perf_counter()
             try:
-                response = client.post(url, json=payload, headers=headers)
+                with httpx.Client(timeout=self._remaining_timeout(deadline)) as client:
+                    response = client.post(url, json=payload, headers=headers)
             except httpx.TransportError as exc:
                 if attempt >= attempts:
                     raise
                 self._log_retry(operation, attempt, attempts, reason=exc.__class__.__name__)
-                self._sleep_before_retry_sync()
+                self._sleep_before_retry_sync(deadline=deadline)
                 continue
             self._log_http_response(operation, response, started_at)
             if not self._should_retry_response(response) or attempt >= attempts:
                 return response
             self._log_retry(operation, attempt, attempts, status_code=response.status_code)
-            self._sleep_before_retry_sync()
+            self._sleep_before_retry_sync(deadline=deadline)
         raise RuntimeError("unreachable llm retry state")
 
     @staticmethod
@@ -366,9 +388,32 @@ class OpenAICompatibleClient:
         if LLM_UPSTREAM_RETRY_DELAY_MS > 0:
             await asyncio.sleep(LLM_UPSTREAM_RETRY_DELAY_MS / 1000)
 
-    def _sleep_before_retry_sync(self) -> None:
-        if LLM_UPSTREAM_RETRY_DELAY_MS > 0:
-            time.sleep(LLM_UPSTREAM_RETRY_DELAY_MS / 1000)
+    def _sleep_before_retry_sync(self, *, deadline: float | None = None) -> None:
+        if LLM_UPSTREAM_RETRY_DELAY_MS <= 0:
+            self._remaining_timeout(deadline)
+            return
+        delay = LLM_UPSTREAM_RETRY_DELAY_MS / 1000
+        if deadline is not None:
+            delay = min(delay, self._remaining_timeout(deadline))
+        time.sleep(delay)
+
+    def _request_deadline_at(self, operation: str) -> float:
+        logger.debug(
+            "llm request sync deadline operation=%s model=%s timeout=%s",
+            operation,
+            self.model,
+            self.request_timeout_seconds,
+        )
+        return time.monotonic() + self.request_timeout_seconds
+
+    @staticmethod
+    def _remaining_timeout(deadline: float | None) -> float | None:
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("llm request deadline exceeded")
+        return remaining
 
     def _log_retry(
         self,
@@ -601,6 +646,14 @@ def _config_string(config: dict[str, Any], *keys: str) -> str:
     return ""
 
 
+def _bounded_float(value: object, *, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
+
+
 def _response_json_or_text(response: httpx.Response) -> object:
     try:
         return response.json()
@@ -713,8 +766,7 @@ def _attachment_image_url(attachment: dict[str, Any], mime_type: str) -> str:
     if _is_data_uri(clean_path):
         return clean_path
     if _is_http_url(clean_path):
-        logger.warning("llm image attachment skipped because remote url was not materialized url=%s", clean_path[:500])
-        return ""
+        return clean_path
     local_path = _local_attachment_path(clean_path)
     if local_path is None or not local_path.is_file():
         return ""

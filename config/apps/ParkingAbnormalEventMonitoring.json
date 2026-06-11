@@ -1,9 +1,20 @@
 {
-  "category": "general",
+  "category": "vision",
   "agent_name": "default",
   "name": "ParkingAbnormalEventMonitoring",
   "title": "车场异常事件监控",
-  "description": "",
+  "description": "兼容 ACP 平台模板名 ParkingAbnormalEventMonitoring，使用专用视觉复判技能判断车场车辆违停、通道拥堵等异常事件。",
+  "aliases": [
+    "车场异常事件监管",
+    "车场异常监管",
+    "车场异常监控",
+    "停车场异常事件监控",
+    "停车场异常事件监管",
+    "停车场异常监管",
+    "停车场异常监控",
+    "车场异常事件检测",
+    "停车场异常事件检测"
+  ],
   "workflow": "parking_abnormal_review",
   "selected_skills": [
     "parking-violation-review",
@@ -18,9 +29,14 @@
     {
       "name": "Qwen3.6-35B-A3B",
       "features": [
+        "vision",
+        "reasoning",
         "chat"
       ],
-      "priority_features": [],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
       "priority": 0,
       "provider": "openai-compatible",
       "model": "Qwen3.6-35B-A3B",
