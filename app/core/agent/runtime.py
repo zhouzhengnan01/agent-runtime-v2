@@ -1232,7 +1232,7 @@ class AgentRuntime:
         runtime_options = self._runtime_options_with_app_template_defaults(runtime_options)
         runtime_options = self._effective_runtime_options(runtime_options)
         runtime_options = self._runtime_options_with_composite_skills(runtime_options)
-        attachments = request.attachments
+        attachments = self._expanded_video_record_attachments(request.attachments)
         if not attachments and runtime_options.thread_id:
             attachments = self._thread_file_attachments(runtime_options.thread_id)
         if attachments and runtime_options.thread_id:
@@ -1381,6 +1381,113 @@ class AgentRuntime:
                     )
                 )
         return attachments
+
+    @classmethod
+    def _expanded_video_record_attachments(cls, attachments: list[Attachment]) -> list[Attachment]:
+        expanded: list[Attachment] = list(attachments)
+        seen_refs: set[str] = set()
+        for attachment in attachments:
+            ref = cls._attachment_reference(attachment)
+            if ref:
+                seen_refs.add(ref)
+        changed = False
+        for attachment in attachments:
+            derived = cls._attachment_record_video(attachment)
+            if derived is None:
+                continue
+            ref = cls._attachment_reference(derived)
+            if ref and ref in seen_refs:
+                continue
+            if ref:
+                seen_refs.add(ref)
+            expanded.append(derived)
+            changed = True
+        return expanded if changed else attachments
+
+    @classmethod
+    def _attachment_record_video(cls, attachment: Attachment) -> Attachment | None:
+        metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+        others = metadata.get("others")
+        if not isinstance(others, dict):
+            return None
+        record = others.get("record")
+        if isinstance(record, str):
+            uri = record.strip()
+            source_meta: dict[str, Any] = {"value": uri}
+        elif isinstance(record, dict):
+            uri = cls._first_string(record.get("url"), record.get("uri"), record.get("path"), record.get("internalUrl"))
+            source_meta = record
+        else:
+            return None
+        if not uri:
+            return None
+        mime_type = cls._record_video_mime_type(uri, source_meta)
+        if not mime_type.startswith("video/"):
+            return None
+        record_name = cls._record_video_name(uri, source_meta, attachment.name)
+        derived_metadata = dict(metadata)
+        derived_metadata.update(
+            {
+                "source": "attachment_record_video",
+                "record_source": "metadata.others.record",
+                "record_parent_name": attachment.name,
+                "record_parent_mime_type": attachment.mime_type,
+                "original_uri": uri,
+            }
+        )
+        return Attachment(
+            name=record_name,
+            path=uri,
+            mime_type=mime_type,
+            metadata=derived_metadata,
+        )
+
+    @staticmethod
+    def _attachment_reference(attachment: Attachment) -> str:
+        path = str(attachment.path or "").strip()
+        if path:
+            return f"path:{path}"
+        data_base64 = str(attachment.data_base64 or "").strip()
+        if data_base64:
+            return f"data:{attachment.name}:{attachment.mime_type}:{len(data_base64)}"
+        return ""
+
+    @staticmethod
+    def _record_video_mime_type(uri: str, metadata: dict[str, Any]) -> str:
+        explicit = AgentRuntime._first_string(
+            metadata.get("mime_type"),
+            metadata.get("mimeType"),
+            metadata.get("media_type"),
+            metadata.get("mediaType"),
+            metadata.get("content_type"),
+            metadata.get("contentType"),
+        )
+        if explicit:
+            clean = explicit.split(";", 1)[0].strip().lower()
+            if clean:
+                return clean
+        guessed = guess_mime_type(Path(urlparse(uri).path or "record.mp4"))
+        return guessed.split(";", 1)[0].strip().lower() if guessed else ""
+
+    @staticmethod
+    def _record_video_name(uri: str, metadata: dict[str, Any], fallback_name: str) -> str:
+        explicit = AgentRuntime._first_string(metadata.get("name"), metadata.get("filename"), metadata.get("fileName"))
+        if explicit:
+            return explicit
+        parsed_name = Path(unquote(urlparse(uri).path)).name
+        if parsed_name:
+            return parsed_name
+        fallback = Path(fallback_name or "record").stem or "record"
+        return f"{fallback}.mp4"
+
+    @staticmethod
+    def _first_string(*values: object) -> str:
+        for value in values:
+            if isinstance(value, str):
+                clean = value.strip()
+                if clean:
+                    return clean
+        return ""
 
     def _materialize_remote_attachments(self, attachments: list[Attachment], thread_id: str) -> list[Attachment]:
         paths = self.artifact_store.prepare_thread(thread_id)

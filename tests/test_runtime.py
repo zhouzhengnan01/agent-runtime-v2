@@ -870,6 +870,82 @@ def test_agent_runtime_downloads_remote_video_attachment_without_explicit_mime_t
     assert "mime_type=video/mp4" in history_text
 
 
+def test_agent_runtime_expands_attachment_record_video_before_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == "https://example.test/frame?id=1":
+            return httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg", "content-length": "8"},
+                content=b"jpegdata",
+            )
+        assert url == "https://example.test/videos/record.mp4?token=abc"
+        return httpx.Response(200, headers={"content-type": "video/mp4", "content-length": "7"}, content=b"mp4data")
+
+    async def fake_complete(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del self, system_prompt, messages
+        return "已看到录像资源"
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(OpenAICompatibleClient, "complete", fake_complete)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="record-video-agent",
+        display_name="Record Video Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="请复判图片并结合录像")],
+                attachments=[
+                    Attachment(
+                        name="image.jpg",
+                        path="https://example.test/frame?id=1",
+                        mime_type="image/jpeg",
+                        metadata={
+                            "others": {
+                                "record": {
+                                    "url": "https://example.test/videos/record.mp4?token=abc",
+                                    "name": "record.mp4",
+                                }
+                            }
+                        },
+                    )
+                ],
+                runtime_options=RuntimeOptions(thread_id="record-video"),
+            ),
+        )
+    )
+
+    assert result.reply == "已看到录像资源"
+    uploads = tmp_path / "threads" / "record-video" / "uploads"
+    downloaded_files = list(uploads.glob("record-*.mp4"))
+    assert len(downloaded_files) == 1
+    history_text = (tmp_path / "threads" / "record-video" / "memory" / "conversation.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "record.mp4" in history_text
+    assert "mime_type=video/mp4" in history_text
+
+
 def test_agent_runtime_drops_remote_attachment_url_after_download_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1105,6 +1181,84 @@ def test_parking_abnormal_review_workflow_returns_json_when_image_missing(tmp_pa
     assert parsed[0]["reviewSourceId"] == "source-1"
     assert parsed[0]["hit"] == 0
     assert "未提供可访问的图片" in parsed[0]["result"]
+
+
+def test_parking_abnormal_review_uses_record_video_from_attachment_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    attachments = runtime._expanded_video_record_attachments(
+        [
+            Attachment(
+                name="image.jpg",
+                path="/mnt/user-data/uploads/image.jpg",
+                mime_type="image/jpeg",
+                metadata={
+                    "others": {
+                        "record": {
+                            "url": "https://example.test/videos/record.mp4?token=abc",
+                            "name": "record.mp4",
+                        }
+                    }
+                },
+            )
+        ]
+    )
+
+    assert len(attachments) == 2
+    derived = attachments[1]
+    assert derived.name == "record.mp4"
+    assert derived.path == "https://example.test/videos/record.mp4?token=abc"
+    assert derived.mime_type == "video/mp4"
+    assert derived.metadata["record_source"] == "metadata.others.record"
+    assert derived.metadata["record_parent_name"] == "image.jpg"
+
+
+def test_parking_abnormal_review_events_count_record_video_as_video_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", lambda self, system_prompt, messages: "[]")
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="parking-review-agent",
+        display_name="Parking Review Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content="当前复判事件来源reviewSourceId为[source-1]。\n本次复判的识别目标为[ClutterDetection]",
+            )
+        ],
+        attachments=[
+            Attachment(
+                name="image.jpg",
+                path="/mnt/user-data/uploads/image.jpg",
+                mime_type="image/jpeg",
+                metadata={
+                    "others": {
+                        "record": {
+                            "url": "https://example.test/videos/record.mp4?token=abc",
+                            "name": "record.mp4",
+                        }
+                    }
+                },
+            )
+        ],
+        runtime_options=RuntimeOptions(thread_id="parking-review-record-events", workflow="parking_abnormal_review"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.status == "completed"
+    review_input = next(event for event in events if event.type == "review.input")
+    assert review_input.data["image_attachment_count"] == 1
+    assert review_input.data["video_attachment_count"] == 1
 
 
 def test_agent_loop_does_not_duplicate_client_supplied_history(
