@@ -26,7 +26,6 @@ MINIMAL_JPEG = bytes.fromhex(
 
 SKILL_ARTIFACT_PATTERNS = {
     "behavior-detection": ["behavior-detection.md", "behavior-detection.json"],
-    "behavior-review": ["behavior-review.md", "behavior-review.json"],
     "cpu-training-runner": [
         "training-summary.md",
         "training-summary.json",
@@ -41,6 +40,7 @@ SKILL_ARTIFACT_PATTERNS = {
     "emoji": ["*.md"],
     "excel-generation": ["*.xlsx"],
     "generate-screen-skill": ["generate-screen-skill-prompt.md"],
+    "jetlinks-ai-component": ["*/component.vue", "*/config.mjs", "*/README.md"],
     "markdown-rendering": ["*.md"],
     "pptx-generation": ["*.pptx"],
     "reference-image-yolo-trainer": [

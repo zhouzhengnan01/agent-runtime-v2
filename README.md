@@ -270,7 +270,7 @@ python -m app.cli acp-stdio --agent default
 - JSON 配置驱动：通用 agent 通过 `config/agents/default.json` 定义工具、Skill、运行行为和提示词；模型参数由
   `config/apps/*.json` 的 `runtime_options` 定义。
 - 统一工具层：Skill、MCP/manual 工具、本地 workspace 工具都通过 `ToolRegistry` 和 `ToolInvocationService` 暴露。
-- Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection、behavior-review 等内置 Skill。
+- Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection 等内置 Skill。
 - Workflow 插件：`artifact_workflow`、`evidence_first_detection` 通过 `WorkflowRegistry` 注册，可选启用。
 - 多协议入口：HTTP、SSE、CLI、ACP WebSocket、ACP stdio、MCP HTTP。
 - Workbench 应用中心：通过预置模板一键套用 default agent、workflow、Skill、MCP 工具和示例提示词。
@@ -668,7 +668,6 @@ config/apps/algorithm-evaluation-deployment.json
 config/apps/algorithm-research-benchmark.json
 config/apps/algorithm-training-orchestration.json
 config/apps/artifact-suite.json
-config/apps/behavior-review.json
 config/apps/behavior-safety-detector.json
 config/apps/data-auto-annotation.json
 config/apps/excel-template-builder.json
@@ -784,7 +783,7 @@ python tools/app_smoke_matrix.py \
 只有强依赖图片的模板（当前主要是 `data-auto-annotation`）会先通过 `/api/uploads/{thread_id}` 上传测试图片；
 行为识别和行为复判按 evidence-first 逻辑先验证“无视觉证据时不输出视觉确认结论”，不会在 smoke 中强行附加图片。
 其中 `behavior-detection` 无视觉证据时允许只返回 `requires_input=true` 和补充证据提示，不强制生成
-`behavior-detection.md/json`；`behavior-review` 仍要求生成复判报告产物。
+`behavior-detection.md/json`。
 默认测试图片会自动写到 `/tmp/jetlinks-app-smoke-image.jpg`；如果需要使用真实业务图片，可以显式传
 `--image /path/to/image.jpg`，显式指定的图片不存在时脚本会直接失败。
 每个应用会记录：
@@ -792,7 +791,7 @@ python tools/app_smoke_matrix.py \
 - `status_completed`：本轮 run 是否完成。
 - `artifacts_present`：声明了 workflow、Skill 或 MCP 工具的应用是否至少生成了一个产物。
 - `expected_artifacts_present`：常见 Skill 的关键产物是否出现，例如 `annotations.coco.json`、
-  `behavior-review.json`、`behavior-review.md`、`*.drawio`、`*.pptx`、`*.xlsx`、`*.xmind` 等。
+  `*.drawio`、`*.pptx`、`*.xlsx`、`*.xmind` 等。
 - `artifact_contents_valid`：关键文件格式是否可读，例如 COCO JSON 结构、JSON 解析、PNG 文件头、
   Draw.io XML、PPTX/XLSX/XMind/DOCX zip 容器、Markdown/TXT 非空。
 - `artifact_names`：生成的文件名，便于确认 COCO、PPT、Draw.io、XMind、Markdown 等产物是否出现。
@@ -1002,7 +1001,6 @@ xmind-generation
 markdown-rendering
 deliverables-export
 behavior-detection
-behavior-review
 data-auto-annotation
 algorithm-engineer
 algorithm-research-scout
@@ -1430,6 +1428,12 @@ ACP WebSocket 和 ACP stdio 都支持 `session/list`、`session/close`、`sessio
 session 扩展方法，并提供 `session/cancel`。取消是 best-effort：协议层会取消当前 prompt task，
 并向 external ACP backend 转发 cancel；已经进入同步线程、沙箱或远端 provider 的底层操作可能不会瞬时停止，
 但协议响应会返回 `stopReason=cancelled`，客户端不会再被正在执行的 prompt 阻塞。
+
+ACP WebSocket 默认启用 prompt keepalive。`session/prompt` 运行期间，服务端会先通过
+`session/update` 发送 `agent_thought_chunk`，提示“正在处理，请等待...”和“已收到请求，正在处理，请等待...”；
+随后默认每 5 秒发送一次 `acp.prompt.keepalive` / `acp.prompt.wait_message` 更新，前端可用这些非最终
+`result` 的消息展示“处理中”状态。可通过 `ACP_PROMPT_KEEPALIVE_ENABLED=0` 关闭，或用
+`ACP_PROMPT_KEEPALIVE_SECONDS` 调整间隔。
 
 ### ACP 支持矩阵
 

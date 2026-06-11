@@ -1,0 +1,9 @@
+{
+  "id": "fall-review",
+  "name": "人员跌倒/倒地检测",
+  "version": "0.1.0",
+  "description": "用于机器视觉复判人员跌倒、倒地、摔倒等客户行为安全事件。",
+  "skills": [
+    "skills/fall-review/manifest.json"
+  ]
+}

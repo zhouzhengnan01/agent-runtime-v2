@@ -1,0 +1,8 @@
+{
+  "name": "visualization_bigscreen_workflow",
+  "display_name": "Visualization Bigscreen Workflow",
+  "description": "Generates bigscreen initialization and region JSON while Python handles file upload and resource save commands.",
+  "enabled": true,
+  "handler": "visualization_bigscreen.py:VisualizationBigscreenWorkflow",
+  "trigger": "explicit_runtime_options"
+}

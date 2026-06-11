@@ -10,8 +10,10 @@ from app.core.tools.providers.memory import MemoryToolProvider, memory_tool_defi
 from app.core.tools.providers.mcp_streamable_http import McpStreamableHttpToolProvider
 from app.core.tools.providers.mcp_stdio import McpStdioToolProvider
 from app.core.tools.providers.skill import SkillToolProvider
+from app.core.tools.providers.visualization import BigscreenToolset, bigscreen_tool_definitions
 
 __all__ = [
+    "BigscreenToolset",
     "DelegateToolProvider",
     "ArtifactWorkspaceToolProvider",
     "LocalToolProvider",
@@ -21,6 +23,7 @@ __all__ = [
     "McpStreamableHttpToolProvider",
     "McpStdioToolProvider",
     "SkillToolProvider",
+    "bigscreen_tool_definitions",
     "delegate_tool_definitions",
     "artifact_workspace_tool_definitions",
     "local_tool_definitions",

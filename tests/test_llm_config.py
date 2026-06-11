@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 import httpx
+import pytest
 from pytest import MonkeyPatch
 
 from app.core.config.agent_config import AgentConfig, ModelConfig
@@ -248,6 +249,107 @@ def test_runtime_selected_skills_enable_tool_choice_auto(monkeypatch: MonkeyPatc
     assert payload["tools"][0]["function"]["name"] == "cpu-training-runner"
 
 
+def test_chat_payload_converts_image_attachments_to_vision_blocks(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    agent = AgentConfig(
+        name="vision-agent",
+        display_name="Vision Agent",
+        model=ModelConfig(model="vision-model", base_url="http://llm.local/v1", api_key="key"),
+    )
+    client = OpenAICompatibleClient(agent)
+
+    payload = client._chat_payload(
+        "system",
+        [
+            {
+                "role": "user",
+                "content": "看图",
+                "_attachments": [
+                    {"name": "scene.jpg", "mime_type": "image/jpeg", "data_base64": "ZmFrZQ=="},
+                    {"name": "video.mp4", "mime_type": "video/mp4", "data_base64": "dmRhdGE="},
+                ],
+            }
+        ],
+    )
+
+    content = payload["messages"][1]["content"]
+    assert content == [
+        {"type": "text", "text": "看图"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,ZmFrZQ=="}},
+    ]
+    assert "_attachments" not in payload["messages"][1]
+
+
+def test_chat_payload_keeps_http_image_attachment_as_image_url(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    agent = AgentConfig(
+        name="vision-url-agent",
+        display_name="Vision URL Agent",
+        model=ModelConfig(model="vision-model", base_url="http://llm.local/v1", api_key="key"),
+    )
+    client = OpenAICompatibleClient(agent)
+
+    payload = client._chat_payload(
+        "system",
+        [
+            {
+                "role": "user",
+                "content": "看 URL 图片",
+                "_attachments": [
+                    {
+                        "name": "image.jpg",
+                        "path": "http://example.test/image.jpg",
+                        "mime_type": "image/jpeg",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert payload["messages"][1]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "http://example.test/image.jpg"},
+    }
+
+
+def test_chat_payload_keeps_data_uri_image_path_as_image_url(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    agent = AgentConfig(
+        name="vision-data-uri-agent",
+        display_name="Vision Data URI Agent",
+        model=ModelConfig(model="vision-model", base_url="http://llm.local/v1", api_key="key"),
+    )
+    client = OpenAICompatibleClient(agent)
+
+    payload = client._chat_payload(
+        "system",
+        [
+            {
+                "role": "user",
+                "content": "看内联图片",
+                "_attachments": [
+                    {
+                        "name": "image.jpg",
+                        "path": "data:image/jpeg;base64,anBlZw==",
+                        "mime_type": "image/jpeg",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert payload["messages"][1]["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/jpeg;base64,anBlZw=="},
+    }
+
+
 def test_model_manager_normalizes_model_tags_for_public_payload() -> None:
     manager = ModelManager(
         [
@@ -464,6 +566,120 @@ def test_complete_with_tools_preserves_usage_metadata(monkeypatch: MonkeyPatch) 
 
     assert response.content == "ok"
     assert response.usage == {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}
+
+
+def test_llm_client_logs_request_and_response_details_redacted(
+    monkeypatch: MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    import app.core.llm.openai_compatible as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_TRACE_PAYLOADS", True)
+    monkeypatch.setattr(llm_module, "LLM_REPLY_TRACE_ENABLED", True)
+    monkeypatch.setattr(llm_module, "LLM_TRACE_MAX_CHARS", 0)
+
+    async def fake_post(
+        self: httpx.AsyncClient,
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        del self, json
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
+                "debug_headers": headers,
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model=ModelConfig(
+            model="json-model-name",
+            base_url="http://llm.local/v1",
+            api_key="json-key",
+            tool_choice="auto",
+            max_tokens=128,
+        ),
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        response = asyncio.run(
+            OpenAICompatibleClient(agent).complete_with_tools(
+                "system",
+                [Message(role="user", content="hi")],
+                [{"type": "function", "function": {"name": "demo", "parameters": {"type": "object"}}}],
+            )
+        )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert response.content == "ok"
+    assert "llm request summary operation=complete_with_tools" in logs
+    assert "llm request payload operation=complete_with_tools" in logs
+    assert "llm http response summary operation=complete_with_tools" in logs
+    assert "llm http response body operation=complete_with_tools" in logs
+    assert "llm response data operation=complete_with_tools" in logs
+    assert "llm reply content operation=complete_with_tools" in logs
+    assert "reply_preview=ok" in logs
+    assert '"content": "hi"' in logs
+    assert '"max_tokens": 128' in logs
+    assert '"Authorization": "********"' in logs
+    assert "json-key" not in logs
+
+
+def test_complete_sync_logs_model_reply_content(monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    import app.core.llm.openai_compatible as llm_module
+
+    monkeypatch.setattr(llm_module, "LLM_REPLY_TRACE_ENABLED", True)
+
+    def fake_post(
+        self: httpx.Client,
+        url: str,
+        *,
+        json: dict[str, Any],
+        headers: dict[str, str],
+    ) -> httpx.Response:
+        del self, json, headers
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": '[{"reviewResult":"不匹配","reason":"画面未见目标"}]'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    agent = AgentConfig(
+        name="json-model",
+        display_name="JSON Model",
+        model=ModelConfig(model="json-model-name", base_url="http://llm.local/v1", api_key="json-key"),
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        response = OpenAICompatibleClient(agent).complete_sync("system", [Message(role="user", content="hi")])
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert response == '[{"reviewResult":"不匹配","reason":"画面未见目标"}]'
+    assert "llm reply content operation=complete_sync" in logs
+    assert 'reply_preview=[{"reviewResult":"不匹配","reason":"画面未见目标"}]' in logs
 
 
 def test_http_status_error_includes_upstream_response_body(monkeypatch: MonkeyPatch) -> None:

@@ -141,3 +141,29 @@ def test_context_compaction_handles_few_oversized_messages() -> None:
     assert "CONTEXT COMPACTION" in result.messages[0]["content"]
     assert result.messages[-1] == {"role": "user", "content": "current task"}
     assert result.after_chars < result.before_chars
+
+
+def test_context_compaction_ignores_internal_attachments_for_size() -> None:
+    manager = ConversationContextManager(
+        max_chars=1000,
+        keep_first_messages=1,
+        keep_last_messages=3,
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": "请根据附件图片判断是否戴帽子。",
+            "_attachments": [
+                {
+                    "name": "scene.jpg",
+                    "mime_type": "image/jpeg",
+                    "path": "data:image/jpeg;base64," + "a" * 5000,
+                }
+            ],
+        }
+    ]
+
+    result = manager.compact(messages)
+
+    assert result.compacted is False
+    assert result.messages[0]["_attachments"][0]["path"].startswith("data:image/jpeg;base64,")

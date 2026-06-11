@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +22,7 @@ PLATFORM_SKILL_ALIASES: dict[str, list[str]] = {
         "deployment-candidate-reviewer",
         "experiment-ledger",
     ],
+    "1780988275767z1lxtrd1": ["generate-screen-skill"],
 }
 
 
@@ -47,10 +47,9 @@ def skill_aliases(root_dir: Path | None = None) -> dict[str, list[str]]:
 
 
 def invalidate_skill_alias_cache() -> None:
-    _plugin_skill_aliases.cache_clear()
+    return None
 
 
-@lru_cache(maxsize=16)
 def _plugin_skill_aliases(root_dir: str) -> dict[str, list[str]]:
     manager = _manager(Path(root_dir))
     aliases: dict[str, list[str]] = {}

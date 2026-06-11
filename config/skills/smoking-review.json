@@ -1,0 +1,88 @@
+{
+  "name": "smoking-review",
+  "description": "用于机器视觉复判抽烟、吸烟、持烟等行为事件。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于商场、消防通道、后厨通道等监控画面中抽烟、吸烟、持烟行为复判。",
+    "keywords": [
+      "抽烟行为检测",
+      "抽烟检测",
+      "吸烟检测",
+      "抽烟",
+      "吸烟",
+      "持烟",
+      "SmokingDetection",
+      "Smoking",
+      "Smoke",
+      "抽烟监测",
+      "吸烟行为",
+      "现场人员吸烟行为",
+      "香烟",
+      "电子烟",
+      "SmokerDetection",
+      "CigaretteDetection",
+      "SmokingBehaviorDetection"
+    ],
+    "examples": [
+      "复判画面中人员是否抽烟",
+      "判断消防通道里是否有人吸烟",
+      "检查后厨通道是否存在抽烟行为",
+      "判断现场人员是否存在吸烟行为",
+      "检查暗光画面中是否有烟头火星或持烟吸食动作"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "smoking_evidence",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "smoking-review"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "metadata": {
+    "developerCenter": {
+      "domain": "general"
+    }
+  }
+}

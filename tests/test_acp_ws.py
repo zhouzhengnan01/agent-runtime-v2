@@ -229,6 +229,156 @@ def test_acp_websocket_prompt_streams_runtime_events() -> None:
         assert "agent_message" not in session_update_types
 
 
+<<<<<<< HEAD
+=======
+def test_acp_websocket_prompt_sends_keepalive_during_long_runtime(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"), block=True)
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    monkeypatch.setattr(acp_transport_ws, "ACP_PROMPT_KEEPALIVE_SECONDS", 0.01)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(thread_id="acp-keepalive", cwd=str(tmp_path)),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "long task"}]},
+            }
+        )
+
+        updates: list[dict[str, Any]] = []
+        for _ in range(10):
+            packet = websocket.receive_json()
+            if packet.get("method") != "session/update":
+                continue
+            updates.append(packet["params"]["update"])
+            runtime_event = packet["params"]["update"].get("_meta", {}).get("jetlinksRuntimeEvent", {})
+            if runtime_event.get("type") == "acp.prompt.keepalive":
+                break
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/cancel",
+                "params": {"sessionId": session_id},
+            }
+        )
+        for _ in range(5):
+            packet = websocket.receive_json()
+            if packet.get("method") != "session/update":
+                continue
+            updates.append(packet["params"]["update"])
+            runtime_event = packet["params"]["update"].get("_meta", {}).get("jetlinksRuntimeEvent", {})
+            if runtime_event.get("type") == "acp.prompt.keepalive.completed":
+                break
+
+    keepalive_updates = [
+        update
+        for update in updates
+        if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.keepalive"
+    ]
+    progress_updates = [
+        update
+        for update in updates
+        if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.progress"
+    ]
+    wait_message_updates = [
+        update
+        for update in updates
+        if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.wait_message"
+    ]
+    assert progress_updates
+    assert progress_updates[0]["sessionUpdate"] == "agent_thought_chunk"
+    assert progress_updates[0]["content"] == {"type": "text", "text": "正在处理，请等待..."}
+    assert wait_message_updates
+    assert wait_message_updates[0]["sessionUpdate"] == "agent_thought_chunk"
+    assert wait_message_updates[0]["content"] == {"type": "text", "text": "已收到请求，正在处理，请等待..."}
+    assert not [
+        update
+        for update in wait_message_updates
+        if update.get("sessionUpdate") == "agent_message_chunk"
+    ]
+    assert keepalive_updates
+    assert keepalive_updates[0]["sessionUpdate"] == "tool_call"
+    assert keepalive_updates[0]["toolCallId"] == "acp-prompt-keepalive"
+    assert keepalive_updates[0]["status"] == "in_progress"
+    keepalive_completed = [
+        update
+        for update in updates
+        if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") == "acp.prompt.keepalive.completed"
+    ]
+    assert keepalive_completed
+    assert keepalive_completed[0]["sessionUpdate"] == "tool_call_update"
+    assert keepalive_completed[0]["toolCallId"] == "acp-prompt-keepalive"
+    assert keepalive_completed[0]["status"] == "completed"
+
+
+def test_acp_websocket_prompt_emits_visible_model_error_chunk(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = HttpStatusFailingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(thread_id="acp-visible-model-error", cwd=str(tmp_path)),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "hello"}]},
+            }
+        )
+
+        visible_error = ""
+        final_reply = ""
+        for _ in range(20):
+            packet = websocket.receive_json()
+            if packet.get("id") == 2 and isinstance(packet.get("result"), dict):
+                final_reply = packet["result"].get("result", {}).get("reply") or ""
+            if packet.get("method") != "session/update":
+                if final_reply:
+                    break
+                continue
+            update = packet.get("params", {}).get("update", {})
+            if update.get("_meta", {}).get("jetlinksRuntimeEvent", {}).get("type") != "acp.prompt.error":
+                continue
+            visible_error = update.get("content", {}).get("text") or ""
+            if final_reply:
+                break
+
+    assert "请求处理失败：模型连接/调用失败：模型服务返回 500 Internal Server Error" in visible_error
+    assert "http://model.example/v1/chat/completions" in visible_error
+    assert '{"error":{"message":"","type":"InternalServerError","param":null,"code":500}}' in visible_error
+    assert "请求处理失败：模型连接/调用失败：模型服务返回 500 Internal Server Error" in final_reply
+    assert "http://model.example/v1/chat/completions" in final_reply
+
+
+>>>>>>> agent-v2
 def test_acp_websocket_new_session_defaults_session_id_to_thread_id() -> None:
     client = TestClient(create_app())
     thread_id = f"acp-same-id-{uuid.uuid4().hex}"
@@ -815,6 +965,576 @@ def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
     assert second.max_tokens == 2000
 
 
+<<<<<<< HEAD
+=======
+def test_acp_websocket_top_level_app_template_preserves_template_config_options(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "cwd": str(tmp_path),
+                    "threadId": "acp-screen-template",
+                    "appTemplateName": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        session_id = created["sessionId"]
+
+        assert created["appTemplateName"] == "70aaee52-99c2-49f5-a9c7-fb746821d3df"
+        assert created["runtimeOptions"]["selectedSkills"] == ["generate-screen-skill"]
+        assert created["runtimeOptions"]["configOptions"]["auto_execute_primary_skill"] is True
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "生成一个可视化大屏"}],
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.thread_id == "acp-screen-template"
+    assert options.selected_skills == ["generate-screen-skill"]
+    assert options.config_options["auto_execute_primary_skill"] is True
+    assert options.config_options["max_tool_rounds"] == 3
+
+
+def test_acp_websocket_prompt_expands_platform_skill_alias_before_runtime(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(thread_id="acp-platform-skill-alias", cwd=str(tmp_path)),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": _acp_params(
+                    sessionId=session_id,
+                    prompt=[{"type": "text", "text": "生成一个园区本月用电的echarts的柱状图组件"}],
+                    runtime_options={
+                        "selectedSkills": ["178054047680069qndudx"],
+                        "configOptions": {"auto_execute_primary_skill": True},
+                    },
+                ),
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.selected_skills == ["jetlinks-ai-component"]
+    assert options.config_options["auto_execute_primary_skill"] is True
+
+
+def test_acp_websocket_expands_plugin_skill_alias_from_loader_root_dir(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents_dir = tmp_path / "config" / "agents"
+    plugin_root = tmp_path / "plugins" / "skills" / "workspace-platform-id"
+    agents_dir.mkdir(parents=True)
+    plugin_root.mkdir(parents=True)
+    (agents_dir / "default.json").write_text(
+        json.dumps({"name": "default", "display_name": "Default"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (plugin_root / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "workspace-platform-id",
+                "name": "Workspace Platform Skill",
+                "version": "1.0.0",
+                "skills": ["manifest.json"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "workspace-runtime-skill",
+                "description": "Workspace runtime skill.",
+                "output_kind": "markdown",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "loader", AgentConfigLoader(tmp_path))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    monkeypatch.setattr(acp_api, "model_manager", ModelManager())
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(
+                    thread_id="acp-root-dir-alias",
+                    cwd=str(tmp_path),
+                    runtime_options={"selectedSkills": ["workspace-platform-id"]},
+                ),
+            }
+        )
+        created = websocket.receive_json()["result"]
+        session_id = created["sessionId"]
+        assert created["runtimeOptions"]["selectedSkills"] == ["workspace-runtime-skill"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": _acp_params(
+                    sessionId=session_id,
+                    prompt=[{"type": "text", "text": "hello"}],
+                ),
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert runtime.requests[0].runtime_options.selected_skills == ["workspace-runtime-skill"]
+
+
+def test_acp_websocket_accepts_platform_session_init_and_agent_command(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session.init",
+                "params": {
+                    "agentId": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                    "parameters": {
+                        "appTemplateName": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                    },
+                    "tools": [],
+                    "expands": {},
+                    "sessionName": "生成一个可视化大屏",
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "agent.command",
+                "params": {
+                    "command": "Chat",
+                    "arguments": {
+                        "type": "generation",
+                        "content": "生成一个可视化大屏",
+                    },
+                },
+            }
+        )
+        accepted = websocket.receive_json()
+        assert accepted["id"] == 2
+        assert accepted["result"]["accepted"] is True
+        _receive_platform_end(websocket)
+
+    assert created["appTemplateName"] == "70aaee52-99c2-49f5-a9c7-fb746821d3df"
+    assert len(runtime.requests) == 1
+    request = runtime.requests[0]
+    assert request.messages[-1].content == "生成一个可视化大屏"
+    assert request.runtime_options.app_template_name == "70aaee52-99c2-49f5-a9c7-fb746821d3df"
+    assert request.runtime_options.selected_skills == ["generate-screen-skill"]
+    assert request.runtime_options.config_options["auto_execute_primary_skill"] is True
+
+
+def test_acp_websocket_platform_agent_command_emits_platform_stream_events(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session.init",
+                "params": {
+                    "agentId": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                    "parameters": {},
+                    "tools": [],
+                    "expands": {},
+                    "sessionName": "生成一个可视化大屏",
+                },
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "agent.command",
+                "params": {
+                    "command": "Chat",
+                    "arguments": {
+                        "type": "generation",
+                        "content": "生成一个可视化大屏",
+                    },
+                },
+            }
+        )
+
+        platform_types: list[str] = []
+        platform_chunks: list[str] = []
+        platform_end_params: dict[str, Any] | None = None
+        agent_message_types: list[str] = []
+        agent_message_response_ids: set[str] = set()
+        accepted: dict[str, Any] | None = None
+        session_event_ended = False
+        agent_message_ended = False
+        for _ in range(60):
+            packet = websocket.receive_json()
+            if packet.get("id") == 2:
+                accepted = packet
+                continue
+            params = packet.get("params")
+            if packet.get("method") == "session.event" and isinstance(params, dict):
+                event_type = params.get("type")
+                if isinstance(event_type, str):
+                    platform_types.append(event_type)
+                    if event_type == "session.response_end":
+                        session_event_ended = True
+                event_params = params.get("params")
+                if isinstance(event_params, dict):
+                    if event_type == "session.response_end":
+                        platform_end_params = event_params
+                    chunk = event_params.get("chunk")
+                    if isinstance(chunk, dict) and isinstance(chunk.get("content"), str):
+                        platform_chunks.append(chunk["content"])
+            if packet.get("method") == "agent.message" and isinstance(params, dict):
+                event_type = params.get("type")
+                if isinstance(event_type, str):
+                    agent_message_types.append(event_type)
+                    if event_type == "session.response_end":
+                        agent_message_ended = True
+                headers = params.get("headers")
+                if isinstance(headers, dict) and isinstance(headers.get("responseId"), str):
+                    agent_message_response_ids.add(headers["responseId"])
+            if session_event_ended and agent_message_ended:
+                break
+
+    assert accepted is not None
+    assert accepted["result"]["accepted"] is True
+    assert session_event_ended is True
+    assert agent_message_ended is True
+    assert "session.response_start" in platform_types
+    assert "session.response_chunk" in platform_types
+    assert platform_types[-1] == "session.response_end"
+    assert "session.response_start" in agent_message_types
+    assert "session.response_chunk" in agent_message_types
+    assert agent_message_types[-1] == "session.response_end"
+    assert len(agent_message_response_ids) == 1
+    assert platform_chunks == ["ok"]
+    assert platform_end_params is not None
+    assert platform_end_params["stopReason"] == "end_turn"
+    assert platform_end_params["status"] == "completed"
+    assert platform_end_params["reply"] == "ok"
+    assert platform_end_params["content"] == [{"type": "text", "text": "ok"}]
+
+
+def test_acp_websocket_platform_agent_command_emits_error_chunk(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = FailingAcpRuntime(
+        ArtifactStore(root_dir=tmp_path / "threads"),
+        "Server error '500 Internal Server Error'; response body: {\"error\":{\"code\":500}}",
+    )
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session.init",
+                "params": {
+                    "agentId": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                    "parameters": {},
+                    "tools": [],
+                    "expands": {},
+                    "sessionName": "生成一个可视化大屏",
+                },
+            }
+        )
+        websocket.receive_json()
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "agent.command",
+                "params": {
+                    "command": "Chat",
+                    "arguments": {
+                        "type": "generation",
+                        "content": "生成一个可视化大屏",
+                    },
+                },
+            }
+        )
+
+        chunks: list[str] = []
+        end_params: dict[str, Any] | None = None
+        accepted: dict[str, Any] | None = None
+        for _ in range(80):
+            packet = websocket.receive_json()
+            if packet.get("id") == 2:
+                accepted = packet
+                continue
+            if packet.get("method") != "session.event":
+                continue
+            params = packet.get("params")
+            if not isinstance(params, dict):
+                continue
+            event_params = params.get("params")
+            if not isinstance(event_params, dict):
+                continue
+            if params.get("type") == "session.response_chunk":
+                chunk = event_params.get("chunk")
+                if isinstance(chunk, dict) and isinstance(chunk.get("content"), str):
+                    chunks.append(chunk["content"])
+            if params.get("type") == "session.response_end":
+                end_params = event_params
+                break
+
+    assert accepted is not None
+    assert accepted["result"]["accepted"] is True
+    assert chunks == [
+        "请求处理失败：Server error '500 Internal Server Error'; response body: {\"error\":{\"code\":500}}"
+    ]
+    assert end_params is not None
+    assert end_params["stopReason"] == "error"
+    assert end_params["error"] == "Server error '500 Internal Server Error'; response body: {\"error\":{\"code\":500}}"
+
+
+def test_acp_websocket_trace_logs_full_conversation_payloads(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    monkeypatch.setattr(acp_transport_ws, "ACP_WS_TRACE_PAYLOADS", True)
+    monkeypatch.setattr(acp_transport_ws, "ACP_WS_TRACE_MAX_CHARS", 0)
+    client = TestClient(create_app())
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+            websocket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "session.init",
+                    "params": {
+                        "agentId": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                        "runtimeOptions": {"api_key": "incoming-secret-key"},
+                    },
+                }
+            )
+            websocket.receive_json()
+
+            websocket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "agent.command",
+                    "params": {
+                        "command": "Chat",
+                        "arguments": {
+                            "type": "generation",
+                            "content": "完整日志测试",
+                        },
+                    },
+                }
+            )
+            _receive_platform_end(websocket)
+
+    trace_logs = "\n".join(record.getMessage() for record in caplog.records if "acp ws trace" in record.getMessage())
+
+    assert "direction=recv" in trace_logs
+    assert "direction=send" in trace_logs
+    assert '"method":"agent.command"' in trace_logs
+    assert '"method":"agent.message"' in trace_logs
+    assert "完整日志测试" in trace_logs
+    assert '"api_key":"********"' in trace_logs
+    assert "incoming-secret-key" not in trace_logs
+    assert "abc@123" not in trace_logs
+
+
+def test_acp_websocket_logs_connection_lifecycle(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+            websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            websocket.receive_json()
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "acp ws connected connection_id=acp-ws-" in logs
+    assert "path=/api/acp/ws" in logs
+    assert "requested_subprotocols=acp.v1" in logs
+    assert "accepted_subprotocol=acp.v1" in logs
+    assert "acp ws received connection_id=acp-ws-" in logs
+    assert "method=initialize" in logs
+    assert "acp ws cleanup complete connection_id=acp-ws-" in logs
+    assert "duration_ms=" in logs
+
+
+def test_acp_websocket_accepts_bridge_payload_containers_for_app_template(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "cwd": str(tmp_path),
+                    "threadId": "acp-bridge-template",
+                    "parameters": {
+                        "appTemplateName": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                    },
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        assert created["appTemplateName"] == "70aaee52-99c2-49f5-a9c7-fb746821d3df"
+        assert created["runtimeOptions"]["selectedSkills"] == ["generate-screen-skill"]
+        assert created["runtimeOptions"]["configOptions"]["auto_execute_primary_skill"] is True
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": created["sessionId"],
+                    "prompt": [{"type": "text", "text": "生成一个智慧园区大屏"}],
+                    "arguments": {
+                        "type": "generation",
+                        "content": "生成一个智慧园区大屏",
+                    },
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.thread_id == "acp-bridge-template"
+    assert options.selected_skills == ["generate-screen-skill"]
+    assert options.config_options["auto_execute_primary_skill"] is True
+
+
+def test_acp_websocket_prompt_bridge_container_can_switch_app_template(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": {
+                    "cwd": str(tmp_path),
+                    "threadId": "acp-bridge-prompt-template",
+                },
+            }
+        )
+        created = websocket.receive_json()["result"]
+        assert created["appTemplateName"] is None
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": created["sessionId"],
+                    "prompt": [{"type": "text", "text": "生成一个智慧园区大屏"}],
+                    "arguments": {
+                        "type": "generation",
+                        "content": "生成一个智慧园区大屏",
+                        "appTemplateName": "70aaee52-99c2-49f5-a9c7-fb746821d3df",
+                    },
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.thread_id == "acp-bridge-prompt-template"
+    assert options.app_template_name == "70aaee52-99c2-49f5-a9c7-fb746821d3df"
+    assert options.selected_skills == ["generate-screen-skill"]
+    assert options.config_options["auto_execute_primary_skill"] is True
+
+
+>>>>>>> agent-v2
 def test_acp_websocket_session_new_accepts_standard_meta_extensions(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1090,6 +1810,101 @@ def test_acp_websocket_session_new_uses_app_model_from_config(
     assert options.api_key == "app-key"
     assert options.temperature == 0.4
     assert options.max_tokens == 128
+
+
+def test_acp_websocket_prompt_infers_upload_app_model_from_review_source_id(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agents_dir = tmp_path / "config" / "agents"
+    apps_dir = tmp_path / "config" / "upload" / "apps"
+    agents_dir.mkdir(parents=True)
+    apps_dir.mkdir(parents=True)
+    (agents_dir / "default.json").write_text(
+        json.dumps(
+            {
+                "name": "default",
+                "display_name": "Default",
+                "model": {
+                    "model": "agent-model",
+                    "base_url": "http://agent.local/v1",
+                    "api_key": "agent-key",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (apps_dir / "uploaded-review-app.json").write_text(
+        json.dumps(
+            {
+                "name": "uploaded-review-app",
+                "title": "Uploaded Review App",
+                "agent_name": "default",
+                "runtime_options": {"config_options": {"force_model_config": True}},
+                "models": [
+                    {
+                        "name": "uploaded-model",
+                        "model": "uploaded-model",
+                        "default_model": "uploaded-model",
+                        "base_url": "http://uploaded.local/v1",
+                        "api_key": "uploaded-key",
+                        "temperature": 0.2,
+                        "max_tokens": 321,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "loader", AgentConfigLoader(tmp_path))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    monkeypatch.setattr(acp_api, "model_manager", ModelManager())
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(thread_id="acp-upload-app-inferred", cwd=str(tmp_path)),
+            }
+        )
+        created = websocket.receive_json()["result"]
+        assert created["appTemplateName"] is None
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": created["sessionId"],
+                    "prompt": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "当前复判事件来源reviewSourceId为"
+                                "[uploaded-review-app_source-123]。请执行复判。"
+                            ),
+                        }
+                    ],
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    assert len(runtime.requests) == 1
+    options = runtime.requests[0].runtime_options
+    assert options.app_template_name == "uploaded-review-app"
+    assert options.model_name == "uploaded-model"
+    assert options.base_url == "http://uploaded.local/v1"
+    assert options.api_key == "uploaded-key"
+    assert options.temperature == 0.2
+    assert options.max_tokens == 321
+    assert options.config_options["force_model_config"] is True
 
 
 def test_acp_websocket_session_update_applies_app_model_from_config(

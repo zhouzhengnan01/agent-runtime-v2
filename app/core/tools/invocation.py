@@ -14,6 +14,7 @@ from app.core.memory import MarkdownMemoryStore, MemoryStore
 from app.core.skills import SkillRunner
 from app.core.tools.providers import (
     ArtifactWorkspaceToolProvider,
+    BigscreenToolset,
     DelegateToolProvider,
     LocalToolProvider,
     ManualToolProvider,
@@ -91,6 +92,7 @@ class ToolInvocationService:
             ),
             DelegateToolProvider.source_type: DelegateToolProvider(root_dir=self.root_dir),
             ManualToolProvider.source_type: ManualToolProvider(),
+            BigscreenToolset.source_type: BigscreenToolset(artifact_store=self.artifact_store),
             McpStreamableHttpToolProvider.source_type: McpStreamableHttpToolProvider(),
             McpStdioToolProvider.source_type: McpStdioToolProvider(artifact_store=self.artifact_store),
             MemoryToolProvider.source_type: MemoryToolProvider(memory_store=self.memory_store),

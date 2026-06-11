@@ -1,0 +1,9 @@
+{
+  "id": "fight-review",
+  "name": "争吵检测",
+  "version": "0.1.0",
+  "description": "用于机器视觉复判争吵、打架、肢体冲突等客户行为事件。",
+  "skills": [
+    "skills/fight-review/manifest.json"
+  ]
+}

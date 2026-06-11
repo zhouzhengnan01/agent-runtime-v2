@@ -1,0 +1,94 @@
+{
+  "name": "parking-violation-review",
+  "description": "用于机器视觉复判车辆违规停车、违停、占用禁停区域等车场异常事件。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于车场监控画面中车辆违规停车、车辆违停、占用通道、占用禁停区、堵塞出入口等事件复判。",
+    "keywords": [
+      "违规停车",
+      "违规停车检测",
+      "车辆违停",
+      "车辆违停检测",
+      "违停",
+      "停车异常",
+      "非法停车",
+      "禁停",
+      "占用通道",
+      "占用车道",
+      "占用出入口",
+      "ParkingViolation",
+      "ParkingViolationDetection",
+      "IllegalParking",
+      "IllegalParkingDetection",
+      "ParkingAbnormalDetection",
+      "判定车辆是否在禁停区域停放",
+      "禁停区域停放",
+      "长时间静止",
+      "车轮压线",
+      "装卸货影响通行",
+      "VehicleParkingViolationDetection",
+      "ViolationParkingDetection"
+    ],
+    "examples": [
+      "复判车辆是否存在违规停车",
+      "判断车场画面中车辆是否违停或占用通道",
+      "检查车辆是否停在禁停区域、出入口或通行通道上",
+      "判断车辆是否在禁停区域长时间停放",
+      "检查车辆是否占用通行车道或关键区域"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "vehicle_location",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "parking-violation-review"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "metadata": {
+    "developerCenter": {
+      "domain": "general"
+    }
+  }
+}

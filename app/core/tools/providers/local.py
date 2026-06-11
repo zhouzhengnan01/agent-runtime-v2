@@ -728,6 +728,10 @@ class LocalToolProvider:
                     candidate.relative_to(root.resolve())
                 except ValueError as exc:
                     raise ValueError(f"{scope} path traversal blocked") from exc
+                if scope == "workspace" and suffix and not candidate.exists():
+                    session_candidate = LocalToolProvider._session_cwd_path(arguments, suffix)
+                    if session_candidate is not None and session_candidate.exists():
+                        return session_candidate
                 return candidate
         raw_session_cwd = str(arguments.get("_session_cwd") or "").strip()
         if raw_session_cwd:
@@ -749,6 +753,24 @@ class LocalToolProvider:
             candidate.relative_to(default_root.resolve())
         except ValueError as exc:
             raise ValueError("Thread path traversal blocked") from exc
+        return candidate
+
+    @staticmethod
+    def _session_cwd_path(arguments: dict[str, Any], raw_path: str) -> Path | None:
+        raw_session_cwd = str(arguments.get("_session_cwd") or "").strip()
+        if not raw_session_cwd:
+            return None
+        session_cwd = Path(raw_session_cwd).expanduser().resolve()
+        normalized_raw = raw_path.replace("\\", "/")
+        candidate = (
+            Path(normalized_raw).expanduser().resolve()
+            if Path(normalized_raw).is_absolute()
+            else (session_cwd / normalized_raw.lstrip("/")).resolve()
+        )
+        try:
+            candidate.relative_to(session_cwd)
+        except ValueError as exc:
+            raise ValueError("Session path traversal blocked") from exc
         return candidate
 
     @staticmethod

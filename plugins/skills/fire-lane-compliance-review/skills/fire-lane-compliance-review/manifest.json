@@ -1,0 +1,71 @@
+{
+  "name": "fire-lane-compliance-review",
+  "description": "用于机器视觉复判消防通道占用、堵塞、违规停放和通行受阻等合规事件。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于消防通道监控画面中车辆、杂物、人员或其他物体占用通道、堵塞通行、影响消防合规的事件复判。",
+    "keywords": [
+      "消防通道合规检测",
+      "消防通道占用检测",
+      "消防通道占用",
+      "消防通道堵塞",
+      "消防通道监管",
+      "消防通道",
+      "FireLaneComplianceDetection",
+      "FireLane"
+    ],
+    "examples": [
+      "复判消防通道是否被占用",
+      "判断消防通道是否被车辆或杂物堵塞",
+      "检查消防通道合规检测是否命中"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "blocked_area",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "fire-lane-compliance-review"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  }
+}

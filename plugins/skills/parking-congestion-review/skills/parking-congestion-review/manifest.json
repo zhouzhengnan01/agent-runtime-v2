@@ -1,0 +1,87 @@
+{
+  "name": "parking-congestion-review",
+  "description": "用于机器视觉复判停车场通道、车道、出入口拥堵或排队堵塞等车场异常事件。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于车场监控画面中停车场通道拥堵、车辆排队、车道堵塞、出入口拥堵等事件复判。",
+    "keywords": [
+      "停车场通道拥堵检测",
+      "车辆拥堵检测",
+      "车辆拥堵",
+      "通道拥堵",
+      "车道拥堵",
+      "车场拥堵",
+      "停车场拥堵",
+      "排队",
+      "堵塞",
+      "堵车",
+      "拥堵",
+      "TrafficCongestion",
+      "TrafficCongestionDetection",
+      "ParkingCongestion",
+      "ParkingCongestionDetection",
+      "道路拥堵",
+      "场区车辆拥堵状况",
+      "车辆排队",
+      "低速停滞",
+      "通行受阻",
+      "VehicleCongestionDetection",
+      "RoadCongestionDetection"
+    ],
+    "examples": [
+      "复判停车场通道是否拥堵",
+      "判断车道中是否有多车排队堵塞",
+      "检查出入口或通道是否发生车辆拥堵",
+      "判断停车场通道是否出现车辆拥堵",
+      "检查通行车道内车辆是否排队停滞造成通行受阻"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "vehicle_queue",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "parking-congestion-review"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  }
+}

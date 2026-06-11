@@ -13,15 +13,20 @@ from typing import Any
 from urllib.parse import urlparse
 from xml.etree import ElementTree
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app.api import skills as skills_api
 from app.core.artifacts import ArtifactStore
+from app.core.config import AgentConfig
+from app.core.llm import OpenAICompatibleClient
 from app.core.skills.aliases import expand_skill_aliases, invalidate_skill_alias_cache
 from app.core.skills import SkillRegistry, SkillRunner
 from app.core.skills.plugins import SkillPluginManager
+from app.core.tools.schemas import ToolInvocationResult
 from app.main import create_app
+from app.schemas import Message, RuntimeOptions
 
 
 def test_skill_plugin_upload_registers_and_executes_uploaded_skill(
@@ -76,6 +81,111 @@ def test_skill_plugin_upload_registers_and_executes_uploaded_skill(
     assert "x-param-kind" not in saved_manifest["input_schema"]["properties"]["legacy"]
 
 
+def test_generate_screen_skill_executes_quick_local_bigscreen_generator(tmp_path: Path) -> None:
+    store = ArtifactStore(root_dir=tmp_path / "runtime")
+    paths = store.prepare_thread("generate-screen-local")
+
+    result = SkillRunner(store).run(
+        "generate-screen-skill",
+        {"objective": "生成一个智慧园区运营可视化大屏"},
+        paths,
+    )
+
+    page_path = paths.outputs / "generated-bigscreen" / "page.json"
+    page = json.loads(page_path.read_text(encoding="utf-8"))
+    resource_paths = sorted((paths.outputs / "generated-bigscreen" / "resources").glob("*.resource.json"))
+
+    assert result.skill_name == "generate-screen-skill"
+    assert result.data["execution_type"] == "python_script"
+    assert result.data["primary_artifact"] == "generated-bigscreen/page.json"
+    assert page["canvas"]["width"] == 1920
+    assert page["canvas"]["height"] == 1080
+    assert page["components"]
+    assert len(resource_paths) >= 3
+    assert any(artifact.name == "page.json" for artifact in result.outputs)
+
+
+def test_visualization_bigscreen_retry_uses_stage_aware_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_module = _load_visualization_bigscreen_module()
+    workflow_class = workflow_module.VisualizationBigscreenWorkflow
+    prompts: list[str] = []
+
+    def fake_complete_sync(self: OpenAICompatibleClient, system_prompt: str, messages: list[Message]) -> str:
+        prompts.append(system_prompt)
+        if len(prompts) == 1:
+            request = httpx.Request("POST", "http://llm.local/v1/chat/completions")
+            response = httpx.Response(500, request=request)
+            raise httpx.HTTPStatusError("upstream 500", request=request, response=response)
+        return json.dumps(
+            {
+                "pageJson": {"canvas": {"backgroundImage": {"fileId": ""}}, "components": []},
+                "blueprint": {},
+                "backgroundSvg": "<svg viewBox=\"0 0 1920 1080\"></svg>",
+            }
+        )
+
+    def fake_upload_background(
+        self: Any,
+        paths: Any,
+        runtime_options: RuntimeOptions,
+        recorder: Any,
+    ) -> ToolInvocationResult:
+        return ToolInvocationResult(
+            content=[{"type": "text", "text": "uploaded"}],
+            structured_content={"fileId": "background-file-id"},
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fake_complete_sync)
+    monkeypatch.setattr(workflow_class, "_upload_background", fake_upload_background)
+
+    workflow = workflow_class(ArtifactStore(root_dir=tmp_path / "runtime"))
+    result, events = workflow.run_with_events(
+        AgentConfig(name="default", display_name="Default"),
+        messages=[Message(role="user", content="当前阶段：initialization\n生成园区可视化大屏初始化画布")],
+        attachments=[],
+        thread_id="stage-aware-retry",
+        runtime_options=RuntimeOptions(
+            thread_id="stage-aware-retry",
+            selected_skills=["1780988275767z1lxtrd1"],
+        ),
+    )
+
+    assert result.status == "completed", result.metadata
+    assert len(prompts) == 2
+    assert '"stage": "initialization"' not in prompts[0]
+    assert 'Current stage: "initialization".' in prompts[1]
+    assert "references/blueprint-standard.md" in prompts[1]
+    assert "references/components/custom-chart.json" not in prompts[1]
+    retry_event = next(event for event in events if event.type == "llm.request.retry")
+    assert retry_event.data["strategy"] == "stage_aware_context_retry"
+    assert retry_event.data["stage"] == "initialization"
+    context_event = next(
+        event for event in events if event.type == "skill.context.loaded" and event.data.get("stage_aware") is True
+    )
+    assert context_event.data["skill_name"] == "generate-screen-skill"
+    assert context_event.data["stage"] == "initialization"
+    assert context_event.data["chars"] > 0
+
+
+def _load_visualization_bigscreen_module() -> Any:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "plugins"
+        / "workflows"
+        / "visualization-bigscreen"
+        / "visualization_bigscreen.py"
+    )
+    spec = importlib.util.spec_from_file_location("visualization_bigscreen_test_module", path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_skill_plugin_upload_can_replace_existing_plugin(tmp_path: Path) -> None:
     manager = SkillPluginManager(tmp_path)
 
@@ -85,6 +195,29 @@ def test_skill_plugin_upload_can_replace_existing_plugin(tmp_path: Path) -> None
     assert first.plugin_id == "summary-plugin"
     assert second.plugin_id == "summary-plugin"
     assert "uploaded-summary" in manager.load_skills()
+
+
+def test_skill_plugin_replace_invalidates_alias_cache(tmp_path: Path) -> None:
+    manager = SkillPluginManager(tmp_path)
+
+    manager.install_zip(_alias_plugin_zip("alias-cache-plugin", "Alias Cache Plugin", "old-alias-skill"))
+    assert expand_skill_aliases(["alias-cache-plugin"], tmp_path) == ["old-alias-skill"]
+
+    manager.install_zip(_alias_plugin_zip("alias-cache-plugin", "Alias Cache Plugin", "new-alias-skill"))
+
+    assert expand_skill_aliases(["alias-cache-plugin"], tmp_path) == ["new-alias-skill"]
+
+
+def test_skill_plugin_delete_invalidates_alias_cache(tmp_path: Path) -> None:
+    manager = SkillPluginManager(tmp_path)
+
+    manager.install_zip(_alias_plugin_zip("deleted-alias-plugin", "Deleted Alias Plugin", "deleted-alias-skill"))
+    assert expand_skill_aliases(["deleted-alias-plugin"], tmp_path) == ["deleted-alias-skill"]
+
+    deleted = manager.delete_plugin("deleted-alias-plugin")
+
+    assert deleted.plugin_id == "deleted-alias-plugin"
+    assert expand_skill_aliases(["deleted-alias-plugin"], tmp_path) == ["deleted-alias-plugin"]
 
 
 def test_skill_plugin_local_path_install_registers_skill(
@@ -107,13 +240,81 @@ def test_skill_plugin_local_path_install_registers_skill(
     assert "uploaded-summary" in skills
 
 
+def test_skill_plugin_api_delete_invalidates_alias_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    upload = client.post(
+        "/api/skills/plugins",
+        files={
+            "file": (
+                "api-delete-plugin.zip",
+                _alias_plugin_zip("api-delete-plugin", "API Delete Plugin", "api-delete-skill"),
+                "application/zip",
+            )
+        },
+    )
+    assert upload.status_code == 200
+    assert expand_skill_aliases(["api-delete-plugin"], tmp_path) == ["api-delete-skill"]
+
+    response = client.delete("/api/skills/plugins/api-delete-plugin")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert expand_skill_aliases(["api-delete-plugin"], tmp_path) == ["api-delete-plugin"]
+
+
+def test_skill_plugin_cache_invalidation_api_refreshes_direct_disk_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skills_api, "registry", SkillRegistry(tmp_path))
+    monkeypatch.setattr(skills_api, "plugin_manager", SkillPluginManager(tmp_path))
+    client = TestClient(create_app())
+
+    assert expand_skill_aliases(["direct-platform-plugin"], tmp_path) == ["direct-platform-plugin"]
+    plugin_root = tmp_path / "plugins" / "skills" / "direct-platform-plugin"
+    plugin_root.mkdir(parents=True)
+    (plugin_root / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "direct-platform-plugin",
+                "name": "Direct Platform Plugin",
+                "version": "1.0.0",
+                "skills": ["manifest.json"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "direct-platform-skill",
+                "description": "Direct platform skill.",
+                "output_kind": "markdown",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert expand_skill_aliases(["direct-platform-plugin"], tmp_path) == ["direct-platform-plugin"]
+
+    response = client.post("/api/skills/plugins/cache/invalidate")
+
+    assert response.status_code == 200
+    assert response.json()["invalidated"] is True
+    assert expand_skill_aliases(["direct-platform-plugin"], tmp_path) == ["direct-platform-skill"]
+
+
 def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
     root = Path(__file__).resolve().parents[1] / "plugins" / "skills" / "builtin-artifact-skills" / "skills"
     package_names = {package.name for package in root.iterdir() if package.is_dir()}
     assert "deliverables-export" in package_names
-    complete_package_names = package_names - {"behavior-review"}
     for package in root.iterdir():
-        if not package.is_dir() or package.name not in complete_package_names:
+        if not package.is_dir():
             continue
         assert (package / "SKILL.md").is_file()
         assert (package / "manifest.json").is_file()
@@ -124,7 +325,6 @@ def test_builtin_skill_plugin_uses_complete_skill_packages() -> None:
         assert (package / "sandbox.yml").is_file()
         assert (package / "runner.py").is_file()
         assert (package / "spec_builder.py").is_file()
-
 
 def test_tianjin_park_skill_defaults_to_local_generation_without_backend(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path / "runtime")
@@ -604,63 +804,6 @@ def test_image_composite_spec_builder_uses_two_image_attachments() -> None:
     assert built["model"] == "wan2.7-image-pro"
 
 
-def test_behavior_review_outputs_second_pass_logic_and_continuous_state(tmp_path: Path) -> None:
-    store = ArtifactStore(root_dir=tmp_path / "runtime")
-    paths = store.prepare_thread("behavior-review-continuous")
-
-    result = SkillRunner(store).run(
-        "behavior-review",
-        {
-            "event_id": "alarm-1",
-            "batch_id": "batch-1",
-            "review_round": 3,
-            "text_rule_candidates": ["翻越进入禁区"],
-            "has_visual_evidence": True,
-            "detector_confidence": 0.91,
-            "rule_confidence": 0.8,
-            "continuous_review": True,
-            "poll_interval_seconds": 3,
-        },
-        paths,
-    )
-
-    assert result.data["review_decision"] == "confirm_incident"
-    assert result.data["risk_level"] == "high"
-    assert result.data["risk_score"] >= 0.87
-    assert result.data["continuous_review"]["enabled"] is True
-    assert result.data["continuous_review"]["next_action"] == "poll_next_batch"
-    assert [step["stage"] for step in result.data["second_review_logic"]] == [
-        "文本规则初筛",
-        "证据完整性检查",
-        "模型/规则一致性",
-        "误报抑制",
-        "二次研判结论",
-    ]
-    report = (paths.outputs / "behavior-review.md").read_text(encoding="utf-8")
-    assert "## 二次研判链路" in report
-    assert "## 连续复判" in report
-
-
-def test_behavior_review_suppresses_visual_confirmation_without_evidence(tmp_path: Path) -> None:
-    store = ArtifactStore(root_dir=tmp_path / "runtime")
-    paths = store.prepare_thread("behavior-review-no-evidence")
-
-    result = SkillRunner(store).run(
-        "behavior-review",
-        {
-            "text_rule_candidates": ["老人摔倒"],
-            "has_visual_evidence": False,
-            "continuous_review": True,
-        },
-        paths,
-    )
-
-    assert result.data["review_decision"] == "need_more_evidence"
-    assert result.data["risk_score"] == 0.0
-    assert result.data["manual_review_required"] is True
-    assert result.data["second_review_logic"][1]["decision"] == "evidence_missing"
-
-
 def test_drawio_generation_escapes_attribute_quotes(tmp_path: Path) -> None:
     store = ArtifactStore(root_dir=tmp_path / "runtime")
     paths = store.prepare_thread("drawio-quotes")
@@ -689,7 +832,7 @@ def test_skill_registry_uses_config_skills_as_entity_catalog() -> None:
     assert names == config_names
     assert "public-skill-demo" not in names
     assert "algorithm-engineer-app" not in names
-    assert "behavior-review" in names
+    assert "behavior-review" not in names
     assert "deliverables-export" in names
     for skill in skills:
         assert skill.manifest_path is not None
@@ -1193,6 +1336,81 @@ def test_prompt_only_plugin_skill_is_registered_and_callable_without_runner_or_e
     content = (paths.outputs / "prompt-only-skill-prompt.md").read_text(encoding="utf-8")
     assert "给我生成一个智慧大屏" in content
     assert "Follow these instructions." in content
+
+
+def test_uploaded_skill_plugin_and_config_override_builtin_skill(tmp_path: Path) -> None:
+    builtin_plugin_root = tmp_path / "plugins" / "skills" / "shared-plugin"
+    builtin_plugin_root.mkdir(parents=True)
+    (builtin_plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "shared-plugin",
+  "name": "Shared Plugin",
+  "version": "1.0.0",
+  "skills": ["manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (builtin_plugin_root / "manifest.json").write_text(
+        """
+{
+  "name": "shared-review",
+  "description": "builtin description",
+  "output_kind": "markdown",
+  "generation": true,
+  "quality_template": []
+}
+""",
+        encoding="utf-8",
+    )
+    upload_plugin_root = tmp_path / "plugins" / "upload" / "skills" / "shared-plugin"
+    upload_plugin_root.mkdir(parents=True)
+    (upload_plugin_root / "plugin.json").write_text(
+        """
+{
+  "id": "shared-plugin",
+  "name": "Shared Plugin Upload",
+  "version": "2.0.0",
+  "skills": ["manifest.json"]
+}
+""",
+        encoding="utf-8",
+    )
+    (upload_plugin_root / "manifest.json").write_text(
+        """
+{
+  "name": "shared-review",
+  "description": "upload plugin description",
+  "output_kind": "json",
+  "generation": true,
+  "quality_template": [],
+  "execution": {"type": "template", "template": "upload"}
+}
+""",
+        encoding="utf-8",
+    )
+    upload_config_root = tmp_path / "config" / "upload" / "skills"
+    upload_config_root.mkdir(parents=True)
+    (upload_config_root / "shared-review.json").write_text(
+        """
+{
+  "name": "shared-review",
+  "description": "upload config description",
+  "output_kind": "json",
+  "generation": true,
+  "quality_template": []
+}
+""",
+        encoding="utf-8",
+    )
+
+    loaded = SkillPluginManager(tmp_path).get_loaded_skill("shared-review")
+
+    assert loaded.plugin is not None
+    assert loaded.plugin.root == upload_plugin_root
+    assert loaded.definition.description == "upload config description"
+    assert loaded.definition.execution == {"type": "template", "template": "upload"}
 
 
 def test_public_template_skill_is_discoverable_and_executes(tmp_path: Path) -> None:
@@ -1878,6 +2096,37 @@ def run(skill_name, spec, paths, artifact_store):
         "data": {"length": len(text)}
     }
 """,
+        )
+    return buffer.getvalue()
+
+
+def _alias_plugin_zip(plugin_id: str, plugin_name: str, skill_name: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "plugin.json",
+            json.dumps(
+                {
+                    "id": plugin_id,
+                    "name": plugin_name,
+                    "version": "1.0.0",
+                    "skills": ["manifest.json"],
+                }
+            ),
+        )
+        archive.writestr(
+            "manifest.json",
+            json.dumps(
+                {
+                    "name": skill_name,
+                    "description": skill_name,
+                    "output_kind": "markdown",
+                    "generation": True,
+                    "input_schema": {"type": "object", "additionalProperties": True},
+                    "output_schema": {"type": "object", "additionalProperties": True},
+                    "sandbox": {"enabled": False, "request_schema_version": "skill-run.v1"},
+                }
+            ),
         )
     return buffer.getvalue()
 

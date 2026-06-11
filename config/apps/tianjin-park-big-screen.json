@@ -11,8 +11,7 @@
     "tianjin-chatbi-analyst",
     "tianjin-system-monitor",
     "tianjin-sentiment-monitor",
-    "tianjin-rpa-operator",
-    "behavior-review"
+    "tianjin-rpa-operator"
   ],
   "selected_mcp_tools": [],
   "prompt_examples": [

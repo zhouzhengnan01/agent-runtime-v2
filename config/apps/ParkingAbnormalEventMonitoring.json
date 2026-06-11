@@ -1,0 +1,35 @@
+{
+  "category": "general",
+  "agent_name": "default",
+  "name": "ParkingAbnormalEventMonitoring",
+  "title": "车场异常事件监控",
+  "description": "",
+  "workflow": "parking_abnormal_review",
+  "selected_skills": [
+    "parking-violation-review",
+    "parking-congestion-review"
+  ],
+  "runtime_options": {
+    "config_options": {
+      "force_model_config": true
+    }
+  },
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "chat"
+      ],
+      "priority_features": [],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://218.67.242.10:59202/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "api_key": "abc@123",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048
+    }
+  ]
+}

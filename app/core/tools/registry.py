@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, List
 
 from app.core.artifacts import ArtifactStore
+from app.core.resources import ResourceRoots, first_existing_file
 from app.core.skills import SkillRegistry, SkillRunner
 from app.core.tools.providers.artifact_workspace import artifact_workspace_tool_definitions
 from app.core.tools.providers.delegate import delegate_tool_definitions
@@ -13,6 +14,7 @@ from app.core.tools.providers.local import local_tool_definitions
 from app.core.tools.providers.markdown_memory import markdown_memory_tool_definitions
 from app.core.tools.providers.memory import memory_tool_definitions
 from app.core.tools.providers.skill import SkillToolProvider
+from app.core.tools.providers.visualization import bigscreen_tool_definitions
 from app.core.tools.schemas import ToolDefinition
 
 
@@ -30,7 +32,10 @@ class ToolRegistry:
         skill_runner: SkillRunner | None = None,
     ) -> None:
         self.root_dir = root_dir or Path(__file__).resolve().parents[3]
-        self.config_path = self.root_dir / "config" / "mcp" / "tools.json"
+        self.resources = ResourceRoots.from_project_root(self.root_dir)
+        self.config_dirs = self.resources.config_dirs("mcp")
+        self.config_dir = self.resources.writable_config_dir("mcp")
+        self.config_path = self.config_dir / "tools.json"
         self.skill_provider = SkillToolProvider(
             artifact_store=artifact_store,
             skill_registry=skill_registry or SkillRegistry(self.root_dir),
@@ -72,6 +77,7 @@ class ToolRegistry:
     def _builtin_tools() -> List[ToolDefinition]:
         return (
             local_tool_definitions()
+            + bigscreen_tool_definitions()
             + artifact_workspace_tool_definitions()
             + delegate_tool_definitions()
             + memory_tool_definitions()
@@ -79,10 +85,11 @@ class ToolRegistry:
         )
 
     def _custom_tools(self) -> List[ToolDefinition]:
-        if not self.config_path.is_file():
+        config_path = first_existing_file(self.config_dirs, "tools.json")
+        if config_path is None:
             return []
         try:
-            raw_content = self.config_path.read_text(encoding="utf-8")
+            raw_content = config_path.read_text(encoding="utf-8")
             if not raw_content.strip():
                 return []
             data = json.loads(raw_content)

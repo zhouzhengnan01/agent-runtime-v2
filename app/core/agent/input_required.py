@@ -49,13 +49,13 @@ def required_inputs_for_result(result: AgentRunResult, request: ChatRequest) -> 
 def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
     # Preflight guards catch common long-running flows before the agent spends
     # tool rounds only to discover that basic files were never provided.
-    # Named workflows own their own multi-turn input state. In particular,
-    # yolo_training_flow can require datasets.zip, image1.zip, and image2.zip
-    # together, so generic skill-level preflight must not collapse that into a
-    # single dataset upload prompt before the workflow gets control.
+    # Named workflows can have their own multi-turn input contract. YOLO
+    # training, for example, asks for dataset/image1/image2 together.
     if _workflow_owns_input_contract(request):
         return []
     selected_skills = {name.strip() for name in request.runtime_options.selected_skills if name.strip()}
+    if _requires_clutter_review_image(request, selected_skills) and not _has_attachment(request.attachments, "image"):
+        return [_requirement("image", reason="Clutter review requires an uploaded image.")]
     if _requires_algorithm_training_inputs(request, selected_skills) and not _has_algorithm_training_input(request):
         return [
             _requirement(
@@ -66,14 +66,24 @@ def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
                 ),
             )
         ]
-    if _requires_data_auto_annotation(request, selected_skills) and not _has_data_auto_annotation_input(request):
-        return [_requirement("dataset", reason="Data auto annotation requires uploaded images or a dataset archive.")]
+    if _requires_data_auto_annotation(request, selected_skills) and not _has_attachment(request.attachments, "image"):
+        return [_requirement("image", reason="Data auto annotation requires an uploaded image.")]
     return []
 
 
 def _workflow_owns_input_contract(request: ChatRequest) -> bool:
     workflow = str(request.runtime_options.workflow or "").strip()
     return workflow in {"yolo_training_flow", "smoking_detection_training_flow"}
+
+
+def _requires_clutter_review_image(request: ChatRequest, selected_skills: set[str]) -> bool:
+    if request.runtime_options.workflow == "parking_abnormal_review":
+        return False
+    if "17803963378248hh02dvt" in selected_skills:
+        return True
+    if request.runtime_options.app_template_name == "ParkingAbnormalEventMonitoring":
+        return True
+    return False
 
 
 def _requires_data_auto_annotation(request: ChatRequest, selected_skills: set[str]) -> bool:
@@ -84,6 +94,8 @@ def _requires_data_auto_annotation(request: ChatRequest, selected_skills: set[st
             image_markers: tuple[str, ...] = ("图片", "图像", "照片", "截图", "image", "photo", "picture")
             return _mentions_any(text, annotation_markers) and _mentions_any(text, image_markers)
         return True
+    if _is_algorithm_training_flow(selected_skills):
+        return False
     text = _last_user_text(request).lower()
     if not text:
         return False
@@ -159,10 +171,6 @@ def _has_algorithm_training_input(request: ChatRequest) -> bool:
     return False
 
 
-def _has_data_auto_annotation_input(request: ChatRequest) -> bool:
-    return _has_attachment(request.attachments, "image") or _has_attachment(request.attachments, "dataset")
-
-
 def _mentions_dataset_path(text: str) -> bool:
     lowered = text.lower()
     if "data.yaml" in lowered or "data.yml" in lowered:
@@ -203,8 +211,6 @@ def _normalize_requirement(value: object) -> dict[str, Any] | None:
 def _infer_required_inputs(result: AgentRunResult, request: ChatRequest) -> list[dict[str, Any]]:
     reply_text = result.reply.lower()
     if not _looks_like_input_request(reply_text):
-        return []
-    if _has_attachment(request.attachments, "dataset") and _mentions_any(reply_text, ("image", "photo", "picture")):
         return []
 
     requirements: list[dict[str, Any]] = []
