@@ -1462,12 +1462,13 @@ def _review_source_id_from_params(params: dict[str, Any]) -> str | None:
     for container in _bridge_payload_containers(params):
         sources.extend([container.get("reviewSourceId"), container.get("review_source_id")])
 
+    prompt_sources: list[object] = []
     prompt_text, _attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
     if prompt_text:
-        sources.append(prompt_text)
+        prompt_sources.append(prompt_text)
     for message in params.get("messages") if isinstance(params.get("messages"), list) else []:
         if isinstance(message, dict):
-            sources.append(message.get("content"))
+            prompt_sources.append(message.get("content"))
 
     for source in sources:
         text = _string(source)
@@ -1481,6 +1482,15 @@ def _review_source_id_from_params(params: dict[str, Any]) -> str | None:
                     return value
         elif "_" in text:
             return text
+    for source in prompt_sources:
+        text = _string(source)
+        if text is None or "reviewSourceId" not in text:
+            continue
+        match = _REVIEW_SOURCE_ID_RE.search(text)
+        if match:
+            value = match.group(1).strip()
+            if value:
+                return value
     return None
 
 
@@ -1668,6 +1678,18 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
             "sessionUpdate": "agent_message_chunk",
             "content": {"type": "text", "text": text},
         }
+    if event.type == "visualization.initialization.ready":
+        return {
+            **base,
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": _visualization_initialization_ready_text(data)},
+        }
+    if event.type == "visualization.region.ready":
+        return {
+            **base,
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": _visualization_region_ready_text(data)},
+        }
     if event.type == "tool.started":
         tool_name = _string(data.get("tool_name")) or "tool"
         return {
@@ -1734,6 +1756,45 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
         "sessionUpdate": "agent_thought_chunk",
         "content": {"type": "text", "text": _runtime_event_summary(event)},
     }
+
+
+def _visualization_initialization_ready_text(data: dict[str, Any]) -> str:
+    page_json = data.get("pageJson") if isinstance(data.get("pageJson"), dict) else {}
+    blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
+    payload = {
+        "_visualizationStage": "initialization_ready",
+        "pageJson": page_json,
+        "blueprint": blueprint,
+        "regions": [],
+        "components": [],
+        "backgroundFileId": _string(data.get("background_file_id")) or "",
+        "regionCount": data.get("region_count") if isinstance(data.get("region_count"), int) else 0,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _visualization_region_ready_text(data: dict[str, Any]) -> str:
+    region_id = _string(data.get("regionId")) or _string(data.get("region_id"))
+    components = data.get("components") if isinstance(data.get("components"), list) else []
+    status = _string(data.get("status")) or "completed"
+    payload = {
+        "_visualizationStage": "region_ready",
+        "regionId": region_id,
+        "status": status,
+        "components": components,
+        "region": {
+            "regionId": region_id,
+            "components": components,
+        },
+        "componentCount": len(components),
+        "completedCount": data.get("completed_count") if isinstance(data.get("completed_count"), int) else 0,
+        "regionCount": data.get("region_count") if isinstance(data.get("region_count"), int) else 0,
+        "durationMs": data.get("duration_ms") if isinstance(data.get("duration_ms"), int | float) else 0,
+    }
+    error = _string(data.get("error"))
+    if error:
+        payload["error"] = error
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _resource_content_updates(event: ChatEvent, content: list[dict[str, Any]]) -> list[dict[str, Any]]:

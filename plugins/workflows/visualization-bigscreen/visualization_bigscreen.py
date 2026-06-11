@@ -3,9 +3,11 @@ from __future__ import annotations
 import copy
 import httpx
 import json
+import os
 import re
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
@@ -16,7 +18,6 @@ from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm import OpenAICompatibleClient
 from app.core.skills import SkillRegistry
-from app.core.skills.context_files import SkillMarkdownContext, load_skill_markdown_context
 from app.core.tools.invocation import ToolInvocationService
 from app.schemas import AgentRunResult, Attachment, ChatEvent, Message, RuntimeOptions
 
@@ -27,13 +28,39 @@ BACKGROUND_PATH = f"{BIGSCREEN_OUTPUT_DIR}/background.svg"
 RESOURCE_DIR = f"{BIGSCREEN_OUTPUT_DIR}/resources"
 ADVANCED_COMPONENT_DIR = f"{BIGSCREEN_OUTPUT_DIR}/advanced-components"
 DEFAULT_RESOURCE_GROUP = "[\"vis_oneself_dimension_line-chart\"]"
-PSEUDO_TEMPLATE_FILE = (
-    Path(__file__).resolve().parents[2]
-    / "skills"
-    / "1780654477379uykyzod7"
-    / "references"
-    / "components"
-    / "pseudo.json"
+DEFAULT_FULL_REGION_CONCURRENCY = 5
+REGION_TITLE_FONT: dict[str, Any] = {
+    "colorType": "default",
+    "color": "rgba(114,232,255,1)",
+    "color1": "rgba(114,232,255,1)",
+    "color2": "rgba(255,255,255,1)",
+    "gradientAngle": 180,
+    "fontSize": 20,
+    "fontWeight": "bold",
+    "fontFamily": "Microsoft YaHei",
+    "fontStyle": "normal",
+    "verticalAlign": "center",
+    "horizontalAlign": "left",
+    "isTextShadow": True,
+    "textShadow": "0 0 10px rgba(64,215,255,0.68)",
+    "paddingTop": 0,
+    "paddingBottom": 0,
+    "paddingLeft": 0,
+    "paddingRight": 0,
+}
+REGION_TITLE_TEXT_PROPS: dict[str, Any] = {
+    "scroll": False,
+    "speed": 100,
+    "sweepLight": False,
+    "sweepLightSpeed": 2,
+    "sweepLightColor": "rgba(255,255,255,0.6)",
+}
+SKILLS_ROOT = Path(__file__).resolve().parents[2] / "skills"
+DEFAULT_VISUALIZATION_SKILL = "ai-vis-page"
+VISUALIZATION_SKILL_NAMES = {DEFAULT_VISUALIZATION_SKILL, "1780654477379uykyzod7", "1780988275767z1lxtrd1"}
+PSEUDO_TEMPLATE_FILES = (
+    SKILLS_ROOT / DEFAULT_VISUALIZATION_SKILL / "references" / "components" / "pseudo.json",
+    SKILLS_ROOT / "1780654477379uykyzod7" / "references" / "components" / "pseudo.json",
 )
 
 
@@ -193,7 +220,7 @@ class VisualizationBigscreenWorkflow:
         )
 
         prompt_text = _last_user_text(messages)
-        stage = _detect_stage(prompt_text)
+        stage = _detect_stage(prompt_text, runtime_options)
         recorder.emit("visualization.stage.detected", {"stage": stage})
 
         try:
@@ -201,6 +228,8 @@ class VisualizationBigscreenWorkflow:
                 reply, metadata = self._run_initialization(agent_config, messages, paths, runtime_options, recorder)
             elif stage == "region":
                 reply, metadata = self._run_region(agent_config, messages, paths, runtime_options, recorder)
+            elif stage == "full":
+                reply, metadata = self._run_full_generation(agent_config, messages, paths, runtime_options, recorder)
             else:
                 raise ValueError("未识别可视化生成阶段，请在提示词中包含 当前阶段：initialization 或 当前阶段：region。")
         except Exception as exc:
@@ -287,7 +316,34 @@ class VisualizationBigscreenWorkflow:
     ) -> tuple[str, dict[str, Any]]:
         prompt_text = _last_user_text(messages)
         requested_region_id = _requested_region_id(prompt_text)
-        recorder.emit("llm.started", _llm_event_payload(agent_config, runtime_options))
+        payload = self._generate_region_payload(
+            agent_config,
+            messages,
+            runtime_options,
+            recorder,
+            requested_region_id=requested_region_id,
+            prompt_text=prompt_text,
+        )
+        metadata = self._finalize_region_payload(payload, paths, runtime_options, recorder)
+        reply = _json_reply({"regionId": payload["regionId"], "components": payload["components"]})
+        return reply, metadata
+
+    def _generate_region_payload(
+        self,
+        agent_config: AgentConfig,
+        messages: list[Message],
+        runtime_options: RuntimeOptions,
+        recorder: EventRecorder,
+        *,
+        requested_region_id: str = "",
+        prompt_text: str = "",
+    ) -> dict[str, Any]:
+        prompt_text = prompt_text or _last_user_text(messages)
+        requested_region_id = requested_region_id or _requested_region_id(prompt_text)
+        llm_event = _llm_event_payload(agent_config, runtime_options)
+        if requested_region_id:
+            llm_event["region_id"] = requested_region_id
+        recorder.emit("llm.started", llm_event)
         llm_reply = self._complete_json(
             agent_config,
             runtime_options,
@@ -307,8 +363,30 @@ class VisualizationBigscreenWorkflow:
         _validate_component_types(components)
         _validate_pseudo_components(components)
         _validate_region_title_component(region_id, _string(payload.get("regionTitle")), components)
+        _normalize_region_title_component(region_id, _string(payload.get("regionTitle")), components)
         _validate_map_intent_components(region_id, prompt_text, _string(payload.get("regionTitle")), components)
         resources = _resources_from_payload(payload)
+        resources.extend(_resources_from_components(components))
+        return {
+            "regionId": region_id,
+            "components": components,
+            "advancedComponents": advanced_components,
+            "resources": resources,
+        }
+
+    def _finalize_region_payload(
+        self,
+        payload: dict[str, Any],
+        paths: ThreadPaths,
+        runtime_options: RuntimeOptions,
+        recorder: EventRecorder,
+    ) -> dict[str, Any]:
+        region_id = _string(payload.get("regionId"))
+        components = _list(payload.get("components"))
+        advanced_components = [dict(item) for item in _list(payload.get("advancedComponents")) if isinstance(item, dict)]
+        resources = _resources_from_payload(payload)
+        if not resources:
+            resources = [dict(item) for item in _list(payload.get("resources")) if isinstance(item, dict)]
         resources.extend(_resources_from_components(components))
         resources.extend(
             self._process_advanced_components(
@@ -339,8 +417,254 @@ class VisualizationBigscreenWorkflow:
             self._save_resource(normalized, runtime_options, recorder)
             saved_count += 1
         _validate_component_resources(components, resources)
-        reply = _json_reply({"regionId": region_id, "components": components})
-        return reply, {"resource_save_count": saved_count, "advanced_component_count": len(advanced_components)}
+        return {"resource_save_count": saved_count, "advanced_component_count": len(advanced_components)}
+
+    def _run_full_generation(
+        self,
+        agent_config: AgentConfig,
+        messages: list[Message],
+        paths: ThreadPaths,
+        runtime_options: RuntimeOptions,
+        recorder: EventRecorder,
+    ) -> tuple[str, dict[str, Any]]:
+        full_started_at = time.perf_counter()
+        initialization_started_at = time.perf_counter()
+        initialization_reply, initialization_metadata = self._run_initialization(
+            agent_config,
+            messages,
+            paths,
+            runtime_options,
+            recorder,
+        )
+        initialization_payload = _loads_json_object(initialization_reply)
+        page_json = _normalize_page_json(_dict(initialization_payload.get("pageJson")))
+        blueprint = _normalize_blueprint(_dict(initialization_payload.get("blueprint")))
+        regions = _regions_for_full_generation(blueprint)
+        recorder.emit(
+            "visualization.full.initialization.completed",
+            {
+                "stage": "full",
+                "region_count": len(regions),
+                "duration_ms": round((time.perf_counter() - initialization_started_at) * 1000, 3),
+                "background_file_id": initialization_metadata.get("background_file_id"),
+            },
+        )
+        recorder.emit(
+            "visualization.initialization.ready",
+            {
+                "stage": "full",
+                "pageJson": page_json,
+                "blueprint": blueprint,
+                "background_file_id": initialization_metadata.get("background_file_id"),
+                "region_count": len(regions),
+            },
+        )
+
+        max_workers = _full_region_concurrency(runtime_options, len(regions))
+        original_prompt = _last_user_text(messages)
+        region_generation_started_at = time.perf_counter()
+        recorder.emit(
+            "visualization.region.concurrent.batch_started",
+            {"stage": "full", "region_count": len(regions), "max_workers": max_workers},
+        )
+
+        generated_by_region: dict[str, dict[str, Any]] = {}
+        finalized_by_region: dict[str, dict[str, Any]] = {}
+        region_errors: dict[str, str] = {}
+        region_durations_ms: dict[str, float] = {}
+        completed_count = 0
+
+        def generate_region(region: dict[str, Any]) -> tuple[str, dict[str, Any], float]:
+            region_id = _string(region.get("id"))
+            region_prompt = _full_region_prompt(original_prompt, region, blueprint)
+            region_messages = [Message(role="user", content=region_prompt)]
+            started_at = time.perf_counter()
+            payload = self._generate_region_payload(
+                agent_config,
+                region_messages,
+                runtime_options,
+                recorder,
+                requested_region_id=region_id,
+                prompt_text=region_prompt,
+            )
+            return region_id, payload, round((time.perf_counter() - started_at) * 1000, 3)
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="visual-region") as executor:
+            futures = {}
+            for index, region in enumerate(regions, start=1):
+                region_id = _string(region.get("id"))
+                recorder.emit(
+                    "visualization.region.concurrent.submitted",
+                    {
+                        "stage": "full",
+                        "region_id": region_id,
+                        "submitted_count": index,
+                        "region_count": len(regions),
+                        "max_workers": max_workers,
+                    },
+                )
+                futures[executor.submit(generate_region, region)] = region_id
+
+            for future in as_completed(futures):
+                region_id = futures[future]
+                try:
+                    completed_region_id, payload, duration_ms = future.result()
+                except Exception as exc:
+                    completed_count += 1
+                    duration_ms = round((time.perf_counter() - region_generation_started_at) * 1000, 3)
+                    error = str(exc)
+                    payload = _failed_region_payload(region_id, error)
+                    generated_by_region[region_id] = payload
+                    finalized_by_region[region_id] = {"resource_save_count": 0, "advanced_component_count": 0}
+                    region_durations_ms[region_id] = duration_ms
+                    region_errors[region_id] = error
+                    recorder.emit(
+                        "visualization.region.concurrent.failed",
+                        {
+                            "stage": "full",
+                            "region_id": region_id,
+                            "completed_count": completed_count,
+                            "region_count": len(regions),
+                            "duration_ms": duration_ms,
+                            "phase": "generate",
+                            "error": error,
+                        },
+                    )
+                    recorder.emit(
+                        "visualization.region.ready",
+                        _region_ready_event_data(
+                            region_id=region_id,
+                            components=[],
+                            completed_count=completed_count,
+                            region_count=len(regions),
+                            duration_ms=duration_ms,
+                            status="failed",
+                            error=error,
+                        ),
+                    )
+                    continue
+                completed_count += 1
+                region_durations_ms[completed_region_id] = duration_ms
+                recorder.emit(
+                    "visualization.region.concurrent.completed",
+                    {
+                        "stage": "full",
+                        "region_id": completed_region_id,
+                        "completed_count": completed_count,
+                        "region_count": len(regions),
+                        "component_count": len(_list(payload.get("components"))),
+                        "duration_ms": duration_ms,
+                    },
+                )
+                try:
+                    finalize_metadata = self._finalize_region_payload(payload, paths, runtime_options, recorder)
+                except Exception as exc:
+                    error = str(exc)
+                    payload = _failed_region_payload(completed_region_id, error)
+                    finalize_metadata = {"resource_save_count": 0, "advanced_component_count": 0}
+                    region_errors[completed_region_id] = error
+                    recorder.emit(
+                        "visualization.region.concurrent.failed",
+                        {
+                            "stage": "full",
+                            "region_id": completed_region_id,
+                            "completed_count": completed_count,
+                            "region_count": len(regions),
+                            "duration_ms": duration_ms,
+                            "phase": "finalize",
+                            "error": error,
+                        },
+                    )
+                generated_by_region[completed_region_id] = payload
+                finalized_by_region[completed_region_id] = finalize_metadata
+                region_components = _list(payload.get("components"))
+                recorder.emit(
+                    "visualization.region.finalized",
+                    {
+                        "stage": "full",
+                        "region_id": completed_region_id,
+                        "component_count": len(region_components),
+                        "resource_save_count": finalize_metadata.get("resource_save_count"),
+                        "advanced_component_count": finalize_metadata.get("advanced_component_count"),
+                    },
+                )
+                recorder.emit(
+                    "visualization.region.ready",
+                    _region_ready_event_data(
+                        region_id=completed_region_id,
+                        components=region_components,
+                        completed_count=completed_count,
+                        region_count=len(regions),
+                        duration_ms=duration_ms,
+                        status="failed" if completed_region_id in region_errors else "completed",
+                        error=region_errors.get(completed_region_id, ""),
+                        resource_save_count=int(finalize_metadata.get("resource_save_count") or 0),
+                        advanced_component_count=int(finalize_metadata.get("advanced_component_count") or 0),
+                    ),
+                )
+
+        region_generation_wall_ms = round((time.perf_counter() - region_generation_started_at) * 1000, 3)
+        region_results: list[dict[str, Any]] = []
+        total_component_count = 0
+        resource_save_count = 0
+        advanced_component_count = 0
+        for region in regions:
+            region_id = _string(region.get("id"))
+            payload = generated_by_region.get(region_id) or _failed_region_payload(region_id, "region did not return a payload")
+            finalize_metadata = finalized_by_region.get(region_id) or {"resource_save_count": 0, "advanced_component_count": 0}
+            region_components = _list(payload.get("components"))
+            region_result = {
+                "regionId": region_id,
+                "status": "failed" if region_id in region_errors else "completed",
+                "componentCount": len(region_components),
+            }
+            if region_id in region_errors:
+                region_result["error"] = region_errors[region_id]
+            region_results.append(region_result)
+            total_component_count += len(region_components)
+            resource_save_count += int(finalize_metadata.get("resource_save_count") or 0)
+            advanced_component_count += int(finalize_metadata.get("advanced_component_count") or 0)
+
+        final_page_json = copy.deepcopy(page_json)
+        final_page_json["components"] = []
+        full_duration_ms = round((time.perf_counter() - full_started_at) * 1000, 3)
+        reply_payload = {
+            "_visualizationStage": "completed",
+            "streamed": True,
+            "pageJson": final_page_json,
+            "blueprint": blueprint,
+            "regions": region_results,
+            "components": [],
+            "componentCount": total_component_count,
+            "failedRegionCount": len(region_errors),
+        }
+        recorder.emit(
+            "visualization.full.completed",
+            {
+                "stage": "full",
+                "region_count": len(region_results),
+                "component_count": total_component_count,
+                "failed_region_count": len(region_errors),
+                "resource_save_count": resource_save_count,
+                "advanced_component_count": advanced_component_count,
+                "max_workers": max_workers,
+                "duration_ms": full_duration_ms,
+                "duration_max_ms": max(region_durations_ms.values(), default=0),
+                "duration_total_ms": region_generation_wall_ms,
+            },
+        )
+        metadata = {
+            **initialization_metadata,
+            "region_count": len(region_results),
+            "component_count": total_component_count,
+            "failed_region_count": len(region_errors),
+            "resource_save_count": resource_save_count,
+            "advanced_component_count": advanced_component_count,
+            "max_workers": max_workers,
+            "region_generation_wall_ms": region_generation_wall_ms,
+            "region_generation_durations_ms": region_durations_ms,
+        }
+        return _json_reply(reply_payload), metadata
 
     def _complete_json(
         self,
@@ -351,16 +675,28 @@ class VisualizationBigscreenWorkflow:
         recorder: EventRecorder,
         stage: str,
     ) -> str:
-        llm_options = runtime_options.model_copy(
+        llm_base_options, direct_llm = _direct_llm_runtime_options(runtime_options)
+        if direct_llm.get("enabled"):
+            recorder.emit("llm.direct_override.enabled", direct_llm)
+        llm_options = llm_base_options.model_copy(
             update={
                 "selected_mcp_tools": [],
                 "response_format": "json",
-                "config_options": {**runtime_options.config_options, "enableWorkspaceTools": False},
+                "config_options": {**llm_base_options.config_options, "enableWorkspaceTools": False},
             },
             deep=True,
         )
         client = OpenAICompatibleClient(agent_config, runtime_options=llm_options)
-        full_system_prompt = self._prompt_with_selected_skill_context(system_prompt, llm_options, recorder)
+        if llm_options.request_timeout_seconds is not None:
+            client.request_timeout_seconds = llm_options.request_timeout_seconds
+        prompt_text = _last_user_text(messages)
+        full_system_prompt = self._prompt_with_stage_context(
+            system_prompt,
+            llm_options,
+            recorder,
+            stage,
+            prompt_text=prompt_text,
+        )
         try:
             reply = client.complete_sync(full_system_prompt, messages)
         except httpx.HTTPStatusError as exc:
@@ -375,105 +711,10 @@ class VisualizationBigscreenWorkflow:
                     "stage": stage,
                 },
             )
-            compact_prompt = self._prompt_with_stage_context(system_prompt, llm_options, recorder, stage)
-            reply = client.complete_sync(compact_prompt, messages)
+            reply = client.complete_sync(full_system_prompt, messages)
         if not reply.strip():
             raise RuntimeError("模型返回为空。")
         return reply
-
-    def _prompt_with_selected_skill_context(
-        self,
-        system_prompt: str,
-        runtime_options: RuntimeOptions,
-        recorder: EventRecorder,
-    ) -> str:
-        skill_name = next((name.strip() for name in runtime_options.selected_skills if name.strip()), "")
-        if not skill_name:
-            return system_prompt
-        try:
-            skill = SkillRegistry(self.tool_service.root_dir).get(skill_name)
-        except KeyError:
-            recorder.emit(
-                "skill.context.loaded",
-                {
-                    "skill_name": skill_name,
-                    "found": False,
-                    "reason": "skill_not_found",
-                },
-            )
-            return system_prompt
-        context = load_skill_markdown_context(skill)
-        if context is None:
-            recorder.emit(
-                "skill.context.loaded",
-                {
-                    "skill_name": skill_name,
-                    "found": True,
-                    "skill_md_found": False,
-                    "reason": "skill_md_not_found",
-                    "manifest_path": str(skill.manifest_path) if skill.manifest_path is not None else "",
-                    "plugin_root": str(skill.plugin_root) if skill.plugin_root is not None else "",
-                },
-            )
-            return system_prompt
-        references = [
-            {
-                "path": reference.path,
-                "chars": len(reference.content),
-                "truncated": reference.truncated,
-            }
-            for reference in context.references
-        ]
-        recorder.emit(
-            "skill.context.loaded",
-            {
-                "skill_name": skill.name,
-                "requested_skill_name": skill_name,
-                "found": True,
-                "skill_md_found": True,
-                "skill_md_path": context.skill_md_path,
-                "skill_md_chars": len(context.skill_md),
-                "skill_md_truncated": context.skill_md_truncated,
-                "reference_count": len(references),
-                "total_reference_chars": sum(int(item["chars"]) for item in references),
-                "reference_truncated_count": sum(1 for item in references if item["truncated"]),
-                "references": references,
-            },
-        )
-        rendered = _render_workflow_skill_context(context)
-        if not rendered:
-            return system_prompt
-        return f"{system_prompt}\n\n{rendered}"
-
-    def _prompt_with_compact_skill_context(
-        self,
-        system_prompt: str,
-        runtime_options: RuntimeOptions,
-        recorder: EventRecorder,
-    ) -> str:
-        skill_name = next((name.strip() for name in runtime_options.selected_skills if name.strip()), "")
-        if not skill_name:
-            return system_prompt
-        try:
-            skill = SkillRegistry(self.tool_service.root_dir).get(skill_name)
-        except KeyError:
-            return system_prompt
-        package_root = _skill_package_root(skill)
-        if package_root is None:
-            return system_prompt
-        context = _compact_visualization_context(package_root)
-        recorder.emit(
-            "skill.context.loaded",
-            {
-                "skill_name": skill.name,
-                "requested_skill_name": skill_name,
-                "compact": True,
-                "chars": len(context),
-            },
-        )
-        if not context:
-            return system_prompt
-        return f"{system_prompt}\n\n{context}"
 
     def _prompt_with_stage_context(
         self,
@@ -481,38 +722,54 @@ class VisualizationBigscreenWorkflow:
         runtime_options: RuntimeOptions,
         recorder: EventRecorder,
         stage: str,
+        *,
+        prompt_text: str = "",
     ) -> str:
         skill_name = next((name.strip() for name in runtime_options.selected_skills if name.strip()), "")
-        if not skill_name:
-            return system_prompt
+        requested_skill_name = skill_name or DEFAULT_VISUALIZATION_SKILL
+        skill = None
         try:
-            skill = SkillRegistry(self.tool_service.root_dir).get(skill_name)
+            skill = SkillRegistry(self.tool_service.root_dir).get(requested_skill_name)
         except KeyError:
             recorder.emit(
                 "skill.context.loaded",
                 {
-                    "skill_name": skill_name,
+                    "skill_name": requested_skill_name,
                     "found": False,
                     "reason": "skill_not_found",
                     "stage_aware": True,
                     "stage": stage,
                 },
             )
-            return system_prompt
-        package_root = _skill_package_root(skill)
+            if requested_skill_name != DEFAULT_VISUALIZATION_SKILL:
+                try:
+                    skill = SkillRegistry(self.tool_service.root_dir).get(DEFAULT_VISUALIZATION_SKILL)
+                except KeyError:
+                    skill = None
+        package_root = _skill_package_root(skill) if skill is not None else None
+        if package_root is None:
+            package_root = _default_visualization_package_root()
         if package_root is None:
             return system_prompt
-        context = _stage_aware_visualization_context(package_root, stage)
+        context, reference_paths = _stage_aware_visualization_context(
+            package_root,
+            stage,
+            prompt_text=prompt_text,
+            requested_region_id=_requested_region_id(prompt_text),
+        )
         recorder.emit(
             "skill.context.loaded",
             {
-                "skill_name": skill.name,
-                "requested_skill_name": skill_name,
+                "skill_name": skill.name if skill is not None else package_root.name,
+                "requested_skill_name": requested_skill_name,
                 "found": True,
                 "compact": True,
                 "stage_aware": True,
                 "stage": stage,
+                "primary_context": True,
                 "chars": len(context),
+                "reference_count": len(reference_paths),
+                "references": [{"path": path} for path in reference_paths],
             },
         )
         if not context:
@@ -667,6 +924,71 @@ class VisualizationBigscreenWorkflow:
         upload_url = runtime_options.config_options.get("visualBigscreenUploadUrl") or runtime_options.config_options.get("fileUploadUrl")
         if isinstance(upload_url, str) and upload_url.strip():
             arguments["_visual_bigscreen_upload_url"] = upload_url.strip()
+            arguments["_visual_bigscreen_upload_prefer_rest"] = True
+        upload_authorization = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadAuthorization",
+            "visual_bigscreen_upload_authorization",
+            "fileUploadAuthorization",
+            "file_upload_authorization",
+        )
+        if upload_authorization:
+            arguments["_visual_bigscreen_upload_authorization"] = upload_authorization
+        upload_token = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadToken",
+            "visual_bigscreen_upload_token",
+            "fileUploadToken",
+            "file_upload_token",
+        )
+        if upload_token:
+            arguments["_visual_bigscreen_upload_token"] = upload_token
+        upload_token_header = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadTokenHeader",
+            "visual_bigscreen_upload_token_header",
+            "fileUploadTokenHeader",
+            "file_upload_token_header",
+        )
+        if upload_token_header:
+            arguments["_visual_bigscreen_upload_token_header"] = upload_token_header
+        upload_headers = (
+            runtime_options.config_options.get("visualBigscreenUploadHeaders")
+            or runtime_options.config_options.get("visual_bigscreen_upload_headers")
+            or runtime_options.config_options.get("fileUploadHeaders")
+            or runtime_options.config_options.get("file_upload_headers")
+        )
+        if isinstance(upload_headers, dict | list):
+            arguments["_visual_bigscreen_upload_headers"] = upload_headers
+        upload_tenant_domain = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadTenantDomain",
+            "visual_bigscreen_upload_tenant_domain",
+            "fileUploadTenantDomain",
+            "file_upload_tenant_domain",
+        )
+        if upload_tenant_domain:
+            arguments["_visual_bigscreen_upload_tenant_domain"] = upload_tenant_domain
+        upload_field = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenUploadField",
+            "visual_bigscreen_upload_field",
+            "fileUploadField",
+            "file_upload_field",
+        )
+        if upload_field:
+            arguments["_visual_bigscreen_upload_field"] = upload_field
+        resource_save_url = _first_config_string(
+            runtime_options.config_options,
+            "visualBigscreenResourceSaveUrl",
+            "visual_bigscreen_resource_save_url",
+            "visualBigscreenSaveResourceUrl",
+            "visual_bigscreen_save_resource_url",
+            "resourceSaveUrl",
+            "resource_save_url",
+        )
+        if resource_save_url:
+            arguments["_visual_bigscreen_resource_save_url"] = resource_save_url
         return arguments
 
 
@@ -678,6 +1000,12 @@ def _initialization_system_prompt() -> str:
         "pageJson.canvas 使用平台结构，components 必须为空数组。\n"
         "backgroundSvg 必须是完整 SVG 字符串，viewBox 为 0 0 1920 1080，包含固定区域背景和 data-region-id 元数据。\n"
         "backgroundSvg 不要包含真实业务值、表格行、告警文本或交互按钮。\n"
+        "backgroundSvg 面板样式必须采用深蓝渐变面板、蓝青色发光边框、四角短线强调和底部微光；装饰必须克制，不要堆叠多层杂线。\n"
+        "backgroundSvg 只负责面板外框和标题安全区装饰，不要在 SVG 里写面板标题文字；标题文字由后续 region 阶段的 text 组件生成。\n"
+        "标题安全区必须保持可读：每个非 header/metrics 面板左侧从 x+18 到 x+min(width*0.62, 300)、从 y+8 到 contentBox.y-6 是标题 text 组件保留区，禁止任何 path/polyline/line/rect 装饰穿过；标题下划线只能放在 contentBox.y-10 到 contentBox.y-4 之间。\n"
+        "所有 contentBox 内部必须完全干净，默认不要画 contentBox 边界；禁止在 contentBox 内画网格、纹理线、分割线、路径线、径向光斑、图表占位、地图引导线或任何会压住后续组件的装饰。\n"
+        "center_main_panel.contentBox 尤其不能出现任何背景线条或中心装饰，避免遮挡后续平台组件。\n"
+        "边框必须有可见但轻量的动效：每个面板外框至少包含一个 class=border-flow 的 stroke-dasharray 流光层，并使用 SVG <animate> 动画 stroke-dashoffset 或 opacity；不要只依赖静态边框。\n"
         "blueprint 使用 fixed standard-1920x1080-v1，区域坐标必须和约定一致。\n"
         f"固定 blueprint JSON：{json.dumps(_default_blueprint(), ensure_ascii=False)}"
     )
@@ -689,6 +1017,7 @@ def _region_system_prompt(requested_region_id: str) -> str:
         "Return only one JSON object. The model must not call tools; Python performs uploads and resource saves.\n"
         "Component selection order: use built-in platform components first when they can render the content; use resourceComponentEcharts for all non-map chart-like visualizations; use pseudo for any map/geography/distribution-map intent; use remote advanced Vue components for everything else that needs richer layout, custom interaction, cards, timelines, topology, complex status panels, or polished composite visuals.\n"
         "Built-in platform component types are text, dateTime, table, video, and pseudo. The tabs component is forbidden.\n"
+        "Panel title components must use the normal text template only. Keep title text in dataSourceProps.defaultValue[0].text; Python will normalize every non-header panel title to one fixed font, size, shadow, alignment, and title-band layout.\n"
         "For remote advanced components, return them in components and also return advancedComponents[]. Each advancedComponents item must contain resourceId, component, resource, and files. files must include root component.vue and config.mjs. component.configuration.componentType must be remote. resource.configuration.componentType must be remote. Leave fileId empty; Python will zip, upload, and write fileId back.\n"
         "Advanced component resourceId must be a valid JavaScript identifier such as ai_smartParkStatus_v1 because config.mjs must export <resourceId>ConfigProps and <resourceId>Config and ConfigProps.type must equal resourceId.\n"
         "Advanced component Vue files must follow the platform remote component rules: component.vue uses Options API, not <script setup>; config.mjs uses complete .vue import extensions; only whitelisted imports are allowed.\n"
@@ -698,8 +1027,8 @@ def _region_system_prompt(requested_region_id: str) -> str:
         "必须返回字段：regionId、components，可选返回 regionTitle、resources。\n"
         f"regionId 必须是 {requested_region_id or 'requestedRegionId'}。\n"
         "regionTitle 是该区域面板标题文本；每个非 header 区域必须把标题作为 components[0] 的平台 text 组件返回。\n"
-        "标题组件样式必须由大模型按区域主题自行设计，但仍必须克隆平台 text 模板并使用 dataSourceProps.defaultValue[0].text 存标题。\n"
-        "标题组件应放在面板标题带：region.y 到 contentBox.y 之间，不要占用主体内容槽位。\n"
+        "标题组件不要自行设计字体、字号、颜色、阴影、对齐、背景或动效；必须只负责写入标题文本，Python 会统一覆盖标题样式。\n"
+        "标题组件应放在面板标题带：region.y 到 contentBox.y 之间，不要占用主体内容槽位；即使返回位置不准，Python 也会统一校正。\n"
         "components 必须是平台真实 ComponentInfo JSON。不要返回完整 pageJson。\n"
         "允许组件类型仅包括 text、dateTime、table、video、pseudo、resourceComponentEcharts；禁止返回 tabs。\n"
         "只要用户提示词、区域标题或业务语义涉及地图、地理、区域分布、点位、经纬度、园区/城市/省市/全国空间分布，必须使用 type=pseudo 的系列分布地图组件，不要用 ECharts 地图。\n"
@@ -716,38 +1045,6 @@ def _region_system_prompt(requested_region_id: str) -> str:
         "componentProps.resource.id 必须等于对应 resource.resourceId，version 固定 0。\n"
         "不要生成 preview.html、React、Vue 或解释说明。"
     )
-
-
-def _render_workflow_skill_context(context: SkillMarkdownContext | None) -> str:
-    if context is None:
-        return ""
-    lines = [
-        "Visualization workflow skill instructions are active.",
-        "Use the embedded SKILL.md and declared reference files as schema rules for JSON generation.",
-        "The workflow, not the model, performs UploadFile and visualizationService:resource/Add command calls.",
-        "Do not invent component keys such as componentType, x, y, width, height, locked, hidden, animations, events, or dataSources when the platform templates do not contain them.",
-        "Return only the JSON object required by the current workflow stage.",
-        "",
-        "## SKILL.md",
-        "",
-        context.skill_md,
-    ]
-    if context.skill_md_truncated:
-        lines.append("\n[SKILL.md truncated by runtime context limit]")
-    if context.references:
-        lines.extend(["", "## Declared Reference Files"])
-        for reference in context.references:
-            lines.extend(
-                [
-                    "",
-                    f"### {reference.path}",
-                    "",
-                    reference.content,
-                ]
-            )
-            if reference.truncated:
-                lines.append(f"\n[{reference.path} truncated by runtime context limit]")
-    return "\n".join(lines).strip()
 
 
 def _is_retryable_llm_status_error(exc: httpx.HTTPStatusError) -> bool:
@@ -769,78 +1066,41 @@ def _skill_package_root(skill: Any) -> Path | None:
     return None
 
 
-def _compact_visualization_context(package_root: Path) -> str:
-    paths = [
-        "references/components/text.json",
-        "references/components/dateTime.json",
-        "references/components/table.json",
-        "references/components/video.json",
-        "references/components/pseudo.json",
-        "references/components/custom-chart.json",
-        "references/components/custom-component.json",
-        "references/resources/echarts-resource.json",
-        "references/resources/custom-resource.json",
-        "references/advanced-component-standard.md",
-    ]
-    lines = [
-        "Compact visualization skill context is active after an upstream LLM 500 retry.",
-        "Use only these rules:",
-        "- Return only JSON for the current stage.",
-        "- Built-in components: text, dateTime, table, video, pseudo.",
-        "- tabs is forbidden.",
-        "- Map/geography/spatial distribution uses pseudo.",
-        "- pseudo must clone references/components/pseudo.json; point data only belongs in dataSourceProps.defaultValue.",
-        "- pseudo point fields must be exactly name, longitude, dimension, value; dimension is latitude.",
-        "- pseudo must not contain latitude/lat/lng/series/geo/option/echartsOption/markers/points/componentType.",
-        "- Non-map charts use resourceComponentEcharts and an ECharts resource in resources[].",
-        "- Complex non-chart visuals use remote advanced Vue component in advancedComponents[].",
-        "- Python performs UploadFile, zip upload, fileId backfill, and resource save.",
-        "",
-        "## Compact Reference Files",
-    ]
-    for relative in paths:
-        path = package_root / relative
-        if not path.is_file():
-            continue
-        try:
-            content = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        limit = 6000 if relative.endswith(".md") else 8000
-        lines.extend(["", f"### {relative}", "", _truncate_text(content, limit)])
-    return "\n".join(lines).strip()
+def _default_visualization_package_root() -> Path | None:
+    root = SKILLS_ROOT / DEFAULT_VISUALIZATION_SKILL
+    return root if (root / "SKILL.md").is_file() else None
 
 
-def _stage_aware_visualization_context(package_root: Path, stage: str) -> str:
+def _stage_aware_visualization_context(
+    package_root: Path,
+    stage: str,
+    *,
+    prompt_text: str = "",
+    requested_region_id: str = "",
+) -> tuple[str, list[str]]:
     normalized_stage = stage if stage in {"initialization", "region"} else "unknown"
     if normalized_stage == "initialization":
         paths = [
-            "references/component-registry.json",
             "references/blueprint-standard.md",
         ]
         rules = [
-            "Stage-aware visualization skill context is active after an upstream LLM 500 retry.",
+            "Stage-aware visualization skill context is active as the primary prompt path.",
             'Current stage: "initialization".',
             "Return only JSON with pageJson, blueprint, and backgroundSvg.",
             "pageJson.canvas must use the platform canvas structure and components must be empty.",
             "backgroundSvg must be a complete 1920x1080 SVG background with region metadata only.",
             "Do not include business values, table rows, alarms, or interactive controls in backgroundSvg.",
+            "Use clean cyber panel chrome: dark blue gradient panel fill, cyan/blue glowing border, corner accents, and subtle bottom glow. Keep decoration sparse; avoid stacked ornamental lines.",
+            "The SVG background must not write literal panel title text. Reserve title safe space only; the region stage returns title text as platform text components.",
+            "Keep title text safe areas clean. For non-header/non-metrics panels, the left title zone from x+18 to x+min(width*0.62, 300), y+8 to contentBox.y-6 must not be crossed by path/polyline/line/rect decoration. Put the optional title underline only between contentBox.y-10 and contentBox.y-4.",
+            "Keep every contentBox completely clean for later components. Prefer no contentBox boundary. Do not draw grids, texture lines, divider lines, route lines, radial glows, chart placeholders, map guide marks, or center visual decoration inside any contentBox.",
+            "center_main_panel.contentBox must have no background lines or center decoration.",
+            "Every panel border must include a lightweight animated flow highlight: use a border-flow stroke layer with SVG <animate> on stroke-dashoffset or opacity. Do not rely on a static border only.",
         ]
     else:
-        paths = [
-            "references/components/text.json",
-            "references/components/dateTime.json",
-            "references/components/table.json",
-            "references/components/video.json",
-            "references/components/pseudo.json",
-            "references/components/custom-chart.json",
-            "references/components/custom-component.json",
-            "references/resources/echarts-resource.json",
-            "references/resources/custom-resource.json",
-            "references/advanced-component-standard.md",
-        ]
+        paths = _region_reference_paths(prompt_text, requested_region_id)
         rules = [
-            "Stage-aware visualization skill context is active after an upstream LLM 500 retry.",
+            "Stage-aware visualization skill context is active as the primary prompt path.",
             f'Current stage: "{normalized_stage}".',
             "Return only JSON with regionId and components; resources and advancedComponents are optional.",
             "Built-in components: text, dateTime, table, video, pseudo. tabs is forbidden.",
@@ -851,6 +1111,7 @@ def _stage_aware_visualization_context(package_root: Path, stage: str) -> str:
             "Complex non-chart visuals use remote advanced Vue component in advancedComponents[].",
         ]
     lines = [*rules, "", "## Stage Reference Files"]
+    loaded_paths: list[str] = []
     for relative in paths:
         path = package_root / relative
         if not path.is_file():
@@ -859,9 +1120,143 @@ def _stage_aware_visualization_context(package_root: Path, stage: str) -> str:
             content = path.read_text(encoding="utf-8")
         except OSError:
             continue
+        loaded_paths.append(relative)
         limit = 4000 if relative.endswith(".md") else 6000
         lines.extend(["", f"### {relative}", "", _truncate_text(content, limit)])
-    return "\n".join(lines).strip()
+    return "\n".join(lines).strip(), loaded_paths
+
+
+def _region_reference_paths(prompt_text: str, region_id: str) -> list[str]:
+    text = _region_context_text(prompt_text, region_id)
+    preferred = _region_preferred_components(region_id)
+    map_intent = _is_map_intent(text)
+    video_intent = _is_video_intent(text)
+    paths = ["references/components/text.json"]
+
+    if _is_time_intent(text) or "dateTime" in preferred:
+        paths.append("references/components/dateTime.json")
+    if _is_table_intent(text) or "table" in preferred:
+        paths.append("references/components/table.json")
+    if video_intent:
+        paths.append("references/components/video.json")
+    if map_intent:
+        paths.append("references/components/pseudo.json")
+    if _is_chart_intent(text) or ("custom-chart" in preferred and not map_intent and not video_intent):
+        paths.extend(
+            [
+                "references/components/custom-chart.json",
+                "references/resources/echarts-resource.json",
+                "references/echarts-script-standard.md",
+            ]
+        )
+    if _is_advanced_component_intent(text):
+        paths.extend(
+            [
+                "references/components/custom-component.json",
+                "references/resources/custom-resource.json",
+                "references/advanced-component-standard.md",
+            ]
+        )
+    return _dedupe_path_list(paths)
+
+
+def _region_context_text(prompt_text: str, region_id: str) -> str:
+    region = _region_definition(region_id)
+    scoped_prompt = _region_scoped_prompt_text(prompt_text, region_id)
+    pieces = [scoped_prompt or prompt_text]
+    if region is not None:
+        pieces.append(_string(region.get("name")))
+        pieces.append(_string(region.get("role")))
+        for slot in _list(region.get("slots")):
+            if isinstance(slot, dict):
+                pieces.append(_string(slot.get("name")))
+    return "\n".join(item for item in pieces if item)
+
+
+def _region_preferred_components(region_id: str) -> set[str]:
+    region = _region_definition(region_id)
+    preferred: set[str] = set()
+    if region is None:
+        return preferred
+    for slot in _list(region.get("slots")):
+        if not isinstance(slot, dict):
+            continue
+        raw = slot.get("preferredComponents")
+        if isinstance(raw, list):
+            preferred.update(_string(item) for item in raw if _string(item))
+    return preferred
+
+
+def _is_time_intent(text: str) -> bool:
+    lowered = text.lower()
+    return any(keyword in lowered for keyword in ("时间", "日期", "当前时间", "date", "time", "datetime"))
+
+
+def _is_table_intent(text: str) -> bool:
+    lowered = text.lower()
+    return any(keyword in lowered for keyword in ("表格", "列表", "排行", "排名", "告警", "事件", "设备清单", "top", "rank", "table", "list", "alarm"))
+
+
+def _is_video_intent(text: str) -> bool:
+    lowered = text.lower()
+    return any(keyword in lowered for keyword in ("视频", "监控", "摄像头", "直播", "播放", "video", "camera", "live"))
+
+
+def _is_chart_intent(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        keyword in lowered
+        for keyword in (
+            "图表",
+            "趋势",
+            "折线",
+            "柱状",
+            "饼图",
+            "仪表盘",
+            "面积图",
+            "占比",
+            "对比",
+            "统计",
+            "分析",
+            "chart",
+            "line",
+            "bar",
+            "pie",
+            "gauge",
+            "trend",
+        )
+    )
+
+
+def _is_advanced_component_intent(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        keyword in lowered
+        for keyword in (
+            "高级组件",
+            "远程组件",
+            "自定义组件",
+            "拓扑",
+            "时间轴",
+            "流程",
+            "交互式",
+            "复杂卡片",
+            "advanced",
+            "remote",
+            "topology",
+            "timeline",
+        )
+    )
+
+
+def _dedupe_path_list(paths: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if path and path not in seen:
+            result.append(path)
+            seen.add(path)
+    return result
 
 
 def _truncate_text(value: str, max_chars: int) -> str:
@@ -915,40 +1310,104 @@ def _default_blueprint() -> dict[str, Any]:
 def _fallback_background_svg() -> str:
     panels = []
     for region in BLUEPRINT_REGIONS:
-        panels.append(
-            "<g id=\"region-{id}\" data-region-id=\"{id}\" data-role=\"{role}\" data-x=\"{x}\" data-y=\"{y}\" "
-            "data-width=\"{width}\" data-height=\"{height}\" data-content-x=\"{cx}\" data-content-y=\"{cy}\" "
-            "data-content-width=\"{cw}\" data-content-height=\"{ch}\">"
-            "<rect x=\"{x}\" y=\"{y}\" width=\"{width}\" height=\"{height}\" rx=\"18\" "
-            "fill=\"rgba(8,28,48,0.68)\" stroke=\"rgba(54,220,255,0.58)\"/>"
-            "<path d=\"M {line_x} {line_y} H {line_x2}\" stroke=\"#1FEAFF\" stroke-width=\"3\" opacity=\"0.72\"/>"
-            "</g>".format(
-                id=region["id"],
-                role=region["role"],
-                x=region["x"],
-                y=region["y"],
-                width=region["width"],
-                height=region["height"],
-                cx=region["contentBox"]["x"],
-                cy=region["contentBox"]["y"],
-                cw=region["contentBox"]["width"],
-                ch=region["contentBox"]["height"],
-                line_x=region["x"] + 18,
-                line_y=region["y"] + 28,
-                line_x2=region["x"] + min(260, region["width"] - 24),
+        x = int(region["x"])
+        y = int(region["y"])
+        width = int(region["width"])
+        height = int(region["height"])
+        content_box = region["contentBox"]
+        cx = int(content_box["x"])
+        cy = int(content_box["y"])
+        cw = int(content_box["width"])
+        ch = int(content_box["height"])
+        radius = 20 if height >= 180 else 16
+        title_x = x + 24
+        title_line_y = max(y + 18, cy - 8)
+        title_line_width = max(90, min(190, width // 3))
+        deco_x = max(x + width - 136, title_x + title_line_width + 48)
+        deco_y = y + 34
+        dot_y = min(y + 58, cy - 10 if cy - y > 44 else y + height - 20)
+        bottom_width = max(86, min(180, width // 4))
+        bottom_x = x + (width - bottom_width) / 2
+        bottom_y = y + height - 3
+        title_chrome = ""
+        if region["role"] not in {"header", "metrics"}:
+            title_chrome = (
+                f'<rect x="{title_x}" y="{title_line_y}" width="{title_line_width}" height="3" rx="1.5" '
+                'fill="url(#titleLine)" class="title-breath" filter="url(#softGlow)">'
+                '<animate attributeName="opacity" values="0.55;0.95;0.55" dur="2.8s" repeatCount="indefinite"/>'
+                '</rect>'
+                f'<path d="M{deco_x} {deco_y}H{min(deco_x + 52, x + width - 80)}'
+                f'L{min(deco_x + 64, x + width - 64)} {deco_y + 8}H{x + width - 36}" '
+                'stroke="#59DFFF" stroke-opacity="0.34" stroke-width="1.2" stroke-linecap="round"/>'
+                f'<rect x="{x + width - 66}" y="{dot_y}" width="8" height="2" rx="1" fill="#59DFFF" class="dot-float"/>'
+                f'<rect x="{x + width - 52}" y="{dot_y}" width="8" height="2" rx="1" fill="#59DFFF" opacity="0.65" class="dot-float"/>'
+                f'<rect x="{x + width - 38}" y="{dot_y}" width="8" height="2" rx="1" fill="#59DFFF" opacity="0.35" class="dot-float"/>'
             )
+        panels.append(
+            f'<g id="region-{region["id"]}" data-region-id="{region["id"]}" data-role="{region["role"]}" '
+            f'data-x="{x}" data-y="{y}" data-width="{width}" data-height="{height}" '
+            f'data-content-x="{cx}" data-content-y="{cy}" data-content-width="{cw}" data-content-height="{ch}">'
+            f'<rect x="{x}" y="{y}" width="{width}" height="{height}" rx="{radius}" fill="url(#panelFill)"/>'
+            f'<rect x="{x}" y="{y}" width="{width}" height="{height}" rx="{radius}" '
+            'fill="none" stroke="#2D7FBE" stroke-opacity="0.52" stroke-width="1.2"/>'
+            f'<rect class="border-base" x="{x}" y="{y}" width="{width}" height="{height}" rx="{radius}" '
+            'fill="none" stroke="url(#strokeGlow)" stroke-width="1.2">'
+            '<animate attributeName="opacity" values="0.26;0.52;0.26" dur="3.2s" repeatCount="indefinite"/>'
+            '</rect>'
+            f'<rect class="border-flow" x="{x}" y="{y}" width="{width}" height="{height}" rx="{radius}" '
+            'fill="none" stroke="#65E4FF" stroke-width="2" filter="url(#softGlow)" stroke-linecap="round" '
+            'stroke-dasharray="90 520" stroke-dashoffset="0">'
+            '<animate attributeName="stroke-dashoffset" from="0" to="-610" dur="5s" repeatCount="indefinite"/>'
+            '<animate attributeName="opacity" values="0.3;0.85;0.3" dur="2.8s" repeatCount="indefinite"/>'
+            '</rect>'
+            f"{title_chrome}"
+            f'<path d="M{x} {y + 40}V{y + radius}C{x} {y + 7} {x + 7} {y} {x + radius} {y}H{x + 58}" '
+            'stroke="#64E6FF" stroke-width="1.5" stroke-opacity="0.78" class="corner-blink" fill="none"/>'
+            f'<path d="M{x + width - 58} {y}H{x + width - radius}C{x + width - 7} {y} {x + width} {y + 7} {x + width} {y + radius}V{y + 40}" '
+            'stroke="#64E6FF" stroke-width="1.5" stroke-opacity="0.55" class="corner-blink" fill="none"/>'
+            f'<path d="M{x + width} {y + height - 56}V{y + height - radius}C{x + width} {y + height - 7} {x + width - 7} {y + height} {x + width - radius} {y + height}H{x + width - 58}" '
+            'stroke="#64E6FF" stroke-width="1.5" stroke-opacity="0.4" class="corner-blink" fill="none"/>'
+            f'<path d="M{x + 58} {y + height}H{x + radius}C{x + 7} {y + height} {x} {y + height - 7} {x} {y + height - radius}V{y + height - 56}" '
+            'stroke="#64E6FF" stroke-width="1.5" stroke-opacity="0.35" class="corner-blink" fill="none"/>'
+            f'<rect x="{bottom_x:.1f}" y="{bottom_y}" width="{bottom_width}" height="2" rx="1" '
+            'fill="#52DBFF" opacity="0.55" filter="url(#softGlow)"/>'
+            "</g>"
         )
     return (
         '<svg viewBox="0 0 1920 1080" width="1920" height="1080" xmlns="http://www.w3.org/2000/svg">'
         "<defs>"
         '<linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">'
         '<stop offset="0%" stop-color="#06111F"/><stop offset="100%" stop-color="#081A30"/></linearGradient>'
-        '<pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">'
-        '<path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(55,180,255,0.12)" stroke-width="1"/></pattern>'
+        '<linearGradient id="panelFill" x1="0" y1="0" x2="1" y2="1">'
+        '<stop offset="0" stop-color="#0A2A46" stop-opacity="0.88"/>'
+        '<stop offset="0.55" stop-color="#071F35" stop-opacity="0.88"/>'
+        '<stop offset="1" stop-color="#061A2D" stop-opacity="0.88"/></linearGradient>'
+        '<linearGradient id="strokeGlow" x1="0" y1="0" x2="1" y2="0">'
+        '<stop offset="0" stop-color="#45D8FF" stop-opacity="0.25"/>'
+        '<stop offset="0.2" stop-color="#45D8FF" stop-opacity="0.95"/>'
+        '<stop offset="0.5" stop-color="#4A8BFF" stop-opacity="0.35"/>'
+        '<stop offset="0.8" stop-color="#45D8FF" stop-opacity="0.9"/>'
+        '<stop offset="1" stop-color="#45D8FF" stop-opacity="0.22"/></linearGradient>'
+        '<linearGradient id="titleLine" x1="0" y1="0" x2="1" y2="0">'
+        '<stop offset="0" stop-color="#5DE2FF"/><stop offset="0.55" stop-color="#4AA8FF"/>'
+        '<stop offset="1" stop-color="#4AA8FF" stop-opacity="0"/></linearGradient>'
+        '<filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">'
+        '<feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/>'
+        '<feMergeNode in="SourceGraphic"/></feMerge></filter>'
         "</defs>"
+        "<style>"
+        ".border-base{stroke-dasharray:8 8;animation:borderPulse 3.2s linear infinite}"
+        ".border-flow{stroke-dasharray:90 520;stroke-dashoffset:0;animation:borderRun 5s linear infinite}"
+        ".title-breath{transform-box:fill-box;transform-origin:center;animation:titleBreath 2.6s ease-in-out infinite}"
+        ".corner-blink{animation:cornerBlink 2.4s ease-in-out infinite}"
+        ".dot-float{animation:dotFloat 2.8s ease-in-out infinite}"
+        "@keyframes borderRun{from{stroke-dashoffset:0}to{stroke-dashoffset:-610}}"
+        "@keyframes borderPulse{0%,100%{opacity:.28}50%{opacity:.55}}"
+        "@keyframes titleBreath{0%,100%{opacity:.72;transform:scaleX(1)}50%{opacity:1;transform:scaleX(1.04)}}"
+        "@keyframes cornerBlink{0%,100%{opacity:.35}50%{opacity:.95}}"
+        "@keyframes dotFloat{0%,100%{opacity:.35;transform:translateY(0)}50%{opacity:.9;transform:translateY(-1.5px)}}"
+        "</style>"
         '<rect width="1920" height="1080" fill="url(#bgGrad)"/>'
-        '<rect width="1920" height="1080" fill="url(#grid)" opacity="0.72"/>'
-        '<ellipse cx="960" cy="520" rx="560" ry="300" fill="rgba(31,234,255,0.12)"/>'
         + "".join(panels)
         + "</svg>"
     )
@@ -982,6 +1441,113 @@ def _normalize_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
     regions = blueprint.get("regions")
     result["regions"] = regions if isinstance(regions, list) and regions else copy.deepcopy(BLUEPRINT_REGIONS)
     return result
+
+
+def _regions_for_full_generation(blueprint: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_regions = _list(_dict(blueprint).get("regions"))
+    if not raw_regions:
+        raw_regions = copy.deepcopy(BLUEPRINT_REGIONS)
+    by_id = {
+        _string(region.get("id")): dict(region)
+        for region in raw_regions
+        if isinstance(region, dict) and _string(region.get("id"))
+    }
+    regions: list[dict[str, Any]] = []
+    for default_region in BLUEPRINT_REGIONS:
+        region_id = _string(default_region.get("id"))
+        merged = copy.deepcopy(default_region)
+        override = by_id.get(region_id)
+        if override:
+            merged.update(override)
+            if not isinstance(merged.get("contentBox"), dict):
+                merged["contentBox"] = copy.deepcopy(default_region["contentBox"])
+            if not isinstance(merged.get("slots"), list):
+                merged["slots"] = copy.deepcopy(default_region["slots"])
+        regions.append(merged)
+    return regions
+
+
+def _full_region_concurrency(runtime_options: RuntimeOptions, region_count: int) -> int:
+    raw = (
+        runtime_options.config_options.get("visualBigscreenRegionConcurrency")
+        or runtime_options.config_options.get("visual_bigscreen_region_concurrency")
+        or os.environ.get("VISUAL_BIGSCREEN_REGION_CONCURRENCY")
+    )
+    try:
+        value = int(raw) if raw is not None and str(raw).strip() else DEFAULT_FULL_REGION_CONCURRENCY
+    except (TypeError, ValueError):
+        value = DEFAULT_FULL_REGION_CONCURRENCY
+    return max(1, min(value, max(1, region_count)))
+
+
+def _full_region_prompt(original_prompt: str, region: dict[str, Any], blueprint: dict[str, Any]) -> str:
+    region_id = _string(region.get("id"))
+    overview = [
+        {
+            "id": _string(item.get("id")),
+            "role": _string(item.get("role")),
+            "x": item.get("x"),
+            "y": item.get("y"),
+            "width": item.get("width"),
+            "height": item.get("height"),
+        }
+        for item in _regions_for_full_generation(blueprint)
+    ]
+    return "\n\n".join(
+        [
+            "Current stage: region",
+            f"requestedRegionId = {region_id}",
+            "Python full-generation orchestration is active. Generate only this region.",
+            "Do not return pageJson or blueprint in this response.",
+            "Return one JSON object with regionId, components, and optional regionTitle/resources/advancedComponents.",
+            "Original user summary:",
+            original_prompt.strip() or "(empty)",
+            "Current region JSON:",
+            json.dumps(region, ensure_ascii=False),
+            "All regions overview:",
+            json.dumps(overview, ensure_ascii=False),
+        ]
+    )
+
+
+def _failed_region_payload(region_id: str, error: str) -> dict[str, Any]:
+    return {
+        "regionId": region_id,
+        "components": [],
+        "advancedComponents": [],
+        "resources": [],
+        "error": error,
+    }
+
+
+def _region_ready_event_data(
+    *,
+    region_id: str,
+    components: list[Any],
+    completed_count: int,
+    region_count: int,
+    duration_ms: float,
+    status: str,
+    error: str = "",
+    resource_save_count: int = 0,
+    advanced_component_count: int = 0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "stage": "full",
+        "region_id": region_id,
+        "regionId": region_id,
+        "status": status,
+        "components": components,
+        "component_count": len(components),
+        "completed_count": completed_count,
+        "region_count": region_count,
+        "duration_ms": duration_ms,
+        "resource_save_count": resource_save_count,
+        "advanced_component_count": advanced_component_count,
+    }
+    if error:
+        payload["error"] = error
+    return payload
 
 
 def _advanced_components_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1218,12 +1784,13 @@ def _normalize_pseudo_component(component: dict[str, Any], region_id: str) -> di
 
 
 def _pseudo_template() -> dict[str, Any]:
-    try:
-        template = json.loads(PSEUDO_TEMPLATE_FILE.read_text(encoding="utf-8"))
-        if isinstance(template, dict) and template.get("type") == "pseudo":
-            return template
-    except (OSError, json.JSONDecodeError):
-        pass
+    for template_file in PSEUDO_TEMPLATE_FILES:
+        try:
+            template = json.loads(template_file.read_text(encoding="utf-8"))
+            if isinstance(template, dict) and template.get("type") == "pseudo":
+                return template
+        except (OSError, json.JSONDecodeError):
+            continue
     return {
         "type": "pseudo",
         "name": "系列分布地图",
@@ -1612,26 +2179,106 @@ def _region_definition(region_id: str) -> dict[str, Any] | None:
 
 
 def _has_region_title_component(region: dict[str, Any], title: str, components: list[Any]) -> bool:
+    return _find_region_title_component_index(region, title, components) is not None
+
+
+def _find_region_title_component_index(region: dict[str, Any], title: str, components: list[Any]) -> int | None:
     region_id = _string(region.get("id"))
     expected_id = f"text_{_safe_file_stem(region_id)}_title"
     content_box = _dict(region.get("contentBox"))
-    title_band_bottom = float(content_box.get("y") or region.get("y") or 0)
+    title_band_bottom = _number(content_box.get("y")) or _number(region.get("y")) or 0
     for index, component in enumerate(components):
         if not isinstance(component, dict):
             continue
-        if _string(component.get("id")) == expected_id:
-            return True
         if component.get("type") != "text":
             continue
+        if _string(component.get("id")) == expected_id:
+            return index
         name = _string(component.get("name"))
         text = _component_static_text(component)
+        if index == 0 and text:
+            return index
         style = _dict(_dict(component.get("componentProps")).get("style"))
         y = _number(style.get("y"))
-        looks_like_title = "标题" in name or text == title or (index == 0 and bool(text))
-        in_title_band = y is not None and title_band_bottom and y < title_band_bottom
+        looks_like_title = "标题" in name or "title" in name.lower() or text == title
+        in_title_band = y is not None and bool(title_band_bottom) and y < title_band_bottom
         if looks_like_title and in_title_band:
-            return True
-    return False
+            return index
+    return None
+
+
+def _normalize_region_title_component(region_id: str, requested_title: str, components: list[Any]) -> None:
+    region = _region_definition(region_id)
+    if region is None or region_id == "header":
+        return
+    title = requested_title or _string(region.get("name")) or region_id
+    index = _find_region_title_component_index(region, title, components)
+    if index is None or not isinstance(components[index], dict):
+        return
+    component = components[index]
+    component["id"] = f"text_{_safe_file_stem(region_id)}_title"
+    component["name"] = title
+    component["type"] = "text"
+    component["visible"] = True
+    component["isLocked"] = _bool(component.get("isLocked", component.get("locked")), False)
+
+    component_props = _dict(component.get("componentProps"))
+    component_props["style"] = _region_title_style(region)
+
+    background = _dict(component_props.get("background"))
+    background.update(
+        {
+            "backgroundColor": "#0000",
+            "imgField": "",
+            "opacity": 1,
+            "borderColor": "#0000",
+            "borderType": "solid",
+            "borderWidth": 0,
+            "borderRadius": 0,
+            "shadowColor": "#0000",
+            "shadowBlur": 0,
+            "shadowX": 0,
+            "shadowY": 0,
+            "shadowDiff": 0,
+        }
+    )
+    component_props["background"] = background
+
+    font = _dict(component_props.get("font"))
+    font.update(REGION_TITLE_FONT)
+    component_props["font"] = font
+
+    text_props = _dict(component_props.get("text"))
+    text_props.update(REGION_TITLE_TEXT_PROPS)
+    component_props["text"] = text_props
+    component["componentProps"] = component_props
+
+    data_source_props = _dict(component.get("dataSourceProps"))
+    default_value = data_source_props.get("defaultValue")
+    if not isinstance(default_value, list) or not default_value or not isinstance(default_value[0], dict):
+        data_source_props["defaultValue"] = [{"text": title}]
+    else:
+        default_value[0]["text"] = title
+    component["dataSourceProps"] = data_source_props
+
+
+def _region_title_style(region: dict[str, Any]) -> dict[str, Any]:
+    x = int(region.get("x") or 0)
+    y = int(region.get("y") or 0)
+    width = int(region.get("width") or 0)
+    height = int(region.get("height") or 0)
+    content_box = _dict(region.get("contentBox"))
+    content_y = int(content_box.get("y") or y + 32)
+    title_y = y + 6 if height <= 120 else y + 10
+    title_height = max(18, min(36, content_y - title_y - 6))
+    title_width = max(120, min(300, width - 48))
+    return {
+        "x": x + 24,
+        "y": title_y,
+        "width": title_width,
+        "height": title_height,
+        "rotate": {"angle": 0},
+    }
 
 
 def _component_static_text(component: dict[str, Any]) -> str:
@@ -1721,13 +2368,52 @@ def _dedupe_resources(resources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(deduped.values())
 
 
-def _detect_stage(text: str) -> str:
+def _detect_stage(text: str, runtime_options: RuntimeOptions | None = None) -> str:
     lowered = text.lower()
-    if "initialization" in lowered or "当前阶段：initialization" in text or "当前阶段: initialization" in text:
+    if (
+        "当前阶段：initialization" in text
+        or "当前阶段: initialization" in text
+        or "current stage: initialization" in lowered
+        or re.search(r"(?m)^\s*stage\s*[:=]\s*initialization\s*$", lowered)
+    ):
         return "initialization"
     if "requestedregionid" in lowered or "当前阶段：region" in text or "当前阶段: region" in text:
         return "region"
+    if (
+        "当前阶段：full" in text
+        or "当前阶段: full" in text
+        or "current stage: full" in lowered
+        or "visualbigscreenmode=full" in lowered
+        or "full_generation" in lowered
+        or "all_regions" in lowered
+    ):
+        return "full"
+    mode = _visual_bigscreen_mode(runtime_options)
+    if mode in {"full", "all", "all_regions", "full_generation"}:
+        return "full"
+    if _is_ai_vis_page_runtime(runtime_options):
+        return "full"
     return ""
+
+
+def _visual_bigscreen_mode(runtime_options: RuntimeOptions | None) -> str:
+    if runtime_options is None:
+        return ""
+    value = (
+        runtime_options.config_options.get("visualBigscreenMode")
+        or runtime_options.config_options.get("visual_bigscreen_mode")
+        or runtime_options.config_options.get("visualizationMode")
+    )
+    return _string(value).lower()
+
+
+def _is_ai_vis_page_runtime(runtime_options: RuntimeOptions | None) -> bool:
+    if runtime_options is None:
+        return False
+    app_template_name = _string(runtime_options.app_template_name).lower()
+    if app_template_name in VISUALIZATION_SKILL_NAMES:
+        return True
+    return any(_string(skill).lower() in VISUALIZATION_SKILL_NAMES for skill in runtime_options.selected_skills)
 
 
 def _requested_region_id(text: str) -> str:
@@ -1794,6 +2480,193 @@ def _tool_error_text(result: Any) -> str:
     content = getattr(result, "content", [])
     texts = [str(item.get("text")) for item in content if isinstance(item, dict) and item.get("text")]
     return "; ".join(texts) or "unknown tool error"
+
+
+def _direct_llm_runtime_options(runtime_options: RuntimeOptions) -> tuple[RuntimeOptions, dict[str, Any]]:
+    config = runtime_options.config_options
+    chat_url = _first_config_string(
+        config,
+        "visualBigscreenDirectLlmChatUrl",
+        "visual_bigscreen_direct_llm_chat_url",
+        "directLlmChatUrl",
+        "direct_llm_chat_url",
+        "openaiChatCompletionsUrl",
+        "openai_chat_completions_url",
+        "codexChatCompletionsUrl",
+        "codex_chat_completions_url",
+    ) or _first_env_string(
+        "VISUAL_BIGSCREEN_DIRECT_LLM_CHAT_URL",
+        "CC_SWITCH_OPENAI_CHAT_URL",
+        "CODEX_OPENAI_CHAT_URL",
+    )
+    base_url = _first_config_string(
+        config,
+        "visualBigscreenDirectLlmBaseUrl",
+        "visual_bigscreen_direct_llm_base_url",
+        "directLlmBaseUrl",
+        "direct_llm_base_url",
+        "openaiBaseUrl",
+        "openai_base_url",
+        "codexBaseUrl",
+        "codex_base_url",
+        "ccSwitch.openai.baseUrl",
+        "ccSwitch.openai.base_url",
+        "ccSwitch.openai.url",
+        "cc_switch.openai.base_url",
+    ) or _first_env_string(
+        "VISUAL_BIGSCREEN_DIRECT_LLM_BASE_URL",
+        "CC_SWITCH_OPENAI_BASE_URL",
+        "CODEX_OPENAI_BASE_URL",
+    )
+    if chat_url and not base_url:
+        base_url = chat_url
+    api_key = _first_config_string(
+        config,
+        "visualBigscreenDirectLlmApiKey",
+        "visual_bigscreen_direct_llm_api_key",
+        "directLlmApiKey",
+        "direct_llm_api_key",
+        "openaiApiKey",
+        "openai_api_key",
+        "codexApiKey",
+        "codex_api_key",
+        "ccSwitch.openai.apiKey",
+        "ccSwitch.openai.api_key",
+        "cc_switch.openai.api_key",
+    ) or _first_env_string(
+        "VISUAL_BIGSCREEN_DIRECT_LLM_API_KEY",
+        "CC_SWITCH_OPENAI_API_KEY",
+        "CODEX_OPENAI_API_KEY",
+    )
+    model_name = _first_config_string(
+        config,
+        "visualBigscreenDirectLlmModel",
+        "visual_bigscreen_direct_llm_model",
+        "directLlmModel",
+        "direct_llm_model",
+        "openaiModel",
+        "openai_model",
+        "codexModel",
+        "codex_model",
+        "ccSwitch.openai.model",
+        "ccSwitch.openai.modelName",
+        "ccSwitch.openai.model_name",
+        "cc_switch.openai.model",
+    ) or _first_env_string(
+        "VISUAL_BIGSCREEN_DIRECT_LLM_MODEL",
+        "CC_SWITCH_OPENAI_MODEL",
+        "CODEX_OPENAI_MODEL",
+    )
+    timeout_seconds = _first_config_number(
+        config,
+        "visualBigscreenDirectLlmTimeoutSeconds",
+        "visual_bigscreen_direct_llm_timeout_seconds",
+        "directLlmTimeoutSeconds",
+        "direct_llm_timeout_seconds",
+        "openaiTimeoutSeconds",
+        "openai_timeout_seconds",
+    )
+    if timeout_seconds is None:
+        timeout_seconds = _first_env_number(
+            "VISUAL_BIGSCREEN_DIRECT_LLM_TIMEOUT_SECONDS",
+            "CC_SWITCH_OPENAI_TIMEOUT_SECONDS",
+            "CODEX_OPENAI_TIMEOUT_SECONDS",
+        )
+
+    configured = bool(chat_url or base_url or model_name)
+    if not configured:
+        return runtime_options, {"enabled": False}
+    missing: list[str] = []
+    if not base_url:
+        missing.append("base_url")
+    if not model_name:
+        missing.append("model")
+    if missing:
+        raise RuntimeError("直连模型配置不完整，缺少 " + ", ".join(missing))
+
+    normalized_base_url = _normalize_openai_base_url(base_url)
+    update: dict[str, Any] = {
+        "base_url": normalized_base_url,
+        "api_key": api_key,
+        "model_name": model_name,
+    }
+    if timeout_seconds is not None:
+        update["request_timeout_seconds"] = max(1.0, min(float(timeout_seconds), 600.0))
+    options = runtime_options.model_copy(update=update, deep=True)
+    return options, {
+        "enabled": True,
+        "model": model_name,
+        "base_url": normalized_base_url,
+        "chat_url_configured": bool(chat_url),
+        "api_key_configured": bool(api_key),
+        "timeout_seconds": options.request_timeout_seconds,
+    }
+
+
+def _normalize_openai_base_url(value: str) -> str:
+    url = value.strip().rstrip("/")
+    suffix = "/chat/completions"
+    if url.lower().endswith(suffix):
+        url = url[: -len(suffix)].rstrip("/")
+    return url
+
+
+def _first_config_string(config: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = _config_value(config, key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _first_env_string(*keys: str) -> str:
+    for key in keys:
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _first_config_number(config: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        parsed = _number_or_none(_config_value(config, key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _first_env_number(*keys: str) -> float | None:
+    for key in keys:
+        parsed = _number_or_none(os.getenv(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _config_value(config: dict[str, Any], key: str) -> Any:
+    if key in config:
+        return config.get(key)
+    if "." not in key:
+        return None
+    current: Any = config
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
 
 
 def _llm_event_payload(agent_config: AgentConfig, runtime_options: RuntimeOptions) -> dict[str, Any]:

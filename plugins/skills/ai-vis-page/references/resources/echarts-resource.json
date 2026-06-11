@@ -1,0 +1,59 @@
+{
+  "resourceId": "__RESOURCE_ID__",
+  "name": "__RESOURCE_NAME__",
+  "version": 0,
+  "thumbnailUrl": "",
+  "provider": "local",
+  "type": "component",
+  "group": "[\"vis_oneself_dimension___CHART_GROUP__\"]",
+  "configuration": {
+    "componentType": "echarts",
+    "javaScript": "__ECHARTS_JAVASCRIPT__"
+  }
+}
+
+
+
+任务：下游运行时项目。可视化/工作台输入对话后会把用户的对话搜集起来当成完整提示词推送给AI在进入编辑器后发送第一次AI编排生成区域的提示词没问题，但是后续循环区域的会话带的东西太多了，规则改成例如下列
+
+当前阶段：region
+requestedRegionId = center_main_panel
+
+用户原始需求摘要：
+智慧园区运营管理大屏，深色科技蓝。
+中心主视觉使用地图组件。
+
+当前区域：
+{
+"id": "center_main_panel",
+"name": "中心主视觉区",
+"role": "main-visual",
+"x": 476,
+"y": 260,
+"width": 968,
+"height": 548,
+"contentBox": {
+"x": 500,
+"y": 316,
+"width": 920,
+"height": 468
+},
+"slots": [...]
+}
+
+已存在组件 ID：
+["text_header_title_xxx", "dateTime_header_time_xxx"]
+
+任务：
+只生成 requestedRegionId 对应区域的 components。
+不要生成完整 pageJson。
+
+pageJson 最多传这两个轻量字段就够了：
+
+{
+"canvas": {
+"width": 1920,
+"height": 1080
+},
+"existingComponentIds": []
+}
