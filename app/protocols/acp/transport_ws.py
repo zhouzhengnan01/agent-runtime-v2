@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from app.core.diagnostics import diagnostic_json, env_flag, env_int
 from app.protocols.acp.dispatcher import AcpDispatcher
+from app.protocols.acp.event_broker import acp_event_broker
 from app.protocols.acp.schemas import AcpWebSocketSession, JsonRpcId
 
 
@@ -63,6 +64,18 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
     async def send_update(session_id: str, update: dict[str, Any]) -> None:
         async with send_lock:
             await _send_session_update(websocket, session_id, update, connection_id=connection_id)
+            await acp_event_broker.publish(
+                _subscription_keys(sessions, session_id),
+                "session/update",
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": session_id,
+                        "update": update,
+                    },
+                },
+            )
             if session_id in platform_sessions:
                 await _send_platform_update(
                     websocket,
@@ -103,6 +116,12 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             logger.info("acp prompt cancelled session_id=%s request_id=%s", task_session_id, request_id)
             if request_id is not None:
                 await send_result(request_id, {"stopReason": "cancelled"})
+                await _publish_prompt_result(
+                    sessions,
+                    task_session_id,
+                    request_id,
+                    {"stopReason": "cancelled"},
+                )
             if task_session_id is not None and task_session_id in platform_sessions:
                 await send_platform_response_end(
                     task_session_id,
@@ -118,6 +137,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             )
             if request_id is not None:
                 await send_error(request_id, -32004, str(exc))
+                await _publish_prompt_error(sessions, task_session_id, request_id, -32004, str(exc))
             if task_session_id is not None and task_session_id in platform_sessions:
                 await send_platform_error_end(task_session_id, request_id, str(exc))
         except ValidationError as exc:
@@ -130,6 +150,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             )
             if request_id is not None:
                 await send_error(request_id, -32602, error_message)
+                await _publish_prompt_error(sessions, task_session_id, request_id, -32602, error_message)
             if task_session_id is not None and task_session_id in platform_sessions:
                 await send_platform_error_end(task_session_id, request_id, error_message)
         except ValueError as exc:
@@ -141,6 +162,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             )
             if request_id is not None:
                 await send_error(request_id, -32602, str(exc))
+                await _publish_prompt_error(sessions, task_session_id, request_id, -32602, str(exc))
             if task_session_id is not None and task_session_id in platform_sessions:
                 await send_platform_error_end(task_session_id, request_id, str(exc))
         except Exception as exc:
@@ -156,7 +178,9 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             elif task_session_id is not None:
                 await send_prompt_error_message(task_session_id, error_message)
             if request_id is not None:
-                await send_result(request_id, _prompt_error_result(sessions, task_session_id, user_text, error_message))
+                error_result = _prompt_error_result(sessions, task_session_id, user_text, error_message)
+                await send_result(request_id, error_result)
+                await _publish_prompt_result(sessions, task_session_id, request_id, error_result)
         else:
             logger.info("acp prompt completed session_id=%s request_id=%s", task_session_id, request_id)
             if task_session_id is not None and task_session_id in platform_sessions:
@@ -166,6 +190,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 await send_platform_response_end(task_session_id, request_id, result)
             if request_id is not None:
                 await send_result(request_id, result)
+                await _publish_prompt_result(sessions, task_session_id, request_id, result)
         finally:
             if keepalive_task is not None:
                 keepalive_task.cancel()
@@ -759,6 +784,45 @@ def _params(value: object) -> dict[str, Any]:
 def _session_id(params: dict[str, Any]) -> str | None:
     value = params.get("sessionId") or params.get("session_id")
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _subscription_keys(sessions: dict[str, AcpWebSocketSession], session_id: str | None) -> set[str]:
+    keys = {session_id or ""}
+    session = sessions.get(session_id or "")
+    if session is not None:
+        keys.add(session.thread_id)
+    return {key for key in keys if key}
+
+
+async def _publish_prompt_result(
+    sessions: dict[str, AcpWebSocketSession],
+    session_id: str | None,
+    request_id: JsonRpcId,
+    result: dict[str, Any],
+) -> None:
+    await acp_event_broker.publish(
+        _subscription_keys(sessions, session_id),
+        "result",
+        {"jsonrpc": "2.0", "id": request_id, "result": result},
+    )
+
+
+async def _publish_prompt_error(
+    sessions: dict[str, AcpWebSocketSession],
+    session_id: str | None,
+    request_id: JsonRpcId,
+    code: int,
+    message: str,
+) -> None:
+    await acp_event_broker.publish(
+        _subscription_keys(sessions, session_id),
+        "error",
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": code, "message": message},
+        },
+    )
 
 
 def _single_active_session_id(sessions: dict[str, AcpWebSocketSession]) -> str | None:
