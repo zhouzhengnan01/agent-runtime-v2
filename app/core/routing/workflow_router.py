@@ -62,11 +62,6 @@ class WorkflowRouter:
                 )
 
         skill_name, score = self._select_skill_from_manifest(routing_text, skills)
-        if request.attachments and score <= 0:
-            detection_skills = [skill for skill in skills if not skill.generation]
-            if len(detection_skills) == 1:
-                skill_name = detection_skills[0].name
-                score = 1
         if not skill_name or score <= 0:
             return WorkflowSelection(workflow_name=None, skill_name=skill_name or None, score=score, reason="no_skill_match")
 

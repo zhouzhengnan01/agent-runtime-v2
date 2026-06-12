@@ -60,3 +60,17 @@ def test_sam3_predict_explicit_url_is_not_overridden(monkeypatch) -> None:
     monkeypatch.setenv("SAM3_PREDICT_URL", "https://sam3.example.test/sam3/predict")
 
     assert module.effective_url("https://explicit.example.test/predict") == "https://explicit.example.test/predict"
+
+
+def test_sam3_predict_builds_v1_json_payload(monkeypatch, tmp_path: Path) -> None:
+    module = _load_sam3_module(monkeypatch)
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"png-bytes")
+
+    payload = module.build_sam3_payload(image_path, ["person", "monitor"], 0.35, 0.5)
+
+    assert module.DEFAULT_URL == "http://218.67.242.10:58800/v1/sam3/predict"
+    assert payload["model"] == "sam3"
+    assert payload["input"]["image"] == "data:image/png;base64,cG5nLWJ5dGVz"
+    assert payload["input"]["text_prompts"] == ["person", "monitor"]
+    assert payload["parameters"] == {"conf": 0.35, "iou": 0.5}

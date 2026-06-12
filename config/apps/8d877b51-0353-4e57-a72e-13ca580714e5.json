@@ -1,0 +1,23 @@
+{
+  "workflow" : "yolo_training_flow",
+  "category" : "general",
+  "agent_name" : "default",
+  "name" : "8d877b51-0353-4e57-a72e-13ca580714e5",
+  "title" : "训练助手",
+  "description" : "",
+  "selected_skills" : [ ],
+  "models" : [ {
+    "name" : "gpt-5.4",
+    "features" : [ "vision", "reasoning", "chat" ],
+    "priority_features" : [ ],
+    "priority" : 0,
+    "provider" : "openai-compatible",
+    "model" : "gpt-5.4",
+    "base_url" : "http://192.168.32.181:9100/api/llm/openai/v1/providers/9f86e75d-654b-4f61-9c44-66e49ff8c7f9/",
+    "default_model" : "gpt-5.4",
+    "api_key" : "9dQYWzhUtubwFdy6UUsrvEx0WlQiqDCk6RTLKHJDvs3JxuMUzZRTgP9itLCxLQcApxZ4ppKuZo8ywrhEdZksLujKQ2lKjHmIyd4fmlST7pkWQzA6lVWz4A6zolvGo5FrXbDLHonjctu4SUorHvTKIH3xS023XMK0KyK1wbocavZ92QkmD6TRpsiAaoi27re9ROrd0i1X7iUeGBw8An0rPBIL",
+    "tool_choice" : "auto",
+    "temperature" : 0.4,
+    "max_tokens" : 2048
+  } ]
+}

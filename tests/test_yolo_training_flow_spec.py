@@ -96,6 +96,36 @@ def test_yolo_training_flow_fallback_keeps_test_split_for_small_dataset() -> Non
     assert training_cfg["split"]["test"] == 0.1
 
 
+def test_yolo_training_flow_epochs_button_keeps_model_value_when_enabled() -> None:
+    module = _load_yolo_training_flow_module()
+    training_cfg = {"training": {"epochs": 80}}
+    runtime_options = RuntimeOptions(
+        skill_parameters={"yolo_training_flow": {"button_epochs": True}},
+    )
+
+    module._apply_epochs_policy(training_cfg, runtime_options)
+
+    assert training_cfg["training"]["epochs"] == 80
+
+
+def test_yolo_training_flow_epochs_button_uses_fixed_value_when_disabled() -> None:
+    module = _load_yolo_training_flow_module()
+    training_cfg = {"training": {"epochs": 80}}
+    runtime_options = RuntimeOptions(
+        skill_parameters={"yolo_training_flow": {"button_epochs": False}},
+    )
+
+    module._apply_epochs_policy(training_cfg, runtime_options)
+
+    assert training_cfg["training"]["epochs"] == 50
+
+
+def test_yolo_training_flow_test_app_disables_model_epochs() -> None:
+    app_config = Path("config/apps/algorithm-engineer-full-cycle-test.json").read_text(encoding="utf-8")
+
+    assert '"button_epochs": false' in app_config
+
+
 def test_yolo_training_flow_owns_three_zip_input_contract(tmp_path: Path) -> None:
     module = _load_yolo_training_flow_module()
     request = ChatRequest(

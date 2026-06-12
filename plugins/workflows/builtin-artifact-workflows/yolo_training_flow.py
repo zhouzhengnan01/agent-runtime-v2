@@ -32,6 +32,8 @@ button = False
 FIXED_SYNTHETIC_COUNT = 5
 button_produce = True
 FIXED_PRODUCE_SYNTHETIC_COUNT = 5
+button_epochs = False
+FIXED_TRAINING_EPOCHS = 50
 AUTO_GENERATE_MISSING_SPEC = True
 
 
@@ -345,6 +347,8 @@ class YoloTrainingWorkflow:
             if task_description:
                 _save_detection_task_description(paths, task_description)
             if training_cfg:
+                _apply_epochs_policy(training_cfg, runtime_options)
+                request_spec["training"]["epochs"] = training_cfg["training"]["epochs"]
                 _force_current_runtime(training_cfg)
                 _save_training_config(paths, training_cfg)
             else:
@@ -360,6 +364,7 @@ class YoloTrainingWorkflow:
             _emit_model_generated_spec(recorder, request_spec, dataset_facts=dataset_facts)
             _write_model_generated_spec_logs(workflow_output_root, request_spec, dataset_facts=dataset_facts)
         else:
+            _apply_epochs_policy(training_cfg, runtime_options)
             _force_current_runtime(training_cfg)
 
         pipeline_work_dir = str((workflow_output_root / PIPELINE_WORK_DIR).resolve())
@@ -1541,6 +1546,20 @@ def _produce_count_button(runtime_options: RuntimeOptions) -> bool:
 def _fixed_produce_synthetic_count(runtime_options: RuntimeOptions) -> int:
     params = _workflow_skill_parameters(runtime_options)
     return _int_from_any(params.get("fixed_produce_synthetic_count"), FIXED_PRODUCE_SYNTHETIC_COUNT)
+
+
+def _epochs_button(runtime_options: RuntimeOptions) -> bool:
+    params = _workflow_skill_parameters(runtime_options)
+    value = _bool_from_any(params.get("button_epochs"))
+    return button_epochs if value is None else value
+
+
+def _apply_epochs_policy(training_cfg: dict[str, Any], runtime_options: RuntimeOptions) -> None:
+    if _epochs_button(runtime_options):
+        return
+    training = training_cfg.get("training")
+    if isinstance(training, dict):
+        training["epochs"] = FIXED_TRAINING_EPOCHS
 
 
 def _auto_generate_missing_spec(runtime_options: RuntimeOptions) -> bool:

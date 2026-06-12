@@ -1,4 +1,5 @@
 import argparse
+import importlib
 import json
 import os
 import sys
@@ -171,6 +172,8 @@ def _safe_resolved_path(value: object) -> Path | None:
 
 
 def _check_conda_runtime(cfg: Dict) -> str:
+    if _preferred_accelerator() == "npu":
+        return "current-npu"
     runtime_cfg = cfg.get("runtime", {})
     conda_env_name = str(runtime_cfg.get("conda_env_name", "")).strip()
     enforce = bool(runtime_cfg.get("enforce_conda_env", True))
@@ -183,6 +186,111 @@ def _check_conda_runtime(cfg: Dict) -> str:
             raise EnvironmentError(msg)
         log_warn(msg)
     return conda_env_name
+
+
+def _is_npu_runtime_available() -> bool:
+    if _truthy_env("JETLINKS_FORCE_CURRENT_PYTHON_ON_NPU"):
+        return True
+    if not _has_ascend_runtime_hint():
+        return False
+    try:
+        import torch
+        import torch_npu  # noqa: F401
+    except Exception:
+        return False
+    return _torch_npu_available(torch)
+
+
+def _preferred_accelerator(torch_module: object | None = None) -> str:
+    if torch_module is None:
+        try:
+            torch_module = importlib.import_module("torch")
+        except Exception:
+            return "cpu"
+    try:
+        cuda = getattr(torch_module, "cuda", None)
+        if cuda is not None and bool(cuda.is_available()) and int(cuda.device_count()) > 0:
+            return "cuda"
+    except Exception:
+        pass
+    if _is_npu_runtime_available():
+        return "npu"
+    return "cpu"
+
+
+def _has_ascend_runtime_hint() -> bool:
+    env_names = (
+        "ASCEND_RT_VISIBLE_DEVICES",
+        "ASCEND_VISIBLE_DEVICES",
+        "NPU_VISIBLE_DEVICES",
+        "ASCEND_HOME_PATH",
+        "ASCEND_TOOLKIT_HOME",
+    )
+    if any(str(os.environ.get(name) or "").strip() for name in env_names):
+        return True
+    return any(Path(path).exists() for path in ("/usr/local/Ascend", "/dev/davinci_manager"))
+
+
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _torch_npu_available(torch_module: object) -> bool:
+    npu = getattr(torch_module, "npu", None)
+    if npu is None:
+        return False
+    try:
+        return bool(npu.is_available())
+    except Exception:
+        return False
+
+
+def _torch_npu_device_count(torch_module: object) -> int:
+    npu = getattr(torch_module, "npu", None)
+    if npu is None:
+        return 0
+    try:
+        return int(npu.device_count())
+    except Exception:
+        return 0
+
+
+def _normalize_device_for_runtime(raw_device: object, *, has_npu: bool, has_cuda: bool) -> str:
+    requested = str(raw_device or "").strip()
+    if has_cuda:
+        if requested.isdigit():
+            return requested
+        if requested.lower().startswith("cuda:"):
+            return requested
+        return "0"
+    if has_npu:
+        if not requested or requested == "cpu":
+            return "npu:0"
+        if requested.lower().startswith("npu:"):
+            return requested
+        if requested.isdigit():
+            visible = [item.strip() for item in os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "").split(",") if item.strip()]
+            if len(visible) == 1 and requested == visible[0]:
+                return "npu:0"
+            return f"npu:{requested}"
+        return "npu:0"
+    if requested and requested != "cpu":
+        log_warn(f"Requested device='{requested}' but no CUDA/NPU accelerator is available; falling back to CPU")
+    return "cpu"
+
+
+def _configure_npu_runtime(torch_module: object) -> None:
+    importlib.import_module("torch_npu")
+    importlib.import_module("torch_npu.contrib.transfer_to_npu")
+    npu = getattr(torch_module, "npu", None)
+    if npu is None:
+        raise RuntimeError("torch_npu is installed but torch.npu is unavailable")
+    config = getattr(npu, "config", None)
+    if config is not None:
+        config.allow_internal_format = False
+    set_compile_mode = getattr(npu, "set_compile_mode", None)
+    if callable(set_compile_mode):
+        set_compile_mode(jit_compile=False)
 
 
 def run(config_path: Path) -> None:
@@ -208,21 +316,21 @@ def run(config_path: Path) -> None:
         raise ValueError(f"training.task only supports detect/segment, got: {task}")
 
     import torch
-    try:
-        from ultralytics import YOLO
-    except ImportError as exc:
-        raise ImportError("Please install ultralytics in the current runtime environment") from exc
 
     requested_model_name = str(training_cfg.get("model", "yolo11n.pt"))
     epochs = int(training_cfg.get("epochs", 100))
     imgsz = int(training_cfg.get("imgsz", 640))
     batch = int(training_cfg.get("batch", 16))
     _has_cuda = torch.cuda.is_available() and torch.cuda.device_count() > 0
-    _default_device = "0" if _has_cuda else "cpu"
-    device = str(training_cfg.get("device", _default_device))
-    if device != "cpu" and not _has_cuda:
-        log_warn(f"Requested device='{device}' but CUDA is unavailable; falling back to CPU")
-        device = "cpu"
+    _has_npu = False if _has_cuda else _is_npu_runtime_available()
+    device = _normalize_device_for_runtime(training_cfg.get("device"), has_npu=_has_npu, has_cuda=_has_cuda)
+    accelerator = "cuda" if _has_cuda else ("npu" if _has_npu else "cpu")
+    if accelerator == "npu":
+        _configure_npu_runtime(torch)
+    try:
+        from ultralytics import YOLO
+    except ImportError as exc:
+        raise ImportError("Please install ultralytics in the current runtime environment") from exc
     workers = int(training_cfg.get("workers", 8))
     patience = int(training_cfg.get("patience", 50))
 
@@ -242,8 +350,18 @@ def run(config_path: Path) -> None:
             workers = 0
         train_overrides.update({"amp": False, "cache": False, "deterministic": False, "plots": True})
         val_overrides.update({"plots": True})
+    elif accelerator == "npu":
+        if workers != 0:
+            log_warn(f"NPU mode workers={workers}; lowering to 0")
+            workers = 0
+        train_overrides.update({"amp": False, "cache": False, "plots": False})
+        val_overrides.update({"plots": False})
 
-    log_info(f"Training runtime={conda_env_name}, data={dataset_yaml}, device={device}, CUDA={_has_cuda}")
+    log_info(
+        "Training runtime="
+        f"{conda_env_name}, data={dataset_yaml}, device={device}, "
+        f"CUDA={_has_cuda}, NPU={_has_npu}, npu_count={_torch_npu_device_count(torch) if _has_npu else 0}"
+    )
     model, model_name, model_fallback_used, model_load_error = _load_yolo_model(YOLO, requested_model_name, task)
     train_results = model.train(
         data=str(dataset_yaml),
@@ -280,6 +398,9 @@ def run(config_path: Path) -> None:
     summary = {
         "config_path": str(config_path),
         "conda_env_name": conda_env_name,
+        "accelerator": accelerator,
+        "device": device,
+        "npu_visible_devices": os.environ.get("ASCEND_RT_VISIBLE_DEVICES", ""),
         "dataset_yaml": str(dataset_yaml),
         "task": task,
         "requested_model": requested_model_name,

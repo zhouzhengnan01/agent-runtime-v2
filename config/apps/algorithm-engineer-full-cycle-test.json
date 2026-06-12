@@ -42,6 +42,7 @@
     "skill_parameters": {
       "yolo_training_flow": {
         "button": false,
+        "button_epochs": false,
         "auto_generate_missing_spec": true
       }
     }
