@@ -2,7 +2,7 @@
 
 This directory defines FRP/SSH debugging for inspecting the ACK runtime image through FRP on `110.40.237.78`.
 
-The production `stable-amd64` image includes `sshd` and `frpc`, but it does not bake SSH keys or FRP tokens into the image. The debug tunnel only starts when Kubernetes mounts `/etc/debug-frp/authorized_keys` and either `/etc/frp/frpc.ini` or the FRP environment variables are provided.
+The production `stable-amd64` image includes `sshd`, `frpc`, the default debug public key, and the FRP relay defaults used by the ACK debug workflow. For normal debug access, set only `JETLINKS_AGENT_DEBUG_FRP_REMOTE_PORT` on the target container. The entrypoint treats that explicit port as the opt-in signal and generates `/etc/frp/frpc.ini` at startup.
 
 ## Prebuilt debug image
 
@@ -16,8 +16,6 @@ For the fastest workflow, build a separate debug image that already includes:
 This image still defaults to `JETLINKS_AGENT_DEBUG_FRP_ENABLED=0`, so runtime only needs:
 
 ```yaml
-- name: JETLINKS_AGENT_DEBUG_FRP_ENABLED
-  value: "1"
 - name: JETLINKS_AGENT_DEBUG_FRP_REMOTE_PORT
   value: "30089"
 ```

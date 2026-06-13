@@ -47,6 +47,24 @@ SKILL_CONTEXT_MAX_CHARS = 6000
 SKILL_LLM_SELECTION_SCORE_GAP = 3.0
 SKILL_AUTO_CANDIDATE_MIN_SCORE = 2.0
 REVIEW_SKILL_EXCLUDED_NAMES = frozenset({"behavior-detection"})
+REVIEW_SKILL_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "garbage-overflow-review": ("垃圾满溢检测", "垃圾漫溢检测"),
+    "垃圾漫溢检测": ("垃圾满溢检测", "garbage-overflow-review"),
+    "smoking-review": ("抽烟监测", "抽烟检测"),
+    "fall-review": ("摔倒监测", "摔倒检测", "人员跌倒/倒地检测"),
+    "fight-review": ("争吵检测",),
+    "fire-flame-review": ("明火 / 火焰识别", "明火 _ 火焰识别", "火焰识别"),
+    "parking-congestion-review": ("车辆拥堵", "车辆拥堵检测"),
+    "parking-violation-review": ("违规停车", "违规停车检测"),
+    "17803963378248hh02dvt": ("杂物检测",),
+}
+GENERIC_REVIEW_OBJECTIVES = frozenset(
+    {
+        "customerbehaviordetection",
+        "kitchenaislehygienedetection",
+        "parkingabnormaldetection",
+    }
+)
 SMOKING_REVIEW_SKILL_NAME = "smoking-review"
 SMOKING_OBJECTIVE = "smokingdetection"
 SMOKING_EXPLICIT_TERMS = ("SmokingDetection", "抽烟检测", "吸烟检测", "持烟检测", "抽烟", "吸烟", "持烟")
@@ -55,6 +73,7 @@ SMOKING_EXCLUDED_OBJECTIVES = frozenset(
         "clutterdetection",
         "garbageoverflowdetection",
         "firedetection",
+        "kitchenaislehygienedetection",
         "parkingabnormaldetection",
         "parkingviolationdetection",
         "parkingcongestiondetection",
@@ -393,6 +412,12 @@ class ParkingAbnormalReviewWorkflow:
                 _pretty_payload_json(video_frame_reports),
             )
 
+        no_specific_skill_result = _no_specific_review_skill_result(
+            review_source_id=review_source_id,
+            objective=objective,
+            selection=skill_selection,
+            skill_error=skill_error,
+        )
         if not review_attachments:
             reply = _json_reply(
                 [
@@ -403,6 +428,17 @@ class ParkingAbnormalReviewWorkflow:
                         "result": _missing_media_result(video_attachments, video_frame_reports),
                     }
                 ]
+            )
+        elif no_specific_skill_result:
+            reply = no_specific_skill_result
+            recorder.emit(
+                "review.normalized_result",
+                {
+                    "review_source_id": review_source_id,
+                    "objective": objective,
+                    "result_chars": len(reply),
+                    "result": reply,
+                },
             )
         else:
             try:
@@ -532,6 +568,8 @@ class ParkingAbnormalReviewWorkflow:
             prompt_text=prompt_text,
         )
         if not candidates:
+            return None
+        if _is_generic_review_objective(objective):
             return None
         if len(candidates) == 1:
             candidate = candidates[0]
@@ -870,17 +908,32 @@ def _canonical_objective(value: str) -> str:
         "杂物": "ClutterDetection",
         "杂物检测": "ClutterDetection",
         "杂物堆积": "ClutterDetection",
-        "后厨通道卫生": "ClutterDetection",
-        "后厨通道卫生检测": "ClutterDetection",
-        "后厨通道卫生监管": "ClutterDetection",
-        "后厨通道卫生安全监管": "ClutterDetection",
-        "后厨通道卫生安全检测": "ClutterDetection",
-        "通道卫生": "ClutterDetection",
         "clutter": "ClutterDetection",
         "clutterdetection": "ClutterDetection",
+        "后厨通道卫生": "KitchenAisleHygieneDetection",
+        "后厨通道卫生检测": "KitchenAisleHygieneDetection",
+        "后厨通道卫生监管": "KitchenAisleHygieneDetection",
+        "后厨通道卫生安全监管": "KitchenAisleHygieneDetection",
+        "后厨通道卫生安全检测": "KitchenAisleHygieneDetection",
+        "kitchenaislehygienedetection": "KitchenAisleHygieneDetection",
         "垃圾满溢": "GarbageOverflowDetection",
         "垃圾满溢检测": "GarbageOverflowDetection",
         "垃圾桶满溢": "GarbageOverflowDetection",
+        "垃圾漫溢": "GarbageOverflowDetection",
+        "垃圾漫溢检测": "GarbageOverflowDetection",
+        "垃圾桶漫溢": "GarbageOverflowDetection",
+        "垃圾桶漫溢检测": "GarbageOverflowDetection",
+        "垃圾溢出": "GarbageOverflowDetection",
+        "垃圾溢出检测": "GarbageOverflowDetection",
+        "垃圾桶溢出": "GarbageOverflowDetection",
+        "垃圾桶溢出检测": "GarbageOverflowDetection",
+        "垃圾桶溢满": "GarbageOverflowDetection",
+        "garbagebin": "GarbageOverflowDetection",
+        "garbage_bin": "GarbageOverflowDetection",
+        "trashbin": "GarbageOverflowDetection",
+        "trash_bin": "GarbageOverflowDetection",
+        "trashoverflow": "GarbageOverflowDetection",
+        "binoverflow": "GarbageOverflowDetection",
         "garbageoverflow": "GarbageOverflowDetection",
         "garbageoverflowdetection": "GarbageOverflowDetection",
         "火焰": "FireDetection",
@@ -975,9 +1028,23 @@ def _objective_from_text(text: str) -> str:
         "garbageoverflow",
         "trashoverflowdetection",
         "binoverflowdetection",
+        "binoverflow",
+        "garbagebin",
+        "garbage_bin",
+        "trashbin",
+        "trash_bin",
         "垃圾满溢检测",
         "垃圾满溢",
         "垃圾桶满溢",
+        "垃圾漫溢检测",
+        "垃圾漫溢",
+        "垃圾桶漫溢检测",
+        "垃圾桶漫溢",
+        "垃圾溢出检测",
+        "垃圾溢出",
+        "垃圾桶溢出检测",
+        "垃圾桶溢出",
+        "垃圾桶溢满",
         "垃圾外溢",
         "垃圾散落",
         "垃圾超出桶口",
@@ -990,15 +1057,21 @@ def _objective_from_text(text: str) -> str:
         "杂物检测",
         "杂物堆积",
         "杂物",
-        "后厨通道卫生安全监管",
-        "后厨通道卫生检测",
-        "后厨通道卫生",
-        "通道卫生",
         "堆积",
         "占道",
     )
     if any(_normalize_match_text(term) in normalized for term in clutter_terms):
         return "ClutterDetection"
+    kitchen_terms = (
+        "kitchenaislehygienedetection",
+        "后厨通道卫生安全监管",
+        "后厨通道卫生安全检测",
+        "后厨通道卫生监管",
+        "后厨通道卫生检测",
+        "后厨通道卫生",
+    )
+    if any(_normalize_match_text(term) in normalized for term in kitchen_terms):
+        return "KitchenAisleHygieneDetection"
     fire_terms = ("firedetection", "fire", "火焰/明火检测", "火焰检测", "明火检测", "火焰", "明火")
     if any(_normalize_match_text(term) in normalized for term in fire_terms):
         return "FireDetection"
@@ -1151,12 +1224,11 @@ def _best_objective(objectives: list[str]) -> str:
 
 def _objective_specificity(objective: str) -> int:
     normalized = _normalize_match_text(objective)
-    generic = {
-        "clutterdetection",
-        "customerbehaviordetection",
-        "parkingabnormaldetection",
-    }
-    return 1 if normalized in generic else 2
+    return 1 if normalized in GENERIC_REVIEW_OBJECTIVES else 2
+
+
+def _is_generic_review_objective(objective: str) -> bool:
+    return _normalize_match_text(objective) in GENERIC_REVIEW_OBJECTIVES
 
 
 def _nested_string(payload: dict[str, Any], path: tuple[str, ...]) -> str:
@@ -1527,17 +1599,36 @@ def _expanded_candidate_skill_names(skill_registry: SkillRegistry, selected_skil
         name = str(raw_name or "").strip()
         if not name:
             continue
-        try:
-            skill = skill_registry.get(name)
-        except KeyError:
-            _append_unique(names, seen, name)
+        skill = _get_review_skill_by_name_or_alias(skill_registry, name)
+        if skill is None:
+            for candidate_name in _review_skill_name_candidates(name):
+                _append_unique(names, seen, candidate_name)
             continue
         if skill.composite:
             for child in skill.child_skills:
-                _append_unique(names, seen, child)
+                child_skill = _get_review_skill_by_name_or_alias(skill_registry, child)
+                _append_unique(names, seen, child_skill.name if child_skill is not None else child)
             continue
-        _append_unique(names, seen, name)
+        _append_unique(names, seen, skill.name)
     return names
+
+
+def _get_review_skill_by_name_or_alias(skill_registry: SkillRegistry, name: str) -> SkillDefinition | None:
+    for candidate_name in _review_skill_name_candidates(name):
+        try:
+            return skill_registry.get(candidate_name)
+        except KeyError:
+            continue
+    return None
+
+
+def _review_skill_name_candidates(name: str) -> tuple[str, ...]:
+    aliases = REVIEW_SKILL_NAME_ALIASES.get(name, ())
+    return (name, *aliases)
+
+
+def _review_skill_name_matches(skill_name: str, canonical_name: str) -> bool:
+    return skill_name in _review_skill_name_candidates(canonical_name)
 
 
 def _append_unique(target: list[str], seen: set[str], value: str) -> None:
@@ -1619,10 +1710,6 @@ def _objective_terms(objective: str, prompt_text: str) -> list[str]:
             "杂物检测",
             "堆积",
             "占道",
-            "后厨通道卫生",
-            "后厨通道卫生检测",
-            "后厨通道卫生安全监管",
-            "通道卫生",
             "垃圾袋",
             "乱堆乱放",
             "塑料筐",
@@ -1638,21 +1725,30 @@ def _objective_terms(objective: str, prompt_text: str) -> list[str]:
             "客户行为",
             "客户行为监管",
             "客户行为检测",
-            "抽烟",
-            "吸烟",
-            "跌倒",
-            "倒地",
-            "争吵",
-            "打架",
+        ],
+        "kitchenaislehygienedetection": [
+            "后厨通道卫生",
+            "后厨通道卫生检测",
+            "后厨通道卫生安全监管",
         ],
         "garbageoverflowdetection": [
             "garbage",
+            "garbagebin",
             "overflow",
             "trashoverflow",
             "binoverflow",
             "垃圾满溢",
             "垃圾满溢检测",
             "垃圾桶满溢",
+            "垃圾漫溢",
+            "垃圾漫溢检测",
+            "垃圾桶漫溢",
+            "垃圾桶漫溢检测",
+            "垃圾溢出",
+            "垃圾溢出检测",
+            "垃圾桶溢出",
+            "垃圾桶溢出检测",
+            "垃圾桶溢满",
             "垃圾外溢",
             "垃圾堆积",
             "垃圾散落",
@@ -1672,20 +1768,14 @@ def _objective_terms(objective: str, prompt_text: str) -> list[str]:
         ],
         "parkingabnormaldetection": [
             "车场异常",
-        "车场异常事件监控",
-        "车场异常事件监管",
-        "车场异常监控",
-        "车场异常监管",
-        "停车场异常事件监控",
-        "停车场异常事件监管",
-        "停车场异常监控",
-        "停车场异常监管",
-        "违规停车",
-        "车辆违停",
-            "车辆违停检测",
-            "停车场通道拥堵检测",
-            "车辆拥堵",
-            "通道拥堵",
+            "车场异常事件监控",
+            "车场异常事件监管",
+            "车场异常监控",
+            "车场异常监管",
+            "停车场异常事件监控",
+            "停车场异常事件监管",
+            "停车场异常监控",
+            "停车场异常监管",
         ],
         "parkingviolationdetection": [
             "ParkingViolation",
@@ -1929,15 +2019,27 @@ def _objective_review_prompt_context(
     selection: ReviewSkillSelection | None,
 ) -> str:
     selected_skill_name = selection.skill_name if selection is not None else ""
-    if (
-        _normalize_match_text(objective) != "parkingviolationdetection"
-        and selected_skill_name != "parking-violation-review"
+    normalized_objective = _normalize_match_text(objective)
+    if normalized_objective == "parkingviolationdetection" or _review_skill_name_matches(
+        selected_skill_name,
+        "parking-violation-review",
     ):
-        if (
-            _normalize_match_text(objective) != "garbageoverflowdetection"
-            and selected_skill_name != "garbage-overflow-review"
-        ):
-            return ""
+        return (
+            "\n车辆违停专项硬规则：\n"
+            "- 只有能清楚看到车辆停放在禁止停车区域、通行车道、出入口、消防通道、坡道口、转弯口，"
+            "或明确阻碍车辆/人员通行时，hit 才能为 1。\n"
+            "- 如果车辆位于正常停车位、停车线内、划定停车区域内，必须判定 hit=0；"
+            "即使上游目标为“车辆违停”或存在告警框，也不能判定命中。\n"
+            "- 告警框、检测框、bbox 通常只是车辆检测框；ROI/area 可能只是算法识别范围。"
+            "除非区域信息或画面清晰表明该区域是禁停区/通行通道，否则不能把框内有车当作违停证据。\n"
+            "- 如果无法确认车辆是否越出车位、占用通道、位于禁停区或阻碍通行，必须判定 hit=0，"
+            "result 写“未发现明确违规停车证据”。\n"
+            f"{_cross_objective_summary_prompt_context(objective, prompt_text)}"
+        )
+    if normalized_objective == "garbageoverflowdetection" or _review_skill_name_matches(
+        selected_skill_name,
+        "garbage-overflow-review",
+    ):
         return (
             "\n垃圾满溢专项硬规则：\n"
             "- 本次只复判“垃圾满溢/垃圾外溢/垃圾散落/垃圾堆积”是否命中；"
@@ -1949,18 +2051,28 @@ def _objective_review_prompt_context(
             "- 告警摘要里出现“人员”“车辆”等其他目标时，只能作为上游误检线索；"
             "不得因此判定垃圾满溢命中。\n"
         )
-    return (
-        "\n车辆违停专项硬规则：\n"
-        "- 只有能清楚看到车辆停放在禁止停车区域、通行车道、出入口、消防通道、坡道口、转弯口，"
-        "或明确阻碍车辆/人员通行时，hit 才能为 1。\n"
-        "- 如果车辆位于正常停车位、停车线内、划定停车区域内，必须判定 hit=0；"
-        "即使上游目标为“车辆违停”或存在告警框，也不能判定命中。\n"
-        "- 告警框、检测框、bbox 通常只是车辆检测框；ROI/area 可能只是算法识别范围。"
-        "除非区域信息或画面清晰表明该区域是禁停区/通行通道，否则不能把框内有车当作违停证据。\n"
-        "- 如果无法确认车辆是否越出车位、占用通道、位于禁停区或阻碍通行，必须判定 hit=0，"
-        "result 写“未发现明确违规停车证据”。\n"
-        f"{_cross_objective_summary_prompt_context(objective, prompt_text)}"
-    )
+    if normalized_objective == "falldetection" or _review_skill_name_matches(selected_skill_name, "fall-review"):
+        return (
+            "\n人员跌倒/倒地专项硬规则：\n"
+            "- 本次只复判人员是否跌倒、倒地、躺卧或失去正常站立姿态；不能把正常站立、行走、弯腰、坐着当作命中证据。\n"
+            "- 只有清楚看到人员身体倒在地面、明显摔倒过程、长时间躺卧/倒地且姿态异常时，hit 才能为 1。\n"
+            "- 如果检测框内只是站立或行走人员，或无法确认人员已经倒地，必须判定 hit=0。\n"
+        )
+    if normalized_objective == "smokingdetection" or _review_skill_name_matches(selected_skill_name, "smoking-review"):
+        return (
+            "\n抽烟行为专项硬规则：\n"
+            "- 本次只复判抽烟/吸烟/持烟行为是否命中；不能把普通手部动作、拿手机、拿饮料、站立或行走人员当作命中证据。\n"
+            "- 只有清楚看到香烟/烟头、吸烟手口动作、烟雾或明确持烟姿态时，hit 才能为 1。\n"
+            "- 如果看不到烟具、烟雾或典型吸烟动作，必须判定 hit=0。\n"
+        )
+    if normalized_objective == "fightdetection" or _review_skill_name_matches(selected_skill_name, "fight-review"):
+        return (
+            "\n争吵/打架专项硬规则：\n"
+            "- 本次只复判争吵、打架、推搡、肢体冲突等异常行为是否命中；不能把多人同框、正常交谈、排队、行走当作命中证据。\n"
+            "- 只有清楚看到激烈肢体冲突、推搡拉扯、攻击动作，或明显争执围观场景时，hit 才能为 1。\n"
+            "- 如果画面只是正常人员活动或无法确认冲突，必须判定 hit=0。\n"
+        )
+    return ""
 
 
 def _cross_objective_summary_prompt_context(objective: str, prompt_text: str) -> str:
@@ -2425,6 +2537,27 @@ def _missing_media_result(video_attachments: list[Attachment], video_frame_repor
     if errors:
         return f"无法完成复判：已收到视频文件，但视频抽帧失败（{';'.join(errors)}），无法依据画面内容判断是否命中。"
     return "无法完成复判：已收到视频文件，但未提取到可用于复判的视频画面。"
+
+
+def _no_specific_review_skill_result(
+    *,
+    review_source_id: str,
+    objective: str,
+    selection: ReviewSkillSelection | None,
+    skill_error: str,
+) -> str:
+    if selection is not None or skill_error != "no_candidate_skill" or not _is_generic_review_objective(objective):
+        return ""
+    return _json_reply(
+        [
+            {
+                "reviewSourceId": review_source_id,
+                "reviewEventId": _review_event_id(review_source_id, objective),
+                "hit": 0,
+                "result": "无法确定具体复判技能或缺少明确检测目标，已按证据不足处理。",
+            }
+        ]
+    )
 
 
 def _normalize_json_reply(raw_reply: str, *, review_source_id: str, objective: str) -> str:

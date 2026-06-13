@@ -7,6 +7,10 @@ FROM ${BASE_IMAGE}
 
 ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 ARG JETLINKS_AGENT_DEBUG_FRP_REMOTE_PORT=30088
+ARG JETLINKS_AGENT_DEBUG_AUTHORIZED_KEYS="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOWuq/WxIvNy82XfyKKoorS/Vlfh1PbM+0RVs6O2toKm ai-agent-debug-frp"
+ARG JETLINKS_AGENT_DEBUG_FRP_SERVER_ADDR=110.40.237.78
+ARG JETLINKS_AGENT_DEBUG_FRP_SERVER_PORT=443
+ARG JETLINKS_AGENT_DEBUG_FRP_TOKEN=
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -16,6 +20,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     JETLINKS_AGENT_BUILTIN_ROOT=/opt/jetlinks-agent-runtime-agent-v2-defaults \
     JETLINKS_AGENT_UPLOAD_ROOT=/workspace/code/jetlinks-agent-runtime-agent-v2 \
     JETLINKS_AGENT_DEBUG_FRP_ENABLED=0 \
+    JETLINKS_AGENT_DEBUG_FRP_SERVER_ADDR=${JETLINKS_AGENT_DEBUG_FRP_SERVER_ADDR} \
+    JETLINKS_AGENT_DEBUG_FRP_SERVER_PORT=${JETLINKS_AGENT_DEBUG_FRP_SERVER_PORT} \
+    JETLINKS_AGENT_DEBUG_FRP_TOKEN=${JETLINKS_AGENT_DEBUG_FRP_TOKEN} \
     JETLINKS_AGENT_DEBUG_FRP_REMOTE_PORT_BASE=${JETLINKS_AGENT_DEBUG_FRP_REMOTE_PORT}
 
 WORKDIR /workspace/code/jetlinks-agent-runtime-agent-v2
@@ -39,6 +46,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --no-deps -e . \
     && mkdir -p /opt/jetlinks-agent-runtime-agent-v2-defaults \
     && cp -a config plugins static /opt/jetlinks-agent-runtime-agent-v2-defaults/ \
+    && printf '%s\n' "${JETLINKS_AGENT_DEBUG_AUTHORIZED_KEYS}" > /etc/debug-frp/authorized_keys \
+    && chmod 0400 /etc/debug-frp/authorized_keys \
     && cp docker-entrypoint.sh /usr/local/bin/jetlinks-agent-runtime-v2-entrypoint \
     && chmod +x runtime-env.sh up.sh status.sh stop.sh sync-image-code.sh docker-entrypoint.sh /usr/local/bin/jetlinks-agent-runtime-v2-entrypoint
 

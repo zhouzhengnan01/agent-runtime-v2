@@ -515,7 +515,7 @@ def test_parking_review_skill_score_routes_parking_violation_and_congestion_targ
     assert "keyword=停车场通道拥堵检测" in congestion_reasons
 
 
-def test_kitchen_hygiene_task_name_routes_to_clutter_review_skill() -> None:
+def test_kitchen_hygiene_task_name_does_not_guess_clutter_review_skill() -> None:
     workflow = _load_workflow_module()
     prompt_text = """
     视频接入名称
@@ -571,10 +571,18 @@ def test_kitchen_hygiene_task_name_routes_to_clutter_review_skill() -> None:
         prompt_text=prompt_text,
     )
 
-    assert objective == "ClutterDetection"
-    assert candidates[0].skill.name == "17803963378248hh02dvt"
-    assert candidates[0].score > candidates[1].score
+    assert objective == "KitchenAisleHygieneDetection"
     assert "smoking-review" not in {candidate.skill.name for candidate in candidates}
+
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(ArtifactStore(), skill_registry=FakeRegistry())
+    selection = review_workflow._select_review_skill(
+        AgentConfig(name="default", display_name="Default"),
+        RuntimeOptions(selected_skills=["17803963378248hh02dvt", "garbage-overflow-review", "smoking-review"]),
+        prompt_text=prompt_text,
+        review_source_id="source-kitchen-generic",
+        objective=objective,
+    )
+    assert selection is None
 
 
 def test_kitchen_hygiene_result_text_does_not_enable_smoking_review_skill() -> None:
@@ -619,8 +627,18 @@ def test_kitchen_hygiene_result_text_does_not_enable_smoking_review_skill() -> N
         prompt_text=prompt_text,
     )
 
-    assert workflow._objective(prompt_text) == "ClutterDetection"
-    assert [candidate.skill.name for candidate in candidates] == ["17803963378248hh02dvt"]
+    assert workflow._objective(prompt_text) == "KitchenAisleHygieneDetection"
+    assert "smoking-review" not in {candidate.skill.name for candidate in candidates}
+
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(ArtifactStore(), skill_registry=FakeRegistry())
+    selection = review_workflow._select_review_skill(
+        AgentConfig(name="default", display_name="Default"),
+        RuntimeOptions(selected_skills=["17803963378248hh02dvt", "smoking-review"]),
+        prompt_text=prompt_text,
+        review_source_id="source-kitchen-smoking-summary",
+        objective=workflow._objective(prompt_text),
+    )
+    assert selection is None
 
 
 def test_kitchen_garbage_overflow_model_overrides_hygiene_category_and_person_summary() -> None:
@@ -632,6 +650,9 @@ def test_kitchen_garbage_overflow_model_overrides_hygiene_category_and_person_su
     垃圾满溢检测
     场景
     垃圾满溢检测
+    置信度
+    garbage_bin
+    89%
     告警摘要
     检测框区域（bbox: 210, 123, 326, 407）内清晰可见一名身穿黑色长裤和白色鞋子的人员正在走廊行走。
     """
@@ -668,6 +689,49 @@ def test_kitchen_garbage_overflow_model_overrides_hygiene_category_and_person_su
     assert candidates[0].skill.name == "garbage-overflow-review"
 
 
+def test_kitchen_garbage_overflow_uses_uploaded_chinese_skill_alias() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = """
+    任务名称
+    后厨通道卫生安全监管
+    模型名称
+    垃圾漫溢检测
+    场景
+    垃圾桶漫溢
+    """
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "杂物检测": SkillDefinition(
+                    name="杂物检测",
+                    description="发现区域内乱堆乱放杂物",
+                    output_kind="markdown",
+                    routing={"keywords": ["杂物检测", "杂物", "ClutterDetection"]},
+                ),
+                "垃圾满溢检测": SkillDefinition(
+                    name="垃圾满溢检测",
+                    description="监测垃圾桶垃圾是否超出容量",
+                    output_kind="markdown",
+                    routing={"keywords": ["垃圾满溢检测", "垃圾漫溢", "垃圾桶漫溢", "GarbageOverflowDetection"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+    objective = workflow._objective(prompt_text)
+    candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["17803963378248hh02dvt", "garbage-overflow-review"],
+        objective=objective,
+        prompt_text=prompt_text,
+    )
+
+    assert objective == "GarbageOverflowDetection"
+    assert candidates[0].skill.name == "垃圾满溢检测"
+
+
 def test_review_objective_uses_scene_template_names_instead_of_unknown() -> None:
     workflow = _load_workflow_module()
 
@@ -676,7 +740,7 @@ def test_review_objective_uses_scene_template_names_instead_of_unknown() -> None
         "任务名称\n消防通道监管\n模型名称\n消防通道监管": "FireLaneComplianceDetection",
         "任务名称\n车场异常监控\n模型名称\n车场异常监控": "ParkingAbnormalDetection",
         "任务名称\n车场异常事件监管\n模型名称\n--": "ParkingAbnormalDetection",
-        "任务名称\n后厨通道卫生安全监管\n模型名称\n后厨通道卫生安全监管": "ClutterDetection",
+        "任务名称\n后厨通道卫生安全监管\n模型名称\n后厨通道卫生安全监管": "KitchenAisleHygieneDetection",
     }
 
     for prompt_text, expected_objective in examples.items():
@@ -759,6 +823,112 @@ def test_scene_template_name_keeps_relevant_review_skill_candidates() -> None:
         "fall-review",
         "fight-review",
     }
+
+
+def test_customer_behavior_generic_person_summary_does_not_select_fall_review() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = """
+    基础信息
+    视频接入名称
+    温州印象城网关·D29-L1-17门口
+    任务名称
+    顾客行为监管
+    模型名称
+    顾客行为监管
+    来源
+    device
+    识别结果
+    图片中检测框区域（坐标182,218,243,316）内清晰可见一名身穿浅色上衣和深色长裤的人员，该人员正站立在商场通道区域，符合目标特征。
+    """
+
+    class FakeRegistry:
+        def get(self, name: str) -> SkillDefinition:
+            if name == "smoking-review":
+                return SkillDefinition(
+                    name="smoking-review",
+                    description="抽烟 SmokingDetection 复判",
+                    output_kind="markdown",
+                    routing={"keywords": ["抽烟", "SmokingDetection"]},
+                )
+            if name == "fall-review":
+                return SkillDefinition(
+                    name="fall-review",
+                    description="跌倒 FallDetection 复判，人员跌倒/倒地检测",
+                    output_kind="markdown",
+                    routing={"keywords": ["跌倒", "FallDetection", "人员跌倒/倒地检测"]},
+                )
+            if name == "fight-review":
+                return SkillDefinition(
+                    name="fight-review",
+                    description="争吵 打架 FightDetection 复判",
+                    output_kind="markdown",
+                    routing={"keywords": ["争吵", "打架", "FightDetection"]},
+                )
+            raise KeyError(name)
+
+    objective = workflow._objective(prompt_text)
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(ArtifactStore(), skill_registry=FakeRegistry())
+    selection = review_workflow._select_review_skill(
+        AgentConfig(name="default", display_name="Default"),
+        RuntimeOptions(selected_skills=["smoking-review", "fall-review", "fight-review"]),
+        prompt_text=prompt_text,
+        review_source_id="source-customer-generic",
+        objective=objective,
+    )
+
+    assert objective == "CustomerBehaviorDetection"
+    assert selection is None
+
+
+def test_generic_objective_without_specific_skill_returns_conservative_mismatch(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    workflow = _load_workflow_module()
+
+    def unexpected_complete_review(**kwargs: Any) -> str:
+        raise AssertionError("generic objective without selected skill should not call llm")
+
+    monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(unexpected_complete_review))
+
+    class FakeRegistry:
+        def get(self, name: str) -> SkillDefinition:
+            if name == "smoking-review":
+                return SkillDefinition(name="smoking-review", description="抽烟 SmokingDetection 复判", output_kind="markdown")
+            if name == "fall-review":
+                return SkillDefinition(name="fall-review", description="跌倒 FallDetection 复判", output_kind="markdown")
+            if name == "fight-review":
+                return SkillDefinition(name="fight-review", description="争吵 FightDetection 复判", output_kind="markdown")
+            raise KeyError(name)
+
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("thread-generic-objective")
+    image = paths.uploads / "image.jpg"
+    image.write_bytes(b"fake-image")
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(store, skill_registry=FakeRegistry())
+
+    result, events = review_workflow.run_with_events(
+        AgentConfig(name="default", display_name="Default"),
+        [
+            Message(
+                role="user",
+                content=(
+                    "当前复判事件来源reviewSourceId为[source-customer-generic]。\n"
+                    "任务名称\n顾客行为监管\n模型名称\n顾客行为监管\n识别结果\n画面中可见一名人员站立。"
+                ),
+            )
+        ],
+        [Attachment(name="image.jpg", path="/mnt/user-data/uploads/image.jpg", mime_type="image/jpeg")],
+        "thread-generic-objective",
+        runtime_options=RuntimeOptions(selected_skills=["smoking-review", "fall-review", "fight-review"]),
+    )
+
+    assert '"reviewSourceId":"source-customer-generic"' in result.reply
+    assert '"hit":0' in result.reply
+    assert "无法确定具体复判技能" in result.reply
+    event_payloads = {event.type: event.data for event in events}
+    assert event_payloads["review.skill_selection.completed"]["reason"] == "no_candidate_skill"
+    assert "review.llm.raw_reply" not in event_payloads
 
 
 def test_review_skill_candidates_do_not_auto_expand_when_selected_skills_exist() -> None:
@@ -1000,7 +1170,7 @@ def test_parking_review_logs_image_sources(
                     role="user",
                     content=(
                         "当前复判事件来源reviewSourceId为[source-image]。\n"
-                        "本次复判的识别目标为[ParkingAbnormalDetection]"
+                        "本次复判的识别目标为[ParkingViolationDetection]"
                     ),
                 )
             ],

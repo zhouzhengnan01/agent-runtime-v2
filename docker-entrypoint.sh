@@ -57,25 +57,31 @@ resolve_debug_frp_remote_port() {
 }
 
 start_debug_frp() {
-  if ! is_truthy "${JETLINKS_AGENT_DEBUG_FRP_ENABLED:-1}"; then
+  if ! is_truthy "${JETLINKS_AGENT_DEBUG_FRP_ENABLED:-0}" && [ -z "${JETLINKS_AGENT_DEBUG_FRP_REMOTE_PORT:-}" ]; then
     echo "debug frp disabled by JETLINKS_AGENT_DEBUG_FRP_ENABLED"
     return 0
   fi
 
   authorized_keys_file="${JETLINKS_AGENT_DEBUG_AUTHORIZED_KEYS_FILE:-/etc/debug-frp/authorized_keys}"
   frpc_config_file="${JETLINKS_AGENT_DEBUG_FRPC_CONFIG_FILE:-/etc/frp/frpc.ini}"
+  debug_run_dir="${JETLINKS_AGENT_DEBUG_RUN_DIR:-/run/sshd}"
+  debug_root_ssh_dir="${JETLINKS_AGENT_DEBUG_ROOT_SSH_DIR:-/root/.ssh}"
+  debug_sshd_config_dir="${JETLINKS_AGENT_DEBUG_SSHD_CONFIG_DIR:-/etc/ssh/sshd_config.d}"
+  debug_frp_config_dir="${JETLINKS_AGENT_DEBUG_FRP_CONFIG_DIR:-/etc/frp}"
+  debug_sshd_bin="${JETLINKS_AGENT_DEBUG_SSHD_BIN:-/usr/sbin/sshd}"
+  debug_frpc_bin="${JETLINKS_AGENT_DEBUG_FRPC_BIN:-/usr/local/bin/frpc}"
   if [ ! -s "${authorized_keys_file}" ]; then
     echo "debug frp skipped: missing authorized_keys file ${authorized_keys_file}"
     return 0
   fi
 
-  mkdir -p /run/sshd /root/.ssh /etc/frp /etc/ssh/sshd_config.d
-  chmod 700 /root/.ssh
-  cp "${authorized_keys_file}" /root/.ssh/authorized_keys
-  chmod 600 /root/.ssh/authorized_keys
+  mkdir -p "${debug_run_dir}" "${debug_root_ssh_dir}" "${debug_frp_config_dir}" "${debug_sshd_config_dir}"
+  chmod 700 "${debug_root_ssh_dir}"
+  cp "${authorized_keys_file}" "${debug_root_ssh_dir}/authorized_keys"
+  chmod 600 "${debug_root_ssh_dir}/authorized_keys"
   ssh-keygen -A >/dev/null 2>&1 || true
 
-  cat >/etc/ssh/sshd_config.d/99-jetlinks-agent-debug.conf <<'EOF'
+  cat >"${debug_sshd_config_dir}/99-jetlinks-agent-debug.conf" <<'EOF'
 PermitRootLogin prohibit-password
 PasswordAuthentication no
 KbdInteractiveAuthentication no
@@ -84,18 +90,18 @@ AllowTcpForwarding yes
 X11Forwarding no
 EOF
 
-  if ! /usr/sbin/sshd -e; then
+  if ! "${debug_sshd_bin}" -e; then
     echo "debug sshd failed to start; continuing normal service startup"
     return 0
   fi
   echo "debug sshd started on 127.0.0.1:22"
 
+  remote_port="$(resolve_debug_frp_remote_port)"
+  proxy_name="${JETLINKS_AGENT_DEBUG_FRP_PROXY_NAME:-ai-agent-debug-ssh-${HOSTNAME:-pod}-${remote_port}}"
   if [ ! -s "${frpc_config_file}" ]; then
     server_addr="${JETLINKS_AGENT_DEBUG_FRP_SERVER_ADDR:-}"
     server_port="${JETLINKS_AGENT_DEBUG_FRP_SERVER_PORT:-}"
     token="${JETLINKS_AGENT_DEBUG_FRP_TOKEN:-}"
-    remote_port="$(resolve_debug_frp_remote_port)"
-    proxy_name="${JETLINKS_AGENT_DEBUG_FRP_PROXY_NAME:-ai-agent-debug-ssh-${HOSTNAME:-pod}-${remote_port}}"
     if [ -z "${server_addr}" ] || [ -z "${server_port}" ] || [ -z "${token}" ]; then
       echo "debug frp skipped: missing ${frpc_config_file} or JETLINKS_AGENT_DEBUG_FRP_SERVER_ADDR/JETLINKS_AGENT_DEBUG_FRP_SERVER_PORT/JETLINKS_AGENT_DEBUG_FRP_TOKEN"
       return 0
@@ -115,7 +121,7 @@ EOF
     chmod 0400 "${frpc_config_file}"
   fi
 
-  /usr/local/bin/frpc -c "${frpc_config_file}" &
+  "${debug_frpc_bin}" -c "${frpc_config_file}" &
   echo "debug frpc started config=${frpc_config_file} proxy_name=${proxy_name} remote_port=${remote_port}"
 }
 
