@@ -20,7 +20,7 @@ from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
 from app.core.skills import SkillRegistry, SkillRunner
 from app.core.skills.context_files import load_skill_markdown_context
-from app.core.tools import ToolInvocationService, ToolRegistry
+from app.core.tools import ToolInvocationResult, ToolInvocationService, ToolRegistry
 from app.schemas import ChatRequest, Message, RuntimeOptions
 
 
@@ -830,6 +830,18 @@ def test_agent_loop_marks_completed_prompt_only_primary_skill(
     assert result.metadata["primary_skill_name"] == "17803963378248hh02dvt"
     assert result.metadata["primary_skill_stage_count"] == 0
     assert result.metadata["primary_skill_completion_status"] == "completed"
+
+
+def test_agent_loop_omits_internal_prompt_only_artifacts() -> None:
+    result = ToolInvocationResult(
+        content=[{"type": "text", "text": "prompt ready"}],
+        structured_content={
+            "data": {"execution_type": "prompt_only"},
+            "artifacts": [{"path": "/tmp/reflective-vest-review-prompt.md", "name": "prompt.md"}],
+        },
+    )
+
+    assert ToolCallingAgentLoop._artifacts_from_tool_result(result, seen=[]) == []
 
 
 def test_agent_loop_explore_phase_prefers_read_only_tools(

@@ -1,8 +1,10 @@
+import base64
 import asyncio
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
+import os
 from pathlib import Path
 import time
 import xml.etree.ElementTree as ET
@@ -23,6 +25,7 @@ from app.core.agent.turn_verifier import verify_turn_completion
 from app.core.events import RunEventStore
 from app.core.llm import LlmChatResponse, OpenAICompatibleClient
 from app.core.routing import WorkflowRouter
+from app.core.runtime.cleanup import RuntimeCleanupConfig, run_runtime_cleanup_once
 from app.main import create_app
 from app.core.skills.aliases import invalidate_skill_alias_cache
 from app.core.skills import SkillRegistry
@@ -2845,6 +2848,92 @@ def test_agent_runtime_infers_specific_review_skill_from_review_routing_text(tmp
     assert "17803963378248hh02dvt" in effective_agent.skills
 
 
+def test_agent_runtime_expands_runtime_skill_aliases(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    request = ChatRequest(
+        messages=[Message(role="user", content="请复判这张图片")],
+        runtime_options=RuntimeOptions(
+            selected_skills=["2063607914266542080"],
+            config_options={"skill_aliases": {"2063607914266542080": "smoking-review"}},
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == ["smoking-review"]
+
+
+def test_agent_runtime_routes_review_skill_from_cv_task_mapping(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    task_id = "2063647485748645888"
+    source_id = "camera-17"
+    encoded = base64.urlsafe_b64encode(
+        f"http://edge.local/image.jpg?streamId=tenant/{task_id}/{source_id}".encode()
+    ).decode().rstrip("=")
+    request = ChatRequest(
+        messages=[Message(role="user", content="请执行智能体审核/复判任务。")],
+        attachments=[
+            Attachment(
+                name="review.jpg",
+                path=f"http://edge.local/_read/{encoded}.jpg",
+                mime_type="image/jpeg",
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            workflow="parking_abnormal_review",
+            app_template_name="StoreViolationDetection",
+            selected_skills=["fire-flame-review", "reflective-vest-review"],
+            config_options={
+                "review_task_mappings": {
+                    f"StoreViolationDetection:{task_id}": {
+                        "skill_name": "reflective-vest-review",
+                        "event_semantics": {
+                            "appTemplateName": "StoreViolationDetection",
+                            "applicationScene": "反光衣/作业服穿戴检测",
+                            "eventTypeName": "反光衣/作业服穿戴检测",
+                            "cvTaskName": "反光衣/作业服穿戴检测",
+                        },
+                    }
+                }
+            },
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == ["reflective-vest-review", "fire-flame-review"]
+    assert effective_request.runtime_options.config_options["routed_primary_skill"]["source"] == "attachment_target_skill"
+    assert effective_request.attachments[0].metadata["streamId"] == f"tenant/{task_id}/{source_id}"
+    assert effective_request.attachments[0].metadata["cvTaskId"] == task_id
+    assert effective_request.attachments[0].metadata["sourceId"] == source_id
+    assert effective_request.attachments[0].metadata["targetSkill"] == "reflective-vest-review"
+    assert "event_semantics=StoreViolationDetection; 反光衣/作业服穿戴检测" in effective_request.messages[0].content
+
+
+def test_agent_runtime_does_not_route_primary_skill_for_non_review_request(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    request = ChatRequest(
+        messages=[Message(role="user", content="普通多技能请求")],
+        attachments=[
+            Attachment(
+                name="input.jpg",
+                path="/mnt/user-data/uploads/input.jpg",
+                mime_type="image/jpeg",
+                metadata={"cvTaskId": "task-1"},
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            selected_skills=["first-skill", "second-skill"],
+            config_options={"review_task_mappings": {"task-1": {"skill_name": "second-skill"}}},
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == ["first-skill", "second-skill"]
+    assert "routed_primary_skill" not in effective_request.runtime_options.config_options
+
+
 def test_agent_runtime_does_not_infer_skill_for_explicit_artifact_workflow(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfigLoader().load("default")
@@ -2856,6 +2945,31 @@ def test_agent_runtime_does_not_infer_skill_for_explicit_artifact_workflow(tmp_p
     _effective_agent, effective_request = runtime._prepare_execution(agent, request)
 
     assert effective_request.runtime_options.selected_skills == []
+
+
+def test_runtime_cleanup_removes_expired_thread_dirs(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    threads_dir = runtime_root / "threads"
+    expired = threads_dir / "expired-thread"
+    fresh = threads_dir / "fresh-thread"
+    expired.mkdir(parents=True)
+    fresh.mkdir()
+    old_time = time.time() - 3600
+    os.utime(expired, (old_time, old_time))
+
+    result = run_runtime_cleanup_once(
+        RuntimeCleanupConfig(
+            root_dir=runtime_root,
+            retention_seconds=60,
+            interval_seconds=60,
+            initial_delay_seconds=0,
+            max_delete_per_run=10,
+        )
+    )
+
+    assert result == {"status": "ok", "deleted": 1, "remaining_expired": 0}
+    assert not expired.exists()
+    assert fresh.exists()
 
 
 def test_agent_runtime_merges_runtime_selected_skill_into_workflow_allowlist(tmp_path: Path) -> None:

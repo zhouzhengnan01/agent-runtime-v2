@@ -28,10 +28,16 @@ PLATFORM_SKILL_ALIASES: dict[str, list[str]] = {
 }
 
 
-def expand_skill_aliases(values: list[str], root_dir: Path | None = None) -> list[str]:
+def expand_skill_aliases(
+    values: list[str],
+    root_dir: Path | None = None,
+    *,
+    extra_aliases: object = None,
+) -> list[str]:
     expanded: list[str] = []
     seen: set[str] = set()
     aliases = skill_aliases(root_dir)
+    aliases.update(normalize_skill_aliases(extra_aliases))
     for value in values:
         names = aliases.get(value, [value])
         for name in names:
@@ -46,6 +52,36 @@ def skill_aliases(root_dir: Path | None = None) -> dict[str, list[str]]:
     aliases = {key: list(value) for key, value in PLATFORM_SKILL_ALIASES.items()}
     aliases.update(_plugin_skill_aliases(str((root_dir or _project_root()).resolve())))
     return aliases
+
+
+def normalize_skill_aliases(value: object) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    aliases: dict[str, list[str]] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        names = _alias_names(raw_value)
+        if names:
+            aliases[key] = names
+    return aliases
+
+
+def _alias_names(value: object) -> list[str]:
+    if isinstance(value, str):
+        name = value.strip()
+        return [name] if name else []
+    if isinstance(value, list):
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            name = str(item).strip()
+            if name and name not in seen:
+                names.append(name)
+                seen.add(name)
+        return names
+    return []
 
 
 def invalidate_skill_alias_cache() -> None:

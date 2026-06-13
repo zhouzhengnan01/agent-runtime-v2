@@ -1496,6 +1496,8 @@ class ToolCallingAgentLoop:
         *,
         seen: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        if ToolCallingAgentLoop._is_internal_prompt_only_result(result.structured_content):
+            return []
         seen_paths = {str(item.get("path") or "") for item in seen if isinstance(item, dict)}
         artifacts: list[dict[str, Any]] = []
         for item in ToolCallingAgentLoop._artifact_items_from_structured_content(result.structured_content):
@@ -1508,6 +1510,13 @@ class ToolCallingAgentLoop:
             if path:
                 seen_paths.add(path)
         return artifacts
+
+    @staticmethod
+    def _is_internal_prompt_only_result(structured_content: dict[str, Any]) -> bool:
+        data = structured_content.get("data")
+        if not isinstance(data, dict):
+            return False
+        return str(data.get("execution_type") or "").strip().lower() == "prompt_only"
 
     @staticmethod
     def _artifact_items_from_structured_content(structured_content: dict[str, Any]) -> list[dict[str, Any]]:

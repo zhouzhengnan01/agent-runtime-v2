@@ -109,7 +109,7 @@ def _dict_block_parts(block: dict[str, Any], index: int) -> tuple[str, Attachmen
             name=_attachment_name(uri, f"image-{index + 1}"),
             mime_type=mime_type,
             data_base64=data,
-            metadata={"acp_type": "image", "uri": uri},
+            metadata={**_block_meta(block), "acp_type": "image", "uri": uri},
         )
     if block_type == "audio":
         data = _string(block.get("data"))
@@ -120,7 +120,7 @@ def _dict_block_parts(block: dict[str, Any], index: int) -> tuple[str, Attachmen
             name=f"audio-{index + 1}",
             mime_type=mime_type,
             data_base64=data,
-            metadata={"acp_type": "audio"},
+            metadata={**_block_meta(block), "acp_type": "audio"},
         )
     if block_type == "resource_link":
         uri = _string(block.get("uri") or block.get("url") or block.get("path"))
@@ -128,13 +128,12 @@ def _dict_block_parts(block: dict[str, Any], index: int) -> tuple[str, Attachmen
         if uri is None:
             return "", None
         mime_type = _string(block.get("mimeType") or block.get("mime_type") or block.get("mediaType"))
-        block_meta = block.get("_meta") if isinstance(block.get("_meta"), dict) else {}
         return "", Attachment(
             name=name,
             path=uri,
             mime_type=mime_type,
             metadata={
-                **block_meta,
+                **_block_meta(block),
                 "acp_type": "resource_link",
                 "uri": uri,
                 "url": _string(block.get("url")),
@@ -178,7 +177,7 @@ def _dict_embedded_resource_parts(resource: dict[str, Any], index: int) -> tuple
             name=_attachment_name(uri, f"resource-{index + 1}.txt"),
             path=uri,
             mime_type=mime_type or "text/plain",
-            metadata={"acp_type": "embedded_text_resource", "uri": uri, "text": text},
+            metadata={**_block_meta(resource), "acp_type": "embedded_text_resource", "uri": uri, "text": text},
         )
     blob = _string(resource.get("blob"))
     if blob is None:
@@ -188,7 +187,7 @@ def _dict_embedded_resource_parts(resource: dict[str, Any], index: int) -> tuple
         path=uri,
         mime_type=mime_type,
         data_base64=blob,
-        metadata={"acp_type": "embedded_blob_resource", "uri": uri},
+        metadata={**_block_meta(resource), "acp_type": "embedded_blob_resource", "uri": uri},
     )
 
 
@@ -201,3 +200,8 @@ def _attachment_name(uri: str | None, fallback: str) -> str:
 
 def _string(value: object) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _block_meta(block: dict[str, Any]) -> dict[str, Any]:
+    meta = block.get("_meta")
+    return dict(meta) if isinstance(meta, dict) else {}
