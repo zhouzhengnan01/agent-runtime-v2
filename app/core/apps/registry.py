@@ -96,11 +96,18 @@ class AppTemplateRegistry:
         if not paths:
             paths = [path]
         merged: dict[str, object] = {}
+        top_data: dict[str, object] | None = None
         for candidate in paths:
             data = json.loads(candidate.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 raise ValueError(f"App template must be a JSON object: {candidate}")
             merged = _deep_merge_dicts(merged, data)
+            top_data = data
+        if len(paths) > 1 and isinstance(top_data, dict) and "workflow" not in top_data:
+            merged.pop("workflow", None)
+            runtime_options = merged.get("runtime_options")
+            if isinstance(runtime_options, dict):
+                runtime_options.pop("workflow", None)
         return merged
 
     def _load_template_collection(self, path: Path) -> builtins.list[AppTemplate]:
