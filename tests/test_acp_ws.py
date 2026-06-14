@@ -21,7 +21,7 @@ from app.core.runtime import ModelManager
 from app.schemas import AgentRunResult, ArtifactRef, ChatEvent, ChatRequest
 from app.schemas import Message
 from app.main import create_app
-from app.protocols.acp.adapter import _event_to_update
+from app.protocols.acp.adapter import _attachments_from_params, _event_to_update
 from app.protocols.acp import transport_ws as acp_transport_ws
 
 
@@ -1347,6 +1347,42 @@ def test_acp_websocket_routes_multimodal_prompt_and_session_model(
     assert "zone=restricted" in request.messages[0].content
     attachment_types = {attachment.metadata["acp_type"] for attachment in request.attachments}
     assert attachment_types == {"image", "resource_link", "embedded_text_resource"}
+
+
+def test_acp_file_results_record_metadata_merges_with_prompt_resource() -> None:
+    attachments = _attachments_from_params(
+        {
+            "prompt": [
+                {"type": "text", "text": "复判图片和录像"},
+                {
+                    "type": "resource_link",
+                    "name": "image.jpg",
+                    "uri": "https://example.test/files/object_1.jpg",
+                    "mimeType": "image/jpeg",
+                },
+            ],
+            "fileResults": [
+                {
+                    "url": "https://example.test/files/object_1.jpg",
+                    "name": "image.jpg",
+                    "extension": "jpg",
+                    "others": {
+                        "type": "labeled",
+                        "record": "https://example.test/files/record_1.mp4",
+                        "internalRecord": "command://mediaService/DownloadSnapFile?record=true",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert len(attachments) == 1
+    attachment = attachments[0]
+    assert attachment.path == "https://example.test/files/object_1.jpg"
+    assert attachment.mime_type == "image/jpeg"
+    assert attachment.metadata["acp_type"] == "file_result"
+    assert attachment.metadata["others"]["record"] == "https://example.test/files/record_1.mp4"
+    assert attachment.metadata["others"]["internalRecord"] == "command://mediaService/DownloadSnapFile?record=true"
 
 
 def test_acp_websocket_session_new_applies_app_template_and_runtime_options(

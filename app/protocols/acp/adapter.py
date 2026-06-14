@@ -10,10 +10,12 @@ from contextlib import suppress
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from app.core.agent import AgentRuntime
 from app.core.apps import AppTemplate, AppTemplateRegistry
+from app.core.artifacts.preview import guess_mime_type
 from app.core.artifacts import ThreadPaths
 from app.core.config import AgentConfigLoader
 from app.core.diagnostics import diagnostic_json, env_flag, env_int, redact_diagnostic_value
@@ -1704,10 +1706,148 @@ def _message_matches_user_text(message: Message | None, text: str) -> bool:
 def _attachments_from_params(params: dict[str, Any]) -> list[Attachment]:
     _prompt_text, prompt_attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
     raw_attachments = params.get("attachments")
-    if not isinstance(raw_attachments, list):
-        return prompt_attachments
-    explicit_attachments = [Attachment.model_validate(item) for item in raw_attachments if isinstance(item, dict)]
-    return [*prompt_attachments, *explicit_attachments]
+    explicit_attachments = (
+        [Attachment.model_validate(item) for item in raw_attachments if isinstance(item, dict)]
+        if isinstance(raw_attachments, list)
+        else []
+    )
+    file_result_attachments = _file_result_attachments_from_params(params)
+    return _merge_attachment_metadata([*prompt_attachments, *explicit_attachments, *file_result_attachments])
+
+
+def _file_result_attachments_from_params(params: dict[str, Any]) -> list[Attachment]:
+    attachments: list[Attachment] = []
+    for raw_results in _file_result_sources(params):
+        for index, item in enumerate(raw_results, start=1):
+            if not isinstance(item, dict):
+                continue
+            uri = _string(
+                item.get("url")
+                or item.get("uri")
+                or item.get("path")
+                or item.get("internalUrl")
+                or item.get("internal_url")
+            )
+            if uri is None:
+                continue
+            name = _string(item.get("name") or item.get("filename") or item.get("fileName")) or _name_from_uri(
+                uri,
+                f"file-result-{index}",
+            )
+            metadata: dict[str, Any] = {
+                "acp_type": "file_result",
+                "uri": uri,
+                "url": uri,
+                "file_result": True,
+            }
+            for key in (
+                "id",
+                "sourceId",
+                "source_id",
+                "dataId",
+                "data_id",
+                "timestamp",
+                "sha1",
+                "extension",
+            ):
+                if item.get(key) is not None:
+                    metadata[key] = item[key]
+            others = item.get("others")
+            if isinstance(others, dict):
+                metadata["others"] = dict(others)
+            attachments.append(
+                Attachment(
+                    name=name,
+                    path=uri,
+                    mime_type=_file_result_mime_type(item, uri, name),
+                    metadata=metadata,
+                )
+            )
+    return attachments
+
+
+def _file_result_sources(params: dict[str, Any]) -> list[list[Any]]:
+    sources: list[list[Any]] = []
+    for container in _file_result_containers(params):
+        for key in ("fileResults", "file_results"):
+            value = container.get(key)
+            if isinstance(value, list):
+                sources.append(value)
+    return sources
+
+
+def _file_result_containers(params: dict[str, Any]) -> list[dict[str, Any]]:
+    containers = [params]
+    for key in ("_meta", "message", "event", "data"):
+        value = params.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+            extra = value.get("extra")
+            if isinstance(extra, dict):
+                containers.append(extra)
+    extra = params.get("extra")
+    if isinstance(extra, dict):
+        containers.append(extra)
+    return containers
+
+
+def _file_result_mime_type(item: dict[str, Any], uri: str, name: str) -> str | None:
+    explicit = _string(
+        item.get("mimeType")
+        or item.get("mime_type")
+        or item.get("mediaType")
+        or item.get("media_type")
+        or item.get("contentType")
+        or item.get("content_type")
+    )
+    if explicit is not None:
+        return explicit
+    extension = _string(item.get("extension") or item.get("ext"))
+    if extension is not None:
+        clean = extension.strip().lstrip(".")
+        if clean:
+            return guess_mime_type(Path(f"file.{clean}"))
+    parsed_name = Path(unquote(urlparse(uri).path)).name
+    return guess_mime_type(Path(parsed_name or name))
+
+
+def _name_from_uri(uri: str, fallback: str) -> str:
+    parsed_name = Path(unquote(urlparse(uri).path)).name
+    return parsed_name or fallback
+
+
+def _merge_attachment_metadata(attachments: list[Attachment]) -> list[Attachment]:
+    merged: list[Attachment] = []
+    index_by_ref: dict[str, int] = {}
+    for attachment in attachments:
+        ref = _attachment_reference(attachment)
+        if not ref or ref not in index_by_ref:
+            if ref:
+                index_by_ref[ref] = len(merged)
+            merged.append(attachment)
+            continue
+        index = index_by_ref[ref]
+        existing = merged[index]
+        metadata = dict(existing.metadata)
+        metadata.update(attachment.metadata)
+        merged[index] = existing.model_copy(
+            update={
+                "mime_type": existing.mime_type or attachment.mime_type,
+                "metadata": metadata,
+            },
+            deep=True,
+        )
+    return merged
+
+
+def _attachment_reference(attachment: Attachment) -> str:
+    path = str(attachment.path or "").strip()
+    if path:
+        return f"path:{path}"
+    data = str(attachment.data_base64 or "").strip()
+    if data:
+        return f"data:{attachment.name}:{attachment.mime_type}:{len(data)}"
+    return ""
 
 
 def _normalize_structured_json_result(
