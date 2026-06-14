@@ -1957,6 +1957,8 @@ class AgentRuntime:
             return runtime_options.model_copy(update={"selected_skills": selected_skills}, deep=True)
         if (runtime_options.app_template_name or "").strip():
             return runtime_options
+        if self._has_runtime_mcp_config(runtime_options):
+            return runtime_options
         selected_skills = self._selected_skills_from_routing(messages)
         if not selected_skills:
             return runtime_options
@@ -1965,6 +1967,15 @@ class AgentRuntime:
         # by the caller versus which ones are still eligible for app-template
         # or bootstrap defaults.
         return runtime_options.model_copy(update={"selected_skills": selected_skills}, deep=True)
+
+    @staticmethod
+    def _has_runtime_mcp_config(runtime_options: RuntimeOptions) -> bool:
+        config_options = runtime_options.config_options
+        for key in ("mcpServers", "mcp_servers", "runtime_mcp_tools", "_runtime_mcp_tools"):
+            value = config_options.get(key)
+            if isinstance(value, list) and value:
+                return True
+        return False
 
     def _runtime_options_with_skill_aliases(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
         selected_skills = self._normalize_skills(
@@ -2620,6 +2631,8 @@ class AgentRuntime:
     def _semantic_values_from_metadata(cls, metadata: dict[str, Any]) -> list[str]:
         values: list[str] = []
         for key in (
+            "appTemplateName",
+            "app_template_name",
             "applicationScene",
             "application_scene",
             "eventTypeName",
@@ -2637,7 +2650,7 @@ class AgentRuntime:
         ):
             value = metadata.get(key)
             if isinstance(value, str) and value.strip():
-                values.append(value.strip())
+                cls._append_unique_text(values, value.strip())
         return values
 
     @classmethod
@@ -2685,6 +2698,16 @@ class AgentRuntime:
             return
         target.append(normalized)
         seen.add(normalized)
+
+    @staticmethod
+    def _append_unique_text(target: list[str], value: str) -> None:
+        normalized = value.strip()
+        if not normalized:
+            return
+        seen = {item.casefold() for item in target}
+        if normalized.casefold() in seen:
+            return
+        target.append(normalized)
 
     @staticmethod
     def _composite_skill_context(skill: SkillDefinition) -> dict[str, object]:

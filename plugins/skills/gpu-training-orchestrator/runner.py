@@ -92,6 +92,8 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) 
 
 def _normalize_training_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]:
     payload = dict(spec)
+    workflow_context = payload.get("workflow_context") if isinstance(payload.get("workflow_context"), dict) else {}
+    overrides = _parse_overrides_text(payload.get("overrides_text"))
     output_root = Path(paths.outputs).resolve()
     dataset = payload.get("dataset") if isinstance(payload.get("dataset"), dict) else {}
     output = payload.get("output") if isinstance(payload.get("output"), dict) else {}
@@ -103,29 +105,89 @@ def _normalize_training_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]
         or payload.get("dataset_yaml")
         or dataset.get("data_yaml")
         or dataset.get("dataset_yaml")
+        or workflow_context.get("data_yaml")
+        or workflow_context.get("dataset_yaml")
+        or workflow_context.get("coco_json")
+        or workflow_context.get("dataset_root")
         or str(output_root / "prepared_data" / "dataset.yaml")
     )
-    project_dir = output.get("project_dir") or payload.get("project_dir") or str(output_root / "training_run")
-    run_name = output.get("run_name") or payload.get("run_name") or "."
+    project_dir = (
+        output.get("project_dir")
+        or payload.get("project_dir")
+        or workflow_context.get("project_dir")
+        or str(output_root / "training_runs")
+    )
+    run_name = output.get("run_name") or payload.get("run_name") or workflow_context.get("run_name") or "."
 
     return {
         "runtime": {
-            "conda_env_name": runtime.get("conda_env_name") if runtime.get("conda_env_name") is not None else payload.get("conda_env_name", ""),
+            "conda_env_name": _first_value(
+                runtime.get("conda_env_name"),
+                payload.get("conda_env_name"),
+                overrides.get("conda_env_name"),
+                "",
+            ),
             "enforce_conda_env": bool(runtime.get("enforce_conda_env", False)),
         },
         "dataset": {"data_yaml": str(data_yaml)},
         "training": {
-            "task": training.get("task") or payload.get("training_task") or "detect",
-            "model": training.get("model") or payload.get("model") or "yolo11n.pt",
-            "epochs": int(training.get("epochs") or payload.get("epochs") or 50),
-            "imgsz": int(training.get("imgsz") or payload.get("imgsz") or 640),
-            "batch": int(training.get("batch") or payload.get("batch") or 16),
-            "device": training.get("device") or payload.get("device") or "0",
-            "workers": int(training.get("workers") or payload.get("workers") or 4),
-            "patience": int(training.get("patience") or payload.get("patience") or 8),
+            "task": _first_value(training.get("task"), payload.get("training_task"), overrides.get("task"), "detect"),
+            "model": _first_value(training.get("model"), payload.get("model"), overrides.get("model"), "yolo11n.pt"),
+            "epochs": _int_value(_first_value(training.get("epochs"), payload.get("epochs"), overrides.get("epochs")), 50),
+            "imgsz": _int_value(_first_value(training.get("imgsz"), payload.get("imgsz"), overrides.get("imgsz")), 640),
+            "batch": _int_value(_first_value(training.get("batch"), payload.get("batch"), overrides.get("batch")), 16),
+            "device": _first_value(training.get("device"), payload.get("device"), overrides.get("device"), "0"),
+            "workers": _int_value(_first_value(training.get("workers"), payload.get("workers"), overrides.get("workers")), 4),
+            "patience": _int_value(_first_value(training.get("patience"), payload.get("patience"), overrides.get("patience")), 8),
+            "amp": _bool_value(_first_value(training.get("amp"), payload.get("amp"), overrides.get("amp")), False),
         },
         "output": {"project_dir": str(project_dir), "run_name": str(run_name)},
     }
+
+
+def _parse_overrides_text(value: Any) -> dict[str, str]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    overrides: dict[str, str] = {}
+    for match in re.finditer(r"([A-Za-z_][A-Za-z0-9_]*)\s*[=：:]\s*([^\s,，;；]+)", value):
+        key = match.group(1).strip()
+        raw = match.group(2).strip().strip("'\"")
+        if key and raw:
+            overrides[key] = raw
+    return overrides
+
+
+def _first_value(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return ""
+
+
+def _int_value(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _bool_value(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, int | float):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().casefold()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return default
 
 
 def _training_command(spec: dict[str, Any], script_path: Path, request_path: Path) -> list[str]:
