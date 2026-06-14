@@ -147,6 +147,58 @@ def test_app_template_registry_deduplicates_collection_and_file_templates(tmp_pa
     assert registry.get("demo").selected_skills == ["drawio-generation"]
 
 
+def test_upload_app_template_inherits_missing_builtin_fields(tmp_path: Path) -> None:
+    builtin_apps_dir = tmp_path / "config" / "apps"
+    upload_apps_dir = tmp_path / "config" / "upload" / "apps"
+    builtin_apps_dir.mkdir(parents=True)
+    upload_apps_dir.mkdir(parents=True)
+    (builtin_apps_dir / "review-app.json").write_text(
+        json.dumps(
+            {
+                "name": "review-app",
+                "title": "Review App",
+                "agent_name": "default",
+                "workflow": "parking_abnormal_review",
+                "selected_skills": ["builtin-review"],
+                "runtime_options": {
+                    "config_options": {
+                        "force_model_config": True,
+                        "builtin_only": "kept",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (upload_apps_dir / "review-app.json").write_text(
+        json.dumps(
+            {
+                "name": "review-app",
+                "title": "Uploaded Review App",
+                "agent_name": "default",
+                "selected_skills": ["2063607914266542080"],
+                "runtime_options": {
+                    "config_options": {
+                        "skill_aliases": {"2063607914266542080": "smoking-review"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    template = AppTemplateRegistry(root_dir=tmp_path).get("review-app")
+
+    assert template.title == "Uploaded Review App"
+    assert template.workflow == "parking_abnormal_review"
+    assert template.selected_skills == ["smoking-review"]
+    assert template.runtime_options["config_options"] == {
+        "force_model_config": True,
+        "builtin_only": "kept",
+        "skill_aliases": {"2063607914266542080": "smoking-review"},
+    }
+
+
 def test_app_template_registry_expands_plugin_aliases_from_root_dir(tmp_path: Path) -> None:
     apps_dir = tmp_path / "config" / "apps"
     plugin_root = tmp_path / "plugins" / "skills" / "root-skill-plugin"
