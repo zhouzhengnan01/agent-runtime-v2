@@ -1,0 +1,42 @@
+{
+  "category": "general",
+  "agent_name": "default",
+  "name": "FireLaneComplianceDetection",
+  "title": "消防通道监管",
+  "description": "针对消防通道、安全出口区域，通过杂物检测算法，识别通道内的违规堆放物，保障消防通道畅通，违规事件自动推送工单处理。",
+  "selected_skills": [
+    "2063607912836284416",
+    "2063607914266542080",
+    "2063609339214217216"
+  ],
+  "models": [
+    {
+      "name": "qwen-vl-plus",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [],
+      "priority": 0,
+      "provider": "aliyun-openai-compatible",
+      "model": "qwen-vl-plus",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "default_model": "qwen-vl-plus",
+      "tool_choice": "auto",
+      "temperature": 0.2,
+      "max_tokens": 2048,
+      "api_key_env": "DASHSCOPE_API_KEY"
+    }
+  ],
+  "runtime_options": {
+    "config_options": {
+      "skill_aliases": {
+        "2063607912836284416": "17803963378248hh02dvt",
+        "2063607914266542080": "smoking-review",
+        "2063609339214217216": "fire-flame-review"
+      }
+    }
+  },
+  "workflow": "parking_abnormal_review"
+}

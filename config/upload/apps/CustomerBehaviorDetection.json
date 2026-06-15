@@ -1,0 +1,46 @@
+{
+  "category": "general",
+  "agent_name": "default",
+  "name": "CustomerBehaviorDetection",
+  "title": "顾客行为监管",
+  "description": "针对门店公共区域的顾客行为，通过抽烟检测、摔倒检测、争吵检测算法，识别顾客危险行为、意外事件与冲突行为，实现安全风险预警，暂不触发工单推送。",
+  "selected_skills": [
+    "2063610791303233536",
+    "2063610791563280384",
+    "2063607914266542080"
+  ],
+  "models": [
+    {
+      "name": "qwen-vl-plus",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [],
+      "priority": 0,
+      "provider": "aliyun-openai-compatible",
+      "model": "qwen-vl-plus",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "default_model": "qwen-vl-plus",
+      "tool_choice": "auto",
+      "temperature": 0.2,
+      "max_tokens": 2048,
+      "api_key_env": "DASHSCOPE_API_KEY"
+    }
+  ],
+  "runtime_options": {
+    "config_options": {
+      "skill_aliases": {
+        "2063610791303233536": "fight-review",
+        "2063610791563280384": "fall-review",
+        "2063607914266542080": "smoking-review"
+      },
+      "skill_label_aliases": {
+        "fall": "fall-review",
+        "fight": "fight-review"
+      }
+    }
+  },
+  "workflow": "parking_abnormal_review"
+}

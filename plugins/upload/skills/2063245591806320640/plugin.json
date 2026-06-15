@@ -1,0 +1,7 @@
+{
+  "id" : "2063245591806320640",
+  "name" : "车辆拥堵",
+  "version" : "0.1.0",
+  "description" : "识别道路 / 场区车辆拥堵状况",
+  "skills" : [ "manifest.json" ]
+}

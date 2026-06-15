@@ -1,0 +1,20 @@
+{
+  "name" : "抽烟监测",
+  "description" : "识别现场人员吸烟行为",
+  "generation" : true,
+  "version" : "0.1.0",
+  "summary" : "识别现场人员吸烟行为",
+  "entry" : "SKILL.md",
+  "metadata" : {
+    "developerCenter" : {
+      "domain" : "vision",
+      "mode" : "hybrid",
+      "compatibleAgents" : [ "vision-analyst" ],
+      "requiredInputs" : [ "image | video-frames" ],
+      "references" : {
+        "kind" : "vision",
+        "visionModels" : [ ]
+      }
+    }
+  }
+}

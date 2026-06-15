@@ -1,0 +1,20 @@
+{
+  "name" : "争吵检测",
+  "description" : "识别人员肢体冲突、争吵打闹",
+  "generation" : true,
+  "version" : "0.1.0",
+  "summary" : "识别人员肢体冲突、争吵打闹",
+  "entry" : "SKILL.md",
+  "metadata" : {
+    "developerCenter" : {
+      "domain" : "vision",
+      "mode" : "hybrid",
+      "compatibleAgents" : [ "vision-analyst" ],
+      "requiredInputs" : [ "image | video-frames" ],
+      "references" : {
+        "kind" : "vision",
+        "visionModels" : [ ]
+      }
+    }
+  }
+}

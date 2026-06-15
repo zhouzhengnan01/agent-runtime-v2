@@ -1,0 +1,96 @@
+{
+  "name": "fire-flame-review",
+  "description": "用于机器视觉复判火焰、明火、可见燃烧等安全事件。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于消防通道、后厨通道、公共区域等监控画面中火焰、明火、燃烧光源事件复判。",
+    "keywords": [
+      "火焰/明火检测",
+      "火焰检测",
+      "明火检测",
+      "火焰",
+      "明火",
+      "燃烧",
+      "FireDetection",
+      "Fire",
+      "Flame",
+      "明火 / 火焰识别",
+      "明火识别",
+      "火焰识别",
+      "火苗",
+      "火星",
+      "火光",
+      "VisibleFireDetection",
+      "OpenFlameDetection",
+      "FlameDetection",
+      "open_fire",
+      "open_flame",
+      "visible_fire",
+      "fire_flame",
+      "fire_point",
+      "fire_detect",
+      "flame_detect"
+    ],
+    "examples": [
+      "复判画面中是否有明火",
+      "判断后厨通道是否出现火焰",
+      "检查消防通道附近是否存在可见燃烧",
+      "判断画面中是否存在明火或火苗",
+      "排除红色灯光、反光、装饰假火造成的误报"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "fire_evidence",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "fire-flame-review"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "metadata": {
+    "developerCenter": {
+      "domain": "general"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name" : "火焰识别",
+  "description" : "检测区域内明火、火焰隐患",
+  "generation" : true,
+  "version" : "0.1.0",
+  "summary" : "检测区域内明火、火焰隐患",
+  "entry" : "SKILL.md",
+  "metadata" : {
+    "developerCenter" : {
+      "domain" : "vision",
+      "mode" : "hybrid",
+      "compatibleAgents" : [ "vision-analyst" ],
+      "requiredInputs" : [ "image | video-frames" ],
+      "references" : {
+        "kind" : "vision",
+        "visionModels" : [ ]
+      }
+    }
+  }
+}

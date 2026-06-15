@@ -1,0 +1,20 @@
+{
+  "name" : "明火 / 火焰识别",
+  "description" : "明火 / 火焰识别",
+  "generation" : true,
+  "version" : "0.1.0",
+  "summary" : "明火 / 火焰识别",
+  "entry" : "SKILL.md",
+  "metadata" : {
+    "developerCenter" : {
+      "domain" : "vision",
+      "mode" : "hybrid",
+      "compatibleAgents" : [ "vision-analyst" ],
+      "requiredInputs" : [ "image | video-frames" ],
+      "references" : {
+        "kind" : "vision",
+        "visionModels" : [ ]
+      }
+    }
+  }
+}

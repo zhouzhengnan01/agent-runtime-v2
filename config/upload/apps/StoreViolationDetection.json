@@ -1,0 +1,46 @@
+{
+  "category": "general",
+  "agent_name": "default",
+  "name": "StoreViolationDetection",
+  "title": "店铺装修违规检测",
+  "description": "针对门店装修、改造等施工场景，通过抽烟检测、火焰识别、安全帽 / 反光衣穿戴检测算法，自动识别人员违规作业与现场安全隐患，违规事件自动推送工单处理。",
+  "selected_skills": [
+    "2065062707190095872",
+    "2063607914019078144",
+    "2063607914266542080",
+    "2065062633986908160"
+  ],
+  "models": [
+    {
+      "name": "qwen-vl-plus",
+      "features": [
+        "vision",
+        "chat"
+      ],
+      "priority_features": [],
+      "priority": 0,
+      "provider": "aliyun-openai-compatible",
+      "model": "qwen-vl-plus",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "default_model": "qwen-vl-plus",
+      "tool_choice": "auto",
+      "temperature": 0.2,
+      "max_tokens": 2048,
+      "api_key_env": "DASHSCOPE_API_KEY"
+    }
+  ],
+  "runtime_options": {
+    "config_options": {
+      "skill_aliases": {
+        "2065062707190095872": "helmet-review",
+        "2063607914019078144": "fire-flame-review",
+        "2063607914266542080": "smoking-review",
+        "2065062633986908160": "reflective-vest-review"
+      },
+      "skill_label_aliases": {
+        "no_helmet": "helmet-review"
+      }
+    }
+  },
+  "workflow": "parking_abnormal_review"
+}

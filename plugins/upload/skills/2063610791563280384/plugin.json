@@ -1,0 +1,7 @@
+{
+  "id" : "2063610791563280384",
+  "name" : "摔倒监测",
+  "version" : "0.1.0",
+  "description" : "识别人员意外摔倒、倒地行为",
+  "skills" : [ "manifest.json" ]
+}

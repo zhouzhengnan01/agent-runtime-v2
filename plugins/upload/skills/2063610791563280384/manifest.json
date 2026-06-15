@@ -1,0 +1,20 @@
+{
+  "name" : "摔倒监测",
+  "description" : "识别人员意外摔倒、倒地行为",
+  "generation" : true,
+  "version" : "0.1.0",
+  "summary" : "识别人员意外摔倒、倒地行为",
+  "entry" : "SKILL.md",
+  "metadata" : {
+    "developerCenter" : {
+      "domain" : "vision",
+      "mode" : "hybrid",
+      "compatibleAgents" : [ "vision-analyst" ],
+      "requiredInputs" : [ "image | video-frames" ],
+      "references" : {
+        "kind" : "vision",
+        "visionModels" : [ ]
+      }
+    }
+  }
+}

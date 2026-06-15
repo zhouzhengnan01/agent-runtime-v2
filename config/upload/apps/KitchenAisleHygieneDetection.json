@@ -1,0 +1,47 @@
+{
+  "category": "general",
+  "agent_name": "default",
+  "name": "KitchenAisleHygieneDetection",
+  "title": "后厨通道卫生安全监管",
+  "description": "针对后厨及通道区域，通过杂物检测、垃圾满溢检测、火焰识别算法，实现后厨环境卫生、垃圾管理与消防安全隐患的全流程监管，违规事件自动推送工单处理。",
+  "selected_skills": [
+    "2063607912836284416",
+    "2063607914019078144",
+    "2063607914266542080",
+    "2063607913775808512"
+  ],
+  "models": [
+    {
+      "name": "qwen-vl-plus",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [],
+      "priority": 0,
+      "provider": "aliyun-openai-compatible",
+      "model": "qwen-vl-plus",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "default_model": "qwen-vl-plus",
+      "tool_choice": "auto",
+      "temperature": 0.2,
+      "max_tokens": 2048,
+      "api_key_env": "DASHSCOPE_API_KEY"
+    }
+  ],
+  "runtime_options": {
+    "config_options": {
+      "skill_aliases": {
+        "2063607912836284416": "17803963378248hh02dvt",
+        "2063607914019078144": "fire-flame-review",
+        "2063607914266542080": "smoking-review",
+        "2063607913775808512": "garbage-overflow-review"
+      },
+      "skill_label_aliases": {
+        "smoking": "smoking-review"
+      }
+    }
+  },
+  "workflow": "parking_abnormal_review"
+}

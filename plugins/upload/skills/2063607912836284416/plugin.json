@@ -1,0 +1,7 @@
+{
+  "id" : "2063607912836284416",
+  "name" : "杂物检测",
+  "version" : "0.1.0",
+  "description" : "发现区域内乱堆乱放杂物",
+  "skills" : [ "manifest.json" ]
+}

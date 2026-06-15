@@ -1,0 +1,20 @@
+{
+  "name" : "反光衣穿戴检测",
+  "description" : "检测人员是否按要求穿戴反光衣",
+  "generation" : true,
+  "version" : "0.1.0",
+  "summary" : "检测人员是否按要求穿戴反光衣",
+  "entry" : "SKILL.md",
+  "metadata" : {
+    "developerCenter" : {
+      "domain" : "vision",
+      "mode" : "hybrid",
+      "compatibleAgents" : [ "vision-analyst" ],
+      "requiredInputs" : [ "image | video-frames" ],
+      "references" : {
+        "kind" : "vision",
+        "visionModels" : [ ]
+      }
+    }
+  }
+}

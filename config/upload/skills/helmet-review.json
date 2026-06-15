@@ -1,0 +1,96 @@
+{
+  "name": "helmet-review",
+  "description": "用于机器视觉复判安全帽佩戴、未戴安全帽、佩戴不规范等施工安全事件。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于店铺装修、施工、改造等监控画面中安全帽穿戴合规复判。",
+    "keywords": [
+      "安全帽穿戴检测",
+      "安全帽检测",
+      "安全帽佩戴检测",
+      "安全帽穿戴",
+      "安全帽佩戴",
+      "未戴安全帽",
+      "未佩戴安全帽",
+      "未规范佩戴安全帽",
+      "安全帽",
+      "头盔",
+      "helmet",
+      "hardhat",
+      "hard_hat",
+      "safety_helmet",
+      "no_helmet",
+      "nohelmet",
+      "no_hardhat",
+      "without_helmet",
+      "person_without_helmet",
+      "HelmetDetection",
+      "SafetyHelmetDetection",
+      "HardHatDetection",
+      "HelmetWearingDetection",
+      "PPEHelmetDetection",
+      "no_hard_hat",
+      "head_without_helmet"
+    ],
+    "examples": [
+      "复判画面中施工人员是否佩戴安全帽",
+      "检查店铺装修现场是否存在未戴安全帽",
+      "判断人员头部是否有安全帽而不是普通帽子或头发",
+      "判断安全帽穿戴检测是否命中"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "helmet_evidence",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "helmet-review"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "metadata": {
+    "developerCenter": {
+      "domain": "general"
+    }
+  }
+}
