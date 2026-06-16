@@ -1,0 +1,73 @@
+{
+  "name": "reflective-vest-review",
+  "description": "用于机器视觉复判反光衣/作业服穿戴检测、未穿反光衣或作业服不合规等事件。",
+  "generation": true,
+  "output_kind": "markdown",
+  "routing": {
+    "summary": "用于作业区域监控画面中人员反光衣、作业服穿戴状态复判。",
+    "keywords": [
+      "反光衣/作业服穿戴检测",
+      "反光衣穿戴检测",
+      "作业服穿戴检测",
+      "反光衣检测",
+      "作业服检测",
+      "反光衣",
+      "作业服",
+      "WorkwearDetection",
+      "ReflectiveVest",
+      "reflection"
+    ],
+    "examples": [
+      "复判画面中人员是否未穿反光衣",
+      "判断作业区域人员作业服穿戴是否合规",
+      "检查告警框内人员身体区域是否有反光衣或作业服"
+    ]
+  },
+  "quality_template": [
+    "visual_evidence",
+    "false_positive_suppression",
+    "hit_decision",
+    "workwear_evidence",
+    "brief_reason"
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "skill_name",
+      "objective"
+    ],
+    "properties": {
+      "skill_name": {
+        "const": "reflective-vest-review"
+      },
+      "objective": {
+        "type": "string"
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "artifacts"
+    ],
+    "properties": {
+      "artifacts": {
+        "type": "array"
+      }
+    },
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  }
+}

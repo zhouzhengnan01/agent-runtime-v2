@@ -1,7 +1,7 @@
 {
-  "name" : "车辆拥堵",
   "description" : "识别道路 / 场区车辆拥堵状况",
   "generation" : true,
+  "name" : "车辆拥堵",
   "version" : "0.1.0",
   "summary" : "识别道路 / 场区车辆拥堵状况",
   "entry" : "SKILL.md",

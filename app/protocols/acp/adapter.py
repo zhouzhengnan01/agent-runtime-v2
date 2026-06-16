@@ -10,18 +10,16 @@ from contextlib import suppress
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from app.core.agent import AgentRuntime
 from app.core.apps import AppTemplate, AppTemplateRegistry
-from app.core.artifacts.preview import guess_mime_type
 from app.core.artifacts import ThreadPaths
 from app.core.config import AgentConfigLoader
-from app.core.diagnostics import diagnostic_json, env_flag, env_int, redact_diagnostic_value
+from app.core.diagnostics import diagnostic_json, env_flag, env_int
 from app.core.runtime import ModelManager
 from app.core.skills.aliases import expand_skill_aliases
-from app.protocols.acp.content import prompt_parts_from_dict_blocks
+from app.protocols.acp.content import attachments_from_payload_fields, prompt_parts_from_dict_blocks
 from app.protocols.acp.external_backend import ExternalAcpSession, prompt_blocks_from_params, prompt_response_payload
 from app.protocols.acp.input_required import stop_reason_for_result
 from app.protocols.acp.schemas import AcpTerminal, AcpWebSocketSession
@@ -34,7 +32,6 @@ logger = logging.getLogger("uvicorn.error")
 ACP_ADAPTER_TRACE_PAYLOADS = env_flag("ACP_ADAPTER_TRACE_PAYLOADS", "0")
 ACP_ADAPTER_TRACE_MAX_CHARS = env_int("ACP_ADAPTER_TRACE_MAX_CHARS", 100)
 ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS = env_int("ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS", 1200)
-ACP_ADAPTER_SESSION_LOG_MAX_CHARS = env_int("ACP_ADAPTER_SESSION_LOG_MAX_CHARS", 1200)
 
 _RUNTIME_OPTION_ALIASES = {
     "threadId": "thread_id",
@@ -158,6 +155,7 @@ class AcpRuntimeAdapter:
                 "loadSession": True,
                 "promptCapabilities": {
                     "image": True,
+                    "video": True,
                     "audio": True,
                     "embeddedContext": True,
                 },
@@ -243,7 +241,7 @@ class AcpRuntimeAdapter:
             stored_runtime_options = self._resolve_model_runtime_options(stored_runtime_options)
         model_name = _string(stored_runtime_options.get("model_name"))
         mcp_servers = _mcp_servers_from_params(params)
-        logger.debug(
+        logger.info(
             "acp session new session_id=%s thread_id=%s agent=%s app_template=%s selected_skills=%s mode=%s config_option_keys=%s param_keys=%s meta_keys=%s bridge_container_keys=%s",
             session_id,
             thread_id,
@@ -255,33 +253,6 @@ class AcpRuntimeAdapter:
             sorted(params.keys()),
             sorted(_params(params.get("_meta")).keys()),
             _bridge_container_key_summary(params),
-        )
-        logger.info(
-            "acp session new detail session_id=%s thread_id=%s agent=%s app_template=%s runtime_options=%s mcp_servers=%s params_summary=%s",
-            session_id,
-            thread_id,
-            agent_name,
-            app_template.name if app_template is not None else None,
-            diagnostic_json(
-                _runtime_options_response(stored_runtime_options),
-                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
-            ),
-            diagnostic_json(
-                _mcp_servers_response(mcp_servers),
-                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
-            ),
-            diagnostic_json(
-                _acp_param_log_summary(params),
-                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
-            ),
-        )
-        _dump_acp_request_debug(
-            thread_id,
-            "session.new",
-            params,
-            app_template=app_template.name if app_template is not None else None,
-            workflow=stored_runtime_options.get("workflow") if isinstance(stored_runtime_options, dict) else None,
-            selected_skills=stored_runtime_options.get("selected_skills") if isinstance(stored_runtime_options, dict) else None,
         )
         sessions[session_id] = AcpWebSocketSession(
             session_id=session_id,
@@ -323,23 +294,8 @@ class AcpRuntimeAdapter:
     ) -> dict[str, Any]:
         session_id = _string(params.get("sessionId") or params.get("session_id"))
         if not session_id or session_id not in sessions:
-            if session_id:
-                restored_params = _restored_session_new_params(session_id)
-                if restored_params is not None:
-                    logger.info(
-                        "acp prompt restored missing session from thread files session_id=%s restored_app_template=%s",
-                        session_id,
-                        _app_template_name(restored_params),
-                    )
-                    self.new_session(sessions, restored_params)
-                else:
-                    logger.warning(
-                        "acp prompt missing session and no persisted session.new found session_id=%s",
-                        session_id,
-                    )
-            if not session_id or session_id not in sessions:
-                session_result = self.new_session(sessions, params)
-                session_id = str(session_result["sessionId"])
+            session_result = self.new_session(sessions, params)
+            session_id = str(session_result["sessionId"])
 
         session = sessions[session_id]
         agent_name = _agent_name_from_meta(params) or session.agent_name
@@ -366,27 +322,9 @@ class AcpRuntimeAdapter:
                 session.model_name = model_name
             agent_name = session.agent_name
             agent = self.loader.load(agent_name)
-        logger.info(
-            "acp prompt app routing session_id=%s thread_id=%s review_source_id=%s app_template=%s agent=%s selected_skills=%s workflow=%s",
-            session_id,
-            session.thread_id,
-            _review_source_id_from_params(params) or "",
-            session.app_template_name or "",
-            agent_name,
-            session.runtime_options.get("selected_skills") if isinstance(session.runtime_options, dict) else None,
-            session.runtime_options.get("workflow") if isinstance(session.runtime_options, dict) else None,
-        )
-        _dump_acp_request_debug(
-            session.thread_id,
-            "session.prompt",
-            params,
-            app_template=session.app_template_name,
-            workflow=session.runtime_options.get("workflow") if isinstance(session.runtime_options, dict) else None,
-            selected_skills=session.runtime_options.get("selected_skills") if isinstance(session.runtime_options, dict) else None,
-        )
         thread_id = _resolve_thread_id(params, session)
         runtime_options = self._prompt_runtime_options(params, session, thread_id)
-        logger.debug(
+        logger.info(
             "acp prompt routing session_id=%s thread_id=%s agent=%s app_template=%s selected_skills=%s selected_mcp_tools=%s mode=%s config_option_keys=%s param_keys=%s meta_keys=%s bridge_container_keys=%s",
             session_id,
             thread_id,
@@ -399,29 +337,6 @@ class AcpRuntimeAdapter:
             sorted(params.keys()),
             sorted(_params(params.get("_meta")).keys()),
             _bridge_container_key_summary(params),
-        )
-        logger.info(
-            "acp prompt detail-lite session_id=%s thread_id=%s agent=%s app_template=%s runtime_options=%s session_mcp_servers=%s prompt_mcp_servers=%s params_summary=%s",
-            session_id,
-            thread_id,
-            agent_name,
-            session.app_template_name,
-            diagnostic_json(
-                runtime_options.model_dump(mode="python", exclude_none=True, exclude={"api_key"}),
-                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
-            ),
-            diagnostic_json(
-                _mcp_servers_response(session.mcp_servers),
-                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
-            ),
-            diagnostic_json(
-                _mcp_servers_response(_mcp_servers_from_params(params)),
-                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
-            ),
-            diagnostic_json(
-                _acp_param_log_summary(params),
-                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
-            ),
         )
         if agent.backend.type == "acp_stdio":
             return await self._prompt_external(session, agent.backend, params, send_update, runtime_options.workflow)
@@ -1085,10 +1000,10 @@ class AcpRuntimeAdapter:
     def _app_template_from_name(self, template_name: str | None) -> AppTemplate | None:
         if template_name is None:
             return None
-        template = self.app_registry.find(template_name)
-        if template is not None:
-            return template
-        raise ValueError(f"Unknown ACP app template: {template_name}")
+        try:
+            return self.app_registry.get(template_name)
+        except KeyError as exc:
+            raise ValueError(f"Unknown ACP app template: {template_name}") from exc
 
     def _app_template_name_from_review_source(self, params: dict[str, Any]) -> str | None:
         review_source_id = _review_source_id_from_params(params)
@@ -1504,22 +1419,6 @@ def _runtime_options_response(runtime_options: dict[str, Any]) -> dict[str, Any]
     return response
 
 
-def _acp_param_log_summary(params: dict[str, Any]) -> dict[str, Any]:
-    meta = _params(params.get("_meta"))
-    runtime_options = _runtime_options_payload(params)
-    bridge_containers = _bridge_payload_containers(params)
-    return {
-        "param_keys": sorted(params.keys()),
-        "meta_keys": sorted(meta.keys()),
-        "bridge_container_keys": [sorted(container.keys()) for container in bridge_containers],
-        "runtime_options": _runtime_options_response(runtime_options),
-        "mcp_servers": _mcp_servers_response(_mcp_servers_from_params(params)),
-        "has_runtime_options": bool(runtime_options),
-        "has_mcp_servers": bool(_mcp_servers_from_params(params)),
-        "session_init_tools_present": _session_init_tools_payload(params) is not None,
-    }
-
-
 def _app_template_name(params: dict[str, Any]) -> str | None:
     meta = _params(params.get("_meta"))
     top_runtime_options = _params(params.get("runtimeOptions") or params.get("runtime_options"))
@@ -1554,76 +1453,9 @@ def _template_name_from_source(source: dict[str, Any]) -> str | None:
         or source.get("template_id")
         or source.get("appId")
         or source.get("app_id")
-        or source.get("taskName")
-        or source.get("task_name")
         or source.get("agentId")
         or source.get("agent_id")
     )
-
-
-def _dump_acp_request_debug(
-    thread_id: str,
-    phase: str,
-    params: dict[str, Any],
-    *,
-    app_template: str | None = None,
-    workflow: str | None = None,
-    selected_skills: object = None,
-) -> None:
-    if not thread_id:
-        return
-    try:
-        outputs_dir = Path(__file__).resolve().parents[3] / ".runtime" / "threads" / thread_id / "outputs"
-        outputs_dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "phase": phase,
-            "threadId": thread_id,
-            "appTemplateName": app_template,
-            "reviewSourceId": _review_source_id_from_params(params),
-            "workflow": workflow,
-            "selectedSkills": selected_skills,
-            "params": redact_diagnostic_value(params),
-        }
-        with (outputs_dir / "acp-request-debug.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        logger.exception("acp request debug dump failed thread_id=%s phase=%s", thread_id, phase)
-
-
-def _restored_session_new_params(session_id: str) -> dict[str, Any] | None:
-    try:
-        debug_path = (
-            Path(__file__).resolve().parents[3]
-            / ".runtime"
-            / "threads"
-            / session_id
-            / "outputs"
-            / "acp-request-debug.jsonl"
-        )
-        if not debug_path.exists():
-            return None
-        restored: dict[str, Any] | None = None
-        for line in debug_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(record, dict) or record.get("phase") != "session.new":
-                continue
-            params = record.get("params")
-            if not isinstance(params, dict):
-                continue
-            restored = dict(params)
-            restored.setdefault("sessionId", session_id)
-            restored.setdefault("threadId", session_id)
-            app_template = _string(record.get("appTemplateName"))
-            if app_template is not None and _app_template_name(restored) is None:
-                meta = _params(restored.get("_meta"))
-                restored["_meta"] = {**meta, "appTemplateName": app_template}
-        return restored
-    except Exception:
-        logger.exception("acp persisted session restore failed session_id=%s", session_id)
-        return None
 
 
 def _review_source_id_from_params(params: dict[str, Any]) -> str | None:
@@ -1631,13 +1463,12 @@ def _review_source_id_from_params(params: dict[str, Any]) -> str | None:
     for container in _bridge_payload_containers(params):
         sources.extend([container.get("reviewSourceId"), container.get("review_source_id")])
 
-    prompt_sources: list[object] = []
     prompt_text, _attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
     if prompt_text:
-        prompt_sources.append(prompt_text)
+        sources.append(prompt_text)
     for message in params.get("messages") if isinstance(params.get("messages"), list) else []:
         if isinstance(message, dict):
-            prompt_sources.append(message.get("content"))
+            sources.append(message.get("content"))
 
     for source in sources:
         text = _string(source)
@@ -1651,15 +1482,6 @@ def _review_source_id_from_params(params: dict[str, Any]) -> str | None:
                     return value
         elif "_" in text:
             return text
-    for source in prompt_sources:
-        text = _string(source)
-        if text is None or "reviewSourceId" not in text:
-            continue
-        match = _REVIEW_SOURCE_ID_RE.search(text)
-        if match:
-            value = match.group(1).strip()
-            if value:
-                return value
     return None
 
 
@@ -1705,256 +1527,27 @@ def _message_matches_user_text(message: Message | None, text: str) -> bool:
 
 def _attachments_from_params(params: dict[str, Any]) -> list[Attachment]:
     _prompt_text, prompt_attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
-    raw_attachments = params.get("attachments")
-    explicit_attachments = (
-        [_attachment_from_raw_item(item, index) for index, item in enumerate(raw_attachments, start=1) if isinstance(item, dict)]
-        if isinstance(raw_attachments, list)
-        else []
-    )
-    file_result_attachments = _file_result_attachments_from_params(params)
-    return _merge_attachment_metadata([*prompt_attachments, *explicit_attachments, *file_result_attachments])
+    attachments = list(prompt_attachments)
+    for source in (params, *_bridge_payload_containers(params)):
+        attachments.extend(attachments_from_payload_fields(source))
+    return _dedupe_attachments(attachments)
 
 
-def _attachment_from_raw_item(item: dict[str, Any], index: int) -> Attachment:
-    path = _string(
-        item.get("path")
-        or item.get("url")
-        or item.get("uri")
-        or item.get("downloadUrl")
-        or item.get("download_url")
-        or item.get("internalUrl")
-        or item.get("internal_url")
-    )
-    name = _string(
-        item.get("name")
-        or item.get("filename")
-        or item.get("fileName")
-        or item.get("title")
-    ) or _name_from_uri(path or "", f"attachment-{index}")
-    metadata = _attachment_metadata_from_raw_item(item)
-    data_base64 = _string(
-        item.get("data_base64")
-        or item.get("dataBase64")
-        or item.get("base64")
-        or item.get("data")
-        or item.get("blob")
-    )
-    return Attachment(
-        name=name,
-        path=path,
-        mime_type=_raw_attachment_mime_type(item, path, name, data_base64),
-        data_base64=data_base64,
-        metadata=metadata,
-    )
-
-
-def _attachment_metadata_from_raw_item(item: dict[str, Any]) -> dict[str, Any]:
-    metadata: dict[str, Any] = {}
-    for key in ("metadata", "meta", "_meta", "others"):
-        value = item.get(key)
-        if isinstance(value, dict):
-            if key == "others":
-                metadata[key] = dict(value)
-            else:
-                metadata.update(value)
-    core_keys = {
-        "name",
-        "filename",
-        "fileName",
-        "title",
-        "path",
-        "url",
-        "uri",
-        "downloadUrl",
-        "download_url",
-        "internalUrl",
-        "internal_url",
-        "mime_type",
-        "mimeType",
-        "media_type",
-        "mediaType",
-        "content_type",
-        "contentType",
-        "data_base64",
-        "dataBase64",
-        "base64",
-        "data",
-        "blob",
-        "metadata",
-        "meta",
-        "_meta",
-        "others",
-    }
-    for key, value in item.items():
-        if key in core_keys or value is None:
-            continue
-        metadata.setdefault(key, value)
-    return metadata
-
-
-def _raw_attachment_mime_type(
-    item: dict[str, Any],
-    path: str | None,
-    name: str,
-    data_base64: str | None,
-) -> str | None:
-    explicit = _string(
-        item.get("mime_type")
-        or item.get("mimeType")
-        or item.get("media_type")
-        or item.get("mediaType")
-        or item.get("content_type")
-        or item.get("contentType")
-    )
-    if explicit is not None:
-        return explicit
-    if data_base64 and data_base64.lower().startswith("data:"):
-        header = data_base64.split(",", 1)[0]
-        mime_type = header.removeprefix("data:").split(";", 1)[0].strip()
-        if mime_type:
-            return mime_type
-    return _mime_type_from_reference(path or name)
-
-
-def _mime_type_from_reference(reference: str) -> str | None:
-    parsed_name = Path(unquote(urlparse(reference).path)).name
-    guessed = guess_mime_type(Path(parsed_name or reference))
-    return guessed if guessed != "application/octet-stream" else None
-
-
-def _file_result_attachments_from_params(params: dict[str, Any]) -> list[Attachment]:
-    attachments: list[Attachment] = []
-    for raw_results in _file_result_sources(params):
-        for index, item in enumerate(raw_results, start=1):
-            if not isinstance(item, dict):
-                continue
-            uri = _string(
-                item.get("url")
-                or item.get("uri")
-                or item.get("path")
-                or item.get("internalUrl")
-                or item.get("internal_url")
-            )
-            if uri is None:
-                continue
-            name = _string(item.get("name") or item.get("filename") or item.get("fileName")) or _name_from_uri(
-                uri,
-                f"file-result-{index}",
-            )
-            metadata: dict[str, Any] = {
-                "acp_type": "file_result",
-                "uri": uri,
-                "url": uri,
-                "file_result": True,
-            }
-            for key in (
-                "id",
-                "sourceId",
-                "source_id",
-                "dataId",
-                "data_id",
-                "timestamp",
-                "sha1",
-                "extension",
-            ):
-                if item.get(key) is not None:
-                    metadata[key] = item[key]
-            others = item.get("others")
-            if isinstance(others, dict):
-                metadata["others"] = dict(others)
-            attachments.append(
-                Attachment(
-                    name=name,
-                    path=uri,
-                    mime_type=_file_result_mime_type(item, uri, name),
-                    metadata=metadata,
-                )
-            )
-    return attachments
-
-
-def _file_result_sources(params: dict[str, Any]) -> list[list[Any]]:
-    sources: list[list[Any]] = []
-    for container in _file_result_containers(params):
-        for key in ("fileResults", "file_results"):
-            value = container.get(key)
-            if isinstance(value, list):
-                sources.append(value)
-    return sources
-
-
-def _file_result_containers(params: dict[str, Any]) -> list[dict[str, Any]]:
-    containers = [params]
-    for key in ("_meta", "message", "event", "data"):
-        value = params.get(key)
-        if isinstance(value, dict):
-            containers.append(value)
-            extra = value.get("extra")
-            if isinstance(extra, dict):
-                containers.append(extra)
-    extra = params.get("extra")
-    if isinstance(extra, dict):
-        containers.append(extra)
-    return containers
-
-
-def _file_result_mime_type(item: dict[str, Any], uri: str, name: str) -> str | None:
-    explicit = _string(
-        item.get("mimeType")
-        or item.get("mime_type")
-        or item.get("mediaType")
-        or item.get("media_type")
-        or item.get("contentType")
-        or item.get("content_type")
-    )
-    if explicit is not None:
-        return explicit
-    extension = _string(item.get("extension") or item.get("ext"))
-    if extension is not None:
-        clean = extension.strip().lstrip(".")
-        if clean:
-            return guess_mime_type(Path(f"file.{clean}"))
-    parsed_name = Path(unquote(urlparse(uri).path)).name
-    return guess_mime_type(Path(parsed_name or name))
-
-
-def _name_from_uri(uri: str, fallback: str) -> str:
-    parsed_name = Path(unquote(urlparse(uri).path)).name
-    return parsed_name or fallback
-
-
-def _merge_attachment_metadata(attachments: list[Attachment]) -> list[Attachment]:
-    merged: list[Attachment] = []
-    index_by_ref: dict[str, int] = {}
+def _dedupe_attachments(attachments: list[Attachment]) -> list[Attachment]:
+    deduped: list[Attachment] = []
+    seen: set[tuple[str, str, str, str]] = set()
     for attachment in attachments:
-        ref = _attachment_reference(attachment)
-        if not ref or ref not in index_by_ref:
-            if ref:
-                index_by_ref[ref] = len(merged)
-            merged.append(attachment)
-            continue
-        index = index_by_ref[ref]
-        existing = merged[index]
-        metadata = dict(existing.metadata)
-        metadata.update(attachment.metadata)
-        merged[index] = existing.model_copy(
-            update={
-                "mime_type": existing.mime_type or attachment.mime_type,
-                "metadata": metadata,
-            },
-            deep=True,
+        identity = (
+            attachment.name,
+            attachment.path or "",
+            attachment.mime_type or "",
+            (attachment.data_base64 or "")[:64],
         )
-    return merged
-
-
-def _attachment_reference(attachment: Attachment) -> str:
-    path = str(attachment.path or "").strip()
-    if path:
-        return f"path:{path}"
-    data = str(attachment.data_base64 or "").strip()
-    if data:
-        return f"data:{attachment.name}:{attachment.mime_type}:{len(data)}"
-    return ""
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(attachment)
+    return deduped
 
 
 def _normalize_structured_json_result(
@@ -2092,18 +1685,6 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
             "sessionUpdate": "agent_message_chunk",
             "content": {"type": "text", "text": text},
         }
-    if event.type == "visualization.initialization.ready":
-        return {
-            **base,
-            "sessionUpdate": "agent_message_chunk",
-            "content": {"type": "text", "text": _visualization_initialization_ready_text(data)},
-        }
-    if event.type == "visualization.region.ready":
-        return {
-            **base,
-            "sessionUpdate": "agent_message_chunk",
-            "content": {"type": "text", "text": _visualization_region_ready_text(data)},
-        }
     if event.type == "tool.started":
         tool_name = _string(data.get("tool_name")) or "tool"
         return {
@@ -2170,45 +1751,6 @@ def _event_to_update(event: ChatEvent, *, suppress_agent_message: bool = False) 
         "sessionUpdate": "agent_thought_chunk",
         "content": {"type": "text", "text": _runtime_event_summary(event)},
     }
-
-
-def _visualization_initialization_ready_text(data: dict[str, Any]) -> str:
-    page_json = data.get("pageJson") if isinstance(data.get("pageJson"), dict) else {}
-    blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
-    payload = {
-        "_visualizationStage": "initialization_ready",
-        "pageJson": page_json,
-        "blueprint": blueprint,
-        "regions": [],
-        "components": [],
-        "backgroundFileId": _string(data.get("background_file_id")) or "",
-        "regionCount": data.get("region_count") if isinstance(data.get("region_count"), int) else 0,
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def _visualization_region_ready_text(data: dict[str, Any]) -> str:
-    region_id = _string(data.get("regionId")) or _string(data.get("region_id"))
-    components = data.get("components") if isinstance(data.get("components"), list) else []
-    status = _string(data.get("status")) or "completed"
-    payload = {
-        "_visualizationStage": "region_ready",
-        "regionId": region_id,
-        "status": status,
-        "components": components,
-        "region": {
-            "regionId": region_id,
-            "components": components,
-        },
-        "componentCount": len(components),
-        "completedCount": data.get("completed_count") if isinstance(data.get("completed_count"), int) else 0,
-        "regionCount": data.get("region_count") if isinstance(data.get("region_count"), int) else 0,
-        "durationMs": data.get("duration_ms") if isinstance(data.get("duration_ms"), int | float) else 0,
-    }
-    error = _string(data.get("error"))
-    if error:
-        payload["error"] = error
-    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _resource_content_updates(event: ChatEvent, content: list[dict[str, Any]]) -> list[dict[str, Any]]:

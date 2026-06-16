@@ -1,7 +1,7 @@
 {
-  "name" : "垃圾满溢检测",
   "description" : "监测垃圾桶垃圾是否超出容量",
   "generation" : true,
+  "name" : "垃圾满溢检测",
   "version" : "0.1.0",
   "summary" : "监测垃圾桶垃圾是否超出容量",
   "entry" : "SKILL.md",

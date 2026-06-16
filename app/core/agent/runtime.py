@@ -2052,16 +2052,6 @@ class AgentRuntime:
             source = "attachment_target_skill" if candidate else "message_attachment_context"
             label_updates: dict[str, str] = {}
             if not candidate:
-                candidate = self._candidate_from_scene_skill_aliases(
-                    runtime_options,
-                    semantic_values,
-                    routing_text,
-                    selected_skills,
-                )
-                score = 115 if candidate else 0
-                if candidate:
-                    source = "scene_skill_aliases"
-            if not candidate:
                 candidate, score = self._candidate_from_attachment_semantics(
                     plugin_manager,
                     semantic_values,
@@ -2083,12 +2073,19 @@ class AgentRuntime:
                 if candidate:
                     source = "attachment_object_labels"
             if not candidate:
-                candidate, score = plugin_manager.select_skill_candidate(
+                skill_metadata_routing_text = self._review_skill_metadata_routing_text(
                     routing_text,
+                    semantic_values,
+                    labels,
+                    attachments,
+                )
+                candidate, score = plugin_manager.select_skill_candidate(
+                    skill_metadata_routing_text,
                     list(attachments),
                     selected_skills,
                 )
                 if candidate:
+                    source = "skill_json_metadata"
                     label_updates = self._skill_label_alias_updates_for_candidate(
                         plugin_manager,
                         labels,
@@ -2105,12 +2102,13 @@ class AgentRuntime:
                 config_options = dict(runtime_options.config_options)
                 config_options["skill_routing_error"] = {
                     "reason": "no_skill_match",
-                    "source": "attachment_object_labels",
+                    "source": source,
                     "selected_skills": selected_skills,
                     "semantic_values": semantic_values,
                     "labels": labels,
                     "message": (
-                        "No selected skill matched the review text, attachment event semantics, or attachment object labels; "
+                        "No selected skill matched the review text, attachment event semantics, attachment object labels, "
+                        "or selected skill JSON metadata; "
                         "the runtime refused to fall back to the first selected skill."
                     ),
                 }
@@ -2157,8 +2155,6 @@ class AgentRuntime:
         task_mappings = self._review_task_mappings(runtime_options.config_options)
         skill_aliases = self._review_task_skill_aliases(runtime_options.config_options)
         event_aliases = self._review_task_event_aliases(runtime_options.config_options)
-        if not task_mappings and not skill_aliases and not event_aliases:
-            return attachments
         selected_skills = [skill.strip() for skill in runtime_options.selected_skills if skill.strip()]
         app_template_name = (runtime_options.app_template_name or "").strip()
         updated_attachments: list[Attachment] = []
@@ -2207,11 +2203,15 @@ class AgentRuntime:
         updates: dict[str, str] = {}
         stream_id = task_context.get("streamId") or ""
         task_id = task_context.get("cvTaskId") or ""
+        algorithm_id = task_context.get("algorithmId") or task_context.get("cvAlgorithmId") or ""
         source_id = task_context.get("sourceId") or ""
         if stream_id:
             updates["streamId"] = stream_id
         if task_id:
             updates["cvTaskId"] = task_id
+        if algorithm_id:
+            updates["algorithmId"] = algorithm_id
+            updates["cvAlgorithmId"] = algorithm_id
         if source_id:
             updates["sourceId"] = source_id
         raw_skill_name = ""
@@ -2321,6 +2321,9 @@ class AgentRuntime:
             "eventTypeName",
             "cvTaskName",
             "taskName",
+            "taskTarget",
+            "task_target",
+            "objective",
             "sceneName",
             "algorithmName",
             "targetSkillName",
@@ -2336,6 +2339,8 @@ class AgentRuntime:
         for value in (
             task_context.get("streamId"),
             task_context.get("cvTaskId"),
+            task_context.get("algorithmId"),
+            task_context.get("cvAlgorithmId"),
         ):
             clean = str(value or "").strip()
             if not clean:
@@ -2364,11 +2369,23 @@ class AgentRuntime:
             metadata.get("taskId"),
             metadata.get("task_id"),
         )
+        algorithm_id = cls._first_string(
+            metadata.get("algorithmId"),
+            metadata.get("algorithm_id"),
+            metadata.get("cvAlgorithmId"),
+            metadata.get("cv_algorithm_id"),
+            metadata.get("modelId"),
+            metadata.get("model_id"),
+            metadata.get("pluginId"),
+            metadata.get("plugin_id"),
+        )
         source_id = cls._first_string(metadata.get("sourceId"), metadata.get("source_id"))
         if stream_id:
             parts = [part.strip() for part in stream_id.split("/") if part.strip()]
-            if len(parts) >= 2 and not task_id:
-                task_id = parts[1]
+            if len(parts) >= 1 and not task_id:
+                task_id = parts[0]
+            if len(parts) >= 2 and not algorithm_id:
+                algorithm_id = parts[1]
             if len(parts) >= 3 and not source_id:
                 source_id = parts[2]
         context: dict[str, str] = {}
@@ -2376,6 +2393,9 @@ class AgentRuntime:
             context["streamId"] = stream_id
         if task_id:
             context["cvTaskId"] = task_id
+        if algorithm_id:
+            context["algorithmId"] = algorithm_id
+            context["cvAlgorithmId"] = algorithm_id
         if source_id:
             context["sourceId"] = source_id
         return context
@@ -2454,35 +2474,6 @@ class AgentRuntime:
         routing_text = "\n".join(semantic_values)
         return plugin_manager.select_skill_candidate(routing_text, [], selected_skills)
 
-    def _candidate_from_scene_skill_aliases(
-        self,
-        runtime_options: RuntimeOptions,
-        semantic_values: list[str],
-        routing_text: str,
-        selected_skills: list[str],
-    ) -> str:
-        aliases = self._scene_skill_aliases(runtime_options.config_options)
-        if not aliases:
-            return ""
-        allowed = set(selected_skills)
-        matches: set[str] = set()
-        semantic_scene_keys = {self._scene_key(value) for value in semantic_values}
-        normalized_routing_text = self._scene_key(routing_text)
-        for scene_key, raw_skill_names in aliases.items():
-            if scene_key in semantic_scene_keys or (
-                normalized_routing_text and scene_key in normalized_routing_text
-            ):
-                for raw_skill_name in raw_skill_names:
-                    normalized = self._normalize_skills(
-                        [raw_skill_name],
-                        root_dir=self.app_template_registry.root_dir,
-                        extra_aliases=self._runtime_skill_aliases(runtime_options),
-                    ) or []
-                    for skill_name in normalized or [raw_skill_name]:
-                        if skill_name in allowed:
-                            matches.add(skill_name)
-        return next(iter(matches)) if len(matches) == 1 else ""
-
     @classmethod
     def _candidate_from_skill_label_aliases(
         cls,
@@ -2533,6 +2524,71 @@ class AgentRuntime:
         return candidate, score, updates
 
     @classmethod
+    def _review_skill_metadata_routing_text(
+        cls,
+        routing_text: str,
+        semantic_values: list[str],
+        labels: list[str],
+        attachments: list[Attachment],
+    ) -> str:
+        parts: list[str] = []
+        cls._append_unique_text(parts, routing_text)
+        for value in semantic_values:
+            cls._append_unique_text(parts, value)
+        for label in labels:
+            for value in cls._label_routing_text(label).splitlines():
+                cls._append_unique_text(parts, value)
+        for attachment in attachments:
+            metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+            for key, value in cls._attachment_review_task_context(attachment).items():
+                cls._append_unique_text(parts, value)
+                cls._append_unique_text(parts, f"{key}={value}")
+            for key in (
+                "targetSkill",
+                "target_skill",
+                "skillName",
+                "skill_name",
+                "appTemplateName",
+                "app_template_name",
+                "applicationScene",
+                "application_scene",
+                "eventTypeName",
+                "event_type_name",
+                "cvTaskName",
+                "cv_task_name",
+                "taskName",
+                "task_name",
+                "taskTarget",
+                "task_target",
+                "objective",
+                "sceneName",
+                "scene_name",
+                "algorithmName",
+                "algorithm_name",
+                "streamId",
+                "stream_id",
+                "cvTaskId",
+                "cv_task_id",
+                "algorithmId",
+                "algorithm_id",
+                "cvAlgorithmId",
+                "cv_algorithm_id",
+                "sourceId",
+                "source_id",
+            ):
+                value = cls._first_string(metadata.get(key))
+                if value:
+                    cls._append_unique_text(parts, value)
+                    cls._append_unique_text(parts, f"{key}={value}")
+            for uri in cls._attachment_review_task_uri_candidates(attachment):
+                cls._append_unique_text(parts, uri)
+            object_summary = cls._attachment_object_summary(metadata)
+            if object_summary:
+                cls._append_unique_text(parts, object_summary)
+                cls._append_unique_text(parts, f"objects={object_summary}")
+        return "\n".join(parts)
+
+    @classmethod
     def _skill_label_alias_updates_for_candidate(
         cls,
         plugin_manager: Any,
@@ -2560,45 +2616,19 @@ class AgentRuntime:
             key = cls._label_key(str(raw_key))
             if not key:
                 continue
-            names = cls._alias_skill_names(raw_value)
+            names: list[str] = []
+            if isinstance(raw_value, str):
+                clean = raw_value.strip()
+                if clean:
+                    names.append(clean)
+            elif isinstance(raw_value, list):
+                for item in raw_value:
+                    clean = str(item).strip()
+                    if clean and clean not in names:
+                        names.append(clean)
             if names:
                 aliases[key] = names
         return aliases
-
-    @classmethod
-    def _scene_skill_aliases(cls, config_options: dict[str, Any]) -> dict[str, list[str]]:
-        aliases: dict[str, list[str]] = {}
-        for config_key in (
-            "scene_skill_aliases",
-            "review_scene_skill_aliases",
-            "event_scene_skill_aliases",
-            "cv_scene_skill_aliases",
-        ):
-            value = config_options.get(config_key)
-            if not isinstance(value, dict):
-                continue
-            for raw_key, raw_value in value.items():
-                key = cls._scene_key(str(raw_key))
-                if not key:
-                    continue
-                names = cls._alias_skill_names(raw_value)
-                if names:
-                    aliases[key] = names
-        return aliases
-
-    @staticmethod
-    def _alias_skill_names(value: object) -> list[str]:
-        names: list[str] = []
-        if isinstance(value, str):
-            clean = value.strip()
-            if clean:
-                names.append(clean)
-        elif isinstance(value, list):
-            for item in value:
-                clean = str(item).strip()
-                if clean and clean not in names:
-                    names.append(clean)
-        return names
 
     @classmethod
     def _runtime_options_with_skill_label_alias_updates(
@@ -2695,7 +2725,7 @@ class AgentRuntime:
     @classmethod
     def _semantic_values_from_metadata(cls, metadata: dict[str, Any]) -> list[str]:
         values: list[str] = []
-        for key in (
+        semantic_keys = (
             "appTemplateName",
             "app_template_name",
             "applicationScene",
@@ -2706,16 +2736,66 @@ class AgentRuntime:
             "cv_task_name",
             "taskName",
             "task_name",
+            "taskTarget",
+            "task_target",
+            "objective",
             "sceneName",
             "scene_name",
             "algorithmName",
             "algorithm_name",
             "targetSkillName",
             "target_skill_name",
-        ):
-            value = metadata.get(key)
-            if isinstance(value, str) and value.strip():
-                cls._append_unique_text(values, value.strip())
+        )
+
+        def append_from_mapping(source: Any) -> None:
+            if not isinstance(source, dict):
+                return
+            for key in semantic_keys:
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    cls._append_unique_text(values, value.strip())
+
+        def parse_mapping(value: Any) -> dict[str, Any] | None:
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, str) and value.strip().startswith("{"):
+                try:
+                    parsed = json.loads(value)
+                except Exception:
+                    return None
+                if isinstance(parsed, dict):
+                    return parsed
+            return None
+
+        def append_from_object(item: Any) -> None:
+            obj = parse_mapping(item)
+            if obj is None:
+                return
+            append_from_mapping(obj)
+            for nested_key in ("others", "extra", "metadata", "_meta", "annotations"):
+                nested = parse_mapping(obj.get(nested_key))
+                if nested is not None:
+                    append_from_mapping(nested)
+            for nested_key in ("objects", "targets", "detections"):
+                nested_items = obj.get(nested_key)
+                if isinstance(nested_items, list):
+                    for nested_item in nested_items:
+                        append_from_object(nested_item)
+
+        append_from_mapping(metadata)
+        nested_meta = parse_mapping(metadata.get("_meta"))
+        if nested_meta is not None:
+            append_from_mapping(nested_meta)
+        for nested_key in ("objects", "targets", "detections"):
+            nested_items = metadata.get(nested_key)
+            if isinstance(nested_items, list):
+                for item in nested_items:
+                    append_from_object(item)
+        for nested_key in ("others", "extra", "metadata", "annotations"):
+            nested = parse_mapping(metadata.get(nested_key))
+            if nested is not None:
+                append_from_mapping(nested)
+                append_from_object(nested)
         return values
 
     @classmethod
@@ -2730,12 +2810,6 @@ class AgentRuntime:
         clean = str(label or "").strip().casefold().replace("-", "_")
         clean = re.sub(r"\s+", "_", clean)
         return clean.strip("_")
-
-    @staticmethod
-    def _scene_key(value: str) -> str:
-        clean = str(value or "").strip().casefold()
-        clean = clean.replace("／", "/")
-        return re.sub(r"\s+", "", clean)
 
     @staticmethod
     def _is_review_skill_routing_request(routing_text: str, attachments: list[Attachment]) -> bool:
@@ -2966,7 +3040,7 @@ class AgentRuntime:
                 materialized.append(
                     attachment.model_copy(
                         update={
-                            "path": attachment.path,
+                            "path": None,
                             "data_base64": None,
                             "metadata": metadata,
                         },
@@ -3164,6 +3238,9 @@ class AgentRuntime:
             path_text = f", path={attachment.path}" if attachment.path else ""
             mime_text = f", mime_type={attachment.mime_type}" if attachment.mime_type else ""
             original_uri = metadata.get("original_uri")
+            stream_id = metadata.get("streamId") or metadata.get("stream_id")
+            cv_task_id = metadata.get("cvTaskId") or metadata.get("cv_task_id") or metadata.get("taskId") or metadata.get("task_id")
+            algorithm_id = metadata.get("algorithmId") or metadata.get("algorithm_id") or metadata.get("cvAlgorithmId") or metadata.get("cv_algorithm_id")
             source_id = metadata.get("sourceId") or metadata.get("source_id")
             data_id = metadata.get("dataId") or metadata.get("data_id")
             timestamp = metadata.get("timestamp")
@@ -3177,6 +3254,12 @@ class AgentRuntime:
                 metadata_parts.append("remote_download_failed=true")
             if isinstance(download_error, str) and download_error:
                 metadata_parts.append(f"download_error={download_error[:200]}")
+            if isinstance(stream_id, str) and stream_id:
+                metadata_parts.append(f"streamId={stream_id}")
+            if isinstance(cv_task_id, str) and cv_task_id:
+                metadata_parts.append(f"cvTaskId={cv_task_id}")
+            if isinstance(algorithm_id, str) and algorithm_id:
+                metadata_parts.append(f"algorithmId={algorithm_id}")
             if isinstance(source_id, str) and source_id:
                 metadata_parts.append(f"sourceId={source_id}")
             if isinstance(data_id, str) and data_id:

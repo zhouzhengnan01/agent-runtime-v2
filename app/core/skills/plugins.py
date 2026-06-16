@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import zipfile
 from collections.abc import Callable
@@ -449,7 +450,7 @@ class SkillPluginManager:
 
     def select_skill_candidate(self, routing_text: str, attachments: list[Any], allowed_skills: list[str]) -> tuple[str, int]:
         loaded = self.load_skills()
-        best_name = ""
+        best_names: list[str] = []
         best_score = 0
         for skill_name in allowed_skills:
             skill = loaded.get(skill_name)
@@ -457,10 +458,12 @@ class SkillPluginManager:
                 continue
             score = _score_skill(skill, skill_name, routing_text, attachments, allowed_skills)
             if score > best_score:
-                best_name = skill_name
+                best_names = [skill_name]
                 best_score = score
-        if best_name:
-            return best_name, best_score
+            elif score > 0 and score == best_score:
+                best_names.append(skill_name)
+        if len(best_names) == 1:
+            return best_names[0], best_score
         return "", 0
 
     def build_spec(
@@ -945,14 +948,13 @@ def _score_skill(
     attachments: list[Any],
     allowed_skills: list[str],
 ) -> int:
-    if loaded.plugin is None:
-        return 0
+    manifest_score = _manifest_keyword_score(loaded, skill_name, routing_text)
     if loaded.spec_builder_path is None:
-        return _manifest_keyword_score(loaded.plugin, skill_name, routing_text)
+        return manifest_score
     module = _load_runner_module(loaded.spec_builder_path)
     scorer = getattr(module, "score_skill", None)
     if not callable(scorer):
-        return _manifest_keyword_score(loaded.plugin, skill_name, routing_text)
+        return manifest_score
     result = _invoke_hook(
         cast(Callable[..., object], scorer),
         {
@@ -962,7 +964,8 @@ def _score_skill(
             "allowed_skills": allowed_skills,
         },
     )
-    return int(result) if isinstance(result, int | float) else 0
+    spec_score = int(result) if isinstance(result, int | float) else 0
+    return max(spec_score, manifest_score)
 
 
 def _build_plugin_spec(
@@ -992,20 +995,101 @@ def _build_plugin_spec(
     return dict(result) if isinstance(result, dict) else base_spec
 
 
-def _manifest_keyword_score(plugin: SkillPlugin, skill_name: str, routing_text: str) -> int:
-    manifest_path = plugin.manifest_paths.get(skill_name)
-    if manifest_path is None:
+def _manifest_keyword_score(loaded: LoadedSkill, skill_name: str, routing_text: str) -> int:
+    if not routing_text.strip():
         return 0
-    try:
-        manifest = _read_manifest_with_discovery(manifest_path)
-    except (OSError, ValueError, json.JSONDecodeError):
+    text_variants = _route_text_variants(routing_text)
+    if not text_variants:
         return 0
+    score = 0
+    seen_hints: set[str] = set()
+    for manifest in _loaded_skill_route_manifests(loaded, skill_name):
+        for hint, weight in _manifest_route_hints(manifest, loaded.plugin, skill_name):
+            hint_key = _route_text_key(hint)
+            if not hint_key or hint_key in seen_hints:
+                continue
+            seen_hints.add(hint_key)
+            if _route_hint_in_text(hint, text_variants):
+                score += weight + min(len(hint_key) // 8, 12)
+    return score
+
+
+def _loaded_skill_route_manifests(loaded: LoadedSkill, skill_name: str) -> list[dict[str, Any]]:
+    paths: list[Path] = [loaded.manifest_path]
+    if loaded.plugin is not None:
+        plugin_manifest_path = loaded.plugin.manifest_paths.get(skill_name)
+        if plugin_manifest_path is not None:
+            paths.append(plugin_manifest_path)
+    manifests: list[dict[str, Any]] = []
+    seen_paths: set[Path] = set()
+    for path in paths:
+        resolved = path.resolve()
+        if resolved in seen_paths:
+            continue
+        seen_paths.add(resolved)
+        try:
+            manifests.append(_read_manifest_with_discovery(path))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+    return manifests
+
+
+def _manifest_route_hints(
+    manifest: dict[str, Any],
+    plugin: SkillPlugin | None,
+    skill_name: str,
+) -> list[tuple[str, int]]:
+    hints: list[tuple[str, int]] = []
+
+    def add(value: object, weight: int) -> None:
+        if isinstance(value, str) and value.strip():
+            hints.append((value.strip(), weight))
+
+    add(skill_name, 90)
+    add(manifest.get("name"), 90)
+    add(manifest.get("display_name"), 80)
+    add(manifest.get("title"), 70)
+    add(manifest.get("description"), 24)
+    if plugin is not None:
+        add(plugin.plugin_id, 90)
+        add(plugin.name, 80)
+        add(plugin.description, 24)
+
     routing = manifest.get("routing")
-    keywords = []
-    if isinstance(routing, dict) and isinstance(routing.get("keywords"), list):
-        keywords = [str(item).lower() for item in routing["keywords"] if isinstance(item, str)]
-    text = routing_text.lower()
-    return 50 if any(keyword in text for keyword in keywords) else 0
+    if isinstance(routing, dict):
+        add(routing.get("summary"), 36)
+        for key, weight in (("keywords", 60), ("aliases", 60), ("examples", 30)):
+            value = routing.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    add(item, weight)
+            else:
+                add(value, weight)
+    return hints
+
+
+def _route_hint_in_text(hint: str, text_variants: set[str]) -> bool:
+    for hint_variant in _route_text_variants(hint):
+        if len(hint_variant) < 2:
+            continue
+        if any(hint_variant in text_variant for text_variant in text_variants):
+            return True
+    return False
+
+
+def _route_text_variants(value: str) -> set[str]:
+    clean = str(value or "").strip().casefold()
+    if not clean:
+        return set()
+    spaced = re.sub(r"[\s_\-./:：/]+", " ", clean).strip()
+    compact = re.sub(r"[\s_\-./:：/]+", "", clean).strip()
+    snake = re.sub(r"[\s\-./:：/]+", "_", clean).strip("_")
+    return {item for item in (clean, spaced, compact, snake) if item}
+
+
+def _route_text_key(value: str) -> str:
+    variants = _route_text_variants(value)
+    return min(variants, key=len) if variants else ""
 
 
 def _read_manifest_with_discovery(path: Path) -> dict[str, Any]:

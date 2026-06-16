@@ -1,7 +1,7 @@
 {
-  "name" : "违规停车",
   "description" : "判定车辆是否在禁停区域停放",
   "generation" : true,
+  "name" : "违规停车",
   "version" : "0.1.0",
   "summary" : "判定车辆是否在禁停区域停放",
   "entry" : "SKILL.md",
