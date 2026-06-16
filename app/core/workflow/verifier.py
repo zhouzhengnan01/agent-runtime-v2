@@ -44,6 +44,8 @@ class OutputVerifier:
             )
         elif skill_name == "data-auto-annotation":
             checks.extend(self._verify_coco_output(run_result))
+        elif skill_name == "behavior-review":
+            checks.extend(self._verify_behavior_review(run_result))
 
         failed = [check.name for check in checks if not check.passed]
         return VerificationResult(passed=not failed, retry_count=retry_count, checks=checks, failed_checks=failed)
@@ -242,3 +244,32 @@ class OutputVerifier:
         ]
         failed = [check.name for check in checks if not check.passed]
         return VerificationResult(passed=not failed, retry_count=retry_count, checks=checks, failed_checks=failed)
+
+    def _verify_behavior_review(self, run_result: SkillRunResult) -> list[VerificationCheck]:
+        data = run_result.data
+        names = [artifact.name for artifact in run_result.outputs]
+        actions = data.get("actions")
+        return [
+            VerificationCheck(name="has_review_markdown", passed="behavior-review.md" in names, detail=", ".join(names)),
+            VerificationCheck(name="has_review_json", passed="behavior-review.json" in names, detail=", ".join(names)),
+            VerificationCheck(
+                name="review_decision_declared",
+                passed=data.get("review_decision") in {"confirm_incident", "need_more_evidence"},
+                detail=str(data.get("review_decision")),
+            ),
+            VerificationCheck(
+                name="evidence_mode_declared",
+                passed=data.get("evidence_mode") in {"text_only", "visual_or_structured"},
+                detail=str(data.get("evidence_mode")),
+            ),
+            VerificationCheck(
+                name="actions_declared",
+                passed=isinstance(actions, list) and bool(actions),
+                detail=str(actions),
+            ),
+            VerificationCheck(
+                name="no_visual_score_without_evidence",
+                passed=not (data.get("evidence_mode") == "text_only" and float(data.get("confidence", 0.0)) > 0.0),
+                detail=f"confidence={data.get('confidence')}",
+            ),
+        ]

@@ -125,7 +125,7 @@ def _write_clean_yolo_log(stdout_text: str) -> None:
             or stripped.startswith("person ")
             or stripped.startswith("cigarette ")
             or stripped.startswith("Starting training")
-            or stripped.endswith("epochs completed in") 
+            or stripped.endswith("epochs completed in")
             or "epochs completed in" in stripped
             or stripped.startswith("Results saved to")
         ):

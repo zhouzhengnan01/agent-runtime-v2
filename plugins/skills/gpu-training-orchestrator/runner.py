@@ -117,6 +117,11 @@ def _normalize_training_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]
         "training": {
             "task": training.get("task") or payload.get("training_task") or "detect",
             "model": training.get("model") or payload.get("model") or "yolo11n.pt",
+            "model_source": training.get("model_source") or payload.get("model_source") or "",
+            "strict_model": bool(training.get("strict_model") or payload.get("strict_model", False)),
+            "model_sha256": training.get("model_sha256") or payload.get("model_sha256") or "",
+            "model_original_name": training.get("model_original_name") or payload.get("model_original_name") or "",
+            "model_id": training.get("model_id") or payload.get("model_id") or "",
             "epochs": int(training.get("epochs") or payload.get("epochs") or 50),
             "imgsz": int(training.get("imgsz") or payload.get("imgsz") or 640),
             "batch": int(training.get("batch") or payload.get("batch") or 16),
@@ -129,6 +134,8 @@ def _normalize_training_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]
 
 
 def _training_command(spec: dict[str, Any], script_path: Path, request_path: Path) -> list[str]:
+    if _is_npu_runtime():
+        return [sys.executable, str(script_path), "--input", str(request_path)]
     conda_env_name = str(spec.get("runtime", {}).get("conda_env_name") or "").strip()
     if not conda_env_name:
         return [sys.executable, str(script_path), "--input", str(request_path)]
@@ -137,6 +144,50 @@ def _training_command(spec: dict[str, Any], script_path: Path, request_path: Pat
         return [sys.executable, str(script_path), "--input", str(request_path)]
     conda_exe = str(os.environ.get("CONDA_EXE", "") or "").strip() or "conda"
     return [conda_exe, "run", "--no-capture-output", "-n", conda_env_name, "python", str(script_path), "--input", str(request_path)]
+
+
+def _is_npu_runtime() -> bool:
+    try:
+        import torch  # type: ignore
+    except Exception:
+        return False
+    try:
+        if bool(torch.cuda.is_available()) and int(torch.cuda.device_count()) > 0:
+            return False
+    except Exception:
+        pass
+    if _truthy_env("JETLINKS_FORCE_CURRENT_PYTHON_ON_NPU"):
+        return True
+    if not _has_ascend_runtime_hint():
+        return False
+    try:
+        import torch_npu  # noqa: F401
+    except Exception:
+        return False
+    npu = getattr(torch, "npu", None)
+    if npu is None:
+        return False
+    try:
+        return bool(npu.is_available())
+    except Exception:
+        return False
+
+
+def _has_ascend_runtime_hint() -> bool:
+    env_names = (
+        "ASCEND_RT_VISIBLE_DEVICES",
+        "ASCEND_VISIBLE_DEVICES",
+        "NPU_VISIBLE_DEVICES",
+        "ASCEND_HOME_PATH",
+        "ASCEND_TOOLKIT_HOME",
+    )
+    if any(str(os.environ.get(name) or "").strip() for name in env_names):
+        return True
+    return any(Path(path).exists() for path in ("/usr/local/Ascend", "/dev/davinci_manager"))
+
+
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _prepare_ultralytics_offline_assets(config_dir: Path) -> None:

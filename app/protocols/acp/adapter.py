@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import signal
 from contextlib import suppress
 from collections.abc import Awaitable, Callable
@@ -29,7 +28,7 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 
 AcpUpdateSender = Callable[[str, dict[str, Any]], Awaitable[None]]
 logger = logging.getLogger("uvicorn.error")
-ACP_ADAPTER_TRACE_PAYLOADS = env_flag("ACP_ADAPTER_TRACE_PAYLOADS", "0")
+ACP_ADAPTER_TRACE_PAYLOADS = env_flag("ACP_ADAPTER_TRACE_PAYLOADS", "1")
 ACP_ADAPTER_TRACE_MAX_CHARS = env_int("ACP_ADAPTER_TRACE_MAX_CHARS", 100)
 ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS = env_int("ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS", 1200)
 
@@ -53,6 +52,10 @@ _RUNTIME_OPTION_ALIASES = {
     "model_id": "model_name",
     "modelName": "model_name",
     "model_name": "model_name",
+    "trainingModelId": "training_model_id",
+    "training_model_id": "training_model_id",
+    "maxSyntheticImages": "max_synthetic_images",
+    "max_synthetic_images": "max_synthetic_images",
     "baseUrl": "base_url",
     "base_url": "base_url",
     "apiKey": "api_key",
@@ -69,6 +72,8 @@ _RUNTIME_OPTION_ALIASES = {
     "mode": "mode",
     "modeId": "mode",
     "mode_id": "mode",
+    "skillParameters": "skill_parameters",
+    "skill_parameters": "skill_parameters",
     "configOptions": "config_options",
     "config_options": "config_options",
     "sandboxProfile": "sandbox_profile",
@@ -84,18 +89,20 @@ _RUNTIME_OPTION_RESPONSE_ALIASES = {
     "app_template_name": "appTemplateName",
     "model_type": "modelType",
     "model_name": "modelName",
+    "training_model_id": "trainingModelId",
+    "max_synthetic_images": "maxSyntheticImages",
     "base_url": "baseUrl",
     "api_key": "apiKey",
     "top_p": "topP",
     "max_tokens": "maxTokens",
     "request_timeout_seconds": "requestTimeoutSeconds",
     "response_format": "responseFormat",
+    "skill_parameters": "skillParameters",
     "config_options": "configOptions",
     "sandbox_profile": "sandboxProfile",
 }
 
 _MODE_IDS = {"plan", "edit", "autonomous", "safe", "yolo"}
-_REVIEW_SOURCE_ID_RE = re.compile(r"reviewSourceId\s*(?:为|=|:)?\s*[\[【]([^\]】]+)[\]】]")
 _CONFIG_OPTION_DEFINITIONS = [
     {
         "id": "modelName",
@@ -992,8 +999,6 @@ class AcpRuntimeAdapter:
 
     def _app_template_from_params(self, params: dict[str, Any]) -> AppTemplate | None:
         template_name = _app_template_name(params)
-        if template_name is None:
-            template_name = self._app_template_name_from_review_source(params)
         return self._app_template_from_name(template_name)
 
     def _app_template_from_name(self, template_name: str | None) -> AppTemplate | None:
@@ -1003,24 +1008,6 @@ class AcpRuntimeAdapter:
             return self.app_registry.get(template_name)
         except KeyError as exc:
             raise ValueError(f"Unknown ACP app template: {template_name}") from exc
-
-    def _app_template_name_from_review_source(self, params: dict[str, Any]) -> str | None:
-        review_source_id = _review_source_id_from_params(params)
-        if review_source_id is None:
-            return None
-        for candidate in _review_source_template_candidates(review_source_id):
-            try:
-                self.app_registry.get(candidate)
-            except (KeyError, ValueError):
-                continue
-            else:
-                logger.info(
-                    "acp inferred app template from reviewSourceId app_template=%s review_source_id=%s",
-                    candidate,
-                    review_source_id,
-                )
-                return candidate
-        return None
 
 
 def _resolve_thread_id(params: dict[str, Any], session: AcpWebSocketSession) -> str:
@@ -1455,43 +1442,6 @@ def _template_name_from_source(source: dict[str, Any]) -> str | None:
         or source.get("agentId")
         or source.get("agent_id")
     )
-
-
-def _review_source_id_from_params(params: dict[str, Any]) -> str | None:
-    sources: list[object] = [params.get("reviewSourceId"), params.get("review_source_id")]
-    for container in _bridge_payload_containers(params):
-        sources.extend([container.get("reviewSourceId"), container.get("review_source_id")])
-
-    prompt_text, _attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
-    if prompt_text:
-        sources.append(prompt_text)
-    for message in params.get("messages") if isinstance(params.get("messages"), list) else []:
-        if isinstance(message, dict):
-            sources.append(message.get("content"))
-
-    for source in sources:
-        text = _string(source)
-        if text is None:
-            continue
-        if "reviewSourceId" in text:
-            match = _REVIEW_SOURCE_ID_RE.search(text)
-            if match:
-                value = match.group(1).strip()
-                if value:
-                    return value
-        elif "_" in text:
-            return text
-    return None
-
-
-def _review_source_template_candidates(review_source_id: str) -> list[str]:
-    parts = [part.strip() for part in review_source_id.split("_") if part.strip()]
-    candidates: list[str] = []
-    for end in range(len(parts), 0, -1):
-        candidate = "_".join(parts[:end])
-        if candidate not in candidates:
-            candidates.append(candidate)
-    return candidates
 
 
 def _agent_name_from_meta(params: dict[str, Any]) -> str | None:

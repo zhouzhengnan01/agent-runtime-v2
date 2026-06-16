@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -6,7 +7,7 @@ import shutil
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -106,6 +107,11 @@ def _normalize_flat_payload(payload: dict) -> dict:
         "training": {
             "task": task,
             "model": model_name,
+            "model_source": str(spec.get("model_source") or ""),
+            "strict_model": bool(spec.get("strict_model", False)),
+            "model_sha256": str(spec.get("model_sha256") or ""),
+            "model_original_name": str(spec.get("model_original_name") or ""),
+            "model_id": str(spec.get("model_id") or ""),
             "epochs": epochs,
             "imgsz": imgsz,
             "batch": batch,
@@ -133,8 +139,28 @@ def _resolve_model_name(model_name: str) -> str:
     return model_name
 
 
-def _load_yolo_model(yolo_cls: object, model_name: str, task: str):
+def _load_yolo_model(
+    yolo_cls: object,
+    model_name: str,
+    task: str,
+    *,
+    strict_model: bool = False,
+    expected_sha256: str = "",
+):
     resolved_model = _resolve_model_name(model_name)
+    if strict_model:
+        candidate = Path(resolved_model).expanduser()
+        if not candidate.is_absolute():
+            raise RuntimeError("User-uploaded model must use an absolute path.")
+        if not candidate.is_file() or candidate.suffix.lower() != ".pt":
+            raise RuntimeError(f"User-uploaded YOLO model is missing or invalid: {candidate}")
+        expected = expected_sha256.strip().lower()
+        if expected and _file_sha256(candidate) != expected:
+            raise RuntimeError(f"User-uploaded YOLO model SHA256 mismatch: {candidate}")
+        try:
+            return yolo_cls(str(candidate), task=task), str(candidate)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load user-uploaded YOLO model '{candidate}': {exc}") from exc
     try:
         return yolo_cls(resolved_model, task=task), resolved_model
     except RuntimeError as exc:
@@ -149,6 +175,14 @@ def _load_yolo_model(yolo_cls: object, model_name: str, task: str):
         raise
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _safe_results_dict(results: object) -> Dict[str, object]:
     raw = getattr(results, "results_dict", None)
     if not isinstance(raw, dict):
@@ -160,184 +194,6 @@ def _safe_results_dict(results: object) -> Dict[str, object]:
         except (TypeError, ValueError):
             safe[str(key)] = str(value)
     return safe
-
-
-def _safe_float(value: object) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_float_list(value: object) -> List[float]:
-    if value is None:
-        return []
-    if hasattr(value, "tolist"):
-        value = value.tolist()
-    if isinstance(value, dict):
-        return []
-    if isinstance(value, (list, tuple)):
-        values = value
-    else:
-        try:
-            values = list(value)  # type: ignore[arg-type]
-        except TypeError:
-            return []
-    result: List[float] = []
-    for item in values:
-        number = _safe_float(item)
-        if number is not None:
-            result.append(number)
-    return result
-
-
-def _safe_int_list(value: object) -> List[int]:
-    if value is None:
-        return []
-    if hasattr(value, "tolist"):
-        value = value.tolist()
-    if isinstance(value, dict):
-        return []
-    if isinstance(value, (list, tuple)):
-        values = value
-    else:
-        try:
-            values = list(value)  # type: ignore[arg-type]
-        except TypeError:
-            return []
-    result: List[int] = []
-    for item in values:
-        try:
-            result.append(int(item))
-        except (TypeError, ValueError):
-            continue
-    return result
-
-
-def _metric_value_for_class(values: List[float], class_index: int, class_count: int, ap_class_indices: List[int]) -> float | None:
-    if not values:
-        return None
-    if len(values) == class_count and 0 <= class_index < len(values):
-        return values[class_index]
-    if ap_class_indices and len(ap_class_indices) == len(values):
-        for pos, metric_class_index in enumerate(ap_class_indices):
-            if metric_class_index == class_index:
-                return values[pos]
-        return None
-    if 0 <= class_index < len(values):
-        return values[class_index]
-    return None
-
-
-def _class_metric_analysis(class_name: str, precision: float | None, recall: float | None, map50: float | None, map50_95: float | None) -> str:
-    if precision is None and recall is None and map50 is None and map50_95 is None:
-        return "未获取到该类别的评估指标，建议检查 test split 是否包含该类别实例或当前 Ultralytics 版本是否返回类别级指标。"
-    if recall == 0:
-        return f"{class_name} 在当前测试集上召回率为 0，模型没有成功检出该类别；若精确率较高，通常表示误报少但漏检严重。"
-    if recall is not None and recall >= 0.95 and map50 is not None and map50 >= 0.9:
-        return f"{class_name} 表现优异，召回率和 mAP50 都很高，当前测试集上识别稳定。"
-    if map50 is not None and map50 < 0.3:
-        return f"{class_name} 的 mAP50 较低，当前测试集上的定位或识别效果较弱，建议补充更多该类别样本并检查标注质量。"
-    if recall is not None and recall < 0.5:
-        return f"{class_name} 召回率偏低，存在明显漏检风险，建议增加该类别训练样本、困难样本和小目标样本。"
-    if precision is not None and precision < 0.5:
-        return f"{class_name} 精确率偏低，误报较多，建议加入更多负样本或相似干扰类别。"
-    return f"{class_name} 指标处于可用但仍需关注的水平，建议结合更多测试图像继续验证泛化表现。"
-
-
-def _extract_per_class_metrics(results: object, class_names: List[str], test_set_summary: Dict[str, Any]) -> List[Dict[str, object]]:
-    if results is None or not class_names:
-        return []
-    box = getattr(results, "box", None)
-    if box is None:
-        return []
-    ap_class_indices = _safe_int_list(
-        getattr(box, "ap_class_index", None)
-        if getattr(box, "ap_class_index", None) is not None
-        else getattr(box, "ap_class", None)
-    )
-    metric_values = {
-        "precision": _safe_float_list(getattr(box, "p", None)),
-        "recall": _safe_float_list(getattr(box, "r", None)),
-        "mAP50": _safe_float_list(getattr(box, "ap50", None)),
-        "mAP50-95": _safe_float_list(getattr(box, "maps", None) if getattr(box, "maps", None) is not None else getattr(box, "ap", None)),
-    }
-    instance_counts = test_set_summary.get("instances_per_class", {})
-    if not isinstance(instance_counts, dict):
-        instance_counts = {}
-
-    metrics: List[Dict[str, object]] = []
-    class_count = len(class_names)
-    for class_index, class_name in enumerate(class_names):
-        precision = _metric_value_for_class(metric_values["precision"], class_index, class_count, ap_class_indices)
-        recall = _metric_value_for_class(metric_values["recall"], class_index, class_count, ap_class_indices)
-        map50 = _metric_value_for_class(metric_values["mAP50"], class_index, class_count, ap_class_indices)
-        map50_95 = _metric_value_for_class(metric_values["mAP50-95"], class_index, class_count, ap_class_indices)
-        metrics.append(
-            {
-                "class_id": class_index,
-                "class_name": class_name,
-                "instances": int(instance_counts.get(class_name, 0) or 0),
-                "precision": precision,
-                "recall": recall,
-                "mAP50": map50,
-                "mAP50-95": map50_95,
-                "analysis": _class_metric_analysis(class_name, precision, recall, map50, map50_95),
-            }
-        )
-    return metrics
-
-
-def _build_class_performance_analysis(test_set_summary: Dict[str, Any], per_class_metrics: List[Dict[str, object]]) -> Dict[str, object]:
-    if not per_class_metrics:
-        return {
-            "summary": "未获取到类别级指标；请确认 test split 中存在标注实例，且当前 Ultralytics 版本返回 per-class metrics。",
-            "classes": [],
-        }
-    image_count = int(test_set_summary.get("images", 0) or 0)
-    instance_count = int(test_set_summary.get("instances", 0) or 0)
-    intro = f"从测试集（{image_count} 张图像，{instance_count} 个实例）的细粒度结果来看，各类别表现如下。"
-    return {
-        "summary": intro,
-        "classes": [
-            {
-                "class_name": item.get("class_name"),
-                "precision": item.get("precision"),
-                "recall": item.get("recall"),
-                "mAP50": item.get("mAP50"),
-                "mAP50-95": item.get("mAP50-95"),
-                "analysis": item.get("analysis"),
-            }
-            for item in per_class_metrics
-        ],
-    }
-
-
-def _summarize_yolo_split(prepared_root: Path, split_name: str, class_names: List[str]) -> Dict[str, object]:
-    images_dir = prepared_root / "images" / split_name
-    labels_dir = prepared_root / "labels" / split_name
-    image_count = len([path for path in images_dir.glob("*") if path.suffix.lower() in IMAGE_EXTS]) if images_dir.exists() else 0
-    instances_per_class = {name: 0 for name in class_names}
-    instance_count = 0
-    if labels_dir.exists():
-        for label_path in labels_dir.glob("*.txt"):
-            for line in label_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-                parts = line.strip().split()
-                if not parts:
-                    continue
-                try:
-                    class_index = int(float(parts[0]))
-                except (TypeError, ValueError):
-                    continue
-                if 0 <= class_index < len(class_names):
-                    instances_per_class[class_names[class_index]] += 1
-                    instance_count += 1
-    return {
-        "split": split_name,
-        "images": image_count,
-        "instances": instance_count,
-        "instances_per_class": instances_per_class,
-    }
 
 
 def _validate_split(split: Dict[str, float]) -> None:
@@ -766,10 +622,14 @@ def run(config_path: Path) -> None:
     )
 
     _write_dataset_yaml(prepared_root, class_names, dataset_yaml)
-    test_set_summary = _summarize_yolo_split(prepared_root, "test", class_names)
     log_info(f"完成数据集划分与转换: {prepared_root}")
 
     model_name = str(training_cfg.get("model", "yolov8n.pt"))
+    model_source = str(training_cfg.get("model_source") or "")
+    strict_model = bool(training_cfg.get("strict_model", False))
+    model_sha256 = str(training_cfg.get("model_sha256") or "")
+    model_original_name = str(training_cfg.get("model_original_name") or "")
+    model_id = str(training_cfg.get("model_id") or "")
     epochs = int(training_cfg.get("epochs", 100))
     imgsz = int(training_cfg.get("imgsz", 640))
     batch = int(training_cfg.get("batch", 16))
@@ -806,7 +666,13 @@ def run(config_path: Path) -> None:
         raise ImportError("请在 conda 环境内安装依赖: pip install ultralytics") from exc
 
     log_info(f"加载模型(自动下载): {model_name}")
-    model, model_name = _load_yolo_model(YOLO, model_name, task)
+    model, model_name = _load_yolo_model(
+        YOLO,
+        model_name,
+        task,
+        strict_model=strict_model,
+        expected_sha256=model_sha256,
+    )
 
     train_project = run_root
     _ensure_dir(train_project)
@@ -846,8 +712,6 @@ def run(config_path: Path) -> None:
         log_warn(f"test split 评估失败，但训练已完成并保留权重: {eval_error}")
 
     eval_results_dict = _safe_results_dict(eval_results)
-    per_class_metrics = _extract_per_class_metrics(eval_results, class_names, test_set_summary)
-    class_performance_analysis = _build_class_performance_analysis(test_set_summary, per_class_metrics)
     summary = {
         "config_path": str(config_path),
         "conda_env_name": conda_env_name,
@@ -855,11 +719,15 @@ def run(config_path: Path) -> None:
         "coco_json": str(coco_json_path),
         "task": task,
         "model": model_name,
+        "model_source": model_source,
+        "strict_model": strict_model,
+        "model_sha256": model_sha256,
+        "model_original_name": model_original_name,
+        "model_id": model_id,
         "num_images": len(image_ids),
         "num_categories": len(class_names),
         "class_names": class_names,
         "split_counts": split_counts,
-        "test_set_summary": test_set_summary,
         "source_counts": source_counts,
         "synthetic_policy": synthetic_policy,
         "run_root": str(run_root),
@@ -867,8 +735,6 @@ def run(config_path: Path) -> None:
         "train_save_dir": str(getattr(train_results, "save_dir", "")),
         "eval_results": str(eval_results) if eval_results is not None else "",
         "results_dict": eval_results_dict,
-        "per_class_metrics": per_class_metrics,
-        "class_performance_analysis": class_performance_analysis,
         "eval_error": eval_error,
     }
 

@@ -6,6 +6,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
 import pytest
 from acp.schema import PromptResponse, SessionNotification
 from fastapi.testclient import TestClient
@@ -20,6 +21,7 @@ from app.schemas import AgentRunResult, ArtifactRef, ChatEvent, ChatRequest
 from app.schemas import Message
 from app.main import create_app
 from app.protocols.acp.adapter import _event_to_update
+from app.protocols.acp import transport_ws as acp_transport_ws
 
 
 class CapturingAcpRuntime(AgentRuntime):
@@ -40,6 +42,37 @@ class CapturingAcpRuntime(AgentRuntime):
             reply="ok",
         )
         yield ChatEvent(type="run.completed", data={"result": result.model_dump()})
+
+
+class FailingAcpRuntime(AgentRuntime):
+    def __init__(self, artifact_store: ArtifactStore, message: str) -> None:
+        self.artifact_store = artifact_store
+        self.message = message
+
+    async def iter_events(self, agent_config: Any, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        if False:
+            yield ChatEvent(type="run.started", data={})
+        raise RuntimeError(self.message)
+
+
+class HttpStatusFailingAcpRuntime(AgentRuntime):
+    def __init__(self, artifact_store: ArtifactStore) -> None:
+        self.artifact_store = artifact_store
+
+    async def iter_events(self, agent_config: Any, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        if False:
+            yield ChatEvent(type="run.started", data={})
+        http_request = httpx.Request("POST", "http://model.example/v1/chat/completions")
+        http_response = httpx.Response(
+            500,
+            request=http_request,
+            json={"error": {"message": "", "type": "InternalServerError", "param": None, "code": 500}},
+        )
+        raise httpx.HTTPStatusError(
+            "Server error '500 Internal Server Error'",
+            request=http_request,
+            response=http_response,
+        )
 
 
 class ArtifactAcpRuntime(AgentRuntime):
@@ -150,6 +183,60 @@ class InputRequiredAcpRuntime(AgentRuntime):
         yield ChatEvent(type="run.completed", data={"result": result.model_dump()})
 
 
+class FencedJsonAcpRuntime(AgentRuntime):
+    def __init__(self, artifact_store: ArtifactStore) -> None:
+        self.artifact_store = artifact_store
+
+    async def iter_events(self, agent_config: Any, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        reply = (
+            "```json\n"
+            "[\n"
+            "  {\n"
+            '    "reviewSourceId": "source-1",\n'
+            '    "reviewEventId": "event-1",\n'
+            '    "hit": 0,\n'
+            '    "result": "未发现杂物堆积。"\n'
+            "  }\n"
+            "]\n"
+            "```"
+        )
+        result = AgentRunResult(
+            agent=agent_config.name,
+            thread_id=request.runtime_options.thread_id or "acp-fenced-json",
+            reply=reply,
+        )
+        yield ChatEvent(type="run.completed", data={"result": result.model_dump()})
+
+
+class StreamingFencedJsonAcpRuntime(AgentRuntime):
+    def __init__(self, artifact_store: ArtifactStore) -> None:
+        self.artifact_store = artifact_store
+
+    async def iter_events(self, agent_config: Any, request: ChatRequest) -> AsyncIterator[ChatEvent]:
+        del request
+        interim = "```json\n[{\"reviewSourceId\":\"source-1\",\"hit\":0}]\n```"
+        final = (
+            "```json\n"
+            "[\n"
+            "  {\n"
+            '    "reviewSourceId": "source-1",\n'
+            '    "reviewEventId": "event-final",\n'
+            '    "hit": 0,\n'
+            '    "result": "最终复判结果。"\n'
+            "  }\n"
+            "]\n"
+            "```"
+        )
+        result = AgentRunResult(
+            agent=agent_config.name,
+            thread_id="acp-streaming-fenced-json",
+            reply=final,
+        )
+        yield ChatEvent(type="agent.message.delta", data={"text": interim})
+        yield ChatEvent(type="agent.message", data={"text": interim})
+        yield ChatEvent(type="run.completed", data={"result": result.model_dump()})
+
+
 def test_acp_websocket_prompt_streams_runtime_events() -> None:
     client = TestClient(create_app())
     thread_id = f"acp-ws-test-{uuid.uuid4().hex}"
@@ -236,6 +323,7 @@ def test_acp_websocket_prompt_sends_keepalive_during_long_runtime(
     runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"), block=True)
     monkeypatch.setattr(acp_api, "runtime", runtime)
     monkeypatch.setattr(acp_transport_ws, "ACP_PROMPT_KEEPALIVE_SECONDS", 0.01)
+    monkeypatch.setattr(acp_transport_ws, "ACP_PROMPT_KEEPALIVE_ENABLED", True)
     client = TestClient(create_app())
 
     with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
@@ -574,6 +662,225 @@ def test_acp_websocket_prompt_infers_input_required_image(
             "reason": "The agent requires an uploaded image.",
         }
     ]
+
+
+def test_acp_websocket_parking_review_without_image_returns_final_json(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fail_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        raise AssertionError("LLM should not be called when parking review has no image attachment.")
+
+    def fail_sync_if_called(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+    ) -> str:
+        del self, system_prompt, messages
+        raise AssertionError("LLM should not be called when parking review has no image attachment.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fail_if_called)
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", fail_sync_if_called)
+    monkeypatch.setattr(acp_api, "runtime", AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads")))
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "new_session",
+                "params": _acp_params(
+                    thread_id="acp-parking-review-no-image",
+                    app_template_name="ParkingAbnormalEventMonitoring",
+                ),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "复判这张图里是否有杂物堆积"}],
+                },
+            }
+        )
+
+        final = _receive_final_packet(websocket, 3)
+
+    PromptResponse.model_validate(final["result"])
+    assert final["result"]["stopReason"] == "end_turn"
+    result = final["result"]["result"]
+    parsed = json.loads(result["reply"])
+    assert parsed[0]["hit"] == 0
+    assert "未提供可访问的图片" in parsed[0]["result"]
+    assert result["metadata"]["workflow"] == "parking_abnormal_review"
+
+
+def test_acp_websocket_parking_review_strips_fenced_json_reply(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = FencedJsonAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        websocket.receive_json()
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "new_session",
+                "params": _acp_params(
+                    thread_id="acp-parking-json-cleanup",
+                    app_template_name="ParkingAbnormalEventMonitoring",
+                ),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "复判"}],
+                },
+            }
+        )
+
+        final = _receive_final_packet(websocket, 3)
+
+    PromptResponse.model_validate(final["result"])
+    result = final["result"]["result"]
+    assert result["reply"].startswith("[")
+    assert "```" not in result["reply"]
+    assert json.loads(result["reply"]) == [
+        {
+            "reviewSourceId": "source-1",
+            "reviewEventId": "event-1",
+            "hit": 0,
+            "result": "未发现杂物堆积。",
+        }
+    ]
+    assert final["result"]["content"][0]["text"] == result["reply"]
+    assert result["content"][0]["text"] == result["reply"]
+
+
+def test_acp_websocket_parking_review_update_contains_final_json_only(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = StreamingFencedJsonAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(
+                    thread_id="acp-parking-final-update",
+                    app_template_name="ParkingAbnormalEventMonitoring",
+                ),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "复判"}],
+                },
+            }
+        )
+
+        updates: list[dict[str, Any]] = []
+        final: dict[str, Any] | None = None
+        for _ in range(20):
+            packet = websocket.receive_json()
+            if packet.get("method") == "session/update":
+                updates.append(packet["params"]["update"])
+                continue
+            if packet.get("id") == 2:
+                final = packet
+                break
+
+    assert final is not None
+    result = final["result"]["result"]
+    chunks = [
+        update["content"]["text"]
+        for update in updates
+        if update.get("sessionUpdate") == "agent_message_chunk"
+        and update.get("content", {}).get("type") == "text"
+    ]
+    assert chunks == [result["reply"]]
+    assert "```" not in chunks[0]
+    assert json.loads(chunks[0]) == [
+        {
+            "reviewSourceId": "source-1",
+            "reviewEventId": "event-final",
+            "hit": 0,
+            "result": "最终复判结果。",
+        }
+    ]
+    assert updates[-1]["_meta"]["jetlinksRuntimeEvent"]["data"]["final"] is True
+
+
+def test_acp_websocket_response_format_json_strips_fenced_json_reply(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = FencedJsonAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(
+                    thread_id="acp-response-format-json-cleanup",
+                    runtime_options={"responseFormat": "json"},
+                ),
+            }
+        )
+        session_id = websocket.receive_json()["result"]["sessionId"]
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "返回 JSON"}],
+                },
+            }
+        )
+
+        final = _receive_final_packet(websocket, 2)
+
+    result = final["result"]["result"]
+    assert result["reply"].startswith("[")
+    assert "```" not in result["reply"]
+    assert final["result"]["content"][0]["text"] == result["reply"]
 
 
 def test_acp_websocket_default_agent_streams_delta_before_prompt_result(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1806,101 +2113,6 @@ def test_acp_websocket_session_new_uses_app_model_from_config(
     assert options.max_tokens == 128
 
 
-def test_acp_websocket_prompt_infers_upload_app_model_from_review_source_id(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    agents_dir = tmp_path / "config" / "agents"
-    apps_dir = tmp_path / "config" / "upload" / "apps"
-    agents_dir.mkdir(parents=True)
-    apps_dir.mkdir(parents=True)
-    (agents_dir / "default.json").write_text(
-        json.dumps(
-            {
-                "name": "default",
-                "display_name": "Default",
-                "model": {
-                    "model": "agent-model",
-                    "base_url": "http://agent.local/v1",
-                    "api_key": "agent-key",
-                },
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    (apps_dir / "uploaded-review-app.json").write_text(
-        json.dumps(
-            {
-                "name": "uploaded-review-app",
-                "title": "Uploaded Review App",
-                "agent_name": "default",
-                "runtime_options": {"config_options": {"force_model_config": True}},
-                "models": [
-                    {
-                        "name": "uploaded-model",
-                        "model": "uploaded-model",
-                        "default_model": "uploaded-model",
-                        "base_url": "http://uploaded.local/v1",
-                        "api_key": "uploaded-key",
-                        "temperature": 0.2,
-                        "max_tokens": 321,
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
-    monkeypatch.setattr(acp_api, "loader", AgentConfigLoader(tmp_path))
-    monkeypatch.setattr(acp_api, "runtime", runtime)
-    monkeypatch.setattr(acp_api, "model_manager", ModelManager())
-    client = TestClient(create_app())
-
-    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
-        websocket.send_json(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "session/new",
-                "params": _acp_params(thread_id="acp-upload-app-inferred", cwd=str(tmp_path)),
-            }
-        )
-        created = websocket.receive_json()["result"]
-        assert created["appTemplateName"] is None
-
-        websocket.send_json(
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "session/prompt",
-                "params": {
-                    "sessionId": created["sessionId"],
-                    "prompt": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "当前复判事件来源reviewSourceId为"
-                                "[uploaded-review-app_source-123]。请执行复判。"
-                            ),
-                        }
-                    ],
-                },
-            }
-        )
-        _receive_final_packet(websocket, 2)
-
-    assert len(runtime.requests) == 1
-    options = runtime.requests[0].runtime_options
-    assert options.app_template_name == "uploaded-review-app"
-    assert options.model_name == "uploaded-model"
-    assert options.base_url == "http://uploaded.local/v1"
-    assert options.api_key == "uploaded-key"
-    assert options.temperature == 0.2
-    assert options.max_tokens == 321
-    assert options.config_options["force_model_config"] is True
-
-
 def test_acp_websocket_session_update_applies_app_model_from_config(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2387,6 +2599,124 @@ def test_acp_websocket_resolves_server_managed_model_id(
     assert request_options.max_tokens == 321
 
 
+def test_acp_websocket_force_app_model_config_over_default_agent_model(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    apps_dir = tmp_path / "config" / "apps"
+    agents_dir = tmp_path / "config" / "agents"
+    apps_dir.mkdir(parents=True)
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "default.json").write_text(
+        json.dumps(
+            {
+                "name": "default",
+                "display_name": "Default",
+                "model": {
+                    "model": "old-model",
+                    "default_model": "old-model",
+                    "base_url": "http://218.67.242.10:59202/v1",
+                    "api_key": "old-key",
+                    "temperature": 0.9,
+                    "max_tokens": 64,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (apps_dir / "parking-review.json").write_text(
+        json.dumps(
+            {
+                "name": "parking-review",
+                "title": "Parking Review",
+                "agent_name": "default",
+                "runtime_options": {"config_options": {"force_model_config": True}},
+                "models": [
+                    {
+                        "name": "Qwen3.6-35B-A3B",
+                        "model": "Qwen3.6-35B-A3B",
+                        "default_model": "Qwen3.6-35B-A3B",
+                        "base_url": "http://192.168.35.140:9100/api/llm/openai/v1/providers/builtin-openai-compatible/",
+                        "api_key": "new-key",
+                        "temperature": 0.4,
+                        "max_tokens": 2048,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    loader = AgentConfigLoader(tmp_path)
+    agent_default = loader.load("default")
+    model_manager = ModelManager()
+    model_manager.configure_from_agent_default(agent_default)
+    runtime = CapturingAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
+    monkeypatch.setattr(acp_api, "loader", loader)
+    monkeypatch.setattr(acp_api, "runtime", runtime)
+    monkeypatch.setattr(acp_api, "model_manager", model_manager)
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/acp/ws", subprotocols=["acp.v1"]) as websocket:
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "session/new",
+                "params": _acp_params(
+                    app_template_name="parking-review",
+                    thread_id="acp-force-template-model",
+                    cwd=str(tmp_path),
+                    runtime_options={
+                        "modelName": "old-model",
+                        "baseUrl": "http://218.67.242.10:59202/v1",
+                        "apiKey": "old-key",
+                        "temperature": 0.9,
+                        "maxTokens": 64,
+                        "configOptions": {"mcpServers": []},
+                    },
+                ),
+            }
+        )
+        created = websocket.receive_json()["result"]
+        session_id = created["sessionId"]
+        assert created["models"]["currentModelId"] == "Qwen3.6-35B-A3B"
+        assert created["runtimeOptions"]["modelName"] == "Qwen3.6-35B-A3B"
+        assert created["runtimeOptions"]["baseUrl"] == (
+            "http://192.168.35.140:9100/api/llm/openai/v1/providers/builtin-openai-compatible/"
+        )
+        assert created["runtimeOptions"]["temperature"] == 0.4
+        assert created["runtimeOptions"]["maxTokens"] == 2048
+
+        websocket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": "复判"}],
+                    "runtimeOptions": {
+                        "modelName": "old-model",
+                        "baseUrl": "http://218.67.242.10:59202/v1",
+                        "apiKey": "old-key",
+                    },
+                },
+            }
+        )
+        _receive_final_packet(websocket, 2)
+
+    request_options = runtime.requests[0].runtime_options
+    assert request_options.model_name == "Qwen3.6-35B-A3B"
+    assert request_options.base_url == "http://192.168.35.140:9100/api/llm/openai/v1/providers/builtin-openai-compatible/"
+    assert request_options.api_key == "new-key"
+    assert request_options.temperature == 0.4
+    assert request_options.max_tokens == 2048
+    assert request_options.config_options["force_model_config"] is True
+    assert request_options.config_options["session_cwd"] == str(tmp_path)
+
+
 def test_acp_websocket_does_not_expose_default_agent_model_when_no_model_configured(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2413,13 +2743,13 @@ def test_acp_websocket_does_not_expose_default_agent_model_when_no_model_configu
         )
         created = websocket.receive_json()["result"]
 
-    assert agent_default.model.model is None
-    assert agent_default.model.default_model is None
-    assert created["models"]["currentModelId"] is None
-    assert created["models"]["currentModelName"] is None
-    assert "modelName" not in created["runtimeOptions"]
-    assert "baseUrl" not in created["runtimeOptions"]
-    assert created["models"]["availableModels"] == []
+    assert agent_default.model.model == "Qwen3.6-35B-A3B"
+    assert agent_default.model.default_model == "Qwen3.6-35B-A3B"
+    assert created["models"]["currentModelId"] == "Qwen3.6-35B-A3B"
+    assert created["models"]["currentModelName"] == "Qwen3.6-35B-A3B"
+    assert created["runtimeOptions"]["modelName"] == "Qwen3.6-35B-A3B"
+    assert created["runtimeOptions"]["baseUrl"] == "http://218.67.242.10:59202/v1"
+    assert created["models"]["availableModels"]
 
 
 def test_default_agent_model_registration_ignores_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2431,10 +2761,11 @@ def test_default_agent_model_registration_ignores_llm_env(monkeypatch: pytest.Mo
     agent = acp_api.loader.load("default")
     registered = model_manager.configure_from_agent_default(agent)
 
-    assert agent.model.model is None
-    assert agent.model.default_model is None
-    assert registered is None
-    assert model_manager.list() == []
+    assert agent.model.model == "Qwen3.6-35B-A3B"
+    assert agent.model.default_model == "Qwen3.6-35B-A3B"
+    assert registered is not None
+    assert registered.id == "Qwen3.6-35B-A3B"
+    assert model_manager.list()
 
 
 def test_acp_websocket_cancel_interrupts_active_prompt(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2565,6 +2896,16 @@ def _receive_final_packet(websocket: Any, request_id: int) -> dict[str, Any]:
         if packet.get("id") == request_id:
             return packet
     raise AssertionError(f"ACP WebSocket response not received: {request_id}")
+
+
+def _receive_platform_end(websocket: Any) -> dict[str, Any]:
+    for _ in range(30):
+        packet = websocket.receive_json()
+        params = packet.get("params")
+        if packet.get("method") == "session.event" and isinstance(params, dict):
+            if params.get("type") == "session.response_end":
+                return packet
+    raise AssertionError("Platform response end event not received")
 
 
 def _acp_params(

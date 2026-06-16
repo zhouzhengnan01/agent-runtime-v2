@@ -15,7 +15,7 @@ from app.core.diagnostics import diagnostic_json, env_flag, env_int
 from app.schemas import ChatEvent
 
 logger = logging.getLogger("uvicorn.error")
-RUNTIME_EVENT_TRACE_PAYLOADS = env_flag("RUNTIME_EVENT_TRACE_PAYLOADS", "0")
+RUNTIME_EVENT_TRACE_PAYLOADS = env_flag("RUNTIME_EVENT_TRACE_PAYLOADS", "1")
 RUNTIME_EVENT_TRACE_MAX_CHARS = env_int("RUNTIME_EVENT_TRACE_MAX_CHARS", 100)
 
 _LOGGED_EVENT_TYPES = {

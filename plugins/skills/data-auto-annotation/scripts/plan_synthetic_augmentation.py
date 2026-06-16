@@ -305,7 +305,7 @@ def _validated_llm_count(llm_plan: Dict[str, Any], real_image_count: int, max_sy
     if not should_generate:
         recommended = 0
     recommended = max(0, recommended)
-    if max_synthetic > 0:
+    if max_synthetic >= 0:
         recommended = min(recommended, max_synthetic)
     return should_generate and recommended > 0, recommended
 
@@ -342,7 +342,7 @@ def build_plan(
 
     if planner == "fixed":
         recommended = max(0, int(fixed_synthetic_count))
-        if max_synthetic > 0:
+        if max_synthetic >= 0:
             recommended = min(recommended, max_synthetic)
         should_generate = recommended > 0
         planner_type = "fixed_count"
@@ -370,7 +370,7 @@ def build_plan(
     if planner_type not in {"llm_dynamic", "fixed_count"}:
         if should_generate:
             recommended = int(heuristic["recommended_synthetic_count"])
-            if max_synthetic > 0:
+            if max_synthetic >= 0:
                 recommended = min(recommended, max_synthetic)
         else:
             recommended = 0
@@ -420,7 +420,7 @@ def main() -> None:
     parser.add_argument("--coco", required=True, help="Real dataset COCO JSON path")
     parser.add_argument("--task", required=True, help="Task description, e.g. bottle detection, helmet detection, smoking detection")
     parser.add_argument("--split-train", type=float, default=0.7, help="Train ratio for real dataset")
-    parser.add_argument("--max-synthetic", type=int, default=2000, help="Hard cap for synthetic image count; <=0 disables cap")
+    parser.add_argument("--max-synthetic", type=int, default=2000, help="Hard cap for synthetic image count; 0 disables synthetic generation")
     parser.add_argument("--planner", choices=["llm", "heuristic", "fixed"], default="llm", help="Planner used for synthetic image count")
     parser.add_argument("--fixed-synthetic-count", type=int, default=20, help="Synthetic image count used when --planner=fixed")
     parser.add_argument("--llm-config", default="", help="JSON file with base_url, api_key, model, temperature, max_tokens, timeout")

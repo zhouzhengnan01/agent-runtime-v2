@@ -41,11 +41,13 @@ def test_smoke_matrix_attaches_image_only_for_image_required_skills() -> None:
     assert needs_smoke_image({"category": "generation", "selected_skills": ["data-auto-annotation"]}) is True
     assert needs_smoke_image({"category": "algorithm-training", "selected_skills": ["reference-image-yolo-trainer"]}) is True
     assert needs_smoke_image({"category": "vision", "selected_skills": ["behavior-detection"]}) is False
+    assert needs_smoke_image({"category": "vision", "selected_skills": ["behavior-review"]}) is False
     assert needs_smoke_image({"category": "algorithm", "selected_skills": ["dataset-curator"]}) is False
 
 
 def test_smoke_matrix_behavior_detection_can_pass_without_artifacts() -> None:
     assert template_expects_artifacts({"workflow": "evidence_first_detection", "selected_skills": ["behavior-detection"]}) is False
+    assert template_expects_artifacts({"workflow": "evidence_first_detection", "selected_skills": ["behavior-review"]}) is True
     assert expected_artifact_patterns({"workflow": "evidence_first_detection", "selected_skills": ["behavior-detection"]}) == []
 
 
@@ -53,6 +55,7 @@ def test_smoke_matrix_expected_artifact_patterns_cover_known_skills() -> None:
     multi_skill_template = {
         "selected_skills": [
             "data-auto-annotation",
+            "behavior-review",
             "drawio-generation",
             "pptx-generation",
             "dataset-curator",
@@ -87,10 +90,17 @@ def test_smoke_matrix_reports_unexpected_skill_artifacts() -> None:
     names = [
         "annotations.coco.json",
         "data-auto-annotation-stderr.txt",
+        "behavior-review.md",
+        "behavior-review.json",
         "deck.pptx",
     ]
 
-    assert unexpected_skill_artifacts(template, names) == ["deck.pptx"]
+    assert unexpected_skill_artifacts(template, names) == ["behavior-review.md", "behavior-review.json", "deck.pptx"]
+    assert unexpected_skill_artifacts({"selected_skills": ["behavior-review"]}, names) == [
+        "annotations.coco.json",
+        "data-auto-annotation-stderr.txt",
+        "deck.pptx",
+    ]
     assert unexpected_skill_artifacts({"selected_skills": ["pptx-generation"]}, ["deck.pptx"]) == []
     assert unexpected_skill_artifacts({"selected_skills": ["markdown-rendering"]}, ["result.md"]) == []
     assert unexpected_skill_artifacts(

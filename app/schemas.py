@@ -31,6 +31,8 @@ class RuntimeOptions(BaseModel):
     app_template_name: str | None = None
     model_type: str | None = None
     model_name: str | None = None
+    training_model_id: str | None = None
+    max_synthetic_images: int | None = None
     base_url: str | None = None
     api_key: str | None = None
     temperature: float | None = None
@@ -39,6 +41,7 @@ class RuntimeOptions(BaseModel):
     request_timeout_seconds: float | None = None
     response_format: Literal["text", "json"] = "text"
     mode: Literal["plan", "edit", "autonomous", "safe", "yolo"] | None = None
+    skill_parameters: dict[str, dict[str, Any]] = Field(default_factory=dict)
     config_options: dict[str, Any] = Field(default_factory=dict)
     sandbox_profile: str | None = None
 

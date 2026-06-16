@@ -1,9 +1,0 @@
-{
-  "id": "parking-congestion-review",
-  "name": "停车场通道拥堵检测",
-  "version": "0.1.0",
-  "description": "用于机器视觉复判停车场通道、车道、出入口拥堵或排队堵塞等车场异常事件。",
-  "skills": [
-    "skills/parking-congestion-review/manifest.json"
-  ]
-}

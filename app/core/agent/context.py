@@ -230,7 +230,7 @@ class ConversationContextManager:
 
     @staticmethod
     def _serialized_chars(messages: list[dict[str, Any]]) -> int:
-        return len(json.dumps(_messages_without_internal_fields(messages), ensure_ascii=False, default=str))
+        return len(json.dumps(messages, ensure_ascii=False, default=str))
 
     @staticmethod
     def _unchanged(messages: list[dict[str, Any]], before_chars: int) -> ContextCompactionResult:
@@ -340,12 +340,3 @@ class ConversationContextManager:
 def _has_tool_calls(message: dict[str, Any]) -> bool:
     raw_calls = message.get("tool_calls")
     return isinstance(raw_calls, list) and bool(raw_calls)
-
-
-def _messages_without_internal_fields(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    sanitized: list[dict[str, Any]] = []
-    for message in messages:
-        clean = dict(message)
-        clean.pop("_attachments", None)
-        sanitized.append(clean)
-    return sanitized

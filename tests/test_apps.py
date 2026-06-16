@@ -221,17 +221,6 @@ def test_app_runtime_options_expand_platform_skill_aliases() -> None:
     ]
 
 
-def test_visualization_platform_skill_alias_expands_to_generate_screen_skill() -> None:
-    template = AppTemplateRegistry().get("general-jetlinks-assistant")
-
-    options = merge_runtime_options_with_template(
-        RuntimeOptions(app_template_name="general-jetlinks-assistant", selected_skills=["1780988275767z1lxtrd1"]),
-        template,
-    )
-
-    assert options.selected_skills == ["generate-screen-skill"]
-
-
 def test_request_selected_skills_expand_platform_skill_aliases(tmp_path: Path) -> None:
     apps_dir = tmp_path / "config" / "apps"
     apps_dir.mkdir(parents=True)
@@ -363,24 +352,19 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         if template.name == "algorithm-engineer-full-cycle":
             assert template.runtime_options["mode"] == "yolo"
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
+        elif template.name == "behavior-review":
+            assert template.runtime_options["mode"] == "yolo"
+            assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
         elif template.name == "algorithm-engineer-workbench":
             assert template.runtime_options["mode"] == "yolo"
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 16
         elif template.name == "reference-image-yolo-training":
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
         elif template.name in {
-            "CustomerBehaviorDetection",
-            "FireLaneComplianceDetection",
-            "KitchenAisleHygieneDetection",
-            "ParkingAbnormalEventMonitoring",
-        }:
-            assert template.runtime_options == {"config_options": {"force_model_config": True}}
-        elif template.name in {
             "70aaee52-99c2-49f5-a9c7-fb746821d3df",
             "0bb9536b-8a36-40fd-8c5b-ea22804b55ab",
             "737d9452-99c6-470e-a77a-20f2f7d73eff",
             "305fb466-1f7f-442b-861e-02e3246f8563",
-            "zujiankaifa",
         }:
             assert template.runtime_options == {
                 "mode": "safe",
@@ -410,12 +394,6 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         if template.name == "305fb466-1f7f-442b-861e-02e3246f8563":
             assert model.api_key is None, template.name
             assert model.api_key_env == "JETLINKS_APP_305FB466_GPT54_API_KEY", template.name
-        elif template.name == "8dd173d5-9ca2-4fde-9678-d5165a111cdb":
-            assert model.api_key is None, template.name
-            assert model.api_key_env == "JETLINKS_APP_8DD173D5_GPT55_API_KEY", template.name
-        elif template.name == "zujiankaifa":
-            assert model.api_key is None, template.name
-            assert model.api_key_env == "ZUJIAN_KAIFA_MODEL_API_KEY", template.name
         else:
             assert model.api_key == "abc@123", template.name
             assert model.api_key_env is None, template.name
@@ -489,6 +467,36 @@ def test_preconfigured_app_templates_do_not_preselect_artifact_workflow() -> Non
         for template in registry.list()
         if template.workflow == "artifact_workflow"
     } == {}
+
+
+def test_behavior_review_template_enables_continuous_second_pass_policy() -> None:
+    template = AppTemplateRegistry().get("behavior-review")
+
+    assert template.workflow is None
+    assert template.title == "行为识别连续复判"
+    assert template.runtime_options["mode"] == "yolo"
+    assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
+    policy = template.runtime_options["config_options"]["agent_execution_policy"]
+    assert policy["mode"] == "continuous_review"
+    assert policy["stage_order"] == [
+        "alert_ingest",
+        "evidence_integrity_check",
+        "second_pass_judgement",
+        "false_positive_suppression",
+        "risk_grade",
+        "action_recommendation",
+        "review_ledger",
+    ]
+    conditional = template.runtime_options["config_options"]["conditional_tool_loop"]
+    assert conditional["continue_while"] == {
+        "json_path": "$.pending_count",
+        "operator": "gt",
+        "expected": 0,
+    }
+    assert conditional["poll_interval_seconds"] == 3
+    assert "tool_call" in template.models[0].features
+
+
 def test_algorithm_engineer_full_cycle_selects_full_stage_skill_chain() -> None:
     template = AppTemplateRegistry().get("algorithm-engineer-full-cycle")
 

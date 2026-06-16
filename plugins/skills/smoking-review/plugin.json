@@ -1,9 +1,0 @@
-{
-  "id": "smoking-review",
-  "name": "抽烟行为检测",
-  "version": "0.1.0",
-  "description": "用于机器视觉复判抽烟、吸烟、持烟等行为事件。",
-  "skills": [
-    "skills/smoking-review/manifest.json"
-  ]
-}

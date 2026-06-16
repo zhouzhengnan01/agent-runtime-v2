@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ from app.core.agent.turn_verifier import verify_turn_completion
 from app.core.config import AgentConfig
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
+from app.core.skills import SkillRegistry
+from app.core.skills.context_files import load_skill_markdown_context
 from app.core.tools import ToolDefinition, ToolInvocationResult, ToolInvocationService
 from app.core.tools.orchestrator import ToolOrchestrator
 from app.schemas import AgentRunResult, ArtifactRef, Message, RuntimeOptions
@@ -155,6 +158,7 @@ class ToolCallingAgentLoop:
             tool_service=self.tool_service,
             primary_skill_context=primary_skill_context,
         )
+        self._emit_primary_skill_context_loaded(recorder, runtime_options)
         system_prompt = self._prompt_with_turn_policy(base_prompt, turn_policy.phase, turn_policy.reason)
         if agent_config.memory.enabled:
             recorder.emit(
@@ -302,7 +306,7 @@ class ToolCallingAgentLoop:
         while state.rounds < max_rounds or run_final_pass_after_conditional_repeat:
             run_final_pass_after_conditional_repeat = False
             state.rounds += 1
-            self._advance_turn_state(state, agent_config, runtime_options)
+            self._advance_turn_state(state, agent_config, runtime_options, recorder)
             self._apply_context_compaction(state, agent_config, recorder, round_number=state.rounds)
             request_started_at = time.perf_counter()
             recorder.emit(
@@ -386,7 +390,7 @@ class ToolCallingAgentLoop:
                 runtime_options,
             )
             if state.required_inputs:
-                self._advance_turn_state(state, agent_config, runtime_options)
+                self._advance_turn_state(state, agent_config, runtime_options, recorder)
                 return self._finalize_completed_turn(
                     state,
                     state.latest_assistant_reply,
@@ -405,7 +409,7 @@ class ToolCallingAgentLoop:
                 runtime_options,
             )
             if state.required_inputs:
-                self._advance_turn_state(state, agent_config, runtime_options)
+                self._advance_turn_state(state, agent_config, runtime_options, recorder)
                 return self._finalize_completed_turn(
                     state,
                     state.latest_assistant_reply,
@@ -501,6 +505,39 @@ class ToolCallingAgentLoop:
                     ),
                 }
             )
+            vision_message = self._tool_result_vision_message(tool_result)
+            if vision_message is not None:
+                state.conversation.append(vision_message)
+
+    @classmethod
+    def _tool_result_vision_message(cls, tool_result: ToolInvocationResult) -> dict[str, Any] | None:
+        if tool_result.is_error:
+            return None
+        structured = tool_result.structured_content
+        if not isinstance(structured, dict):
+            return None
+        mime_type = str(structured.get("mime_type") or structured.get("mimeType") or "").split(";", 1)[0].lower()
+        kind = str(structured.get("kind") or "").lower()
+        path = structured.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return None
+        if kind != "image" and not mime_type.startswith("image/"):
+            return None
+        if not mime_type:
+            guessed, _encoding = mimetypes.guess_type(path)
+            mime_type = guessed or "image/*"
+        return {
+            "role": "user",
+            "content": "The downloaded image is available for visual inspection.",
+            "_attachments": [
+                {
+                    "name": str(structured.get("filename") or path.rsplit("/", 1)[-1] or "image"),
+                    "path": path,
+                    "mime_type": mime_type,
+                    "_local_path": structured.get("_local_path"),
+                }
+            ],
+        }
 
     async def _wait_before_conditional_tool_retry(
         self,
@@ -610,6 +647,7 @@ class ToolCallingAgentLoop:
         state: ToolLoopState,
         agent_config: AgentConfig,
         runtime_options: RuntimeOptions | None,
+        recorder: EventRecorder,
     ) -> None:
         primary_skill_context = load_primary_skill_context(
             root_dir=self.tool_service.root_dir,
@@ -654,6 +692,7 @@ class ToolCallingAgentLoop:
             primary_skill_context=primary_skill_context,
         )
         state.system_prompt = self._prompt_with_turn_policy(base_prompt, state.turn_phase, state.turn_policy_reason)
+        self._emit_primary_skill_context_loaded(recorder, runtime_options)
         state.memory_context_count = memory_context_count
         tool_definitions = self._tool_definitions_for_run(agent_config, runtime_options)
         state.system_prompt = prompt_with_runtime_mcp_discovery_failures(state.system_prompt, runtime_options)
@@ -696,6 +735,12 @@ class ToolCallingAgentLoop:
             required_inputs=state.required_inputs,
             artifacts=self._completion_artifacts(state),
         )
+        verification_verdict = state.verification_verdict
+        verification_reason = state.verification_reason
+        if self._should_mark_completed_turn_verified(state, guard_metadata):
+            verification_verdict = "passed"
+            verification_reason = "Completed turn executed tools and produced a final response."
+        primary_skill_metadata = self._primary_skill_metadata_for_result(state, verification_verdict)
         return self._result(
             agent_config,
             thread_id,
@@ -713,14 +758,45 @@ class ToolCallingAgentLoop:
             extra_metadata={
                 "turn_phase": state.turn_phase,
                 "turn_policy_reason": state.turn_policy_reason,
-                "verification_verdict": state.verification_verdict,
-                "verification_reason": state.verification_reason,
-                **(state.primary_skill_context.to_metadata() if state.primary_skill_context is not None else {}),
+                "verification_verdict": verification_verdict,
+                "verification_reason": verification_reason,
+                **primary_skill_metadata,
                 **guard_metadata,
             },
             required_inputs=state.required_inputs,
             artifacts=state.artifacts,
         )
+
+    @staticmethod
+    def _should_mark_completed_turn_verified(state: ToolLoopState, guard_metadata: dict[str, Any]) -> bool:
+        if state.verification_verdict == "passed":
+            return False
+        if state.required_inputs:
+            return False
+        if guard_metadata.get("unverified_completion_blocked") is True:
+            return False
+        if guard_metadata.get("unavailable_selected_skills_blocked") is True:
+            return False
+        return state.tool_call_count > 0 and bool(state.latest_assistant_reply.strip())
+
+    @staticmethod
+    def _primary_skill_metadata_for_result(
+        state: ToolLoopState,
+        verification_verdict: str,
+    ) -> dict[str, Any]:
+        if state.primary_skill_context is None:
+            return {}
+        metadata = state.primary_skill_context.to_metadata()
+        if (
+            state.primary_skill_context.stage_count == 0
+            and metadata.get("primary_skill_completion_status") == "unknown"
+            and verification_verdict == "passed"
+            and not state.required_inputs
+            and state.tool_call_count > 0
+            and state.latest_assistant_reply.strip()
+        ):
+            metadata["primary_skill_completion_status"] = "completed"
+        return metadata
 
     def _finalize_exhausted_turn(
         self,
@@ -880,6 +956,68 @@ class ToolCallingAgentLoop:
         definitions = [tool for tool in definitions if self._tool_allowed_in_mode(tool, mode)]
         return definitions
 
+    def _emit_primary_skill_context_loaded(
+        self,
+        recorder: EventRecorder,
+        runtime_options: RuntimeOptions | None,
+    ) -> None:
+        if runtime_options is None or not runtime_options.selected_skills:
+            return
+        skill_name = runtime_options.selected_skills[0].strip()
+        if not skill_name:
+            return
+        try:
+            skill = SkillRegistry(self.tool_service.root_dir).get(skill_name)
+        except KeyError:
+            recorder.emit(
+                "skill.context.loaded",
+                {
+                    "skill_name": skill_name,
+                    "found": False,
+                    "reason": "skill_not_found",
+                },
+            )
+            return
+        context = load_skill_markdown_context(skill)
+        if context is None:
+            recorder.emit(
+                "skill.context.loaded",
+                {
+                    "skill_name": skill_name,
+                    "found": True,
+                    "skill_md_found": False,
+                    "reason": "skill_md_not_found",
+                    "manifest_path": str(skill.manifest_path) if skill.manifest_path is not None else "",
+                    "plugin_root": str(skill.plugin_root) if skill.plugin_root is not None else "",
+                },
+            )
+            return
+        references = [
+            {
+                "path": reference.path,
+                "chars": len(reference.content),
+                "truncated": reference.truncated,
+            }
+            for reference in context.references
+        ]
+        recorder.emit(
+            "skill.context.loaded",
+            {
+                "skill_name": skill_name,
+                "found": True,
+                "skill_md_found": True,
+                "skill_md_path": context.skill_md_path,
+                "skill_md_chars": len(context.skill_md),
+                "skill_md_truncated": context.skill_md_truncated,
+                "reference_count": len(references),
+                "total_reference_chars": sum(int(item["chars"]) for item in references),
+                "reference_truncated_count": sum(1 for item in references if item["truncated"]),
+                "references": references,
+                "manifest_path": str(skill.manifest_path) if skill.manifest_path is not None else "",
+                "plugin_root": str(skill.plugin_root) if skill.plugin_root is not None else "",
+            },
+        )
+
     @staticmethod
     def _tool_selected_for_run(
         tool: ToolDefinition,
@@ -918,6 +1056,7 @@ class ToolCallingAgentLoop:
         names = {
             "present_files",
             "local_read_file",
+            "local_download_url",
             "local_file_to_base64",
             "visual_bigscreen_upload_file",
             "visualization_bigscreen_upload_file",
@@ -1178,7 +1317,13 @@ class ToolCallingAgentLoop:
         if mode == "safe":
             if source_type == "skill":
                 return False
-            if source_type == "local" and operation in {"write_file", "patch_file", "shell_command", "extract_archive"}:
+            if source_type == "local" and operation in {
+                "write_file",
+                "download_url",
+                "patch_file",
+                "shell_command",
+                "extract_archive",
+            }:
                 return False
             return True
         if mode == "edit":

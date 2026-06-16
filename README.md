@@ -46,6 +46,137 @@ uvicorn app.main:app --reload --port 8010
 http://127.0.0.1:8010/workbench
 ```
 
+### 本地 Docker 镜像启动
+
+如果希望用容器启动当前工作区代码，可以先构建本地 Python 3.12 镜像：
+
+```bash
+cd /Users/chenhao/Desktop/code/jetlinks-official/jetlinks-agent-runtime-agent-v2
+
+docker build \
+  --build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.12-slim \
+  -t jetlinks-agent-runtime-v2:local-py312 .
+```
+
+启动容器（联调模式，默认会挂载当前源码目录，改代码后重启即可生效）：
+
+```bash
+APP_PORT=18013 \
+APP_HOST=127.0.0.1 \
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_PULL_IMAGE=false \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
+JETLINKS_AGENT_CONTAINER_PORT=8000 \
+./up.sh --docker
+```
+
+如果不希望目标机器拉取或挂载源码，需要使用已经把 `app/config/plugins/static` 打进镜像的版本，并关闭源码挂载：
+
+```bash
+APP_PORT=18013 \
+APP_HOST=127.0.0.1 \
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_PULL_IMAGE=false \
+JETLINKS_AGENT_MOUNT_CODE=false \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-image-only \
+JETLINKS_AGENT_CONTAINER_PORT=8000 \
+./up.sh --docker
+```
+
+远端仓库镜像同理，把 `JETLINKS_AGENT_IMAGE` 换成仓库地址即可；目标机器只需要有 `up.sh/runtime-env.sh/status.sh/stop.sh`
+这几个启动脚本和 Docker，不需要完整源码目录。
+
+如果希望把镜像里的内置代码、配置和 skill 文件同步到本地目录，再用本地目录挂载启动，可以先执行：
+
+```bash
+JETLINKS_AGENT_SYNC_TARGET_DIR=/opt/jetlinks-agent-runtime-v2 \
+./sync-image-code.sh
+```
+
+`sync-image-code.sh` 可以单独拷到目标机器执行；如果没有显式传 `JETLINKS_AGENT_IMAGE`，脚本会根据当前机器架构自动选择镜像：
+
+```text
+x86_64/amd64   -> registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:stable-amd64
+aarch64/arm64  -> registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:stable-arm64
+```
+
+如果需要指定完整镜像地址，也可以显式传：
+
+```bash
+./sync-image-code.sh \
+  --image registry.cn-hangzhou.aliyuncs.com/koudaimao/jetlinks-agent-runtime-v2:stable-arm64 \
+  --target /opt/jetlinks-agent-runtime-v2
+```
+
+如果目标目录为空，它会把镜像里的代码、配置、skill 和启动脚本都同步出来。
+然后进入同步出来的目录，用默认挂载模式启动：
+
+```bash
+cd /opt/jetlinks-agent-runtime-v2
+
+APP_PORT=18013 \
+APP_HOST=127.0.0.1 \
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_PULL_IMAGE=false \
+JETLINKS_AGENT_MOUNT_CODE=true \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-code \
+JETLINKS_AGENT_CONTAINER_PORT=8000 \
+./up.sh --docker
+```
+
+`sync-image-code.sh` 默认从镜像内的 `/workspace/code/jetlinks-agent-runtime-agent-v2` 同步；如果镜像工作目录不同，可以设置
+`JETLINKS_AGENT_SYNC_SOURCE_DIR` 覆盖。注意 Docker 的 bind mount 不会自动把镜像里的已有文件复制到宿主机目录；
+必须先同步，再挂载运行。
+
+启动后访问：
+
+```bash
+curl http://127.0.0.1:18013/health
+```
+
+正常返回：
+
+```json
+{"status":"ok","service":"jetlinks-agent-runtime-v2"}
+```
+
+默认情况下，`up.sh --docker` 会自动把当前项目真实路径挂载到容器内，并把容器工作目录设置为挂载目录：
+
+```text
+/Users/chenhao/code/jetlinks-official/jetlinks-agent-runtime-agent-v2
+  -> /workspace/code/jetlinks-agent-runtime-agent-v2
+```
+
+这里的宿主机路径来自 `pwd -P`，所以即使从 `/Users/chenhao/Desktop/code/...` 进入项目，
+实际挂载路径也可能显示为 `/Users/chenhao/code/...`。
+
+可以用下面命令确认实际挂载：
+
+```bash
+docker inspect jetlinks-agent-runtime-v2-local-image \
+  --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+```
+
+如果设置了 `JETLINKS_AGENT_MOUNT_CODE=false`，上面的命令不会输出源码挂载，服务会直接使用镜像内置代码。
+
+查看状态：
+
+```bash
+APP_PORT=18013 \
+APP_HOST=127.0.0.1 \
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
+./status.sh --docker
+```
+
+停止容器：
+
+```bash
+JETLINKS_AGENT_IMAGE=jetlinks-agent-runtime-v2:local-py312 \
+JETLINKS_AGENT_CONTAINER_NAME=jetlinks-agent-runtime-v2-local-image \
+./stop.sh --docker
+```
+
 ### 一键进程管理脚本
 
 仓库根目录提供了面向本地部署、Java `ProcessBuilder` 或其他进程管理器调用的脚本：
@@ -71,7 +202,7 @@ http://127.0.0.1:8010/workbench
 BASE_PYTHON=/usr/bin/python3.12 VENV_DIR=.venv ./install-deps.sh
 ```
 
-默认启动地址是 `http://127.0.0.1:8000`，Workbench 为：
+默认监听地址是 `0.0.0.0:8000`；本机访问 Workbench 为：
 
 ```text
 http://127.0.0.1:8000/workbench
@@ -97,7 +228,7 @@ APP_PORT=8010 ./stop.sh
 
 常用变量：
 
-- `APP_HOST`：监听地址，默认 `127.0.0.1`
+- `APP_HOST`：监听地址，默认 `0.0.0.0`
 - `APP_PORT`：监听端口，默认 `8000`
 - `APP_MODULE`：ASGI 应用，默认 `app.main:app`
 - `APP_WORKERS`：uvicorn workers，默认 `1`
@@ -270,7 +401,7 @@ python -m app.cli acp-stdio --agent default
 - JSON 配置驱动：通用 agent 通过 `config/agents/default.json` 定义工具、Skill、运行行为和提示词；模型参数由
   `config/apps/*.json` 的 `runtime_options` 定义。
 - 统一工具层：Skill、MCP/manual 工具、本地 workspace 工具都通过 `ToolRegistry` 和 `ToolInvocationService` 暴露。
-- Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection 等内置 Skill。
+- Skill 插件：支持 drawio、pptx、excel、xmind、markdown、deliverables、behavior-detection、behavior-review 等内置 Skill。
 - Workflow 插件：`artifact_workflow`、`evidence_first_detection` 通过 `WorkflowRegistry` 注册，可选启用。
 - 多协议入口：HTTP、SSE、CLI、ACP WebSocket、ACP stdio、MCP HTTP。
 - Workbench 应用中心：通过预置模板一键套用 default agent、workflow、Skill、MCP 工具和示例提示词。
@@ -668,6 +799,7 @@ config/apps/algorithm-evaluation-deployment.json
 config/apps/algorithm-research-benchmark.json
 config/apps/algorithm-training-orchestration.json
 config/apps/artifact-suite.json
+config/apps/behavior-review.json
 config/apps/behavior-safety-detector.json
 config/apps/data-auto-annotation.json
 config/apps/excel-template-builder.json
@@ -783,7 +915,7 @@ python tools/app_smoke_matrix.py \
 只有强依赖图片的模板（当前主要是 `data-auto-annotation`）会先通过 `/api/uploads/{thread_id}` 上传测试图片；
 行为识别和行为复判按 evidence-first 逻辑先验证“无视觉证据时不输出视觉确认结论”，不会在 smoke 中强行附加图片。
 其中 `behavior-detection` 无视觉证据时允许只返回 `requires_input=true` 和补充证据提示，不强制生成
-`behavior-detection.md/json`。
+`behavior-detection.md/json`；`behavior-review` 仍要求生成复判报告产物。
 默认测试图片会自动写到 `/tmp/jetlinks-app-smoke-image.jpg`；如果需要使用真实业务图片，可以显式传
 `--image /path/to/image.jpg`，显式指定的图片不存在时脚本会直接失败。
 每个应用会记录：
@@ -791,7 +923,7 @@ python tools/app_smoke_matrix.py \
 - `status_completed`：本轮 run 是否完成。
 - `artifacts_present`：声明了 workflow、Skill 或 MCP 工具的应用是否至少生成了一个产物。
 - `expected_artifacts_present`：常见 Skill 的关键产物是否出现，例如 `annotations.coco.json`、
-  `*.drawio`、`*.pptx`、`*.xlsx`、`*.xmind` 等。
+  `behavior-review.json`、`behavior-review.md`、`*.drawio`、`*.pptx`、`*.xlsx`、`*.xmind` 等。
 - `artifact_contents_valid`：关键文件格式是否可读，例如 COCO JSON 结构、JSON 解析、PNG 文件头、
   Draw.io XML、PPTX/XLSX/XMind/DOCX zip 容器、Markdown/TXT 非空。
 - `artifact_names`：生成的文件名，便于确认 COCO、PPT、Draw.io、XMind、Markdown 等产物是否出现。
@@ -1001,6 +1133,7 @@ xmind-generation
 markdown-rendering
 deliverables-export
 behavior-detection
+behavior-review
 data-auto-annotation
 algorithm-engineer
 algorithm-research-scout
@@ -1428,12 +1561,6 @@ ACP WebSocket 和 ACP stdio 都支持 `session/list`、`session/close`、`sessio
 session 扩展方法，并提供 `session/cancel`。取消是 best-effort：协议层会取消当前 prompt task，
 并向 external ACP backend 转发 cancel；已经进入同步线程、沙箱或远端 provider 的底层操作可能不会瞬时停止，
 但协议响应会返回 `stopReason=cancelled`，客户端不会再被正在执行的 prompt 阻塞。
-
-ACP WebSocket 默认启用 prompt keepalive。`session/prompt` 运行期间，服务端会先通过
-`session/update` 发送 `agent_thought_chunk`，提示“正在处理，请等待...”和“已收到请求，正在处理，请等待...”；
-随后默认每 5 秒发送一次 `acp.prompt.keepalive` / `acp.prompt.wait_message` 更新，前端可用这些非最终
-`result` 的消息展示“处理中”状态。可通过 `ACP_PROMPT_KEEPALIVE_ENABLED=0` 关闭，或用
-`ACP_PROMPT_KEEPALIVE_SECONDS` 调整间隔。
 
 ### ACP 支持矩阵
 

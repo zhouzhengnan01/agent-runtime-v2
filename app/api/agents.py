@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.auth import require_runtime_token
 from app.core.runtime import default_container
+from app.core.runtime.health_state import ReviewSlot
 from app.schemas import AgentRunResult, ChatRequest
 
 
@@ -78,9 +79,16 @@ async def run_agent(agent_name: str, request: ChatRequest) -> AgentRunResult:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     try:
-        return await runtime.run(agent, request)
+        async with ReviewSlot():
+            return await runtime.run(agent, request)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def _stream_with_review_slot(agent, request: ChatRequest):
+    async with ReviewSlot():
+        async for event in runtime.stream(agent, request):
+            yield event
 
 
 @router.post("/{agent_name}/runs/stream", dependencies=[Depends(require_runtime_token)])
@@ -89,4 +97,4 @@ async def stream_agent(agent_name: str, request: ChatRequest) -> StreamingRespon
         agent = loader.load(agent_name)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return StreamingResponse(runtime.stream(agent, request), media_type="text/event-stream")
+    return StreamingResponse(_stream_with_review_slot(agent, request), media_type="text/event-stream")

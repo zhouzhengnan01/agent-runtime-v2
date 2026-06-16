@@ -1,0 +1,22 @@
+{
+  "category" : "general",
+  "agent_name" : "default",
+  "name" : "2a835735-f68f-4c4f-ab51-71ee451dc6f9",
+  "title" : "111",
+  "description" : "",
+  "selected_skills" : [ ],
+  "models" : [ {
+    "name" : "gpt-5.4",
+    "features" : [ "vision", "reasoning", "chat" ],
+    "priority_features" : [ ],
+    "priority" : 0,
+    "provider" : "openai-compatible",
+    "model" : "gpt-5.4",
+    "base_url" : "http://192.168.33.59:9800/api/llm/openai/v1/providers/426826f1-0478-41d0-8dfb-b52b633c9291/",
+    "default_model" : "gpt-5.4",
+    "api_key_enc" : "enc.fernet.v1.gAAAAABqK26OkYpH_yzEMrun5jXEwsEmBABoUxeM1GvLn0Yb9PS-V_eNEKk26u4uTu6vXz1zjbz_k3QZ8SSPYSauXii8XPIbzYCYptH1En4w2eL1NeOCzkbRuWG8EcQFhFJWuj4pelDGC7dsJWE4b5sAmxOy7BqsgaUx9NwaPPM_dGUanyJdib-Skh50OrYt1bfI3bih2UvTGrLHWt30dwUQu0iSOXH7D7-sgw6-6b7j4qu0uBvckm3kex-oUwvfiuQ4XE2fqjEZFhsEBnUp6hSmbReaHn4Y7DTzsx4vg2i6PzWoF_qUfLskuZHul0FbOTqzKuUnJJoUZ4cGaN2jJ-ZXecwibhwzhcitCssQ23Qton5zEahP72OPvpa2IooCNk9LakaGLrvfFyJ6Z8zfoYAB_aBknZGH9A==",
+    "tool_choice" : "auto",
+    "temperature" : 0.4,
+    "max_tokens" : 2048
+  } ]
+}

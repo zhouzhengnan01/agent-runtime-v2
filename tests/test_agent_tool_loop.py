@@ -773,6 +773,65 @@ def test_agent_loop_treats_selected_skill_as_tool_when_no_workflow_mapping(
     assert tools_event.data["tools"] == ["drawio-generation"]
 
 
+def test_agent_loop_marks_completed_prompt_only_primary_skill(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[list[dict[str, Any]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, tools
+        calls.append(list(messages))
+        if len(calls) == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_review",
+                        name="17803963378248hh02dvt",
+                        arguments='{"skill_name":"17803963378248hh02dvt","objective":"复判这张图里是否存在杂物堆积"}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="复判结果：未命中。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    agent = AgentConfig(
+        name="review-skill-agent",
+        display_name="Review Skill Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=[],
+        skills=["17803963378248hh02dvt"],
+        workflows={"default": "agent_loop"},
+    )
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path)))
+    recorder = EventRecorder(agent=agent.name, thread_id="prompt-only-review")
+
+    result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="复判这张图里是否存在杂物堆积")],
+            thread_id="prompt-only-review",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="prompt-only-review",
+                selected_skills=["17803963378248hh02dvt"],
+            ),
+        )
+    ).result
+
+    assert result.status == "completed"
+    assert result.metadata["verification_verdict"] == "passed"
+    assert result.metadata["primary_skill_name"] == "17803963378248hh02dvt"
+    assert result.metadata["primary_skill_stage_count"] == 0
+    assert result.metadata["primary_skill_completion_status"] == "completed"
+
+
 def test_agent_loop_explore_phase_prefers_read_only_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -983,6 +1042,14 @@ def test_agent_loop_injects_primary_skill_markdown_declared_references(
     assert "### references/command-standard.md" in prompt
     assert "Service ID: fileService" in prompt
     assert "### references/components/custom-chart.json" in prompt
+    context_event = next(event for event in recorder.events if event.type == "skill.context.loaded")
+    assert context_event.data["skill_name"] == "generate-screen-skill"
+    assert context_event.data["skill_md_path"].endswith("plugins/skills/1780049181817h6isu9jw/SKILL.md")
+    assert context_event.data["reference_count"] >= 10
+    reference_paths = [item["path"] for item in context_event.data["references"]]
+    assert "references/blueprint-standard.md" in reference_paths
+    assert "references/component-registry.json" in reference_paths
+    assert "references/command-standard.md" in reference_paths
 
 
 def test_skill_markdown_context_loads_declared_reference_files_only() -> None:
@@ -1002,6 +1069,74 @@ def test_skill_markdown_context_loads_declared_reference_files_only() -> None:
     assert all(path.startswith("references/") for path in reference_paths)
     blueprint = next(item for item in context.references if item.path == "references/blueprint-standard.md")
     assert "# Standard Bigscreen Blueprint" in blueprint.content
+
+
+def test_agent_loop_passes_selected_skill_roots_to_local_tools(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    seen_arguments: list[dict[str, Any]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(
+            tool_calls=[
+                LlmToolCall(
+                    id="call-read-reference",
+                    name="local_read_file",
+                    arguments='{"path":"references/blueprint-standard.md"}',
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+
+    original_call_tool = ToolInvocationService.call_tool
+
+    def capture_call_tool(
+        self: ToolInvocationService,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> Any:
+        seen_arguments.append(dict(arguments))
+        return original_call_tool(self, name, arguments)
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    monkeypatch.setattr(ToolInvocationService, "call_tool", capture_call_tool)
+    agent = AgentConfig(
+        name="screen-skill-root-agent",
+        display_name="Screen Skill Root Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="tool-model"),
+        tools=["local_read_file"],
+        skills=[],
+        workflows={"default": "agent_loop"},
+        runtime={"max_tool_rounds": 1},
+    )
+    loop = ToolCallingAgentLoop(ToolInvocationService(artifact_store=ArtifactStore(root_dir=tmp_path)))
+    recorder = EventRecorder(agent=agent.name, thread_id="screen-skill-root-read")
+
+    loop_result = asyncio.run(
+        loop.run(
+            agent_config=agent,
+            messages=[Message(role="user", content="生成智慧园区运营可视化大屏")],
+            thread_id="screen-skill-root-read",
+            recorder=recorder,
+            runtime_options=RuntimeOptions(
+                thread_id="screen-skill-root-read",
+                selected_skills=["generate-screen-skill"],
+            ),
+        )
+    )
+
+    assert loop_result.result.metadata["tool_call_count"] == 1
+    assert seen_arguments
+    skill_roots = seen_arguments[0]["_skill_roots"]
+    assert len(skill_roots) == 1
+    assert skill_roots[0].endswith("plugins/skills/1780049181817h6isu9jw")
 
 
 def test_agent_loop_keeps_primary_skill_guidance_alongside_composite_guidance(
@@ -2366,20 +2501,20 @@ def test_agent_loop_modes_control_tool_exposure(tmp_path: Path, monkeypatch: Mon
                 runtime_options=RuntimeOptions(
                     thread_id="safe-mode",
                     mode="safe",
-                    selected_mcp_tools=["local_read_file", "local_write_file"],
+                    selected_mcp_tools=["local_read_file", "local_download_url", "local_write_file"],
                 ),
             ),
         )
     )
-    yolo_result, yolo_events = asyncio.run(
+    autonomous_result, autonomous_events = asyncio.run(
         runtime.run_with_events(
             agent,
             ChatRequest(
-                messages=[Message(role="user", content="yolo")],
+                messages=[Message(role="user", content="autonomous")],
                 runtime_options=RuntimeOptions(
-                    thread_id="yolo-mode",
-                    mode="yolo",
-                    selected_mcp_tools=["local_read_file", "local_write_file"],
+                    thread_id="autonomous-mode",
+                    mode="autonomous",
+                    selected_mcp_tools=["local_read_file", "local_download_url", "local_write_file"],
                 ),
             ),
         )
@@ -2388,13 +2523,89 @@ def test_agent_loop_modes_control_tool_exposure(tmp_path: Path, monkeypatch: Mon
     assert plan_result.metadata["mode"] == "plan"
     assert next(event for event in plan_events if event.type == "tools.available").data["tools"] == []
     assert safe_result.metadata["mode"] == "safe"
-    assert yolo_result.metadata["mode"] == "yolo"
-    assert seen_tools_by_call == [["local_read_file"], ["local_read_file", "local_write_file"]]
+    assert autonomous_result.metadata["mode"] == "autonomous"
+    assert seen_tools_by_call[0] == ["local_read_file"]
+    assert set(seen_tools_by_call[1]) == {"local_read_file", "local_download_url", "local_write_file"}
     assert next(event for event in safe_events if event.type == "tools.available").data["tools"] == ["local_read_file"]
-    assert next(event for event in yolo_events if event.type == "tools.available").data["tools"] == [
+    assert set(next(event for event in autonomous_events if event.type == "tools.available").data["tools"]) == {
         "local_read_file",
+        "local_download_url",
         "local_write_file",
+    }
+
+
+def test_agent_loop_passes_downloaded_image_to_next_llm_round(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    original_client = httpx.Client
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "image/png", "content-length": "7"},
+            content=b"pngdata",
+        )
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    seen_payload_messages: list[list[dict[str, Any]]] = []
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[Any],
+        tools: list[dict[str, Any]],
+    ) -> LlmChatResponse:
+        del system_prompt, tools
+        seen_payload_messages.append(self._chat_payload("system", messages)["messages"])
+        if len(seen_payload_messages) == 1:
+            return LlmChatResponse(
+                tool_calls=[
+                    LlmToolCall(
+                        id="call_download",
+                        name="local_download_url",
+                        arguments='{"url":"https://example.test/scene.png"}',
+                    )
+                ],
+                finish_reason="tool_calls",
+            )
+        return LlmChatResponse(content="已看图。", finish_reason="stop")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    agent = AgentConfig(
+        name="download-vision-agent",
+        display_name="Download Vision Agent",
+        model=ModelConfig(base_url="http://llm.local/v1", api_key="key", model="vision-model"),
+        tools=["local_download_url"],
+        workflows={"default": "agent_loop"},
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="下载并复判图片")],
+                runtime_options=RuntimeOptions(thread_id="download-vision"),
+            ),
+        )
+    )
+
+    assert result.reply == "已看图。"
+    second_round = seen_payload_messages[1]
+    vision_messages = [
+        message
+        for message in second_round
+        if isinstance(message.get("content"), list)
+        and any(block.get("type") == "image_url" for block in message["content"] if isinstance(block, dict))
     ]
+    assert vision_messages
+    image_block = next(block for block in vision_messages[-1]["content"] if block.get("type") == "image_url")
+    assert image_block["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 def test_agent_loop_verify_phase_allows_shell_in_autonomous_mode(

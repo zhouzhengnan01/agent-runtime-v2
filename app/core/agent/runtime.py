@@ -7,9 +7,7 @@ import logging
 import mimetypes
 import os
 import re
-import time
-from collections.abc import AsyncIterator, Callable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -47,8 +45,6 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 logger = logging.getLogger("uvicorn.error")
 REMOTE_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
 REMOTE_ATTACHMENT_TIMEOUT_SECONDS = 30.0
-WORKFLOW_THREAD_WORKERS = max(1, int(os.getenv("JETLINKS_WORKFLOW_THREAD_WORKERS", "8") or "8"))
-WORKFLOW_QUEUE_WARN_SECONDS = max(0.0, float(os.getenv("JETLINKS_WORKFLOW_QUEUE_WARN_SECONDS", "1") or "1"))
 FIXED_REPLY_ENV = "JETLINKS_AGENT_FIXED_REPLY"
 FIXED_REPLY_ENABLED_ENV = "JETLINKS_AGENT_FIXED_REPLY_ENABLED"
 FIXED_REPLY_FOREVER_ENV = "JETLINKS_AGENT_FIXED_REPLY_FOREVER"
@@ -100,10 +96,6 @@ class AgentRuntime:
         self.session_manager = session_manager or AgentSessionManager()
         self.workflow_registry = workflow_registry or WorkflowRegistry.builtin(self.artifact_store)
         self.workflow_router = workflow_router
-        self.workflow_executor = ThreadPoolExecutor(
-            max_workers=WORKFLOW_THREAD_WORKERS,
-            thread_name_prefix="jetlinks-workflow",
-        )
         self.model_config, self._model_config_fields = self._normalize_model_config(model_config)
         self.app_template_registry = app_template_registry or AppTemplateRegistry()
         self.secret_codec = SecretCodec(self.app_template_registry.root_dir)
@@ -174,10 +166,26 @@ class AgentRuntime:
         if execution.workflow_name is not None:
             # Workflow path: a named workflow owns the full execution instead of
             # the generic tool-calling loop.
-            return await self._run_workflow_in_executor(
-                lambda: self._run_workflow_with_events_sync(execution),
-                execution,
+            workflow = self.workflow_registry.get(execution.workflow_name)
+            if workflow is None:
+                raise ValueError(f"Workflow is not registered: {execution.workflow_name}")
+            result, events = workflow.run_with_events(
+                agent_config=execution.agent_config,
+                messages=self._workflow_messages(execution.conversation),
+                attachments=execution.request.attachments,
+                thread_id=execution.paths.thread_id,
+                workflow_name=execution.workflow_name,
+                runtime_options=execution.request.runtime_options,
             )
+            self.session_store.save(
+                execution.paths,
+                self._conversation_with_result(execution.conversation, result),
+                run_id=self._run_id(events),
+            )
+            self._enrich_required_inputs(result, execution.request)
+            self._replace_final_result_event(events, result)
+            self._persist_events(execution.agent_config, execution.request, result.thread_id, events, result)
+            return result, events
 
         # Default path: merge thread history and let the agent loop decide when
         # to answer directly versus when to call tools.
@@ -301,7 +309,7 @@ class AgentRuntime:
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
-        task = asyncio.create_task(self._run_workflow_in_executor(run_workflow, execution))
+        task = asyncio.create_task(asyncio.to_thread(run_workflow))
         try:
             while True:
                 item = await queue.get()
@@ -328,69 +336,6 @@ class AgentRuntime:
                         run_id=self._run_id(captured_events),
                     )
                 self._persist_events(execution.agent_config, execution.request, thread_id, captured_events, final_result)
-
-    async def _run_workflow_in_executor(self, func: Callable[[], Any], execution: ExecutionContext) -> Any:
-        loop = asyncio.get_running_loop()
-        queued_at = time.monotonic()
-        logger.info(
-            "workflow queue submitted workflow=%s thread_id=%s workers=%s",
-            execution.workflow_name,
-            execution.paths.thread_id,
-            WORKFLOW_THREAD_WORKERS,
-        )
-
-        def wrapped() -> Any:
-            wait_seconds = time.monotonic() - queued_at
-            log = logger.warning if wait_seconds >= WORKFLOW_QUEUE_WARN_SECONDS else logger.info
-            log(
-                "workflow queue acquired workflow=%s thread_id=%s wait_ms=%.1f workers=%s",
-                execution.workflow_name,
-                execution.paths.thread_id,
-                wait_seconds * 1000,
-                WORKFLOW_THREAD_WORKERS,
-            )
-            started_at = time.monotonic()
-            try:
-                return func()
-            except Exception:
-                logger.exception(
-                    "workflow execution failed workflow=%s thread_id=%s elapsed_ms=%.1f",
-                    execution.workflow_name,
-                    execution.paths.thread_id,
-                    (time.monotonic() - started_at) * 1000,
-                )
-                raise
-            finally:
-                logger.info(
-                    "workflow execution finished workflow=%s thread_id=%s elapsed_ms=%.1f",
-                    execution.workflow_name,
-                    execution.paths.thread_id,
-                    (time.monotonic() - started_at) * 1000,
-                )
-
-        return await loop.run_in_executor(self.workflow_executor, wrapped)
-
-    def _run_workflow_with_events_sync(self, execution: ExecutionContext) -> tuple[AgentRunResult, list[ChatEvent]]:
-        workflow = self.workflow_registry.get(execution.workflow_name or "")
-        if workflow is None:
-            raise ValueError(f"Workflow is not registered: {execution.workflow_name}")
-        result, events = workflow.run_with_events(
-            agent_config=execution.agent_config,
-            messages=self._workflow_messages(execution.conversation),
-            attachments=execution.request.attachments,
-            thread_id=execution.paths.thread_id,
-            workflow_name=execution.workflow_name,
-            runtime_options=execution.request.runtime_options,
-        )
-        self.session_store.save(
-            execution.paths,
-            self._conversation_with_result(execution.conversation, result),
-            run_id=self._run_id(events),
-        )
-        self._enrich_required_inputs(result, execution.request)
-        self._replace_final_result_event(events, result)
-        self._persist_events(execution.agent_config, execution.request, result.thread_id, events, result)
-        return result, events
 
     async def _stream_agent_loop_events(self, execution: ExecutionContext) -> AsyncIterator[ChatEvent]:
         conversation = self._conversation_with_vision_attachments(execution.conversation, execution.request.attachments, execution.paths)
@@ -1232,7 +1177,7 @@ class AgentRuntime:
         runtime_options = self._runtime_options_with_app_template_defaults(runtime_options)
         runtime_options = self._effective_runtime_options(runtime_options)
         runtime_options = self._runtime_options_with_composite_skills(runtime_options)
-        attachments = self._expanded_video_record_attachments(request.attachments)
+        attachments = request.attachments
         if not attachments and runtime_options.thread_id:
             attachments = self._thread_file_attachments(runtime_options.thread_id)
         if attachments and runtime_options.thread_id:
@@ -1382,113 +1327,6 @@ class AgentRuntime:
                 )
         return attachments
 
-    @classmethod
-    def _expanded_video_record_attachments(cls, attachments: list[Attachment]) -> list[Attachment]:
-        expanded: list[Attachment] = list(attachments)
-        seen_refs: set[str] = set()
-        for attachment in attachments:
-            ref = cls._attachment_reference(attachment)
-            if ref:
-                seen_refs.add(ref)
-        changed = False
-        for attachment in attachments:
-            derived = cls._attachment_record_video(attachment)
-            if derived is None:
-                continue
-            ref = cls._attachment_reference(derived)
-            if ref and ref in seen_refs:
-                continue
-            if ref:
-                seen_refs.add(ref)
-            expanded.append(derived)
-            changed = True
-        return expanded if changed else attachments
-
-    @classmethod
-    def _attachment_record_video(cls, attachment: Attachment) -> Attachment | None:
-        metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
-        others = metadata.get("others")
-        if not isinstance(others, dict):
-            return None
-        record = others.get("record")
-        if isinstance(record, str):
-            uri = record.strip()
-            source_meta: dict[str, Any] = {"value": uri}
-        elif isinstance(record, dict):
-            uri = cls._first_string(record.get("url"), record.get("uri"), record.get("path"), record.get("internalUrl"))
-            source_meta = record
-        else:
-            return None
-        if not uri:
-            return None
-        mime_type = cls._record_video_mime_type(uri, source_meta)
-        if not mime_type.startswith("video/"):
-            return None
-        record_name = cls._record_video_name(uri, source_meta, attachment.name)
-        derived_metadata = dict(metadata)
-        derived_metadata.update(
-            {
-                "source": "attachment_record_video",
-                "record_source": "metadata.others.record",
-                "record_parent_name": attachment.name,
-                "record_parent_mime_type": attachment.mime_type,
-                "original_uri": uri,
-            }
-        )
-        return Attachment(
-            name=record_name,
-            path=uri,
-            mime_type=mime_type,
-            metadata=derived_metadata,
-        )
-
-    @staticmethod
-    def _attachment_reference(attachment: Attachment) -> str:
-        path = str(attachment.path or "").strip()
-        if path:
-            return f"path:{path}"
-        data_base64 = str(attachment.data_base64 or "").strip()
-        if data_base64:
-            return f"data:{attachment.name}:{attachment.mime_type}:{len(data_base64)}"
-        return ""
-
-    @staticmethod
-    def _record_video_mime_type(uri: str, metadata: dict[str, Any]) -> str:
-        explicit = AgentRuntime._first_string(
-            metadata.get("mime_type"),
-            metadata.get("mimeType"),
-            metadata.get("media_type"),
-            metadata.get("mediaType"),
-            metadata.get("content_type"),
-            metadata.get("contentType"),
-        )
-        if explicit:
-            clean = explicit.split(";", 1)[0].strip().lower()
-            if clean:
-                return clean
-        guessed = guess_mime_type(Path(urlparse(uri).path or "record.mp4"))
-        return guessed.split(";", 1)[0].strip().lower() if guessed else ""
-
-    @staticmethod
-    def _record_video_name(uri: str, metadata: dict[str, Any], fallback_name: str) -> str:
-        explicit = AgentRuntime._first_string(metadata.get("name"), metadata.get("filename"), metadata.get("fileName"))
-        if explicit:
-            return explicit
-        parsed_name = Path(unquote(urlparse(uri).path)).name
-        if parsed_name:
-            return parsed_name
-        fallback = Path(fallback_name or "record").stem or "record"
-        return f"{fallback}.mp4"
-
-    @staticmethod
-    def _first_string(*values: object) -> str:
-        for value in values:
-            if isinstance(value, str):
-                clean = value.strip()
-                if clean:
-                    return clean
-        return ""
-
     def _materialize_remote_attachments(self, attachments: list[Attachment], thread_id: str) -> list[Attachment]:
         paths = self.artifact_store.prepare_thread(thread_id)
         materialized: list[Attachment] = []
@@ -1508,20 +1346,8 @@ class AgentRuntime:
                     exc,
                 )
                 metadata = dict(attachment.metadata)
-                metadata["download_error"] = self._redacted_remote_attachment_error(str(exc), attachment.path)
-                metadata["original_uri"] = metadata.get("uri") or attachment.path
-                metadata["remote_download_failed"] = True
-                materialized.append(
-                    attachment.model_copy(
-                        update={
-                            "path": None,
-                            "data_base64": None,
-                            "metadata": metadata,
-                        },
-                        deep=True,
-                    )
-                )
-                changed = True
+                metadata["download_error"] = str(exc)
+                materialized.append(attachment.model_copy(update={"metadata": metadata}, deep=True))
                 continue
             materialized.append(updated)
             changed = True
@@ -1648,17 +1474,6 @@ class AgentRuntime:
         return name[:180]
 
     @staticmethod
-    def _redacted_remote_attachment_error(error: str, raw_url: str | None) -> str:
-        redacted = error
-        if raw_url:
-            clean_url = raw_url.strip()
-            if clean_url:
-                parsed = urlparse(clean_url)
-                safe_url = parsed._replace(query="", fragment="").geturl() if parsed.scheme and parsed.netloc else "<remote-url>"
-                redacted = redacted.replace(clean_url, safe_url)
-        return redacted[:1000]
-
-    @staticmethod
     def _fingerprinted_remote_attachment_filename(filename: str, fingerprint: str) -> str:
         path = Path(filename)
         stem = path.stem or "attachment"
@@ -1716,15 +1531,9 @@ class AgentRuntime:
             data_id = metadata.get("dataId") or metadata.get("data_id")
             timestamp = metadata.get("timestamp")
             sha1 = metadata.get("sha1")
-            remote_download_failed = metadata.get("remote_download_failed")
-            download_error = metadata.get("download_error")
             metadata_parts = []
-            if isinstance(original_uri, str) and original_uri and not remote_download_failed:
+            if isinstance(original_uri, str) and original_uri:
                 metadata_parts.append(f"original_uri={original_uri}")
-            if remote_download_failed:
-                metadata_parts.append("remote_download_failed=true")
-            if isinstance(download_error, str) and download_error:
-                metadata_parts.append(f"download_error={download_error[:200]}")
             if isinstance(source_id, str) and source_id:
                 metadata_parts.append(f"sourceId={source_id}")
             if isinstance(data_id, str) and data_id:

@@ -8,7 +8,6 @@ from app.core.apps.models import AppTemplate
 from app.core.artifacts import ArtifactStore
 from app.core.config import AgentConfigLoader
 from app.core.mcp import McpToolRegistry
-from app.core.resources import ResourceRoots, first_existing_file, merged_json_paths
 from app.core.skills.aliases import expand_skill_aliases
 from app.core.skills import SkillRegistry
 from app.core.workflow import WorkflowRegistry
@@ -19,17 +18,15 @@ class AppTemplateRegistry:
 
     def __init__(self, root_dir: Path | None = None) -> None:
         self.root_dir = root_dir or Path(__file__).resolve().parents[3]
-        self.resources = ResourceRoots.from_project_root(self.root_dir)
-        self.config_dirs = self.resources.config_dirs("apps")
-        self.config_dir = self.resources.writable_config_dir("apps")
+        self.config_dir = self.root_dir / "config" / "apps"
 
     def list(self) -> builtins.list[AppTemplate]:
         return sorted(self._read_templates(), key=lambda template: (template.category, template.title, template.name))
 
     def get(self, name: str) -> AppTemplate:
         safe_name = self._safe_name(name)
-        path = first_existing_file(self.config_dirs, f"{safe_name}.json")
-        if path is not None:
+        path = self.config_dir / f"{safe_name}.json"
+        if path.is_file():
             return self._load_template(path)
         for template in self._read_templates():
             if template.name == safe_name:
@@ -37,16 +34,17 @@ class AppTemplateRegistry:
         raise KeyError(f"App template not found: {safe_name}")
 
     def _read_templates(self) -> builtins.list[AppTemplate]:
-        if not any(directory.is_dir() for directory in self.config_dirs):
+        if not self.config_dir.is_dir():
             return []
         templates_by_name: dict[str, AppTemplate] = {}
-        for collection_path in reversed([path for path in (directory / "templates.json" for directory in self.config_dirs) if path.is_file()]):
+        collection_path = self.config_dir / "templates.json"
+        if collection_path.is_file():
             try:
                 for template in self._load_template_collection(collection_path):
                     templates_by_name[template.name] = template
             except (ValueError, TypeError, json.JSONDecodeError):
                 pass
-        for path in merged_json_paths(self.config_dirs, skip_names={"templates.json"}):
+        for path in sorted(self.config_dir.glob("*.json")):
             if path.name.startswith(".") or path.name == "templates.json":
                 continue
             try:

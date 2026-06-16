@@ -108,7 +108,7 @@ def _dashboard_spec(action: str, spec: dict[str, Any]) -> dict[str, Any]:
         "layout": {"columns": 24, "rows": 12, "panels": panels},
         "implementation_notes": [
             "长连接、摄像头持续事件和 checkpoint 建议放在后台任务或 MCP server 层，不放在单次 agent run 内。",
-            "大屏前端只消费结构化聚合 API 和事件流，复判结果由业务复判服务批处理写回业务系统。",
+            "大屏前端只消费结构化聚合 API 和事件流，复判结果由 behavior-review 批处理写回业务系统。",
             "所有实时事件都应携带 event_id、camera_id、occurred_at、severity、review_status 和 trace_id，便于去重和追踪。",
         ],
     }
@@ -134,10 +134,11 @@ def _data_sources(
     if include_behavior_review:
         sources.append(
             {
-                "id": "review-stats",
+                "id": "behavior-review",
                 "name": "行为识别复判队列",
                 "type": "mcp-or-http",
                 "url": f"{api_base_url}/review-stats",
+                "recommended_skill": "behavior-review",
                 "refresh_seconds": 3,
             }
         )
@@ -197,7 +198,7 @@ def _panels(include_behavior_review: bool, include_public_opinion: bool, include
         {"id": "system-health", "title": "系统健康", "type": "status-grid", "x": 18, "y": 6, "w": 6, "h": 3, "data_source": "system-health"},
     ]
     if include_behavior_review:
-        panels.append({"id": "review-queue", "title": "AI 行为复判", "type": "review-board", "x": 6, "y": 9, "w": 12, "h": 3, "data_source": "review-stats"})
+        panels.append({"id": "review-queue", "title": "AI 行为复判", "type": "review-board", "x": 6, "y": 9, "w": 12, "h": 3, "data_source": "behavior-review"})
     if include_public_opinion:
         panels.append({"id": "public-opinion", "title": "舆情风险", "type": "sentiment-card", "x": 18, "y": 9, "w": 3, "h": 3, "data_source": "public-opinion"})
     if include_rpa_status:

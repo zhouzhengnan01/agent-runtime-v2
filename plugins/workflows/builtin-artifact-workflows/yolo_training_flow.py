@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -20,20 +21,15 @@ _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 WORKFLOW_NAME = "yolo_training_flow"
 WORKFLOW_OUTPUT_DIR = "yolo_training_flow"
 PIPELINE_WORK_DIR = "pipeline_work"
+TRAINING_MODEL_REGISTRY = "training_models.json"
 DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "image-dataset-produce", "data-auto-annotation", "gpu-training-orchestrator"]
 DEFAULT_TRAINING_SPLIT = {"train": 0.7, "val": 0.2, "test": 0.1}
 MIN_TEST_SPLIT = 0.1
 
-# Synthetic image count switch for the algorithm-engineer-full-cycle-test app.
-# button=True: use the LLM planner to decide how many images to synthesize.
-# button=False: use FIXED_SYNTHETIC_COUNT instead.
-#模型思考开关控制：button=True时由LLM决定合成数量，button=False时使用固定数量。11
-button = False
-FIXED_SYNTHETIC_COUNT = 5
-button_produce = True
-FIXED_PRODUCE_SYNTHETIC_COUNT = 5
+DEFAULT_MAX_SYNTHETIC_IMAGES = 2000
+button_epochs = False
+FIXED_TRAINING_EPOCHS = 50
 AUTO_GENERATE_MISSING_SPEC = True
-MODEL_THINKING_FIXED_EPOCHS = 50
 
 
 class YoloTrainingWorkflow:
@@ -142,6 +138,21 @@ class YoloTrainingWorkflow:
             recorder.emit("run.completed", {"result": result.model_dump()})
             return result, recorder.events
 
+        requested_training_model_id = _requested_training_model_id(runtime_options)
+        user_training_model, user_training_model_error = _resolve_user_training_model(
+            paths,
+            requested_training_model_id,
+        )
+        if user_training_model_error:
+            return self._model_spec_failed_result(
+                recorder,
+                agent_config.name,
+                paths.thread_id,
+                workflow,
+                f"用户上传的训练模型不可用：{user_training_model_error}",
+                phase="user_training_model_invalid",
+            )
+
         model_managed_spec = _auto_generate_missing_spec(runtime_options)
         if model_managed_spec:
             generation_enabled = True
@@ -153,7 +164,7 @@ class YoloTrainingWorkflow:
                 runtime_options=runtime_options,
                 recorder=recorder,
             )
-            request_spec = _ensure_intent_labels(request_spec, spec_user_text, allow_rule_fallback=not bool(request_spec))
+            request_spec = _ensure_intent_labels(request_spec, spec_user_text)
             if _spec_string(request_spec, "generation_prompt"):
                 request_spec["use_synthetic_generation"] = True
         else:
@@ -329,7 +340,7 @@ class YoloTrainingWorkflow:
                 recorder=recorder,
             )
             request_spec = _fallback_model_managed_yolo_training_request_spec(request_spec, spec_user_text, dataset_facts)
-            request_spec = _ensure_intent_labels(request_spec, spec_user_text, allow_rule_fallback=False)
+            request_spec = _ensure_intent_labels(request_spec, spec_user_text)
             synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
             if synthetic_generation is not None:
                 generation_enabled = synthetic_generation
@@ -346,6 +357,8 @@ class YoloTrainingWorkflow:
             if task_description:
                 _save_detection_task_description(paths, task_description)
             if training_cfg:
+                _apply_epochs_policy(training_cfg, runtime_options)
+                request_spec["training"]["epochs"] = training_cfg["training"]["epochs"]
                 _force_current_runtime(training_cfg)
                 _save_training_config(paths, training_cfg)
             else:
@@ -361,7 +374,32 @@ class YoloTrainingWorkflow:
             _emit_model_generated_spec(recorder, request_spec, dataset_facts=dataset_facts)
             _write_model_generated_spec_logs(workflow_output_root, request_spec, dataset_facts=dataset_facts)
         else:
+            _apply_epochs_policy(training_cfg, runtime_options)
             _force_current_runtime(training_cfg)
+
+        if user_training_model:
+            _apply_user_training_model(training_cfg, user_training_model)
+            _save_training_config(paths, training_cfg)
+            request_training = request_spec.get("training")
+            if isinstance(request_training, dict):
+                request_training["model"] = user_training_model["local_path"]
+                request_training["model_source"] = "user_upload"
+                request_training["strict_model"] = True
+                request_training["model_sha256"] = user_training_model["sha256"]
+                request_training["model_id"] = user_training_model["modelId"]
+            recorder.emit(
+                "workflow.user_model_selected",
+                {
+                    "modelId": user_training_model["modelId"],
+                    "name": user_training_model["name"],
+                    "path": user_training_model["path"],
+                    "sha256": user_training_model["sha256"],
+                    "source": "user_upload",
+                },
+            )
+        else:
+            _clear_user_training_model_selection(training_cfg, request_spec)
+            _save_training_config(paths, training_cfg)
 
         pipeline_work_dir = str((workflow_output_root / PIPELINE_WORK_DIR).resolve())
         project_dir = str((workflow_output_root / "training_run").resolve())
@@ -372,7 +410,11 @@ class YoloTrainingWorkflow:
         data_prep_spec = {
             "skill_name": "data-auto-annotation",
             "overrides_text": user_text,
-            "attachments": [_attachment_payload(item) for item in attachments],
+            "attachments": [
+                _attachment_payload(item)
+                for item in attachments
+                if not _is_training_model_attachment(item)
+            ],
             "dataset_root": str(dataset_root),
             "image1": composite_image1,
             "image2": composite_image2,
@@ -382,10 +424,9 @@ class YoloTrainingWorkflow:
             "work_dir": pipeline_work_dir,
             "output_dir": data_prep_output_dir,
             "skip_generation": not generation_enabled,
-            "synthetic_count_button": _synthetic_count_button(runtime_options),
-            "fixed_synthetic_count": _fixed_synthetic_count(runtime_options),
-            "produce_count_button": _produce_count_button(runtime_options),
-            "fixed_produce_synthetic_count": _fixed_produce_synthetic_count(runtime_options),
+            "max_synthetic": _max_synthetic_images(runtime_options),
+            "synthetic_count_button": True,
+            "produce_count_button": True,
             "register_artifacts": not training_enabled,
             "split_requested": training_enabled,
             "split": training_cfg["split"],
@@ -405,10 +446,9 @@ class YoloTrainingWorkflow:
                 "output_dir": data_prep_output_dir,
                 "run_name": run_name,
                 "phase": "data_preparation",
-                "synthetic_count_button": _synthetic_count_button(runtime_options),
-                "fixed_synthetic_count": _fixed_synthetic_count(runtime_options),
-                "produce_count_button": _produce_count_button(runtime_options),
-                "fixed_produce_synthetic_count": _fixed_produce_synthetic_count(runtime_options),
+                "max_synthetic": _max_synthetic_images(runtime_options),
+                "synthetic_count_button": True,
+                "produce_count_button": True,
                 "register_artifacts": not training_enabled,
             },
         }
@@ -679,6 +719,18 @@ def _find_dataset_package_attachment(
             elif not _looks_like_composite_role_name(name, path):
                 fallback_candidates.append(item)
     return (named_candidates or fallback_candidates or [None])[0]
+
+
+def _is_training_model_attachment(item: Attachment) -> bool:
+    name = str(item.name or "").strip()
+    path = str(item.path or "").strip()
+    if not (name.lower().endswith(".pt") or path.lower().endswith(".pt")):
+        return False
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    role = str(metadata.get("role") or "").strip().lower()
+    source = str(metadata.get("source") or "").strip().lower()
+    normalized_path = path.replace("\\", "/").lower()
+    return role == "training_model" or source == "user_upload" or "/uploads/models/" in normalized_path
 
 
 def _attachment_payload(attachment: Any) -> dict[str, Any]:
@@ -1166,8 +1218,6 @@ def _generate_model_managed_yolo_training_intent_spec(
         "合成目的必须是把 image2 中目标自然合成到 image1 场景中，形成真实、可标注的训练图片。"
         "generation_prompt 必须包含上述 image1/image2 角色、自然融合、光照/尺度/遮挡一致、适合检测标注等要求。"
         "labels 必须围绕用户要训练的检测目标，不要固定套用示例类别；"
-        "必须从用户的自然语言目标中自主理解所有需要检测的具体对象，不要求用户使用固定格式；"
-        "当用户表达多个检测目标时，labels 必须完整包含每一个具体对象，禁止只输出其中一部分。"
         "labels 必须是 YOLO 训练可直接使用的英文 ASCII 类名，只能使用小写英文、数字和下划线，"
         "禁止输出中文、空格或自然语言短语；例如人脸检测输出 face，不要输出 人脸；"
         "严禁返回 object、target、thing、foreground、目标、物体、对象 等泛化类别；"
@@ -1222,11 +1272,9 @@ def _generate_dataset_aware_yolo_training_request_spec(
         "training 必须含 task, model, epochs, imgsz, batch, device, workers, patience。"
         "runtime 必须含 enforce_conda_env=false；不要指定 conda_env_name，或置为空字符串。"
         "split 必须含 train, val, test，三项相加约等于 1。"
-        "training.epochs 必须固定为 50，不要根据数据规模调整 epochs。"
-        "labels 必须重新核对 user_text 的完整自然语言目标；如果 base_spec.labels 漏掉了用户想检测的类别，必须在本轮输出完整 labels。"
         "决策规则："
         "根据 image_count、format、label_count、category_counts、bbox_size_summary、image_size_summary 判断训练强度；"
-        "小目标多时提高 imgsz；图片少或类别不均衡时保持 epochs=50、增加 patience 并启用合成；"
+        "小目标多时提高 imgsz；图片少或类别不均衡时增加 epochs/patience 并启用合成；"
         "val/test 必须优先使用真实图，合成图只能进入 train；"
         "如果数据规模很小，test 比例要保守，避免每类在验证集缺失；"
         "labels 必须是英文 ASCII 类名，使用小写英文、数字、下划线，禁止中文和泛化 object/target。"
@@ -1241,7 +1289,7 @@ def _generate_dataset_aware_yolo_training_request_spec(
                     "dataset_facts": dataset_facts,
                     "requirements": [
                         "先解释性地利用 dataset_facts 决定训练参数，但输出只要 JSON。",
-                        "不要覆盖 base_spec 中合理的 task_description、generation_prompt；labels 必须以 user_text 的完整检测目标为准，修正 base_spec 中不完整的 labels。",
+                        "不要覆盖 base_spec 中合理的 task_description、labels、generation_prompt，除非 dataset_facts 证明需要修正。",
                         "训练必须使用当前运行环境。",
                     ],
                 },
@@ -1255,8 +1303,6 @@ def _generate_dataset_aware_yolo_training_request_spec(
         payload = _parse_json_object(raw)
         generated = payload if isinstance(payload, dict) else {}
         merged = _merge_request_specs(base_spec, generated)
-        _apply_model_generated_labels(merged, generated)
-        _force_model_thinking_epochs(merged)
         recorder.emit(
             "llm.completed",
             {
@@ -1299,9 +1345,7 @@ def _fallback_model_managed_yolo_training_request_spec(
         "runtime": {"conda_env_name": "", "enforce_conda_env": False},
         "split": fallback_training["split"],
     }
-    merged = _merge_request_specs(fallback, spec)
-    _force_model_thinking_epochs(merged)
-    return merged
+    return _merge_request_specs(fallback, spec)
 
 
 def _complete_yolo_training_request_spec(
@@ -1328,8 +1372,6 @@ def _complete_yolo_training_request_spec(
         "runtime 对象，含 enforce_conda_env；不要输出 conda_env_name，或将 conda_env_name 置为空字符串；"
         "split 对象，含 train, val, test。"
         "原则：不要覆盖 existing_spec 里已经有的非空值；labels 必须跟随用户目标变化，不要固定套用示例类别；"
-        "必须从用户的自然语言目标中自主理解所有需要检测的具体对象，不要求用户使用固定格式；"
-        "当用户表达多个检测目标时，labels 必须完整包含每一个具体对象，禁止只输出其中一部分。"
         "labels 必须是 YOLO 训练可直接使用的英文 ASCII 类名，只能使用小写英文、数字和下划线，"
         "禁止输出中文、空格或自然语言短语；例如人脸检测输出 face，不要输出 人脸；"
         "严禁返回 object、target、thing、foreground、目标、物体、对象 等泛化类别；"
@@ -1338,7 +1380,7 @@ def _complete_yolo_training_request_spec(
         "合成提示词要适合 image2 目标自然合成到 image1 场景，并强调真实监控画面、可标注；"
         "训练参数必须由你根据任务目标、YOLO 训练常识和快速验证需求自行选择，不要照抄用户未提供的固定模板；"
         "训练必须使用当前运行环境，不要推理或指定 Conda 环境；runtime.enforce_conda_env 必须为 false；"
-        "epochs 必须固定为 50；split 比例、模型大小、batch、patience 由你合理选择。"
+        "split 比例、模型大小、epochs、batch、patience 也必须由你合理选择。"
         "如果用户提供了 image1/image2 或上下文暗示需要合成数据，use_synthetic_generation 必须为 true。"
     )
     messages = [
@@ -1356,7 +1398,6 @@ def _complete_yolo_training_request_spec(
         payload = _parse_json_object(raw)
         completed = payload if isinstance(payload, dict) else {}
         merged = _merge_request_specs(spec, completed)
-        _force_model_thinking_epochs(merged)
         recorder.emit(
             "llm.completed",
             {
@@ -1399,12 +1440,6 @@ def _merge_request_specs(base: dict[str, Any], generated: dict[str, Any]) -> dic
             if isinstance(value, dict):
                 merged[key] = dict(value)
     return merged
-
-
-def _apply_model_generated_labels(spec: dict[str, Any], generated: dict[str, Any]) -> None:
-    labels = _normalize_detection_labels(_spec_string_list(generated, "labels"))
-    if labels and not _labels_are_generic(labels):
-        spec["labels"] = labels
 
 
 def _emit_model_generated_spec(
@@ -1539,26 +1574,29 @@ def _workflow_skill_parameters(runtime_options: RuntimeOptions) -> dict[str, Any
     return app_params if isinstance(app_params, dict) else {}
 
 
-def _synthetic_count_button(runtime_options: RuntimeOptions) -> bool:
+def _max_synthetic_images(runtime_options: RuntimeOptions) -> int:
+    direct = getattr(runtime_options, "max_synthetic_images", None)
+    if direct is not None:
+        return _int_from_any(direct, DEFAULT_MAX_SYNTHETIC_IMAGES)
     params = _workflow_skill_parameters(runtime_options)
-    value = _bool_from_any(params.get("button"))
-    return button if value is None else value
+    return _int_from_any(
+        params.get("maxSyntheticImages") or params.get("max_synthetic_images") or params.get("max_synthetic"),
+        DEFAULT_MAX_SYNTHETIC_IMAGES,
+    )
 
 
-def _fixed_synthetic_count(runtime_options: RuntimeOptions) -> int:
+def _epochs_button(runtime_options: RuntimeOptions) -> bool:
     params = _workflow_skill_parameters(runtime_options)
-    return _int_from_any(params.get("fixed_synthetic_count"), FIXED_SYNTHETIC_COUNT)
+    value = _bool_from_any(params.get("button_epochs"))
+    return button_epochs if value is None else value
 
 
-def _produce_count_button(runtime_options: RuntimeOptions) -> bool:
-    params = _workflow_skill_parameters(runtime_options)
-    value = _bool_from_any(params.get("button_produce"))
-    return button_produce if value is None else value
-
-
-def _fixed_produce_synthetic_count(runtime_options: RuntimeOptions) -> int:
-    params = _workflow_skill_parameters(runtime_options)
-    return _int_from_any(params.get("fixed_produce_synthetic_count"), FIXED_PRODUCE_SYNTHETIC_COUNT)
+def _apply_epochs_policy(training_cfg: dict[str, Any], runtime_options: RuntimeOptions) -> None:
+    if _epochs_button(runtime_options):
+        return
+    training = training_cfg.get("training")
+    if isinstance(training, dict):
+        training["epochs"] = FIXED_TRAINING_EPOCHS
 
 
 def _auto_generate_missing_spec(runtime_options: RuntimeOptions) -> bool:
@@ -1685,8 +1723,6 @@ _LABEL_ALIAS_TO_CANONICAL: dict[str, tuple[str, ...]] = {
     "hard_hat": ("hard_hat",),
     "helmet": ("hard_hat",),
     "安全帽": ("hard_hat",),
-    "头盔": ("hard_hat",),
-    "安全头盔": ("hard_hat",),
     "mask": ("mask",),
     "口罩": ("mask",),
     "fire": ("fire",),
@@ -1710,12 +1746,6 @@ _LABEL_ALIAS_TO_CANONICAL: dict[str, tuple[str, ...]] = {
     "phone": ("phone",),
     "mobile_phone": ("phone",),
     "手机": ("phone",),
-    "shoe": ("shoe",),
-    "shoes": ("shoe",),
-    "footwear": ("shoe",),
-    "鞋子": ("shoe",),
-    "鞋": ("shoe",),
-    "鞋靴": ("shoe",),
     "cup": ("cup",),
     "杯子": ("cup",),
     "box": ("box",),
@@ -1749,14 +1779,13 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("车辆", "汽车", "小汽车", "轿车", "机动车", "vehicle", "car"), ("car",)),
     (("瓶子", "水瓶", "矿泉水瓶", "bottle"), ("bottle",)),
     (("钢材", "钢筋", "钢板", "steel", "rebar"), ("steel",)),
-    (("安全帽", "头盔", "安全头盔", "helmet", "hard hat", "hard_hat"), ("hard_hat",)),
+    (("安全帽", "helmet", "hard hat", "hard_hat"), ("hard_hat",)),
     (("口罩", "mask"), ("mask",)),
     (("火焰", "fire", "flame"), ("fire",)),
     (("人脸", "脸部", "面部", "human face", "face"), ("face",)),
     (("头部", "head"), ("head",)),
     (("手套", "glove"), ("glove",)),
     (("手机", "phone", "mobile phone"), ("phone",)),
-    (("鞋子", "鞋靴", "shoe", "shoes", "footwear"), ("shoe",)),
     (("杯子", "cup"), ("cup",)),
     (("纸箱", "箱子", "box"), ("box",)),
     (("包裹", "package", "parcel"), ("package",)),
@@ -1768,7 +1797,7 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 
-def _ensure_intent_labels(spec: dict[str, Any], user_text: str, *, allow_rule_fallback: bool = True) -> dict[str, Any]:
+def _ensure_intent_labels(spec: dict[str, Any], user_text: str) -> dict[str, Any]:
     merged = dict(spec or {})
     explicit_labels = _normalize_detection_labels(_extract_annotation_labels(user_text))
     if explicit_labels:
@@ -1778,17 +1807,13 @@ def _ensure_intent_labels(spec: dict[str, Any], user_text: str, *, allow_rule_fa
 
     current_labels = _spec_string_list(merged, "labels")
     normalized_current = _normalize_detection_labels(current_labels)
-    if normalized_current and not _labels_are_generic(current_labels):
+    inferred_labels = _infer_labels_from_training_intent(user_text)
+    if inferred_labels and (not normalized_current or _labels_are_generic(current_labels) or normalized_current != inferred_labels):
+        merged["labels"] = inferred_labels
+    elif normalized_current:
         merged["labels"] = normalized_current
-        _align_spec_text_with_labels(merged, normalized_current)
-        return merged
-    if current_labels:
-        merged.pop("labels", None)
-
-    if allow_rule_fallback:
-        inferred_labels = _infer_labels_from_training_intent(user_text)
-        if inferred_labels:
-            merged["labels"] = inferred_labels
+    elif inferred_labels:
+        merged["labels"] = inferred_labels
     _align_spec_text_with_labels(merged, _spec_string_list(merged, "labels"))
     return merged
 
@@ -1798,16 +1823,9 @@ def _infer_labels_from_training_intent(user_text: str) -> list[str]:
     if not text:
         return []
     lowered = text.lower()
-    matched: list[tuple[int, tuple[str, ...]]] = []
     for aliases, labels in _INTENT_LABEL_RULES:
-        positions = [lowered.find(alias.lower()) for alias in aliases if alias.lower() in lowered]
-        if positions:
-            matched.append((min(positions), labels))
-    if matched:
-        labels: list[str] = []
-        for _, rule_labels in sorted(matched, key=lambda item: item[0]):
-            labels.extend(rule_labels)
-        return _dedupe_detection_labels(labels)
+        if any(alias.lower() in lowered for alias in aliases):
+            return _dedupe_detection_labels(labels)
     for target in _extract_intent_target_terms(text):
         labels = _normalize_detection_labels([target])
         if labels:
@@ -1906,14 +1924,6 @@ def _align_spec_text_with_labels(spec: dict[str, Any], labels: list[str]) -> Non
         if re.search(r"\bdefect\b|缺陷|异物", value, flags=re.IGNORECASE):
             spec[key] = re.sub(r"\bdefect\b", label_text, value, flags=re.IGNORECASE)
             spec[key] = str(spec[key]).replace("缺陷/异物", label_text).replace("缺陷", label_text).replace("异物", label_text)
-
-
-def _force_model_thinking_epochs(spec: dict[str, Any]) -> None:
-    if MODEL_THINKING_FIXED_EPOCHS is None:
-        return
-    training = spec.get("training")
-    if isinstance(training, dict):
-        training["epochs"] = MODEL_THINKING_FIXED_EPOCHS
 
 
 def _spec_training_config(spec: dict[str, Any]) -> dict[str, Any]:
@@ -3164,6 +3174,143 @@ def _load_annotation_labels(paths: ThreadPaths) -> list[str]:
 
 def _training_config_marker_path(paths: ThreadPaths) -> Path:
     return paths.workspace / "training_config.json"
+
+
+def _training_model_registry_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / TRAINING_MODEL_REGISTRY
+
+
+def _requested_training_model_id(runtime_options: RuntimeOptions) -> str:
+    direct = str(getattr(runtime_options, "training_model_id", None) or "").strip()
+    if direct:
+        return direct
+    params = _workflow_skill_parameters(runtime_options)
+    for key in ("modelId", "model_id", "trainingModelId", "training_model_id"):
+        value = str(params.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_user_training_model(
+    paths: ThreadPaths,
+    model_id: str,
+) -> tuple[dict[str, Any] | None, str]:
+    requested_model_id = str(model_id or "").strip()
+    if not requested_model_id:
+        return None, ""
+    registry_path = _training_model_registry_path(paths)
+    if not registry_path.exists():
+        return None, f"当前线程没有已上传模型，找不到 modelId={requested_model_id}"
+    try:
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return None, f"训练模型注册表无法读取：{exc}"
+    if not isinstance(payload, dict):
+        return None, "训练模型注册表格式无效"
+    models = payload.get("models")
+    if not isinstance(models, dict):
+        return None, "训练模型注册表中缺少 models"
+    record = models.get(requested_model_id)
+    if not isinstance(record, dict):
+        return None, f"当前线程找不到 modelId={requested_model_id}"
+    if str(record.get("modelId") or "").strip() != requested_model_id:
+        return None, f"模型记录与请求的 modelId={requested_model_id} 不一致"
+    return _validate_user_training_model_record(paths, record)
+
+
+def _validate_user_training_model_record(
+    paths: ThreadPaths,
+    record: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    raw_path = str(record.get("local_path") or record.get("path") or "").strip()
+    if not raw_path:
+        return None, "训练模型路径为空"
+    model_path = _resolve_uploaded_local_path(paths.root, raw_path)
+    try:
+        resolved = model_path.resolve(strict=True)
+    except OSError:
+        return None, f"找不到模型文件：{raw_path}"
+    models_root = (paths.uploads / "models").resolve()
+    try:
+        resolved.relative_to(models_root)
+    except ValueError:
+        return None, "模型文件不在当前线程的 uploads/models 目录中"
+    if not resolved.is_file() or resolved.suffix.lower() != ".pt":
+        return None, "模型文件必须是有效的 .pt 文件"
+    if resolved.stat().st_size <= 0:
+        return None, "模型文件为空"
+
+    actual_sha256 = _file_sha256(resolved)
+    expected_sha256 = str(record.get("sha256") or "").strip().lower()
+    if expected_sha256 and expected_sha256 != actual_sha256:
+        return None, "模型文件 SHA256 与上传记录不一致"
+    relative = resolved.relative_to(paths.uploads).as_posix()
+    return {
+        **record,
+        "source": "user_upload",
+        "name": str(record.get("name") or resolved.name),
+        "path": f"/mnt/user-data/uploads/{relative}",
+        "local_path": str(resolved),
+        "mime_type": "application/octet-stream",
+        "size": resolved.stat().st_size,
+        "sha256": actual_sha256,
+    }, ""
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _apply_user_training_model(training_cfg: dict[str, Any], model_record: dict[str, Any]) -> None:
+    training = training_cfg.get("training")
+    if not isinstance(training, dict):
+        return
+    training["model"] = str(model_record["local_path"])
+    training["model_source"] = "user_upload"
+    training["strict_model"] = True
+    training["model_sha256"] = str(model_record["sha256"])
+    training["model_original_name"] = str(model_record.get("name") or "")
+    training["model_id"] = str(model_record.get("modelId") or "")
+
+
+def _clear_user_training_model_selection(
+    training_cfg: dict[str, Any],
+    request_spec: dict[str, Any],
+) -> None:
+    training = training_cfg.get("training")
+    if not isinstance(training, dict):
+        return
+    has_user_selection = bool(
+        str(training.get("model_source") or "").strip() == "user_upload"
+        or training.get("strict_model")
+        or str(training.get("model_id") or "").strip()
+    )
+    current_model = str(training.get("model") or "").replace("\\", "/").lower()
+    if "/uploads/models/" in current_model:
+        has_user_selection = True
+    if not has_user_selection:
+        return
+
+    request_training = request_spec.get("training")
+    llm_model = ""
+    if isinstance(request_training, dict):
+        llm_model = str(request_training.get("model") or "").strip()
+        normalized_llm_model = llm_model.replace("\\", "/").lower()
+        if (
+            str(request_training.get("model_source") or "").strip() == "user_upload"
+            or request_training.get("strict_model")
+            or str(request_training.get("model_id") or "").strip()
+            or "/uploads/models/" in normalized_llm_model
+        ):
+            llm_model = ""
+    training["model"] = llm_model or "yolo11n.pt"
+    for key in ("model_source", "strict_model", "model_sha256", "model_original_name", "model_id"):
+        training.pop(key, None)
 
 
 def _save_training_config(paths: ThreadPaths, training_cfg: dict[str, Any]) -> None:

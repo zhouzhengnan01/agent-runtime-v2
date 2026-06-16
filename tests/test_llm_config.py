@@ -316,40 +316,6 @@ def test_chat_payload_keeps_http_image_attachment_as_image_url(monkeypatch: Monk
     }
 
 
-def test_chat_payload_keeps_data_uri_image_path_as_image_url(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.delenv("LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
-    monkeypatch.delenv("LLM_MODEL", raising=False)
-    agent = AgentConfig(
-        name="vision-data-uri-agent",
-        display_name="Vision Data URI Agent",
-        model=ModelConfig(model="vision-model", base_url="http://llm.local/v1", api_key="key"),
-    )
-    client = OpenAICompatibleClient(agent)
-
-    payload = client._chat_payload(
-        "system",
-        [
-            {
-                "role": "user",
-                "content": "看内联图片",
-                "_attachments": [
-                    {
-                        "name": "image.jpg",
-                        "path": "data:image/jpeg;base64,anBlZw==",
-                        "mime_type": "image/jpeg",
-                    }
-                ],
-            }
-        ],
-    )
-
-    assert payload["messages"][1]["content"][1] == {
-        "type": "image_url",
-        "image_url": {"url": "data:image/jpeg;base64,anBlZw=="},
-    }
-
-
 def test_model_manager_normalizes_model_tags_for_public_payload() -> None:
     manager = ModelManager(
         [
@@ -578,7 +544,6 @@ def test_llm_client_logs_request_and_response_details_redacted(
     import app.core.llm.openai_compatible as llm_module
 
     monkeypatch.setattr(llm_module, "LLM_TRACE_PAYLOADS", True)
-    monkeypatch.setattr(llm_module, "LLM_REPLY_TRACE_ENABLED", True)
     monkeypatch.setattr(llm_module, "LLM_TRACE_MAX_CHARS", 0)
 
     async def fake_post(
@@ -623,13 +588,11 @@ def test_llm_client_logs_request_and_response_details_redacted(
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert response.content == "ok"
-    assert "llm request summary operation=complete_with_tools" in logs
-    assert "llm request payload operation=complete_with_tools" in logs
-    assert "llm http response summary operation=complete_with_tools" in logs
-    assert "llm http response body operation=complete_with_tools" in logs
+    assert "llm request operation=complete_with_tools" in logs
+    assert "llm http response operation=complete_with_tools" in logs
     assert "llm response data operation=complete_with_tools" in logs
     assert "llm reply content operation=complete_with_tools" in logs
-    assert "reply_preview=ok" in logs
+    assert "回复内容(最多 4000 字符):\nok" in logs
     assert '"content": "hi"' in logs
     assert '"max_tokens": 128' in logs
     assert '"Authorization": "********"' in logs
@@ -640,9 +603,6 @@ def test_complete_sync_logs_model_reply_content(monkeypatch: MonkeyPatch, caplog
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
-    import app.core.llm.openai_compatible as llm_module
-
-    monkeypatch.setattr(llm_module, "LLM_REPLY_TRACE_ENABLED", True)
 
     def fake_post(
         self: httpx.Client,
@@ -679,7 +639,7 @@ def test_complete_sync_logs_model_reply_content(monkeypatch: MonkeyPatch, caplog
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert response == '[{"reviewResult":"不匹配","reason":"画面未见目标"}]'
     assert "llm reply content operation=complete_sync" in logs
-    assert 'reply_preview=[{"reviewResult":"不匹配","reason":"画面未见目标"}]' in logs
+    assert "回复内容(最多 4000 字符):\n[{\"reviewResult\":\"不匹配\",\"reason\":\"画面未见目标\"}]" in logs
 
 
 def test_http_status_error_includes_upstream_response_body(monkeypatch: MonkeyPatch) -> None:

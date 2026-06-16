@@ -320,6 +320,8 @@ def render_skill_markdown_context(context: SkillMarkdownContext | None) -> str:
     lines = [
         "Primary skill package instructions:",
         f"Source: {context.skill_md_path}",
+        "The SKILL.md and declared reference files below have already been loaded into this prompt.",
+        "Use the embedded content directly. If a tool read is still needed, use the declared relative path such as references/example.md, not an absolute host path.",
         "",
         "## SKILL.md",
         "",

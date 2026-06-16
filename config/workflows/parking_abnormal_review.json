@@ -1,0 +1,8 @@
+{
+  "name": "parking_abnormal_review",
+  "display_name": "复判工作流",
+  "description": "面向机器视觉告警复判的确定性工作流：读取复判事件和图片证据，直接返回最终 JSON 复判结果。",
+  "enabled": true,
+  "handler": "parking_abnormal_review.py:ParkingAbnormalReviewWorkflow",
+  "trigger": "explicit_runtime_options"
+}

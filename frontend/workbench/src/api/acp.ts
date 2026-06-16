@@ -209,7 +209,8 @@ export async function runAcpPrompt(
       cwd: "/",
       sessionId: options.threadId,
       agentName: options.agentName,
-      threadId: options.threadId
+      threadId: options.threadId,
+      runtimeOptions: options.runtimeOptions
     });
     return await client.prompt({ ...options, sessionId: String(session.sessionId || "") });
   } finally {

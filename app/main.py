@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import acp, agents, apps, artifacts, cron, health, mcp, sandbox, skills, uploads, workflows
+from app.api import acp, acp_http_stream, agents, apps, artifacts, cron, health, mcp, sandbox, skills, uploads, workflows
 from app.core.runtime import RuntimeBootstrapConfig, default_container
 
 
@@ -83,6 +83,7 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
     )
     app.include_router(health.router)
     app.include_router(acp.router)
+    app.include_router(acp_http_stream.router)
     app.include_router(agents.router)
     app.include_router(apps.router)
     app.include_router(artifacts.router)

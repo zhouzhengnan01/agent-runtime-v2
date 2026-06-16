@@ -1,9 +1,0 @@
-{
-  "id": "fire-flame-review",
-  "name": "火焰/明火检测",
-  "version": "0.1.0",
-  "description": "用于机器视觉复判火焰、明火、可见燃烧等安全事件。",
-  "skills": [
-    "skills/fire-flame-review/manifest.json"
-  ]
-}

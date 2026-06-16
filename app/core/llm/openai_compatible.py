@@ -20,10 +20,8 @@ from app.schemas import Message, RuntimeOptions
 
 
 logger = logging.getLogger("uvicorn.error")
-LLM_TRACE_PAYLOADS = env_flag("LLM_TRACE_PAYLOADS", "0")
-LLM_REPLY_TRACE_ENABLED = env_flag("LLM_REPLY_TRACE_ENABLED", "0")
+LLM_TRACE_PAYLOADS = env_flag("LLM_TRACE_PAYLOADS", "1")
 LLM_TRACE_MAX_CHARS = env_int("LLM_TRACE_MAX_CHARS", 100)
-LLM_ERROR_TRACE_MAX_CHARS = env_int("LLM_ERROR_TRACE_MAX_CHARS", 1200)
 LLM_REPLY_TRACE_MAX_CHARS = env_int("LLM_REPLY_TRACE_MAX_CHARS", 4000)
 LLM_UPSTREAM_RETRIES = max(0, env_int("LLM_UPSTREAM_RETRIES", 2))
 LLM_UPSTREAM_RETRY_DELAY_MS = max(0, env_int("LLM_UPSTREAM_RETRY_DELAY_MS", 300))
@@ -232,72 +230,81 @@ class OpenAICompatibleClient:
     def _log_request(self, operation: str, payload: dict[str, Any]) -> None:
         image_blocks = _payload_image_urls(payload)
         logger.info(
-            "llm request summary operation=%s model=%s url=%s messages=%s tools=%s image_blocks=%s "
-            "image_sources=%s stream=%s timeout=%s",
+            "\n===== 模型请求 | llm request operation=%s =====\n"
+            "操作: %s\n"
+            "模型: %s\n"
+            "Base URL: %s\n"
+            "请求地址: %s\n"
+            "超时(秒): %s\n"
+            "API Key 是否配置: %s\n"
+            "API Key 长度: %s\n"
+            "消息数: %s\n"
+            "工具数: %s\n"
+            "图片块数: %s\n"
+            "图片来源: %s\n"
+            "是否流式: %s\n"
+            "发送内容(最多 %s 字符):\n%s\n"
+            "===== 模型请求结束 =====",
+            operation,
             operation,
             self.model,
+            self.base_url,
             self._chat_completions_url(),
+            self.request_timeout_seconds,
+            "是" if self.api_key else "否",
+            len(self.api_key or ""),
             len(payload.get("messages")) if isinstance(payload.get("messages"), list) else 0,
             len(payload.get("tools")) if isinstance(payload.get("tools"), list) else 0,
             len(image_blocks),
             _image_url_summary(image_blocks),
-            payload.get("stream") is True,
-            self.request_timeout_seconds,
+            "是" if payload.get("stream") is True else "否",
+            LLM_TRACE_MAX_CHARS,
+            _pretty_json(diagnostic_json(payload, max_chars=LLM_TRACE_MAX_CHARS)) if LLM_TRACE_PAYLOADS else "<disabled>",
         )
-        if LLM_TRACE_PAYLOADS:
-            logger.info(
-                "llm request payload operation=%s max_chars=%s payload=%s",
-                operation,
-                LLM_TRACE_MAX_CHARS,
-                _pretty_json(diagnostic_json(payload, max_chars=LLM_TRACE_MAX_CHARS)),
-            )
 
     def _log_http_response(self, operation: str, response: httpx.Response, started_at: float) -> None:
         body = _response_json_or_text(response)
-        body_chars = len(str(body)) if isinstance(body, str | dict | list) else 0
-        duration_ms = round((time.perf_counter() - started_at) * 1000, 3)
         logger.info(
-            "llm http response summary operation=%s model=%s status_code=%s duration_ms=%s body_chars=%s",
+            "\n===== 模型HTTP响应 | llm http response operation=%s =====\n"
+            "操作: %s\n"
+            "模型: %s\n"
+            "状态码: %s\n"
+            "耗时(ms): %s\n"
+            "响应字符数: %s\n"
+            "响应内容(最多 %s 字符):\n%s\n"
+            "===== 模型HTTP响应结束 =====",
+            operation,
             operation,
             self.model,
             response.status_code,
-            duration_ms,
-            body_chars,
+            round((time.perf_counter() - started_at) * 1000, 3),
+            len(str(body)) if isinstance(body, str | dict | list) else 0,
+            LLM_TRACE_MAX_CHARS,
+            _pretty_json(diagnostic_json(body, max_chars=LLM_TRACE_MAX_CHARS)) if LLM_TRACE_PAYLOADS else "<disabled>",
         )
-        if response.status_code >= 400:
-            logger.warning(
-                "llm http error operation=%s model=%s status_code=%s body=%s",
-                operation,
-                self.model,
-                response.status_code,
-                _pretty_json(diagnostic_json(body, max_chars=LLM_ERROR_TRACE_MAX_CHARS)),
-            )
-        elif LLM_TRACE_PAYLOADS:
-            logger.info(
-                "llm http response body operation=%s max_chars=%s body=%s",
-                operation,
-                LLM_TRACE_MAX_CHARS,
-                _pretty_json(diagnostic_json(body, max_chars=LLM_TRACE_MAX_CHARS)),
-            )
 
     def _log_response_data(self, operation: str, data: dict[str, Any]) -> None:
         response = self._parse_chat_response(data)
         logger.info(
-            "llm response summary operation=%s model=%s finish_reason=%s reply_chars=%s tool_calls=%s usage=%s",
+            "\n===== 模型解析结果 | llm response data operation=%s =====\n"
+            "操作: %s\n"
+            "模型: %s\n"
+            "结束原因: %s\n"
+            "回复字符数: %s\n"
+            "工具调用数: %s\n"
+            "Token 用量:\n%s\n"
+            "解析数据(最多 %s 字符):\n%s\n"
+            "===== 模型解析结果结束 =====",
+            operation,
             operation,
             self.model,
             response.finish_reason,
             len(response.content or ""),
             len(response.tool_calls),
             _pretty_json(diagnostic_json(response.usage, max_chars=LLM_TRACE_MAX_CHARS)),
+            LLM_TRACE_MAX_CHARS,
+            _pretty_json(diagnostic_json(data, max_chars=LLM_TRACE_MAX_CHARS)) if LLM_TRACE_PAYLOADS else "<disabled>",
         )
-        if LLM_TRACE_PAYLOADS:
-            logger.info(
-                "llm response data operation=%s max_chars=%s data=%s",
-                operation,
-                LLM_TRACE_MAX_CHARS,
-                _pretty_json(diagnostic_json(data, max_chars=LLM_TRACE_MAX_CHARS)),
-            )
 
     async def _post_chat_completion(
         self,
@@ -385,15 +392,19 @@ class OpenAICompatibleClient:
         )
 
     def _log_reply_content(self, operation: str, content: str) -> None:
-        if not LLM_REPLY_TRACE_ENABLED:
-            return
-        max_chars = LLM_REPLY_TRACE_MAX_CHARS if LLM_TRACE_PAYLOADS else min(500, LLM_REPLY_TRACE_MAX_CHARS)
         logger.info(
-            "llm reply content operation=%s model=%s reply_chars=%s reply_preview=%s",
+            "\n===== 模型回复正文 | llm reply content operation=%s =====\n"
+            "操作: %s\n"
+            "模型: %s\n"
+            "回复字符数: %s\n"
+            "回复内容(最多 %s 字符):\n%s\n"
+            "===== 模型回复正文结束 =====",
+            operation,
             operation,
             self.model,
             len(content),
-            _truncate_log_text(content, max_chars),
+            LLM_REPLY_TRACE_MAX_CHARS,
+            _truncate_log_text(content, LLM_REPLY_TRACE_MAX_CHARS),
         )
 
     def _chat_payload(
@@ -693,11 +704,8 @@ def _attachment_image_url(attachment: dict[str, Any], mime_type: str) -> str:
     if not isinstance(path, str) or not path.strip():
         return ""
     clean_path = path.strip()
-    if _is_data_uri(clean_path):
-        return clean_path
     if _is_http_url(clean_path):
-        logger.warning("llm image attachment skipped because remote url was not materialized url=%s", clean_path[:500])
-        return ""
+        return clean_path
     local_path = _local_attachment_path(clean_path)
     if local_path is None or not local_path.is_file():
         return ""
@@ -720,10 +728,6 @@ def _data_uri(mime_type: str, encoded: str) -> str:
 def _is_http_url(value: str) -> bool:
     parsed = urlparse(value)
     return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
-
-
-def _is_data_uri(value: str) -> bool:
-    return value.lower().startswith("data:")
 
 
 def _local_attachment_path(path: str) -> Path | None:
