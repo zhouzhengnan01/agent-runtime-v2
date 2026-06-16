@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -106,6 +107,11 @@ def _normalize_flat_payload(payload: dict) -> dict:
         "training": {
             "task": task,
             "model": model_name,
+            "model_source": str(spec.get("model_source") or ""),
+            "strict_model": bool(spec.get("strict_model", False)),
+            "model_sha256": str(spec.get("model_sha256") or ""),
+            "model_original_name": str(spec.get("model_original_name") or ""),
+            "model_id": str(spec.get("model_id") or ""),
             "epochs": epochs,
             "imgsz": imgsz,
             "batch": batch,
@@ -133,8 +139,28 @@ def _resolve_model_name(model_name: str) -> str:
     return model_name
 
 
-def _load_yolo_model(yolo_cls: object, model_name: str, task: str):
+def _load_yolo_model(
+    yolo_cls: object,
+    model_name: str,
+    task: str,
+    *,
+    strict_model: bool = False,
+    expected_sha256: str = "",
+):
     resolved_model = _resolve_model_name(model_name)
+    if strict_model:
+        candidate = Path(resolved_model).expanduser()
+        if not candidate.is_absolute():
+            raise RuntimeError("User-uploaded model must use an absolute path.")
+        if not candidate.is_file() or candidate.suffix.lower() != ".pt":
+            raise RuntimeError(f"User-uploaded YOLO model is missing or invalid: {candidate}")
+        expected = expected_sha256.strip().lower()
+        if expected and _file_sha256(candidate) != expected:
+            raise RuntimeError(f"User-uploaded YOLO model SHA256 mismatch: {candidate}")
+        try:
+            return yolo_cls(str(candidate), task=task), str(candidate)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load user-uploaded YOLO model '{candidate}': {exc}") from exc
     try:
         return yolo_cls(resolved_model, task=task), resolved_model
     except RuntimeError as exc:
@@ -147,6 +173,14 @@ def _load_yolo_model(yolo_cls: object, model_name: str, task: str):
             candidate.unlink()
             return yolo_cls(model_name, task=task), model_name
         raise
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _safe_results_dict(results: object) -> Dict[str, object]:
@@ -591,6 +625,11 @@ def run(config_path: Path) -> None:
     log_info(f"完成数据集划分与转换: {prepared_root}")
 
     model_name = str(training_cfg.get("model", "yolov8n.pt"))
+    model_source = str(training_cfg.get("model_source") or "")
+    strict_model = bool(training_cfg.get("strict_model", False))
+    model_sha256 = str(training_cfg.get("model_sha256") or "")
+    model_original_name = str(training_cfg.get("model_original_name") or "")
+    model_id = str(training_cfg.get("model_id") or "")
     epochs = int(training_cfg.get("epochs", 100))
     imgsz = int(training_cfg.get("imgsz", 640))
     batch = int(training_cfg.get("batch", 16))
@@ -627,7 +666,13 @@ def run(config_path: Path) -> None:
         raise ImportError("请在 conda 环境内安装依赖: pip install ultralytics") from exc
 
     log_info(f"加载模型(自动下载): {model_name}")
-    model, model_name = _load_yolo_model(YOLO, model_name, task)
+    model, model_name = _load_yolo_model(
+        YOLO,
+        model_name,
+        task,
+        strict_model=strict_model,
+        expected_sha256=model_sha256,
+    )
 
     train_project = run_root
     _ensure_dir(train_project)
@@ -674,6 +719,11 @@ def run(config_path: Path) -> None:
         "coco_json": str(coco_json_path),
         "task": task,
         "model": model_name,
+        "model_source": model_source,
+        "strict_model": strict_model,
+        "model_sha256": model_sha256,
+        "model_original_name": model_original_name,
+        "model_id": model_id,
         "num_images": len(image_ids),
         "num_categories": len(class_names),
         "class_names": class_names,

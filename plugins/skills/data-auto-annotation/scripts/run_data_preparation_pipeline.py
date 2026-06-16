@@ -555,12 +555,17 @@ def _produce_synthetic_count(
     reference_count: int,
     produce_count_button: bool,
     fixed_produce_synthetic_count: int,
+    max_synthetic: int,
 ) -> int:
     if reference_count <= 0:
         return 0
     if produce_count_button:
-        return max(1, _fallback_total_synthetic_count(plan, reference_count))
-    return max(0, int(fixed_produce_synthetic_count))
+        total = max(1, _fallback_total_synthetic_count(plan, reference_count))
+    else:
+        total = max(0, int(fixed_produce_synthetic_count))
+    if max_synthetic >= 0:
+        total = min(total, max_synthetic)
+    return max(0, total)
 
 
 def _fallback_prompt_sequence(
@@ -772,6 +777,7 @@ def _generate_and_annotate_synthetic_with_produce(
     planner_llm: Dict[str, Any] | None = None,
     produce_count_button: bool = True,
     fixed_produce_synthetic_count: int = 5,
+    max_synthetic: int = 2000,
     random_seed: int | None = None,
 ) -> tuple[Path, Path]:
     if not PRODUCE_GENERATION_SCRIPT.is_file():
@@ -786,7 +792,13 @@ def _generate_and_annotate_synthetic_with_produce(
     annotation_root = output_dir / "synthetic_annotations"
     annotation_root.mkdir(parents=True, exist_ok=True)
     partial_coco_files: List[Path] = []
-    produce_total = _produce_synthetic_count(plan, len(reference_images), produce_count_button, fixed_produce_synthetic_count)
+    produce_total = _produce_synthetic_count(
+        plan,
+        len(reference_images),
+        produce_count_button,
+        fixed_produce_synthetic_count,
+        max_synthetic,
+    )
     if produce_total <= 0:
         raise ValueError("image-dataset-produce fallback requested 0 synthetic images")
     prompts, prompt_source = _fallback_prompt_sequence(plan, labels, produce_total, planner_llm)
@@ -1139,6 +1151,7 @@ def main() -> None:
                                 args.planner_llm,
                                 args.produce_count_button,
                                 args.fixed_produce_synthetic_count,
+                                args.max_synthetic,
                             )
                             training_coco = _merge(real_coco, synthetic_coco, Path(inspection["images_dir"]).resolve(), synthetic_root, work_dir, args.dry_run)
                             training_root = work_dir / "merged_images"

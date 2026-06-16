@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -20,18 +21,12 @@ _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 WORKFLOW_NAME = "yolo_training_flow"
 WORKFLOW_OUTPUT_DIR = "yolo_training_flow"
 PIPELINE_WORK_DIR = "pipeline_work"
+TRAINING_MODEL_REGISTRY = "training_models.json"
 DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "image-dataset-produce", "data-auto-annotation", "gpu-training-orchestrator"]
 DEFAULT_TRAINING_SPLIT = {"train": 0.7, "val": 0.2, "test": 0.1}
 MIN_TEST_SPLIT = 0.1
 
-# Synthetic image count switch for the algorithm-engineer-full-cycle-test app.
-# button=True: use the LLM planner to decide how many images to synthesize.
-# button=False: use FIXED_SYNTHETIC_COUNT instead.
-#模型思考开关控制：button=True时由LLM决定合成数量，button=False时使用固定数量。11
-button = False
-FIXED_SYNTHETIC_COUNT = 5
-button_produce = True
-FIXED_PRODUCE_SYNTHETIC_COUNT = 5
+DEFAULT_MAX_SYNTHETIC_IMAGES = 2000
 button_epochs = False
 FIXED_TRAINING_EPOCHS = 50
 AUTO_GENERATE_MISSING_SPEC = True
@@ -142,6 +137,21 @@ class YoloTrainingWorkflow:
             recorder.emit("agent.message", {"text": reply})
             recorder.emit("run.completed", {"result": result.model_dump()})
             return result, recorder.events
+
+        requested_training_model_id = _requested_training_model_id(runtime_options)
+        user_training_model, user_training_model_error = _resolve_user_training_model(
+            paths,
+            requested_training_model_id,
+        )
+        if user_training_model_error:
+            return self._model_spec_failed_result(
+                recorder,
+                agent_config.name,
+                paths.thread_id,
+                workflow,
+                f"用户上传的训练模型不可用：{user_training_model_error}",
+                phase="user_training_model_invalid",
+            )
 
         model_managed_spec = _auto_generate_missing_spec(runtime_options)
         if model_managed_spec:
@@ -367,6 +377,30 @@ class YoloTrainingWorkflow:
             _apply_epochs_policy(training_cfg, runtime_options)
             _force_current_runtime(training_cfg)
 
+        if user_training_model:
+            _apply_user_training_model(training_cfg, user_training_model)
+            _save_training_config(paths, training_cfg)
+            request_training = request_spec.get("training")
+            if isinstance(request_training, dict):
+                request_training["model"] = user_training_model["local_path"]
+                request_training["model_source"] = "user_upload"
+                request_training["strict_model"] = True
+                request_training["model_sha256"] = user_training_model["sha256"]
+                request_training["model_id"] = user_training_model["modelId"]
+            recorder.emit(
+                "workflow.user_model_selected",
+                {
+                    "modelId": user_training_model["modelId"],
+                    "name": user_training_model["name"],
+                    "path": user_training_model["path"],
+                    "sha256": user_training_model["sha256"],
+                    "source": "user_upload",
+                },
+            )
+        else:
+            _clear_user_training_model_selection(training_cfg, request_spec)
+            _save_training_config(paths, training_cfg)
+
         pipeline_work_dir = str((workflow_output_root / PIPELINE_WORK_DIR).resolve())
         project_dir = str((workflow_output_root / "training_run").resolve())
         run_name = "."
@@ -376,7 +410,11 @@ class YoloTrainingWorkflow:
         data_prep_spec = {
             "skill_name": "data-auto-annotation",
             "overrides_text": user_text,
-            "attachments": [_attachment_payload(item) for item in attachments],
+            "attachments": [
+                _attachment_payload(item)
+                for item in attachments
+                if not _is_training_model_attachment(item)
+            ],
             "dataset_root": str(dataset_root),
             "image1": composite_image1,
             "image2": composite_image2,
@@ -386,10 +424,9 @@ class YoloTrainingWorkflow:
             "work_dir": pipeline_work_dir,
             "output_dir": data_prep_output_dir,
             "skip_generation": not generation_enabled,
-            "synthetic_count_button": _synthetic_count_button(runtime_options),
-            "fixed_synthetic_count": _fixed_synthetic_count(runtime_options),
-            "produce_count_button": _produce_count_button(runtime_options),
-            "fixed_produce_synthetic_count": _fixed_produce_synthetic_count(runtime_options),
+            "max_synthetic": _max_synthetic_images(runtime_options),
+            "synthetic_count_button": True,
+            "produce_count_button": True,
             "register_artifacts": not training_enabled,
             "split_requested": training_enabled,
             "split": training_cfg["split"],
@@ -409,10 +446,9 @@ class YoloTrainingWorkflow:
                 "output_dir": data_prep_output_dir,
                 "run_name": run_name,
                 "phase": "data_preparation",
-                "synthetic_count_button": _synthetic_count_button(runtime_options),
-                "fixed_synthetic_count": _fixed_synthetic_count(runtime_options),
-                "produce_count_button": _produce_count_button(runtime_options),
-                "fixed_produce_synthetic_count": _fixed_produce_synthetic_count(runtime_options),
+                "max_synthetic": _max_synthetic_images(runtime_options),
+                "synthetic_count_button": True,
+                "produce_count_button": True,
                 "register_artifacts": not training_enabled,
             },
         }
@@ -683,6 +719,18 @@ def _find_dataset_package_attachment(
             elif not _looks_like_composite_role_name(name, path):
                 fallback_candidates.append(item)
     return (named_candidates or fallback_candidates or [None])[0]
+
+
+def _is_training_model_attachment(item: Attachment) -> bool:
+    name = str(item.name or "").strip()
+    path = str(item.path or "").strip()
+    if not (name.lower().endswith(".pt") or path.lower().endswith(".pt")):
+        return False
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    role = str(metadata.get("role") or "").strip().lower()
+    source = str(metadata.get("source") or "").strip().lower()
+    normalized_path = path.replace("\\", "/").lower()
+    return role == "training_model" or source == "user_upload" or "/uploads/models/" in normalized_path
 
 
 def _attachment_payload(attachment: Any) -> dict[str, Any]:
@@ -1526,26 +1574,15 @@ def _workflow_skill_parameters(runtime_options: RuntimeOptions) -> dict[str, Any
     return app_params if isinstance(app_params, dict) else {}
 
 
-def _synthetic_count_button(runtime_options: RuntimeOptions) -> bool:
+def _max_synthetic_images(runtime_options: RuntimeOptions) -> int:
+    direct = getattr(runtime_options, "max_synthetic_images", None)
+    if direct is not None:
+        return _int_from_any(direct, DEFAULT_MAX_SYNTHETIC_IMAGES)
     params = _workflow_skill_parameters(runtime_options)
-    value = _bool_from_any(params.get("button"))
-    return button if value is None else value
-
-
-def _fixed_synthetic_count(runtime_options: RuntimeOptions) -> int:
-    params = _workflow_skill_parameters(runtime_options)
-    return _int_from_any(params.get("fixed_synthetic_count"), FIXED_SYNTHETIC_COUNT)
-
-
-def _produce_count_button(runtime_options: RuntimeOptions) -> bool:
-    params = _workflow_skill_parameters(runtime_options)
-    value = _bool_from_any(params.get("button_produce"))
-    return button_produce if value is None else value
-
-
-def _fixed_produce_synthetic_count(runtime_options: RuntimeOptions) -> int:
-    params = _workflow_skill_parameters(runtime_options)
-    return _int_from_any(params.get("fixed_produce_synthetic_count"), FIXED_PRODUCE_SYNTHETIC_COUNT)
+    return _int_from_any(
+        params.get("maxSyntheticImages") or params.get("max_synthetic_images") or params.get("max_synthetic"),
+        DEFAULT_MAX_SYNTHETIC_IMAGES,
+    )
 
 
 def _epochs_button(runtime_options: RuntimeOptions) -> bool:
@@ -3137,6 +3174,143 @@ def _load_annotation_labels(paths: ThreadPaths) -> list[str]:
 
 def _training_config_marker_path(paths: ThreadPaths) -> Path:
     return paths.workspace / "training_config.json"
+
+
+def _training_model_registry_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / TRAINING_MODEL_REGISTRY
+
+
+def _requested_training_model_id(runtime_options: RuntimeOptions) -> str:
+    direct = str(getattr(runtime_options, "training_model_id", None) or "").strip()
+    if direct:
+        return direct
+    params = _workflow_skill_parameters(runtime_options)
+    for key in ("modelId", "model_id", "trainingModelId", "training_model_id"):
+        value = str(params.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_user_training_model(
+    paths: ThreadPaths,
+    model_id: str,
+) -> tuple[dict[str, Any] | None, str]:
+    requested_model_id = str(model_id or "").strip()
+    if not requested_model_id:
+        return None, ""
+    registry_path = _training_model_registry_path(paths)
+    if not registry_path.exists():
+        return None, f"当前线程没有已上传模型，找不到 modelId={requested_model_id}"
+    try:
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return None, f"训练模型注册表无法读取：{exc}"
+    if not isinstance(payload, dict):
+        return None, "训练模型注册表格式无效"
+    models = payload.get("models")
+    if not isinstance(models, dict):
+        return None, "训练模型注册表中缺少 models"
+    record = models.get(requested_model_id)
+    if not isinstance(record, dict):
+        return None, f"当前线程找不到 modelId={requested_model_id}"
+    if str(record.get("modelId") or "").strip() != requested_model_id:
+        return None, f"模型记录与请求的 modelId={requested_model_id} 不一致"
+    return _validate_user_training_model_record(paths, record)
+
+
+def _validate_user_training_model_record(
+    paths: ThreadPaths,
+    record: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    raw_path = str(record.get("local_path") or record.get("path") or "").strip()
+    if not raw_path:
+        return None, "训练模型路径为空"
+    model_path = _resolve_uploaded_local_path(paths.root, raw_path)
+    try:
+        resolved = model_path.resolve(strict=True)
+    except OSError:
+        return None, f"找不到模型文件：{raw_path}"
+    models_root = (paths.uploads / "models").resolve()
+    try:
+        resolved.relative_to(models_root)
+    except ValueError:
+        return None, "模型文件不在当前线程的 uploads/models 目录中"
+    if not resolved.is_file() or resolved.suffix.lower() != ".pt":
+        return None, "模型文件必须是有效的 .pt 文件"
+    if resolved.stat().st_size <= 0:
+        return None, "模型文件为空"
+
+    actual_sha256 = _file_sha256(resolved)
+    expected_sha256 = str(record.get("sha256") or "").strip().lower()
+    if expected_sha256 and expected_sha256 != actual_sha256:
+        return None, "模型文件 SHA256 与上传记录不一致"
+    relative = resolved.relative_to(paths.uploads).as_posix()
+    return {
+        **record,
+        "source": "user_upload",
+        "name": str(record.get("name") or resolved.name),
+        "path": f"/mnt/user-data/uploads/{relative}",
+        "local_path": str(resolved),
+        "mime_type": "application/octet-stream",
+        "size": resolved.stat().st_size,
+        "sha256": actual_sha256,
+    }, ""
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _apply_user_training_model(training_cfg: dict[str, Any], model_record: dict[str, Any]) -> None:
+    training = training_cfg.get("training")
+    if not isinstance(training, dict):
+        return
+    training["model"] = str(model_record["local_path"])
+    training["model_source"] = "user_upload"
+    training["strict_model"] = True
+    training["model_sha256"] = str(model_record["sha256"])
+    training["model_original_name"] = str(model_record.get("name") or "")
+    training["model_id"] = str(model_record.get("modelId") or "")
+
+
+def _clear_user_training_model_selection(
+    training_cfg: dict[str, Any],
+    request_spec: dict[str, Any],
+) -> None:
+    training = training_cfg.get("training")
+    if not isinstance(training, dict):
+        return
+    has_user_selection = bool(
+        str(training.get("model_source") or "").strip() == "user_upload"
+        or training.get("strict_model")
+        or str(training.get("model_id") or "").strip()
+    )
+    current_model = str(training.get("model") or "").replace("\\", "/").lower()
+    if "/uploads/models/" in current_model:
+        has_user_selection = True
+    if not has_user_selection:
+        return
+
+    request_training = request_spec.get("training")
+    llm_model = ""
+    if isinstance(request_training, dict):
+        llm_model = str(request_training.get("model") or "").strip()
+        normalized_llm_model = llm_model.replace("\\", "/").lower()
+        if (
+            str(request_training.get("model_source") or "").strip() == "user_upload"
+            or request_training.get("strict_model")
+            or str(request_training.get("model_id") or "").strip()
+            or "/uploads/models/" in normalized_llm_model
+        ):
+            llm_model = ""
+    training["model"] = llm_model or "yolo11n.pt"
+    for key in ("model_source", "strict_model", "model_sha256", "model_original_name", "model_id"):
+        training.pop(key, None)
 
 
 def _save_training_config(paths: ThreadPaths, training_cfg: dict[str, Any]) -> None:

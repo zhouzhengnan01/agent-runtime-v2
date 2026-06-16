@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import importlib
 import json
 import os
@@ -95,8 +96,28 @@ def _resolve_model_name(model_name: str) -> str:
     return model_name
 
 
-def _load_yolo_model(yolo_cls: object, model_name: str, task: str):
+def _load_yolo_model(
+    yolo_cls: object,
+    model_name: str,
+    task: str,
+    *,
+    strict_model: bool = False,
+    expected_sha256: str = "",
+):
     resolved_model = _resolve_model_name(model_name)
+    if strict_model:
+        candidate = Path(resolved_model).expanduser()
+        if not candidate.is_absolute():
+            raise RuntimeError("User-uploaded model must use an absolute path.")
+        if not candidate.is_file() or candidate.suffix.lower() != ".pt":
+            raise RuntimeError(f"User-uploaded YOLO model is missing or invalid: {candidate}")
+        expected = expected_sha256.strip().lower()
+        if expected and _file_sha256(candidate) != expected:
+            raise RuntimeError(f"User-uploaded YOLO model SHA256 mismatch: {candidate}")
+        try:
+            return yolo_cls(str(candidate), task=task), str(candidate), False, ""
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load user-uploaded YOLO model '{candidate}': {exc}") from exc
     try:
         return yolo_cls(resolved_model, task=task), resolved_model, False, ""
     except RuntimeError as exc:
@@ -117,6 +138,14 @@ def _load_yolo_model(yolo_cls: object, model_name: str, task: str):
         return _load_builtin_fallback_model(yolo_cls, model_name, resolved_model, task, exc)
     except Exception as exc:
         return _load_builtin_fallback_model(yolo_cls, model_name, resolved_model, task, exc)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _load_builtin_fallback_model(yolo_cls: object, requested_model: str, resolved_model: str, task: str, original_exc: Exception):
@@ -318,6 +347,11 @@ def run(config_path: Path) -> None:
     import torch
 
     requested_model_name = str(training_cfg.get("model", "yolo11n.pt"))
+    model_source = str(training_cfg.get("model_source") or "")
+    strict_model = bool(training_cfg.get("strict_model", False))
+    model_sha256 = str(training_cfg.get("model_sha256") or "")
+    model_original_name = str(training_cfg.get("model_original_name") or "")
+    model_id = str(training_cfg.get("model_id") or "")
     epochs = int(training_cfg.get("epochs", 100))
     imgsz = int(training_cfg.get("imgsz", 640))
     batch = int(training_cfg.get("batch", 16))
@@ -362,7 +396,13 @@ def run(config_path: Path) -> None:
         f"{conda_env_name}, data={dataset_yaml}, device={device}, "
         f"CUDA={_has_cuda}, NPU={_has_npu}, npu_count={_torch_npu_device_count(torch) if _has_npu else 0}"
     )
-    model, model_name, model_fallback_used, model_load_error = _load_yolo_model(YOLO, requested_model_name, task)
+    model, model_name, model_fallback_used, model_load_error = _load_yolo_model(
+        YOLO,
+        requested_model_name,
+        task,
+        strict_model=strict_model,
+        expected_sha256=model_sha256,
+    )
     train_results = model.train(
         data=str(dataset_yaml),
         task=task,
@@ -405,6 +445,11 @@ def run(config_path: Path) -> None:
         "task": task,
         "requested_model": requested_model_name,
         "model": model_name,
+        "model_source": model_source,
+        "strict_model": strict_model,
+        "model_sha256": model_sha256,
+        "model_original_name": model_original_name,
+        "model_id": model_id,
         "model_fallback_used": model_fallback_used,
         "model_load_error": model_load_error,
         "run_root": str(run_root),

@@ -117,6 +117,11 @@ def _normalize_training_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]
         "training": {
             "task": training.get("task") or payload.get("training_task") or "detect",
             "model": training.get("model") or payload.get("model") or "yolo11n.pt",
+            "model_source": training.get("model_source") or payload.get("model_source") or "",
+            "strict_model": bool(training.get("strict_model") or payload.get("strict_model", False)),
+            "model_sha256": training.get("model_sha256") or payload.get("model_sha256") or "",
+            "model_original_name": training.get("model_original_name") or payload.get("model_original_name") or "",
+            "model_id": training.get("model_id") or payload.get("model_id") or "",
             "epochs": int(training.get("epochs") or payload.get("epochs") or 50),
             "imgsz": int(training.get("imgsz") or payload.get("imgsz") or 640),
             "batch": int(training.get("batch") or payload.get("batch") or 16),

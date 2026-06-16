@@ -31,6 +31,8 @@ class RuntimeOptions(BaseModel):
     app_template_name: str | None = None
     model_type: str | None = None
     model_name: str | None = None
+    training_model_id: str | None = None
+    max_synthetic_images: int | None = None
     base_url: str | None = None
     api_key: str | None = None
     temperature: float | None = None

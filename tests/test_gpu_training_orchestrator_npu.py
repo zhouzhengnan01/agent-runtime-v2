@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -118,3 +119,56 @@ def test_cpu_is_used_when_no_accelerator_is_available() -> None:
     module = _load_prepared_training_module()
 
     assert module._normalize_device_for_runtime("0", has_npu=False, has_cuda=False) == "cpu"
+
+
+def test_uploaded_model_load_failure_does_not_delete_or_fallback(tmp_path: Path) -> None:
+    module = _load_prepared_training_module()
+    model_path = tmp_path / "custom.pt"
+    model_path.write_bytes(b"not-a-real-model")
+    sha256 = hashlib.sha256(b"not-a-real-model").hexdigest()
+
+    class BrokenYolo:
+        def __init__(self, model, task):
+            raise RuntimeError(f"broken model: {model}")
+
+    try:
+        module._load_yolo_model(
+            BrokenYolo,
+            str(model_path.resolve()),
+            "detect",
+            strict_model=True,
+            expected_sha256=sha256,
+        )
+    except RuntimeError as exc:
+        assert "user-uploaded YOLO model" in str(exc)
+    else:
+        raise AssertionError("strict uploaded model loading should fail")
+
+    assert model_path.read_bytes() == b"not-a-real-model"
+
+
+def test_runner_preserves_uploaded_model_policy(tmp_path: Path) -> None:
+    module = _load_runner_module()
+    paths = SimpleNamespace(outputs=tmp_path / "outputs")
+    model_path = tmp_path / "custom.pt"
+
+    normalized = module._normalize_training_spec(
+        {
+            "training": {
+                "model": str(model_path),
+                "model_source": "user_upload",
+                "strict_model": True,
+                "model_sha256": "abc123",
+                "model_original_name": "custom.pt",
+                "model_id": "model-custom",
+            }
+        },
+        paths,
+    )
+
+    assert normalized["training"]["model"] == str(model_path)
+    assert normalized["training"]["model_source"] == "user_upload"
+    assert normalized["training"]["strict_model"] is True
+    assert normalized["training"]["model_sha256"] == "abc123"
+    assert normalized["training"]["model_original_name"] == "custom.pt"
+    assert normalized["training"]["model_id"] == "model-custom"

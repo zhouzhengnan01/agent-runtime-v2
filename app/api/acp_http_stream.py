@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 import re
 import uuid
@@ -46,6 +47,31 @@ def _unique_model_path(root: Path, filename: str) -> Path:
     if not candidate.exists():
         return candidate
     return root / f"{candidate.stem or 'model'}-{uuid.uuid4().hex[:8]}{candidate.suffix}"
+
+
+def _model_registry_path(workspace: Path) -> Path:
+    return workspace / "training_models.json"
+
+
+def _register_training_model(workspace: Path, model_record: dict[str, object]) -> None:
+    registry_path = _model_registry_path(workspace)
+    registry: dict[str, object] = {"models": {}}
+    if registry_path.exists():
+        try:
+            current = json.loads(registry_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            current = {}
+        if isinstance(current, dict):
+            registry = current
+    models = registry.get("models")
+    if not isinstance(models, dict):
+        models = {}
+        registry["models"] = models
+    models[str(model_record["modelId"])] = model_record
+    registry_path.write_text(
+        json.dumps(registry, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _sse_payload(payload: dict, *, event: str) -> str:
@@ -130,18 +156,41 @@ async def upload_pt_model(thread_id: str, file: UploadFile = File(...)) -> dict[
 
     relative = target.relative_to(paths.uploads).as_posix()
     virtual_path = f"{VIRTUAL_UPLOADS_PREFIX}/{relative}"
+    sha256 = digest.hexdigest()
+    model_id = f"model-{uuid.uuid4().hex}"
     attachment = {
         "name": target.name,
         "path": virtual_path,
         "mime_type": "application/octet-stream",
+        "metadata": {
+            "modelId": model_id,
+            "role": "training_model",
+            "source": "user_upload",
+            "sha256": sha256,
+            "size": size,
+        },
     }
+    model_record = {
+        "modelId": model_id,
+        "source": "user_upload",
+        "name": target.name,
+        "original_name": original_name,
+        "path": virtual_path,
+        "local_path": str(target.resolve()),
+        "mime_type": "application/octet-stream",
+        "size": size,
+        "sha256": sha256,
+        "uploaded_at": datetime.now(UTC).isoformat(),
+    }
+    _register_training_model(paths.workspace, model_record)
     return {
+        "modelId": model_id,
         "thread_id": paths.thread_id,
         "name": target.name,
         "original_name": original_name,
         "path": virtual_path,
         "mime_type": "application/octet-stream",
         "size": size,
-        "sha256": digest.hexdigest(),
+        "sha256": sha256,
         "attachment": attachment,
     }
