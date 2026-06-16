@@ -39,6 +39,33 @@ def test_video_attachments_are_detected_by_mime_type() -> None:
     assert workflow._video_attachments([image, video, text]) == [video]
 
 
+def test_media_attachments_are_detected_by_name_or_url_when_mime_missing() -> None:
+    workflow = _load_workflow_module()
+    image_by_name = Attachment(name="image.jpg")
+    image_by_url = Attachment(name="snapshot", path="https://example.test/files/snapshot.png?token=abc")
+    video_by_url = Attachment(name="record", path="https://example.test/files/record.mp4?token=abc")
+    text = Attachment(name="note.txt")
+
+    assert workflow._image_attachments([image_by_name, image_by_url, video_by_url, text]) == [
+        image_by_name,
+        image_by_url,
+    ]
+    assert workflow._video_attachments([image_by_name, image_by_url, video_by_url, text]) == [video_by_url]
+
+
+def test_review_source_id_can_come_from_attachment_metadata() -> None:
+    workflow = _load_workflow_module()
+    attachments = [
+        Attachment(
+            name="image.jpg",
+            mime_type="image/jpeg",
+            metadata={"headers": {"reviewSourceId": "source-from-metadata"}},
+        )
+    ]
+
+    assert workflow._review_source_id("请复判图片", attachments) == "source-from-metadata"
+
+
 def test_candidate_frame_indices_are_uniformly_sampled() -> None:
     workflow = _load_workflow_module()
 
@@ -1151,6 +1178,7 @@ def test_parking_review_logs_image_sources(
         skill_result: SkillRunResult | None,
         skill_error: str,
     ) -> str:
+        assert review_source_id == "source-camera-1"
         return '[{"reviewSourceId":"source-image","reviewEventId":"event-image","hit":0,"result":"未命中"}]'
 
     monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(fake_complete_review))
@@ -1194,13 +1222,14 @@ def test_parking_review_logs_image_sources(
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert result.reply == '[{"reviewSourceId":"source-image","reviewEventId":"event-image","hit":0,"result":"未命中"}]'
-    assert "parking review input summary review_source_id=source-image" in logs
+    assert "parking review input summary review_source_id=source-camera-1" in logs
     assert "link_count=1" in logs
     assert "remote_link_count=1" in logs
     assert "https://example.test/api/ai/task/history/_read/image.jpg?..." in logs
     assert '"dataId":"data-1"' in logs
-    assert "parking review final result review_source_id=source-image" in logs
+    assert "parking review final result review_source_id=source-camera-1" in logs
     event_payloads = {event.type: event.data for event in events}
+    assert event_payloads["review.input"]["review_source_id"] == "source-camera-1"
     assert event_payloads["review.input"]["image_sources"][0]["url"] == image_url
     assert event_payloads["review.input"]["image_sources"][0]["dataId"] == "data-1"
 

@@ -10,8 +10,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
+from app.core.artifacts.preview import guess_mime_type
 from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.config import AgentConfig
 from app.core.diagnostics import diagnostic_json, env_flag, env_int
@@ -282,8 +283,8 @@ class ParkingAbnormalReviewWorkflow:
         attachments: list[Attachment],
         runtime_options: RuntimeOptions | None = None,
     ) -> str | None:
-        del attachments, runtime_options
-        review_source_id = _review_source_id(_last_user_text(messages))
+        del runtime_options
+        review_source_id = _review_source_id(_last_user_text(messages), attachments)
         if not review_source_id or review_source_id == "unknown_review_source":
             return None
         return review_source_id
@@ -310,7 +311,7 @@ class ParkingAbnormalReviewWorkflow:
         prompt_text = _last_user_text(messages)
         sanitized_prompt_text = _sanitize_review_prompt_text(prompt_text)
         prompt_sanitized = sanitized_prompt_text != prompt_text
-        review_source_id = _review_source_id(prompt_text)
+        review_source_id = _review_source_id(prompt_text, attachments)
         objective, objective_source = _objective_with_source(prompt_text, attachments)
         video_frame_attachments, video_frame_reports = _video_frame_attachments_for_review(
             image_attachments,
@@ -735,7 +736,7 @@ def _review_llm_runtime_options(runtime_options: RuntimeOptions) -> RuntimeOptio
     return runtime_options.model_copy(update={"request_timeout_seconds": capped}, deep=True)
 
 
-def _review_source_id(text: str) -> str:
+def _review_source_id(text: str, attachments: list[Attachment] | None = None) -> str:
     payload = _parse_json_object(text)
     if payload:
         for path in (
@@ -749,6 +750,10 @@ def _review_source_id(text: str) -> str:
             value = _nested_string(payload, path)
             if value:
                 return value
+    if attachments:
+        attachment_value = _review_source_id_from_attachments(attachments)
+        if attachment_value:
+            return attachment_value
     patterns = [
         r"reviewSourceId为\[([^\]]+)\]",
         r"复判事件来源reviewSourceId为\[([^\]]+)\]",
@@ -759,6 +764,39 @@ def _review_source_id(text: str) -> str:
         if match:
             return match.group(1).strip()
     return "unknown_review_source"
+
+
+def _review_source_id_from_attachments(attachments: list[Attachment]) -> str:
+    for attachment in attachments:
+        metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+        value = _review_source_id_from_metadata(metadata)
+        if value:
+            return value
+    return ""
+
+
+def _review_source_id_from_metadata(metadata: dict[str, Any]) -> str:
+    for key in (
+        "reviewSourceId",
+        "review_source_id",
+        "reviewEventSourceId",
+        "review_event_source_id",
+        "sourceId",
+        "source_id",
+        "eventSourceId",
+        "event_source_id",
+        "id",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    for container_key in ("headers", "event", "alarm", "source", "schemaResults"):
+        value = metadata.get(container_key)
+        if isinstance(value, dict):
+            nested = _review_source_id_from_metadata(value)
+            if nested:
+                return nested
+    return ""
 
 
 def _objective(text: str) -> str:
@@ -1244,7 +1282,7 @@ def _image_attachments(attachments: list[Attachment]) -> list[Attachment]:
     return [
         attachment
         for attachment in attachments
-        if (attachment.mime_type or "").split(";", 1)[0].strip().lower().startswith("image/")
+        if _attachment_media_type(attachment).startswith("image/")
     ]
 
 
@@ -1487,8 +1525,32 @@ def _video_attachments(attachments: list[Attachment]) -> list[Attachment]:
     return [
         attachment
         for attachment in attachments
-        if (attachment.mime_type or "").split(";", 1)[0].strip().lower().startswith("video/")
+        if _attachment_media_type(attachment).startswith("video/")
     ]
+
+
+def _attachment_media_type(attachment: Attachment) -> str:
+    explicit = (attachment.mime_type or "").split(";", 1)[0].strip().lower()
+    if explicit:
+        return explicit
+    for reference in (attachment.name, attachment.path or ""):
+        guessed = _guess_media_type_from_reference(reference)
+        if guessed:
+            return guessed
+    metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+    for key in ("url", "uri", "original_uri", "path"):
+        guessed = _guess_media_type_from_reference(metadata.get(key))
+        if guessed:
+            return guessed
+    return ""
+
+
+def _guess_media_type_from_reference(reference: Any) -> str:
+    if not isinstance(reference, str) or not reference.strip():
+        return ""
+    parsed_name = Path(unquote(urlparse(reference.strip()).path)).name
+    guessed = guess_mime_type(Path(parsed_name or reference.strip()))
+    return "" if guessed == "application/octet-stream" else guessed.split(";", 1)[0].strip().lower()
 
 
 def _review_skill_candidates(

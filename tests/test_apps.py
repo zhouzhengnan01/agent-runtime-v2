@@ -342,7 +342,7 @@ def test_app_template_registry_finds_template_by_alias() -> None:
     assert kitchen is not None
     assert "17803963378248hh02dvt" in kitchen.selected_skills
     assert "garbage-overflow-review" in kitchen.selected_skills
-    assert "smoking-review" not in kitchen.selected_skills
+    assert "smoking-review" in kitchen.selected_skills
 
 
 def test_visualization_platform_skill_alias_expands_to_ai_vis_page() -> None:
@@ -406,14 +406,14 @@ def test_preconfigured_app_templates_reference_existing_capabilities() -> None:
 
 def test_preconfigured_app_template_skills_have_local_entities() -> None:
     registry = AppTemplateRegistry()
-    config_skills = {path.stem for path in (registry.root_dir / "config" / "skills").glob("*.json")}
+    skill_names = {skill.name for skill in SkillRegistry(registry.root_dir).list()}
 
     missing = sorted(
         {
             skill_name
             for template in registry.list()
             for skill_name in template.selected_skills
-            if skill_name not in config_skills
+            if skill_name not in skill_names
         }
     )
 
@@ -497,8 +497,12 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
             "FireLaneComplianceDetection",
             "KitchenAisleHygieneDetection",
             "ParkingAbnormalEventMonitoring",
+            "StoreViolationDetection",
         }:
-            assert template.runtime_options == {"config_options": {"force_model_config": True}}
+            assert template.workflow == "parking_abnormal_review"
+            assert template.runtime_options.get("workflow") == "parking_abnormal_review"
+            assert "skill_aliases" in template.runtime_options["config_options"]
+            assert "scene_skill_aliases" in template.runtime_options["config_options"]
         elif template.name == "ai-vis-page":
             assert template.runtime_options["config_options"]["force_model_config"] is True
             assert template.runtime_options["config_options"]["visualBigscreenMode"] == "full"
@@ -553,13 +557,35 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
             assert model.base_url, template.name
             assert model.api_key is None, template.name
             assert model.api_key_env == "ZUJIAN_KAIFA_MODEL_API_KEY", template.name
+        elif template.name in {
+            "CustomerBehaviorDetection",
+            "FireLaneComplianceDetection",
+            "KitchenAisleHygieneDetection",
+            "ParkingAbnormalEventMonitoring",
+            "StoreViolationDetection",
+        }:
+            assert model.name == "qwen3.7-plus", template.name
+            assert model.model == "qwen3.7-plus", template.name
+            assert model.default_model == "qwen3.7-plus", template.name
+            assert model.base_url, template.name
+            assert model.api_key is None, template.name
+            assert model.api_key_env == "DASHSCOPE_API_KEY", template.name
         else:
             assert model.model, template.name
             assert model.base_url, template.name
             assert model.api_key == "abc@123", template.name
             assert model.api_key_env is None, template.name
         assert model.api_key_enc is None, template.name
-        assert model.temperature == 0.4, template.name
+        if template.name in {
+            "CustomerBehaviorDetection",
+            "FireLaneComplianceDetection",
+            "KitchenAisleHygieneDetection",
+            "ParkingAbnormalEventMonitoring",
+            "StoreViolationDetection",
+        }:
+            assert model.temperature == 0.2, template.name
+        else:
+            assert model.temperature == 0.4, template.name
         assert model.max_tokens == 2048, template.name
 
 
@@ -786,10 +812,16 @@ class CustomWorkflow:
 def test_preconfigured_app_templates_have_no_duplicate_names_or_titles() -> None:
     registry = AppTemplateRegistry()
     templates = registry.list()
-    app_files = [path for path in (registry.root_dir / "config" / "apps").glob("*.json") if path.name != "templates.json"]
+    app_names = {
+        path.stem
+        for directory in registry.config_dirs
+        if directory.is_dir()
+        for path in directory.glob("*.json")
+        if path.name != "templates.json"
+    }
     names = [template.name for template in templates]
 
-    assert len(templates) == len(app_files)
+    assert len(templates) == len(app_names)
     assert len(names) == len(set(names))
 
 

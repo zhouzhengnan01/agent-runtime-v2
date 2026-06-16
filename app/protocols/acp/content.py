@@ -102,14 +102,15 @@ def _dict_block_parts(block: dict[str, Any], index: int) -> tuple[str, Attachmen
     if block_type == "image":
         data = _string(block.get("data"))
         mime_type = _string(block.get("mimeType") or block.get("mime_type")) or "image/*"
-        uri = _string(block.get("uri"))
-        if data is None:
+        uri = _string(block.get("uri") or block.get("url") or block.get("path"))
+        if data is None and uri is None:
             return "", None
         return "", Attachment(
             name=_attachment_name(uri, f"image-{index + 1}"),
+            path=uri if data is None else None,
             mime_type=mime_type,
             data_base64=data,
-            metadata={**_block_meta(block), "acp_type": "image", "uri": uri},
+            metadata={**_block_meta(block), "acp_type": "image", "uri": uri, "url": _string(block.get("url"))},
         )
     if block_type == "audio":
         data = _string(block.get("data"))

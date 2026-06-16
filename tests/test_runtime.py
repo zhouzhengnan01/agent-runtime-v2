@@ -890,6 +890,73 @@ def test_agent_runtime_downloads_remote_image_attachment_before_llm(
     assert f"/mnt/user-data/uploads/{downloaded.name}" in history_text
 
 
+def test_agent_runtime_keeps_remote_image_url_when_download_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://example.test/frame.jpg?token=abc"
+        return httpx.Response(403, text="forbidden")
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del system_prompt, tools
+        payload = self._chat_payload("system", messages)
+        seen_messages.append(payload["messages"])
+        return LlmChatResponse(content="已复判远程图片", finish_reason="stop")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="remote-vision-agent",
+        display_name="Remote Vision Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="请复判图片")],
+                attachments=[
+                    Attachment(
+                        name="frame.jpg",
+                        path="https://example.test/frame.jpg?token=abc",
+                        mime_type="image/jpeg",
+                    )
+                ],
+                runtime_options=RuntimeOptions(thread_id="remote-vision-fallback"),
+            ),
+        )
+    )
+
+    assert result.reply == "已复判远程图片"
+    user_content = seen_messages[0][1]["content"]
+    assert isinstance(user_content, list)
+    image_blocks = [block for block in user_content if block.get("type") == "image_url"]
+    assert image_blocks == [
+        {"type": "image_url", "image_url": {"url": "https://example.test/frame.jpg?token=abc"}}
+    ]
+    history_text = (tmp_path / "threads" / "remote-vision-fallback" / "memory" / "conversation.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "remote_download_failed" in history_text
+
+
 def test_agent_runtime_downloads_remote_video_attachment_without_explicit_mime_type(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1034,7 +1101,7 @@ def test_agent_runtime_expands_attachment_record_video_before_download(
     assert "mime_type=video/mp4" in history_text
 
 
-def test_agent_runtime_drops_remote_attachment_url_after_download_failure(
+def test_agent_runtime_keeps_remote_attachment_url_after_download_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1091,8 +1158,14 @@ def test_agent_runtime_drops_remote_attachment_url_after_download_failure(
 
     assert result.reply == "未收到可用画面"
     user_content = seen_messages[0][1]["content"]
-    assert isinstance(user_content, str)
-    assert "https://example.test/file.mp4?accessKey=bad" not in user_content
+    assert isinstance(user_content, list)
+    assert user_content[0]["type"] == "text"
+    assert "remote_download_failed=true" in user_content[0]["text"]
+    assert "download_error=" in user_content[0]["text"]
+    image_blocks = [block for block in user_content if block.get("type") == "image_url"]
+    assert image_blocks == [
+        {"type": "image_url", "image_url": {"url": "https://example.test/file.mp4?accessKey=bad"}}
+    ]
     history_text = (tmp_path / "threads" / "remote-download-failed" / "memory" / "conversation.jsonl").read_text(
         encoding="utf-8"
     )
@@ -2908,6 +2981,71 @@ def test_agent_runtime_routes_review_skill_from_cv_task_mapping(tmp_path: Path) 
     assert effective_request.attachments[0].metadata["sourceId"] == source_id
     assert effective_request.attachments[0].metadata["targetSkill"] == "reflective-vest-review"
     assert "event_semantics=StoreViolationDetection; 反光衣/作业服穿戴检测" in effective_request.messages[0].content
+
+
+def test_agent_runtime_routes_review_skill_from_scene_alias_before_labels(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    request = ChatRequest(
+        messages=[Message(role="user", content="请执行智能体审核/复判任务。")],
+        attachments=[
+            Attachment(
+                name="review.jpg",
+                path="http://edge.local/review.jpg",
+                mime_type="image/jpeg",
+                metadata={
+                    "applicationScene": "顾客行为监管",
+                    "eventTypeName": "人员跌倒/倒地检测",
+                    "objects": [{"label": "fight"}],
+                },
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            workflow="parking_abnormal_review",
+            selected_skills=["fight-review", "fall-review", "smoking-review"],
+            config_options={
+                "scene_skill_aliases": {
+                    "人员跌倒/倒地检测": "fall-review",
+                    "争吵检测": "fight-review",
+                },
+                "skill_label_aliases": {"fight": "fight-review"},
+            },
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == ["fall-review", "fight-review", "smoking-review"]
+    assert effective_request.runtime_options.config_options["routed_primary_skill"]["source"] == "scene_skill_aliases"
+
+
+def test_agent_runtime_refuses_ambiguous_big_scene_alias(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    request = ChatRequest(
+        messages=[Message(role="user", content="请执行智能体审核/复判任务。")],
+        attachments=[
+            Attachment(
+                name="review.jpg",
+                path="http://edge.local/review.jpg",
+                mime_type="image/jpeg",
+                metadata={"applicationScene": "顾客行为监管"},
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            workflow="parking_abnormal_review",
+            selected_skills=["fight-review", "fall-review", "smoking-review"],
+            config_options={
+                "scene_skill_aliases": {
+                    "人员跌倒/倒地检测": "fall-review",
+                    "争吵检测": "fight-review",
+                }
+            },
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == []
+    assert effective_request.runtime_options.config_options["skill_routing_error"]["reason"] == "no_skill_match"
 
 
 def test_agent_runtime_does_not_route_primary_skill_for_non_review_request(tmp_path: Path) -> None:

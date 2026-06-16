@@ -1385,6 +1385,37 @@ def test_acp_file_results_record_metadata_merges_with_prompt_resource() -> None:
     assert attachment.metadata["others"]["internalRecord"] == "command://mediaService/DownloadSnapFile?record=true"
 
 
+def test_acp_explicit_attachments_accept_camel_case_image_fields() -> None:
+    attachments = _attachments_from_params(
+        {
+            "prompt": "请复判图片",
+            "attachments": [
+                {
+                    "fileName": "frame.jpg",
+                    "url": "https://example.test/files/frame.jpg?token=abc",
+                    "mimeType": "image/jpeg",
+                    "dataBase64": "anBlZw==",
+                    "_meta": {
+                        "reviewSourceId": "source-from-attachment",
+                        "sceneName": "垃圾满溢检测",
+                    },
+                    "bbox": [1, 2, 3, 4],
+                }
+            ],
+        }
+    )
+
+    assert len(attachments) == 1
+    attachment = attachments[0]
+    assert attachment.name == "frame.jpg"
+    assert attachment.path == "https://example.test/files/frame.jpg?token=abc"
+    assert attachment.mime_type == "image/jpeg"
+    assert attachment.data_base64 == "anBlZw=="
+    assert attachment.metadata["reviewSourceId"] == "source-from-attachment"
+    assert attachment.metadata["sceneName"] == "垃圾满溢检测"
+    assert attachment.metadata["bbox"] == [1, 2, 3, 4]
+
+
 def test_acp_websocket_session_new_applies_app_template_and_runtime_options(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

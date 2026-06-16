@@ -2052,6 +2052,16 @@ class AgentRuntime:
             source = "attachment_target_skill" if candidate else "message_attachment_context"
             label_updates: dict[str, str] = {}
             if not candidate:
+                candidate = self._candidate_from_scene_skill_aliases(
+                    runtime_options,
+                    semantic_values,
+                    routing_text,
+                    selected_skills,
+                )
+                score = 115 if candidate else 0
+                if candidate:
+                    source = "scene_skill_aliases"
+            if not candidate:
                 candidate, score = self._candidate_from_attachment_semantics(
                     plugin_manager,
                     semantic_values,
@@ -2444,6 +2454,35 @@ class AgentRuntime:
         routing_text = "\n".join(semantic_values)
         return plugin_manager.select_skill_candidate(routing_text, [], selected_skills)
 
+    def _candidate_from_scene_skill_aliases(
+        self,
+        runtime_options: RuntimeOptions,
+        semantic_values: list[str],
+        routing_text: str,
+        selected_skills: list[str],
+    ) -> str:
+        aliases = self._scene_skill_aliases(runtime_options.config_options)
+        if not aliases:
+            return ""
+        allowed = set(selected_skills)
+        matches: set[str] = set()
+        semantic_scene_keys = {self._scene_key(value) for value in semantic_values}
+        normalized_routing_text = self._scene_key(routing_text)
+        for scene_key, raw_skill_names in aliases.items():
+            if scene_key in semantic_scene_keys or (
+                normalized_routing_text and scene_key in normalized_routing_text
+            ):
+                for raw_skill_name in raw_skill_names:
+                    normalized = self._normalize_skills(
+                        [raw_skill_name],
+                        root_dir=self.app_template_registry.root_dir,
+                        extra_aliases=self._runtime_skill_aliases(runtime_options),
+                    ) or []
+                    for skill_name in normalized or [raw_skill_name]:
+                        if skill_name in allowed:
+                            matches.add(skill_name)
+        return next(iter(matches)) if len(matches) == 1 else ""
+
     @classmethod
     def _candidate_from_skill_label_aliases(
         cls,
@@ -2521,19 +2560,45 @@ class AgentRuntime:
             key = cls._label_key(str(raw_key))
             if not key:
                 continue
-            names: list[str] = []
-            if isinstance(raw_value, str):
-                clean = raw_value.strip()
-                if clean:
-                    names.append(clean)
-            elif isinstance(raw_value, list):
-                for item in raw_value:
-                    clean = str(item).strip()
-                    if clean and clean not in names:
-                        names.append(clean)
+            names = cls._alias_skill_names(raw_value)
             if names:
                 aliases[key] = names
         return aliases
+
+    @classmethod
+    def _scene_skill_aliases(cls, config_options: dict[str, Any]) -> dict[str, list[str]]:
+        aliases: dict[str, list[str]] = {}
+        for config_key in (
+            "scene_skill_aliases",
+            "review_scene_skill_aliases",
+            "event_scene_skill_aliases",
+            "cv_scene_skill_aliases",
+        ):
+            value = config_options.get(config_key)
+            if not isinstance(value, dict):
+                continue
+            for raw_key, raw_value in value.items():
+                key = cls._scene_key(str(raw_key))
+                if not key:
+                    continue
+                names = cls._alias_skill_names(raw_value)
+                if names:
+                    aliases[key] = names
+        return aliases
+
+    @staticmethod
+    def _alias_skill_names(value: object) -> list[str]:
+        names: list[str] = []
+        if isinstance(value, str):
+            clean = value.strip()
+            if clean:
+                names.append(clean)
+        elif isinstance(value, list):
+            for item in value:
+                clean = str(item).strip()
+                if clean and clean not in names:
+                    names.append(clean)
+        return names
 
     @classmethod
     def _runtime_options_with_skill_label_alias_updates(
@@ -2665,6 +2730,12 @@ class AgentRuntime:
         clean = str(label or "").strip().casefold().replace("-", "_")
         clean = re.sub(r"\s+", "_", clean)
         return clean.strip("_")
+
+    @staticmethod
+    def _scene_key(value: str) -> str:
+        clean = str(value or "").strip().casefold()
+        clean = clean.replace("／", "/")
+        return re.sub(r"\s+", "", clean)
 
     @staticmethod
     def _is_review_skill_routing_request(routing_text: str, attachments: list[Attachment]) -> bool:
@@ -2895,7 +2966,7 @@ class AgentRuntime:
                 materialized.append(
                     attachment.model_copy(
                         update={
-                            "path": None,
+                            "path": attachment.path,
                             "data_base64": None,
                             "metadata": metadata,
                         },

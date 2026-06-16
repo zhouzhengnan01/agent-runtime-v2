@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -744,7 +744,7 @@ def _attachment_image_blocks(attachments: object) -> list[dict[str, Any]]:
     for raw_attachment in attachments:
         if not isinstance(raw_attachment, dict):
             continue
-        mime_type = _clean_mime_type(raw_attachment.get("mime_type") or raw_attachment.get("mimeType"))
+        mime_type = _attachment_mime_type(raw_attachment)
         if not mime_type.startswith("image/"):
             continue
         image_url = _attachment_image_url(raw_attachment, mime_type)
@@ -759,7 +759,7 @@ def _attachment_image_url(attachment: dict[str, Any], mime_type: str) -> str:
     data_base64 = attachment.get("data_base64") or attachment.get("dataBase64")
     if isinstance(data_base64, str) and data_base64.strip():
         return _data_uri(mime_type, data_base64.strip())
-    path = attachment.get("_local_path") or attachment.get("path")
+    path = attachment.get("_local_path") or attachment.get("path") or _attachment_metadata_url(attachment)
     if not isinstance(path, str) or not path.strip():
         return ""
     clean_path = path.strip()
@@ -809,6 +809,47 @@ def _clean_mime_type(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return value.split(";", 1)[0].strip().lower()
+
+
+def _attachment_mime_type(attachment: dict[str, Any]) -> str:
+    explicit = _clean_mime_type(attachment.get("mime_type") or attachment.get("mimeType"))
+    if explicit:
+        return explicit
+    data_base64 = attachment.get("data_base64") or attachment.get("dataBase64")
+    if isinstance(data_base64, str) and data_base64.lower().startswith("data:"):
+        header = data_base64.split(",", 1)[0]
+        mime_type = header.removeprefix("data:").split(";", 1)[0].strip().lower()
+        if mime_type:
+            return mime_type
+    for reference in (
+        attachment.get("name"),
+        attachment.get("path"),
+        attachment.get("_local_path"),
+        _attachment_metadata_url(attachment),
+    ):
+        guessed = _guess_mime_type_from_reference(reference)
+        if guessed:
+            return guessed
+    return ""
+
+
+def _attachment_metadata_url(attachment: dict[str, Any]) -> str:
+    metadata = attachment.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    for key in ("original_uri", "url", "uri", "path"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _guess_mime_type_from_reference(reference: object) -> str:
+    if not isinstance(reference, str) or not reference.strip():
+        return ""
+    parsed_name = Path(unquote(urlparse(reference.strip()).path)).name
+    guessed = _guess_mime_type(Path(parsed_name or reference.strip()))
+    return "" if guessed == "application/octet-stream" else guessed
 
 
 def _guess_mime_type(path: Path) -> str:

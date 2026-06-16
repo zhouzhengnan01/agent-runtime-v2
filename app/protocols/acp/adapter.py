@@ -1707,12 +1707,119 @@ def _attachments_from_params(params: dict[str, Any]) -> list[Attachment]:
     _prompt_text, prompt_attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
     raw_attachments = params.get("attachments")
     explicit_attachments = (
-        [Attachment.model_validate(item) for item in raw_attachments if isinstance(item, dict)]
+        [_attachment_from_raw_item(item, index) for index, item in enumerate(raw_attachments, start=1) if isinstance(item, dict)]
         if isinstance(raw_attachments, list)
         else []
     )
     file_result_attachments = _file_result_attachments_from_params(params)
     return _merge_attachment_metadata([*prompt_attachments, *explicit_attachments, *file_result_attachments])
+
+
+def _attachment_from_raw_item(item: dict[str, Any], index: int) -> Attachment:
+    path = _string(
+        item.get("path")
+        or item.get("url")
+        or item.get("uri")
+        or item.get("downloadUrl")
+        or item.get("download_url")
+        or item.get("internalUrl")
+        or item.get("internal_url")
+    )
+    name = _string(
+        item.get("name")
+        or item.get("filename")
+        or item.get("fileName")
+        or item.get("title")
+    ) or _name_from_uri(path or "", f"attachment-{index}")
+    metadata = _attachment_metadata_from_raw_item(item)
+    data_base64 = _string(
+        item.get("data_base64")
+        or item.get("dataBase64")
+        or item.get("base64")
+        or item.get("data")
+        or item.get("blob")
+    )
+    return Attachment(
+        name=name,
+        path=path,
+        mime_type=_raw_attachment_mime_type(item, path, name, data_base64),
+        data_base64=data_base64,
+        metadata=metadata,
+    )
+
+
+def _attachment_metadata_from_raw_item(item: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key in ("metadata", "meta", "_meta", "others"):
+        value = item.get(key)
+        if isinstance(value, dict):
+            if key == "others":
+                metadata[key] = dict(value)
+            else:
+                metadata.update(value)
+    core_keys = {
+        "name",
+        "filename",
+        "fileName",
+        "title",
+        "path",
+        "url",
+        "uri",
+        "downloadUrl",
+        "download_url",
+        "internalUrl",
+        "internal_url",
+        "mime_type",
+        "mimeType",
+        "media_type",
+        "mediaType",
+        "content_type",
+        "contentType",
+        "data_base64",
+        "dataBase64",
+        "base64",
+        "data",
+        "blob",
+        "metadata",
+        "meta",
+        "_meta",
+        "others",
+    }
+    for key, value in item.items():
+        if key in core_keys or value is None:
+            continue
+        metadata.setdefault(key, value)
+    return metadata
+
+
+def _raw_attachment_mime_type(
+    item: dict[str, Any],
+    path: str | None,
+    name: str,
+    data_base64: str | None,
+) -> str | None:
+    explicit = _string(
+        item.get("mime_type")
+        or item.get("mimeType")
+        or item.get("media_type")
+        or item.get("mediaType")
+        or item.get("content_type")
+        or item.get("contentType")
+    )
+    if explicit is not None:
+        return explicit
+    if data_base64 and data_base64.lower().startswith("data:"):
+        header = data_base64.split(",", 1)[0]
+        mime_type = header.removeprefix("data:").split(";", 1)[0].strip()
+        if mime_type:
+            return mime_type
+    return _mime_type_from_reference(path or name)
+
+
+def _mime_type_from_reference(reference: str) -> str | None:
+    parsed_name = Path(unquote(urlparse(reference).path)).name
+    guessed = guess_mime_type(Path(parsed_name or reference))
+    return guessed if guessed != "application/octet-stream" else None
 
 
 def _file_result_attachments_from_params(params: dict[str, Any]) -> list[Attachment]:

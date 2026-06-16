@@ -11,7 +11,7 @@
   ],
   "models": [
     {
-      "name": "qwen-vl-plus",
+      "name": "qwen3.7-plus",
       "features": [
         "vision",
         "reasoning",
@@ -20,9 +20,9 @@
       "priority_features": [],
       "priority": 0,
       "provider": "aliyun-openai-compatible",
-      "model": "qwen-vl-plus",
+      "model": "qwen3.7-plus",
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "default_model": "qwen-vl-plus",
+      "default_model": "qwen3.7-plus",
       "tool_choice": "auto",
       "temperature": 0.2,
       "max_tokens": 2048,
@@ -38,9 +38,32 @@
       },
       "skill_label_aliases": {
         "fall": "fall-review",
-        "fight": "fight-review"
+        "fight": "fight-review",
+        "smoking": "smoking-review",
+        "smoke": "smoking-review"
+      },
+      "scene_skill_aliases": {
+        "人员跌倒/倒地检测": "fall-review",
+        "人员跌倒检测": "fall-review",
+        "人员倒地检测": "fall-review",
+        "跌倒检测": "fall-review",
+        "摔倒监测": "fall-review",
+        "摔倒检测": "fall-review",
+        "FallDetection": "fall-review",
+        "PersonFallDetection": "fall-review",
+        "争吵检测": "fight-review",
+        "打架检测": "fight-review",
+        "肢体冲突检测": "fight-review",
+        "FightDetection": "fight-review",
+        "ArgumentDetection": "fight-review",
+        "抽烟行为检测": "smoking-review",
+        "抽烟检测": "smoking-review",
+        "吸烟检测": "smoking-review",
+        "抽烟监测": "smoking-review",
+        "SmokingDetection": "smoking-review"
       }
-    }
+    },
+    "workflow": "parking_abnormal_review"
   },
   "workflow": "parking_abnormal_review"
 }

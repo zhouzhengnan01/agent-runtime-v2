@@ -11,7 +11,7 @@
   ],
   "models": [
     {
-      "name": "qwen-vl-plus",
+      "name": "qwen3.7-plus",
       "features": [
         "vision",
         "reasoning",
@@ -20,9 +20,9 @@
       "priority_features": [],
       "priority": 0,
       "provider": "aliyun-openai-compatible",
-      "model": "qwen-vl-plus",
+      "model": "qwen3.7-plus",
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "default_model": "qwen-vl-plus",
+      "default_model": "qwen3.7-plus",
       "tool_choice": "auto",
       "temperature": 0.2,
       "max_tokens": 2048,
@@ -35,8 +35,33 @@
         "2063607912836284416": "17803963378248hh02dvt",
         "2063607914266542080": "smoking-review",
         "2063609339214217216": "fire-flame-review"
+      },
+      "scene_skill_aliases": {
+        "杂物检测": "17803963378248hh02dvt",
+        "消防通道杂物检测": "17803963378248hh02dvt",
+        "消防通道占用检测": "17803963378248hh02dvt",
+        "消防通道堵塞检测": "17803963378248hh02dvt",
+        "ClutterDetection": "17803963378248hh02dvt",
+        "火焰/明火检测": "fire-flame-review",
+        "火焰检测": "fire-flame-review",
+        "明火检测": "fire-flame-review",
+        "明火 / 火焰识别": "fire-flame-review",
+        "FireDetection": "fire-flame-review",
+        "抽烟行为检测": "smoking-review",
+        "抽烟检测": "smoking-review",
+        "吸烟检测": "smoking-review",
+        "SmokingDetection": "smoking-review"
+      },
+      "skill_label_aliases": {
+        "smoking": "smoking-review",
+        "smoke": "smoking-review",
+        "fire": "fire-flame-review",
+        "flame": "fire-flame-review",
+        "clutter": "17803963378248hh02dvt",
+        "debris": "17803963378248hh02dvt"
       }
-    }
+    },
+    "workflow": "parking_abnormal_review"
   },
   "workflow": "parking_abnormal_review"
 }

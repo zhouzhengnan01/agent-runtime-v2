@@ -10,7 +10,7 @@
   ],
   "models": [
     {
-      "name": "qwen-vl-plus",
+      "name": "qwen3.7-plus",
       "features": [
         "vision",
         "reasoning",
@@ -19,9 +19,9 @@
       "priority_features": [],
       "priority": 0,
       "provider": "aliyun-openai-compatible",
-      "model": "qwen-vl-plus",
+      "model": "qwen3.7-plus",
       "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "default_model": "qwen-vl-plus",
+      "default_model": "qwen3.7-plus",
       "tool_choice": "auto",
       "temperature": 0.2,
       "max_tokens": 2048,
@@ -33,8 +33,27 @@
       "skill_aliases": {
         "2063245591202340864": "parking-violation-review",
         "2063245591806320640": "parking-congestion-review"
+      },
+      "scene_skill_aliases": {
+        "车辆违停检测": "parking-violation-review",
+        "违规停车检测": "parking-violation-review",
+        "违停检测": "parking-violation-review",
+        "ParkingViolationDetection": "parking-violation-review",
+        "IllegalParkingDetection": "parking-violation-review",
+        "车辆拥堵检测": "parking-congestion-review",
+        "停车场通道拥堵检测": "parking-congestion-review",
+        "车辆拥堵": "parking-congestion-review",
+        "ParkingCongestionDetection": "parking-congestion-review",
+        "TrafficCongestionDetection": "parking-congestion-review"
+      },
+      "skill_label_aliases": {
+        "parking_violation": "parking-violation-review",
+        "illegal_parking": "parking-violation-review",
+        "parking_congestion": "parking-congestion-review",
+        "traffic_congestion": "parking-congestion-review"
       }
-    }
+    },
+    "workflow": "parking_abnormal_review"
   },
   "workflow": "parking_abnormal_review"
 }
