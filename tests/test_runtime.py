@@ -1,13 +1,20 @@
+import base64
 import asyncio
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 import json
+import logging
+import os
 from pathlib import Path
+import time
 import xml.etree.ElementTree as ET
 
 import httpx
 import pytest
 from PIL import Image
+from fastapi.testclient import TestClient
 
+from app.api import health as health_api
 from app.core.agent import AgentRuntime
 from app.core.apps import AppTemplateRegistry
 from app.core.artifacts import ArtifactStore
@@ -15,8 +22,11 @@ from app.core.config import AgentConfig, AgentConfigLoader
 from app.core.config.agent_config import ModelConfig
 from app.core.config.secrets import SecretCodec
 from app.core.agent.turn_verifier import verify_turn_completion
+from app.core.events import RunEventStore
 from app.core.llm import LlmChatResponse, OpenAICompatibleClient
 from app.core.routing import WorkflowRouter
+from app.core.runtime.cleanup import RuntimeCleanupConfig, run_runtime_cleanup_once
+from app.main import create_app
 from app.core.skills.aliases import invalidate_skill_alias_cache
 from app.core.skills import SkillRegistry
 from app.core.skills.plugins import SkillPluginManager
@@ -98,6 +108,86 @@ def test_runtime_fixed_reply_bypasses_input_required_for_integration_debug(
         "agent.message",
         "run.completed",
     ]
+
+
+def test_runtime_queue_state_snapshot_reports_default_and_parking_queues(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+
+    runtime.queue_state().increment("default_workflow")
+    runtime.queue_state().increment("parking_review")
+    runtime.queue_state().increment("parking_review")
+
+    snapshot = runtime.queue_state_snapshot()
+
+    assert snapshot["default_workflow"].name == "default_workflow"
+    assert snapshot["default_workflow"].pending == 1
+    assert snapshot["default_workflow"].workers >= 1
+    assert snapshot["default_workflow"].max_backlog is None
+    assert snapshot["default_workflow"].overloaded is False
+
+    assert snapshot["parking_review"].name == "parking_review"
+    assert snapshot["parking_review"].pending == 2
+    assert snapshot["parking_review"].workers >= 1
+    assert snapshot["parking_review"].max_backlog is not None
+
+    runtime.queue_state().decrement("default_workflow")
+    runtime.queue_state().decrement("parking_review")
+    runtime.queue_state().decrement("parking_review")
+
+
+def test_health_ready_returns_in_memory_queue_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    monkeypatch.setattr(health_api.default_container, "runtime", runtime)
+
+    runtime.queue_state().increment("parking_review")
+
+    client = TestClient(create_app())
+    response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["service"] == "jetlinks-agent-runtime-v2"
+    assert payload["queues"]["default_workflow"]["pending"] == 0
+    assert payload["queues"]["parking_review"]["pending"] == 1
+    assert payload["queues"]["parking_review"]["workers"] >= 1
+    assert payload["queues"]["parking_review"]["rejected_total"] == 0
+    assert payload["queues"]["parking_review"]["last_overloaded_at"] is None
+    assert payload["queues"]["parking_review"]["last_rejected_at"] is None
+    assert payload["queues"]["parking_review"]["last_reject_reason"] is None
+    assert "parking_review" not in payload["overloaded_queues"]
+
+    runtime.queue_state().decrement("parking_review")
+
+
+def test_health_ready_reports_queue_rejection_counters(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    monkeypatch.setattr(health_api.default_container, "runtime", runtime)
+    monkeypatch.setattr("app.core.agent.runtime.PARKING_REVIEW_MAX_QUEUE_BACKLOG", 1)
+    monkeypatch.setattr("app.core.agent.runtime._parking_review_queue_backlog", lambda: 1)
+
+    class FailingWorkflow:
+        def run_with_events(self, **kwargs: object) -> tuple[AgentRunResult, list[ChatEvent]]:
+            raise AssertionError("overloaded parking review should not enter workflow")
+
+    runtime.workflow_registry = WorkflowRegistry({"parking_abnormal_review": FailingWorkflow()})
+    agent = AgentConfig(name="parking-overload-agent", display_name="Parking Overload Agent")
+    request = ChatRequest(
+        messages=[Message(role="user", content='{"reviewSourceId":"overload-source"}')],
+        runtime_options=RuntimeOptions(thread_id="parking-overload-health", workflow="parking_abnormal_review"),
+    )
+
+    asyncio.run(runtime.run_with_events(agent, request))
+
+    client = TestClient(create_app())
+    response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    payload = response.json()
+    parking = payload["queues"]["parking_review"]
+    assert parking["rejected_total"] == 1
+    assert parking["last_rejected_at"] is not None
+    assert parking["last_reject_reason"] == "parking_review_queue_overloaded"
 
 
 def test_runtime_fixed_reply_forever_streams_same_delta_without_completion(
@@ -800,6 +890,73 @@ def test_agent_runtime_downloads_remote_image_attachment_before_llm(
     assert f"/mnt/user-data/uploads/{downloaded.name}" in history_text
 
 
+def test_agent_runtime_keeps_remote_image_url_when_download_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://example.test/frame.jpg?token=abc"
+        return httpx.Response(403, text="forbidden")
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del system_prompt, tools
+        payload = self._chat_payload("system", messages)
+        seen_messages.append(payload["messages"])
+        return LlmChatResponse(content="已复判远程图片", finish_reason="stop")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="remote-vision-agent",
+        display_name="Remote Vision Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="请复判图片")],
+                attachments=[
+                    Attachment(
+                        name="frame.jpg",
+                        path="https://example.test/frame.jpg?token=abc",
+                        mime_type="image/jpeg",
+                    )
+                ],
+                runtime_options=RuntimeOptions(thread_id="remote-vision-fallback"),
+            ),
+        )
+    )
+
+    assert result.reply == "已复判远程图片"
+    user_content = seen_messages[0][1]["content"]
+    assert isinstance(user_content, list)
+    image_blocks = [block for block in user_content if block.get("type") == "image_url"]
+    assert image_blocks == [
+        {"type": "image_url", "image_url": {"url": "https://example.test/frame.jpg?token=abc"}}
+    ]
+    history_text = (tmp_path / "threads" / "remote-vision-fallback" / "memory" / "conversation.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "remote_download_failed" in history_text
+
+
 def test_agent_runtime_downloads_remote_video_attachment_without_explicit_mime_type(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -865,6 +1022,189 @@ def test_agent_runtime_downloads_remote_video_attachment_without_explicit_mime_t
     )
     assert f"/mnt/user-data/uploads/{downloaded_files[0].name}" in history_text
     assert "mime_type=video/mp4" in history_text
+
+
+def test_agent_runtime_expands_attachment_record_video_before_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url == "https://example.test/frame?id=1":
+            return httpx.Response(
+                200,
+                headers={"content-type": "image/jpeg", "content-length": "8"},
+                content=b"jpegdata",
+            )
+        assert url == "https://example.test/videos/record.mp4?token=abc"
+        return httpx.Response(200, headers={"content-type": "video/mp4", "content-length": "7"}, content=b"mp4data")
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del self, system_prompt, messages, tools
+        return LlmChatResponse(content="已看到录像资源", finish_reason="stop")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="record-video-agent",
+        display_name="Record Video Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="请复判图片并结合录像")],
+                attachments=[
+                    Attachment(
+                        name="image.jpg",
+                        path="https://example.test/frame?id=1",
+                        mime_type="image/jpeg",
+                        metadata={
+                            "others": {
+                                "record": {
+                                    "url": "https://example.test/videos/record.mp4?token=abc",
+                                    "name": "record.mp4",
+                                }
+                            }
+                        },
+                    )
+                ],
+                runtime_options=RuntimeOptions(thread_id="record-video"),
+            ),
+        )
+    )
+
+    assert result.reply == "已看到录像资源"
+    uploads = tmp_path / "threads" / "record-video" / "uploads"
+    downloaded_files = list(uploads.glob("record-*.mp4"))
+    assert len(downloaded_files) == 1
+    history_text = (tmp_path / "threads" / "record-video" / "memory" / "conversation.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "record.mp4" in history_text
+    assert "mime_type=video/mp4" in history_text
+
+
+def test_agent_runtime_keeps_remote_attachment_url_after_download_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_messages: list[list[dict[str, object]]] = []
+    original_client = httpx.Client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://example.test/file.mp4?accessKey=bad"
+        return httpx.Response(500, text="remote storage error")
+
+    async def fake_complete_with_tools(
+        self: OpenAICompatibleClient,
+        system_prompt: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> LlmChatResponse:
+        del system_prompt, tools
+        payload = self._chat_payload("system", messages)
+        seen_messages.append(payload["messages"])
+        return LlmChatResponse(content="未收到可用画面", finish_reason="stop")
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="remote-failed-agent",
+        display_name="Remote Failed Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+
+    result = asyncio.run(
+        runtime.run(
+            agent,
+            ChatRequest(
+                messages=[Message(role="user", content="请复判视频")],
+                attachments=[
+                    Attachment(
+                        name="file.mp4",
+                        path="https://example.test/file.mp4?accessKey=bad",
+                        mime_type="image/jpeg",
+                        metadata={"acp_type": "resource_link", "uri": "https://example.test/file.mp4?accessKey=bad"},
+                    )
+                ],
+                runtime_options=RuntimeOptions(thread_id="remote-download-failed"),
+            ),
+        )
+    )
+
+    assert result.reply == "未收到可用画面"
+    user_content = seen_messages[0][1]["content"]
+    assert isinstance(user_content, list)
+    assert user_content[0]["type"] == "text"
+    assert "remote_download_failed=true" in user_content[0]["text"]
+    assert "download_error=" in user_content[0]["text"]
+    image_blocks = [block for block in user_content if block.get("type") == "image_url"]
+    assert image_blocks == [
+        {"type": "image_url", "image_url": {"url": "https://example.test/file.mp4?accessKey=bad"}}
+    ]
+    history_text = (tmp_path / "threads" / "remote-download-failed" / "memory" / "conversation.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "remote_download_failed" in history_text
+    assert "download_error" in history_text
+
+
+def test_llm_client_keeps_remote_image_urls_as_vision_blocks() -> None:
+    agent = AgentConfig(
+        name="remote-url-agent",
+        display_name="Remote URL Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+    )
+    client = OpenAICompatibleClient(agent)
+
+    payload = client._chat_payload(
+        "system",
+        [
+            {
+                "role": "user",
+                "content": "请复判图片",
+                "_attachments": [
+                    {
+                        "name": "file.mp4",
+                        "path": "https://example.test/file.mp4?accessKey=bad",
+                        "mime_type": "image/jpeg",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert payload["messages"][1]["content"] == [
+        {"type": "text", "text": "请复判图片"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "https://example.test/file.mp4?accessKey=bad"},
+        },
+    ]
 
 
 def test_parking_abnormal_review_workflow_returns_final_json_with_image(
@@ -1008,6 +1348,84 @@ def test_parking_abnormal_review_workflow_returns_json_when_image_missing(tmp_pa
     assert parsed[0]["reviewSourceId"] == "source-1"
     assert parsed[0]["hit"] == 0
     assert "未提供可访问的图片" in parsed[0]["result"]
+
+
+def test_parking_abnormal_review_uses_record_video_from_attachment_metadata(
+    tmp_path: Path,
+) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    attachments = runtime._expanded_video_record_attachments(
+        [
+            Attachment(
+                name="image.jpg",
+                path="/mnt/user-data/uploads/image.jpg",
+                mime_type="image/jpeg",
+                metadata={
+                    "others": {
+                        "record": {
+                            "url": "https://example.test/videos/record.mp4?token=abc",
+                            "name": "record.mp4",
+                        }
+                    }
+                },
+            )
+        ]
+    )
+
+    assert len(attachments) == 2
+    derived = attachments[1]
+    assert derived.name == "record.mp4"
+    assert derived.path == "https://example.test/videos/record.mp4?token=abc"
+    assert derived.mime_type == "video/mp4"
+    assert derived.metadata["record_source"] == "metadata.others.record"
+    assert derived.metadata["record_parent_name"] == "image.jpg"
+
+
+def test_parking_abnormal_review_events_count_record_video_as_video_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(OpenAICompatibleClient, "complete_sync", lambda self, system_prompt, messages: "[]")
+    monkeypatch.setattr(OpenAICompatibleClient, "configured", property(lambda self: True))
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path / "threads"))
+    agent = AgentConfig(
+        name="parking-review-agent",
+        display_name="Parking Review Agent",
+        model={"model": "vision-model", "base_url": "http://llm.local/v1", "api_key": "key"},
+        tools=[],
+        skills=[],
+    )
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content="当前复判事件来源reviewSourceId为[source-1]。\n本次复判的识别目标为[ClutterDetection]",
+            )
+        ],
+        attachments=[
+            Attachment(
+                name="image.jpg",
+                path="/mnt/user-data/uploads/image.jpg",
+                mime_type="image/jpeg",
+                metadata={
+                    "others": {
+                        "record": {
+                            "url": "https://example.test/videos/record.mp4?token=abc",
+                            "name": "record.mp4",
+                        }
+                    }
+                },
+            )
+        ],
+        runtime_options=RuntimeOptions(thread_id="parking-review-record-events", workflow="parking_abnormal_review"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert result.status == "completed"
+    review_input = next(event for event in events if event.type == "review.input")
+    assert review_input.data["image_attachment_count"] == 1
+    assert review_input.data["video_attachment_count"] == 1
 
 
 def test_agent_loop_does_not_duplicate_client_supplied_history(
@@ -1533,6 +1951,321 @@ def test_workflow_persists_and_restores_thread_conversation(tmp_path: Path) -> N
     assert "工作流第二轮回复" in transcript_path.read_text(encoding="utf-8")
 
 
+def test_sync_workflow_run_with_events_does_not_block_event_loop(tmp_path: Path) -> None:
+    class BlockingWorkflow:
+        def run_with_events(
+            self,
+            agent_config: AgentConfig,
+            messages: list[Message],
+            attachments: list[Attachment],
+            thread_id: str | None,
+            on_event=None,
+            workflow_name: str | None = None,
+            runtime_options: RuntimeOptions | None = None,
+        ) -> tuple[AgentRunResult, list[ChatEvent]]:
+            del messages, attachments, on_event, runtime_options
+            time.sleep(0.05)
+            event = ChatEvent(
+                type="run.started",
+                data={
+                    "run_id": "run-blocking-workflow",
+                    "agent": agent_config.name,
+                    "thread_id": thread_id or "",
+                    "workflow": workflow_name or "blocking_workflow",
+                },
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=thread_id or "",
+                reply="done",
+                metadata={"workflow": workflow_name or "blocking_workflow"},
+            )
+            return result, [event]
+
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        workflow_registry=WorkflowRegistry({"blocking_workflow": BlockingWorkflow()}),
+    )
+    agent = AgentConfig(name="workflow-thread-agent", display_name="Workflow Thread Agent")
+    request = ChatRequest(
+        messages=[Message(role="user", content="run blocking workflow")],
+        runtime_options=RuntimeOptions(thread_id="workflow-thread", workflow="blocking_workflow"),
+    )
+
+    async def run_and_probe_loop() -> tuple[AgentRunResult, bool]:
+        task = asyncio.create_task(runtime.run(agent, request))
+        await asyncio.sleep(0)
+        probe = asyncio.create_task(asyncio.sleep(0.01))
+        done, _pending = await asyncio.wait({task, probe}, timeout=0.03, return_when=asyncio.FIRST_COMPLETED)
+        probe_completed_before_workflow = probe in done and task not in done
+        result = await task
+        return result, probe_completed_before_workflow
+
+    result, probe_completed_before_workflow = asyncio.run(run_and_probe_loop())
+
+    assert result.reply == "done"
+    assert probe_completed_before_workflow is True
+
+
+def test_workflow_executor_logs_queue_wait(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    class BlockingWorkflow:
+        def run_with_events(
+            self,
+            agent_config: AgentConfig,
+            messages: list[Message],
+            attachments: list[Attachment],
+            thread_id: str | None,
+            on_event=None,
+            workflow_name: str | None = None,
+            runtime_options: RuntimeOptions | None = None,
+        ) -> tuple[AgentRunResult, list[ChatEvent]]:
+            del messages, attachments, on_event, runtime_options
+            time.sleep(0.05)
+            event = ChatEvent(
+                type="run.started",
+                data={
+                    "run_id": f"run-{thread_id}",
+                    "agent": agent_config.name,
+                    "thread_id": thread_id or "",
+                    "workflow": workflow_name or "blocking_workflow",
+                },
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=thread_id or "",
+                reply=f"done-{thread_id}",
+                metadata={"workflow": workflow_name or "blocking_workflow"},
+            )
+            return result, [event]
+
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        run_event_store=RunEventStore(tmp_path / "runs"),
+        workflow_registry=WorkflowRegistry({"blocking_workflow": BlockingWorkflow()}),
+    )
+    runtime.workflow_executor.shutdown(wait=False, cancel_futures=True)
+    runtime.workflow_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-workflow")
+    agent = AgentConfig(name="workflow-queue-agent", display_name="Workflow Queue Agent")
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+
+    async def run_two_workflows() -> list[AgentRunResult]:
+        requests = [
+            ChatRequest(
+                messages=[Message(role="user", content=f"run blocking workflow {index}")],
+                runtime_options=RuntimeOptions(thread_id=f"workflow-queue-{index}", workflow="blocking_workflow"),
+            )
+            for index in range(2)
+        ]
+        return await asyncio.gather(*(runtime.run(agent, request) for request in requests))
+
+    results = asyncio.run(run_two_workflows())
+
+    runtime.workflow_executor.shutdown(wait=False, cancel_futures=True)
+    assert [result.reply for result in results] == ["done-workflow-queue-0", "done-workflow-queue-1"]
+    queue_logs = [
+        record
+        for record in caplog.records
+        if record.name == "uvicorn.error" and record.getMessage().startswith("workflow queue acquired")
+    ]
+    assert len(queue_logs) == 2
+    assert all("wait_ms=" in record.getMessage() for record in queue_logs)
+    assert all("queue_backlog=" in record.getMessage() for record in queue_logs)
+    run_started_events = [
+        event
+        for path in (tmp_path / "runs").glob("*.json")
+        for event in json.loads(path.read_text(encoding="utf-8")).get("events", [])
+        if event.get("type") == "run.started"
+    ]
+    assert run_started_events
+    assert all("queue_backlog" in event["data"] for event in run_started_events)
+    assert all("queue_wait_ms" in event["data"] for event in run_started_events)
+
+
+def test_parking_review_queue_overload_returns_conservative_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.core.agent.runtime.PARKING_REVIEW_MAX_QUEUE_BACKLOG", 1)
+    monkeypatch.setattr("app.core.agent.runtime._parking_review_queue_backlog", lambda: 1)
+
+    class FailingWorkflow:
+        def run_with_events(self, **kwargs: object) -> tuple[AgentRunResult, list[ChatEvent]]:
+            raise AssertionError("overloaded parking review should not enter workflow")
+
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        run_event_store=RunEventStore(tmp_path / "runs"),
+        workflow_registry=WorkflowRegistry({"parking_abnormal_review": FailingWorkflow()}),
+    )
+    agent = AgentConfig(name="parking-overload-agent", display_name="Parking Overload Agent")
+    request = ChatRequest(
+        messages=[Message(role="user", content='{"reviewSourceId":"overload-source"}')],
+        runtime_options=RuntimeOptions(thread_id="parking-overload", workflow="parking_abnormal_review"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    assert json.loads(result.reply) == [
+        {
+            "reviewSourceId": "overload-source",
+            "reviewEventId": "overload-source_event_1",
+            "hit": 0,
+            "result": "系统复判任务积压，已按证据不足处理，请稍后重试。",
+        }
+    ]
+    assert result.metadata["queue_rejected"] is True
+    assert result.metadata["queue_backlog"] == 1
+    assert result.metadata["queue_name"] == "parking_review"
+    assert [event.type for event in events] == [
+        "run.started",
+        "review.skill_invocation.failed",
+        "artifact.created",
+        "agent.message",
+        "run.completed",
+    ]
+    assert events[0].data["queue_rejected"] is True
+    assert events[0].data["queue_backlog"] == 1
+    assert events[0].data["queue_name"] == "parking_review"
+    assert list((tmp_path / "runs").glob("*.json"))
+
+
+def test_parking_review_queue_metrics_use_dedicated_executor_label(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ParkingWorkflow:
+        def run_with_events(
+            self,
+            agent_config: AgentConfig,
+            messages: list[Message],
+            attachments: list[Attachment],
+            thread_id: str | None,
+            on_event=None,
+            workflow_name: str | None = None,
+            runtime_options: RuntimeOptions | None = None,
+        ) -> tuple[AgentRunResult, list[ChatEvent]]:
+            del messages, attachments, on_event, runtime_options
+            event = ChatEvent(
+                type="run.started",
+                data={
+                    "run_id": f"run-{thread_id}",
+                    "agent": agent_config.name,
+                    "thread_id": thread_id or "",
+                    "workflow": workflow_name or "parking_abnormal_review",
+                },
+            )
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=thread_id or "",
+                reply="done",
+                metadata={"workflow": workflow_name or "parking_abnormal_review"},
+            )
+            return result, [event]
+
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        run_event_store=RunEventStore(tmp_path / "runs"),
+        workflow_registry=WorkflowRegistry({"parking_abnormal_review": ParkingWorkflow()}),
+    )
+    runtime.parking_review_executor.shutdown(wait=False, cancel_futures=True)
+    runtime.parking_review_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-parking-review")
+    agent = AgentConfig(name="parking-metrics-agent", display_name="Parking Metrics Agent")
+    request = ChatRequest(
+        messages=[Message(role="user", content="run parking review workflow")],
+        runtime_options=RuntimeOptions(thread_id="parking-metrics", workflow="parking_abnormal_review"),
+    )
+
+    result, events = asyncio.run(runtime.run_with_events(agent, request))
+
+    runtime.parking_review_executor.shutdown(wait=False, cancel_futures=True)
+    assert result.reply == "done"
+    run_started = next(event for event in events if event.type == "run.started")
+    assert run_started.data["queue_name"] == "parking_review"
+
+
+def test_parking_review_deduplicates_concurrent_review_source_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.core.agent.runtime.PARKING_REVIEW_DEDUP_TTL_SECONDS", 60.0)
+
+    class BlockingParkingWorkflow:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def dedup_key(
+            self,
+            messages: list[Message],
+            attachments: list[Attachment],
+            runtime_options: RuntimeOptions | None = None,
+        ) -> str | None:
+            del attachments, runtime_options
+            payload = json.loads(messages[-1].content)
+            return str(payload["reviewSourceId"])
+
+        def run_with_events(
+            self,
+            agent_config: AgentConfig,
+            messages: list[Message],
+            attachments: list[Attachment],
+            thread_id: str | None,
+            on_event=None,
+            workflow_name: str | None = None,
+            runtime_options: RuntimeOptions | None = None,
+        ) -> tuple[AgentRunResult, list[ChatEvent]]:
+            del messages, attachments, on_event, runtime_options
+            self.calls += 1
+            time.sleep(0.05)
+            event = ChatEvent(
+                type="run.started",
+                data={
+                    "run_id": "run-source-1",
+                    "agent": agent_config.name,
+                    "thread_id": thread_id or "",
+                    "workflow": workflow_name or "parking_abnormal_review",
+                },
+            )
+            reply = '[{"reviewSourceId":"source-1","reviewEventId":"event-1","hit":0,"result":"未命中"}]'
+            result = AgentRunResult(
+                agent=agent_config.name,
+                thread_id=thread_id or "",
+                reply=reply,
+                metadata={"workflow": workflow_name or "parking_abnormal_review", "review_source_id": "source-1"},
+            )
+            return result, [event]
+
+    workflow = BlockingParkingWorkflow()
+    runtime = AgentRuntime(
+        artifact_store=ArtifactStore(root_dir=tmp_path / "threads"),
+        run_event_store=RunEventStore(tmp_path / "runs"),
+        workflow_registry=WorkflowRegistry({"parking_abnormal_review": workflow}),
+    )
+    runtime.parking_review_executor.shutdown(wait=False, cancel_futures=True)
+    runtime.parking_review_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-parking-dedup")
+    agent = AgentConfig(name="parking-dedup-agent", display_name="Parking Dedup Agent")
+
+    async def run_two_reviews() -> list[tuple[AgentRunResult, list[ChatEvent]]]:
+        requests = [
+            ChatRequest(
+                messages=[Message(role="user", content='{"reviewSourceId":"source-1"}')],
+                runtime_options=RuntimeOptions(thread_id=f"parking-dedup-{index}", workflow="parking_abnormal_review"),
+            )
+            for index in range(2)
+        ]
+        return await asyncio.gather(*(runtime.run_with_events(agent, request) for request in requests))
+
+    results = asyncio.run(run_two_reviews())
+
+    runtime.parking_review_executor.shutdown(wait=False, cancel_futures=True)
+    assert workflow.calls == 1
+    assert [result.thread_id for result, _events in results] == ["parking-dedup-0", "parking-dedup-1"]
+    assert results[0][0].reply == results[1][0].reply
+    assert results[1][0].metadata["deduped"] is True
+    assert results[1][0].metadata["dedup_source"] == "inflight"
+    assert results[1][0].metadata["dedup_key"] == "source-1"
+    assert results[1][1][0].data["deduped"] is True
+
+
 def test_runtime_init_skills_replace_agent_json_default_skills(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1714,13 +2447,12 @@ def test_agent_runtime_parking_template_without_image_returns_review_json(
     assert parsed[0]["hit"] == 0
     assert "未提供可访问的图片" in parsed[0]["result"]
     assert result.metadata["workflow"] == "parking_abnormal_review"
-    assert [event.type for event in events] == [
-        "run.started",
-        "review.input",
-        "artifact.created",
-        "agent.message",
-        "run.completed",
-    ]
+    event_types = [event.type for event in events]
+    assert event_types[0] == "run.started"
+    assert "review.input" in event_types
+    assert "review.skill_selection.completed" in event_types
+    assert "artifact.created" in event_types
+    assert event_types[-2:] == ["agent.message", "run.completed"]
 
 
 def test_agent_runtime_selected_clutter_skill_without_workflow_still_requires_image(
@@ -2153,7 +2885,7 @@ def test_agent_runtime_recovers_selected_skill_from_workbench_message_context(
     assert "data-auto-annotation" in seen_tools
 
 
-def test_agent_runtime_infers_behavior_review_skill_from_routing_text(tmp_path: Path) -> None:
+def test_agent_runtime_infers_specific_review_skill_from_review_routing_text(tmp_path: Path) -> None:
     runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
     agent = AgentConfig(
         name="routing-selected-skill-agent",
@@ -2180,13 +2912,164 @@ def test_agent_runtime_infers_behavior_review_skill_from_routing_text(tmp_path: 
                 metadata={"sourceId": "a4502e03485d35bd9957ed811623cb9c"},
             )
         ],
-        runtime_options=RuntimeOptions(thread_id="routing-behavior-review"),
+        runtime_options=RuntimeOptions(thread_id="routing-clutter-review"),
     )
 
     effective_agent, effective_request = runtime._prepare_execution(agent, request)
 
-    assert effective_request.runtime_options.selected_skills == ["behavior-review"]
-    assert "behavior-review" in effective_agent.skills
+    assert effective_request.runtime_options.selected_skills == ["17803963378248hh02dvt"]
+    assert "17803963378248hh02dvt" in effective_agent.skills
+
+
+def test_agent_runtime_expands_runtime_skill_aliases(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    request = ChatRequest(
+        messages=[Message(role="user", content="请复判这张图片")],
+        runtime_options=RuntimeOptions(
+            selected_skills=["2063607914266542080"],
+            config_options={"skill_aliases": {"2063607914266542080": "smoking-review"}},
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == ["smoking-review"]
+
+
+def test_agent_runtime_routes_review_skill_from_cv_task_mapping(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    task_id = "2063647485748645888"
+    source_id = "camera-17"
+    encoded = base64.urlsafe_b64encode(
+        f"http://edge.local/image.jpg?streamId=tenant/{task_id}/{source_id}".encode()
+    ).decode().rstrip("=")
+    request = ChatRequest(
+        messages=[Message(role="user", content="请执行智能体审核/复判任务。")],
+        attachments=[
+            Attachment(
+                name="review.jpg",
+                path=f"http://edge.local/_read/{encoded}.jpg",
+                mime_type="image/jpeg",
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            workflow="parking_abnormal_review",
+            app_template_name="StoreViolationDetection",
+            selected_skills=["fire-flame-review", "reflective-vest-review"],
+            config_options={
+                "review_task_mappings": {
+                    f"StoreViolationDetection:{task_id}": {
+                        "skill_name": "reflective-vest-review",
+                        "event_semantics": {
+                            "appTemplateName": "StoreViolationDetection",
+                            "applicationScene": "反光衣/作业服穿戴检测",
+                            "eventTypeName": "反光衣/作业服穿戴检测",
+                            "cvTaskName": "反光衣/作业服穿戴检测",
+                        },
+                    }
+                }
+            },
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == ["reflective-vest-review", "fire-flame-review"]
+    assert effective_request.runtime_options.config_options["routed_primary_skill"]["source"] == "attachment_target_skill"
+    assert effective_request.attachments[0].metadata["streamId"] == f"tenant/{task_id}/{source_id}"
+    assert effective_request.attachments[0].metadata["cvTaskId"] == task_id
+    assert effective_request.attachments[0].metadata["sourceId"] == source_id
+    assert effective_request.attachments[0].metadata["targetSkill"] == "reflective-vest-review"
+    assert "event_semantics=StoreViolationDetection; 反光衣/作业服穿戴检测" in effective_request.messages[0].content
+
+
+def test_agent_runtime_routes_review_skill_from_scene_alias_before_labels(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    request = ChatRequest(
+        messages=[Message(role="user", content="请执行智能体审核/复判任务。")],
+        attachments=[
+            Attachment(
+                name="review.jpg",
+                path="http://edge.local/review.jpg",
+                mime_type="image/jpeg",
+                metadata={
+                    "applicationScene": "顾客行为监管",
+                    "eventTypeName": "人员跌倒/倒地检测",
+                    "objects": [{"label": "fight"}],
+                },
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            workflow="parking_abnormal_review",
+            selected_skills=["fight-review", "fall-review", "smoking-review"],
+            config_options={
+                "scene_skill_aliases": {
+                    "人员跌倒/倒地检测": "fall-review",
+                    "争吵检测": "fight-review",
+                },
+                "skill_label_aliases": {"fight": "fight-review"},
+            },
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == ["fall-review", "fight-review", "smoking-review"]
+    assert effective_request.runtime_options.config_options["routed_primary_skill"]["source"] == "scene_skill_aliases"
+
+
+def test_agent_runtime_refuses_ambiguous_big_scene_alias(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    request = ChatRequest(
+        messages=[Message(role="user", content="请执行智能体审核/复判任务。")],
+        attachments=[
+            Attachment(
+                name="review.jpg",
+                path="http://edge.local/review.jpg",
+                mime_type="image/jpeg",
+                metadata={"applicationScene": "顾客行为监管"},
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            workflow="parking_abnormal_review",
+            selected_skills=["fight-review", "fall-review", "smoking-review"],
+            config_options={
+                "scene_skill_aliases": {
+                    "人员跌倒/倒地检测": "fall-review",
+                    "争吵检测": "fight-review",
+                }
+            },
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == []
+    assert effective_request.runtime_options.config_options["skill_routing_error"]["reason"] == "no_skill_match"
+
+
+def test_agent_runtime_does_not_route_primary_skill_for_non_review_request(tmp_path: Path) -> None:
+    runtime = AgentRuntime(artifact_store=ArtifactStore(root_dir=tmp_path))
+    request = ChatRequest(
+        messages=[Message(role="user", content="普通多技能请求")],
+        attachments=[
+            Attachment(
+                name="input.jpg",
+                path="/mnt/user-data/uploads/input.jpg",
+                mime_type="image/jpeg",
+                metadata={"cvTaskId": "task-1"},
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            selected_skills=["first-skill", "second-skill"],
+            config_options={"review_task_mappings": {"task-1": {"skill_name": "second-skill"}}},
+        ),
+    )
+
+    effective_request = runtime._effective_request(request)
+
+    assert effective_request.runtime_options.selected_skills == ["first-skill", "second-skill"]
+    assert "routed_primary_skill" not in effective_request.runtime_options.config_options
 
 
 def test_agent_runtime_does_not_infer_skill_for_explicit_artifact_workflow(tmp_path: Path) -> None:
@@ -2200,6 +3083,31 @@ def test_agent_runtime_does_not_infer_skill_for_explicit_artifact_workflow(tmp_p
     _effective_agent, effective_request = runtime._prepare_execution(agent, request)
 
     assert effective_request.runtime_options.selected_skills == []
+
+
+def test_runtime_cleanup_removes_expired_thread_dirs(tmp_path: Path) -> None:
+    runtime_root = tmp_path / ".runtime"
+    threads_dir = runtime_root / "threads"
+    expired = threads_dir / "expired-thread"
+    fresh = threads_dir / "fresh-thread"
+    expired.mkdir(parents=True)
+    fresh.mkdir()
+    old_time = time.time() - 3600
+    os.utime(expired, (old_time, old_time))
+
+    result = run_runtime_cleanup_once(
+        RuntimeCleanupConfig(
+            root_dir=runtime_root,
+            retention_seconds=60,
+            interval_seconds=60,
+            initial_delay_seconds=0,
+            max_delete_per_run=10,
+        )
+    )
+
+    assert result == {"status": "ok", "deleted": 1, "remaining_expired": 0}
+    assert not expired.exists()
+    assert fresh.exists()
 
 
 def test_agent_runtime_merges_runtime_selected_skill_into_workflow_allowlist(tmp_path: Path) -> None:

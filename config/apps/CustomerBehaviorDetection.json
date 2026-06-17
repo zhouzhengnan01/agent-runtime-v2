@@ -1,0 +1,66 @@
+{
+  "name": "CustomerBehaviorDetection",
+  "title": "顾客行为监管",
+  "description": "兼容 ACP 平台模板名 CustomerBehaviorDetection，使用专用视觉复判技能判断抽烟、人员跌倒/倒地、争吵等客户行为事件。",
+  "aliases": [
+    "顾客行为检测",
+    "客户行为监管",
+    "客户行为检测",
+    "顾客行为安全监管",
+    "客户行为安全监管"
+  ],
+  "category": "vision",
+  "icon": "shield",
+  "agent_name": "default",
+  "workflow": "parking_abnormal_review",
+  "selected_skills": [
+    "smoking-review",
+    "fall-review",
+    "fight-review"
+  ],
+  "selected_mcp_tools": [],
+  "runtime_options": {
+    "config_options": {
+      "force_model_config": true
+    }
+  },
+  "prompt_examples": [
+    "人员翻越围栏进入禁区，请按证据优先模式判断",
+    "老人摔倒，需要区分文本规则判断和视觉证据确认",
+    "客户出现异常行为，请结合视觉证据给出判断和处置建议"
+  ],
+  "tags": [
+    "客户行为",
+    "行为识别",
+    "安全",
+    "证据优先"
+  ],
+  "model_tags": [
+    "chat",
+    "vision",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://218.67.242.10:59202/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

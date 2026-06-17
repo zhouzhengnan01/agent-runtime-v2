@@ -147,6 +147,94 @@ def test_app_template_registry_deduplicates_collection_and_file_templates(tmp_pa
     assert registry.get("demo").selected_skills == ["drawio-generation"]
 
 
+def test_upload_app_template_does_not_inherit_missing_workflow(tmp_path: Path) -> None:
+    builtin_apps_dir = tmp_path / "config" / "apps"
+    upload_apps_dir = tmp_path / "config" / "upload" / "apps"
+    builtin_apps_dir.mkdir(parents=True)
+    upload_apps_dir.mkdir(parents=True)
+    (builtin_apps_dir / "review-app.json").write_text(
+        json.dumps(
+            {
+                "name": "review-app",
+                "title": "Review App",
+                "agent_name": "default",
+                "workflow": "parking_abnormal_review",
+                "selected_skills": ["builtin-review"],
+                "runtime_options": {
+                    "config_options": {
+                        "force_model_config": True,
+                        "builtin_only": "kept",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (upload_apps_dir / "review-app.json").write_text(
+        json.dumps(
+            {
+                "name": "review-app",
+                "title": "Uploaded Review App",
+                "agent_name": "default",
+                "selected_skills": ["2063607914266542080"],
+                "runtime_options": {
+                    "config_options": {
+                        "skill_aliases": {"2063607914266542080": "smoking-review"},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    template = AppTemplateRegistry(root_dir=tmp_path).get("review-app")
+
+    assert template.title == "Uploaded Review App"
+    assert template.workflow is None
+    assert template.selected_skills == ["smoking-review"]
+    assert template.runtime_options["config_options"] == {
+        "force_model_config": True,
+        "builtin_only": "kept",
+        "skill_aliases": {"2063607914266542080": "smoking-review"},
+    }
+
+
+def test_upload_app_template_uses_explicit_workflow(tmp_path: Path) -> None:
+    builtin_apps_dir = tmp_path / "config" / "apps"
+    upload_apps_dir = tmp_path / "config" / "upload" / "apps"
+    builtin_apps_dir.mkdir(parents=True)
+    upload_apps_dir.mkdir(parents=True)
+    (builtin_apps_dir / "review-app.json").write_text(
+        json.dumps(
+            {
+                "name": "review-app",
+                "title": "Review App",
+                "agent_name": "default",
+                "workflow": "parking_abnormal_review",
+                "selected_skills": ["builtin-review"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (upload_apps_dir / "review-app.json").write_text(
+        json.dumps(
+            {
+                "name": "review-app",
+                "title": "Uploaded Review App",
+                "agent_name": "default",
+                "workflow": "parking_abnormal_review",
+                "selected_skills": ["smoking-review"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    template = AppTemplateRegistry(root_dir=tmp_path).get("review-app")
+
+    assert template.workflow == "parking_abnormal_review"
+    assert template.selected_skills == ["smoking-review"]
+
+
 def test_app_template_registry_expands_plugin_aliases_from_root_dir(tmp_path: Path) -> None:
     apps_dir = tmp_path / "config" / "apps"
     plugin_root = tmp_path / "plugins" / "skills" / "root-skill-plugin"
@@ -197,6 +285,19 @@ def test_app_template_registry_rejects_unknown_template(tmp_path: Path) -> None:
         registry.get("missing")
 
 
+def test_app_template_registry_rejects_invalid_template_name_without_path_lookup(tmp_path: Path) -> None:
+    registry = AppTemplateRegistry(root_dir=tmp_path)
+    prompt_like_name = (
+        "Session context (JSON):\n"
+        '{"draftId":"IZ6svzP9_KmVAlpjG_VXB0Qj2UgBzRAQ"}\n\n'
+        "Original request: 2\n"
+        "Visualization type: big screen\n"
+    )
+
+    with pytest.raises(ValueError, match="App template name must be 1-128 characters"):
+        registry.get(prompt_like_name)
+
+
 def test_app_runtime_options_expand_platform_skill_aliases() -> None:
     template = AppTemplateRegistry().get("general-jetlinks-assistant")
 
@@ -219,6 +320,40 @@ def test_app_runtime_options_expand_platform_skill_aliases() -> None:
         "deployment-candidate-reviewer",
         "experiment-ledger",
     ]
+
+
+def test_app_template_registry_finds_template_by_alias() -> None:
+    registry = AppTemplateRegistry()
+
+    expected = {
+        "顾客行为检测": "CustomerBehaviorDetection",
+        "消防通道监管": "FireLaneComplianceDetection",
+        "车场异常监控": "ParkingAbnormalEventMonitoring",
+        "车场异常事件监管": "ParkingAbnormalEventMonitoring",
+        "后厨通道卫生安全监管": "KitchenAisleHygieneDetection",
+    }
+
+    for alias, template_name in expected.items():
+        template = registry.find(alias)
+        assert template is not None
+        assert template.name == template_name
+
+    kitchen = registry.find("后厨通道卫生安全监管")
+    assert kitchen is not None
+    assert "17803963378248hh02dvt" in kitchen.selected_skills
+    assert "garbage-overflow-review" in kitchen.selected_skills
+    assert "smoking-review" in kitchen.selected_skills
+
+
+def test_visualization_platform_skill_alias_expands_to_ai_vis_page() -> None:
+    template = AppTemplateRegistry().get("general-jetlinks-assistant")
+
+    options = merge_runtime_options_with_template(
+        RuntimeOptions(app_template_name="general-jetlinks-assistant", selected_skills=["1780988275767z1lxtrd1"]),
+        template,
+    )
+
+    assert options.selected_skills == ["ai-vis-page"]
 
 
 def test_request_selected_skills_expand_platform_skill_aliases(tmp_path: Path) -> None:
@@ -271,14 +406,14 @@ def test_preconfigured_app_templates_reference_existing_capabilities() -> None:
 
 def test_preconfigured_app_template_skills_have_local_entities() -> None:
     registry = AppTemplateRegistry()
-    config_skills = {path.stem for path in (registry.root_dir / "config" / "skills").glob("*.json")}
+    skill_names = {skill.name for skill in SkillRegistry(registry.root_dir).list()}
 
     missing = sorted(
         {
             skill_name
             for template in registry.list()
             for skill_name in template.selected_skills
-            if skill_name not in config_skills
+            if skill_name not in skill_names
         }
     )
 
@@ -352,19 +487,32 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         if template.name == "algorithm-engineer-full-cycle":
             assert template.runtime_options["mode"] == "yolo"
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
-        elif template.name == "behavior-review":
-            assert template.runtime_options["mode"] == "yolo"
-            assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
         elif template.name == "algorithm-engineer-workbench":
             assert template.runtime_options["mode"] == "yolo"
             assert template.runtime_options["config_options"]["max_tool_rounds"] == 16
         elif template.name == "reference-image-yolo-training":
             assert template.runtime_options == {"mode": "yolo", "config_options": {"max_tool_rounds": 16}}
         elif template.name in {
+            "CustomerBehaviorDetection",
+            "FireLaneComplianceDetection",
+            "KitchenAisleHygieneDetection",
+            "ParkingAbnormalEventMonitoring",
+            "StoreViolationDetection",
+        }:
+            assert template.workflow == "parking_abnormal_review"
+            assert template.runtime_options.get("workflow") == "parking_abnormal_review"
+            assert "skill_aliases" in template.runtime_options["config_options"]
+            assert "scene_skill_aliases" in template.runtime_options["config_options"]
+        elif template.name == "ai-vis-page":
+            assert template.runtime_options["config_options"]["force_model_config"] is True
+            assert template.runtime_options["config_options"]["visualBigscreenMode"] == "full"
+            assert template.workflow == "visualization_bigscreen_workflow"
+        elif template.name in {
             "70aaee52-99c2-49f5-a9c7-fb746821d3df",
             "0bb9536b-8a36-40fd-8c5b-ea22804b55ab",
             "737d9452-99c6-470e-a77a-20f2f7d73eff",
             "305fb466-1f7f-442b-861e-02e3246f8563",
+            "zujiankaifa",
         }:
             assert template.runtime_options == {
                 "mode": "safe",
@@ -388,17 +536,56 @@ def test_preconfigured_app_templates_carry_model_defaults() -> None:
         assert len(template.models) == 1, template.name
         model = template.models[0]
         assert model.name, template.name
-        assert model.model, template.name
         assert model.default_model, template.name
-        assert model.base_url, template.name
-        if template.name == "305fb466-1f7f-442b-861e-02e3246f8563":
+        if template.name == "ai-vis-page":
+            assert model.model == "", template.name
+            assert model.base_url == "", template.name
+            assert model.api_key == "", template.name
+            assert model.api_key_env is None, template.name
+        elif template.name == "305fb466-1f7f-442b-861e-02e3246f8563":
+            assert model.model, template.name
+            assert model.base_url, template.name
             assert model.api_key is None, template.name
             assert model.api_key_env == "JETLINKS_APP_305FB466_GPT54_API_KEY", template.name
+        elif template.name == "8dd173d5-9ca2-4fde-9678-d5165a111cdb":
+            assert model.model, template.name
+            assert model.base_url, template.name
+            assert model.api_key is None, template.name
+            assert model.api_key_env == "JETLINKS_APP_8DD173D5_GPT55_API_KEY", template.name
+        elif template.name == "zujiankaifa":
+            assert model.model, template.name
+            assert model.base_url, template.name
+            assert model.api_key is None, template.name
+            assert model.api_key_env == "ZUJIAN_KAIFA_MODEL_API_KEY", template.name
+        elif template.name in {
+            "CustomerBehaviorDetection",
+            "FireLaneComplianceDetection",
+            "KitchenAisleHygieneDetection",
+            "ParkingAbnormalEventMonitoring",
+            "StoreViolationDetection",
+        }:
+            assert model.name == "qwen3.7-plus", template.name
+            assert model.model == "qwen3.7-plus", template.name
+            assert model.default_model == "qwen3.7-plus", template.name
+            assert model.base_url, template.name
+            assert model.api_key is None, template.name
+            assert model.api_key_env == "DASHSCOPE_API_KEY", template.name
         else:
+            assert model.model, template.name
+            assert model.base_url, template.name
             assert model.api_key == "abc@123", template.name
             assert model.api_key_env is None, template.name
         assert model.api_key_enc is None, template.name
-        assert model.temperature == 0.4, template.name
+        if template.name in {
+            "CustomerBehaviorDetection",
+            "FireLaneComplianceDetection",
+            "KitchenAisleHygieneDetection",
+            "ParkingAbnormalEventMonitoring",
+            "StoreViolationDetection",
+        }:
+            assert model.temperature == 0.2, template.name
+        else:
+            assert model.temperature == 0.4, template.name
         assert model.max_tokens == 2048, template.name
 
 
@@ -467,36 +654,6 @@ def test_preconfigured_app_templates_do_not_preselect_artifact_workflow() -> Non
         for template in registry.list()
         if template.workflow == "artifact_workflow"
     } == {}
-
-
-def test_behavior_review_template_enables_continuous_second_pass_policy() -> None:
-    template = AppTemplateRegistry().get("behavior-review")
-
-    assert template.workflow is None
-    assert template.title == "行为识别连续复判"
-    assert template.runtime_options["mode"] == "yolo"
-    assert template.runtime_options["config_options"]["max_tool_rounds"] == 1000
-    policy = template.runtime_options["config_options"]["agent_execution_policy"]
-    assert policy["mode"] == "continuous_review"
-    assert policy["stage_order"] == [
-        "alert_ingest",
-        "evidence_integrity_check",
-        "second_pass_judgement",
-        "false_positive_suppression",
-        "risk_grade",
-        "action_recommendation",
-        "review_ledger",
-    ]
-    conditional = template.runtime_options["config_options"]["conditional_tool_loop"]
-    assert conditional["continue_while"] == {
-        "json_path": "$.pending_count",
-        "operator": "gt",
-        "expected": 0,
-    }
-    assert conditional["poll_interval_seconds"] == 3
-    assert "tool_call" in template.models[0].features
-
-
 def test_algorithm_engineer_full_cycle_selects_full_stage_skill_chain() -> None:
     template = AppTemplateRegistry().get("algorithm-engineer-full-cycle")
 
@@ -655,10 +812,16 @@ class CustomWorkflow:
 def test_preconfigured_app_templates_have_no_duplicate_names_or_titles() -> None:
     registry = AppTemplateRegistry()
     templates = registry.list()
-    app_files = [path for path in (registry.root_dir / "config" / "apps").glob("*.json") if path.name != "templates.json"]
+    app_names = {
+        path.stem
+        for directory in registry.config_dirs
+        if directory.is_dir()
+        for path in directory.glob("*.json")
+        if path.name != "templates.json"
+    }
     names = [template.name for template in templates]
 
-    assert len(templates) == len(app_files)
+    assert len(templates) == len(app_names)
     assert len(names) == len(set(names))
 
 

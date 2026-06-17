@@ -1,0 +1,66 @@
+{
+  "name": "KitchenAisleHygieneDetection",
+  "title": "后厨通道卫生检测",
+  "description": "兼容 ACP 平台模板名 KitchenAisleHygieneDetection，使用专用视觉复判技能判断后厨通道杂物、垃圾满溢、火焰/明火等事件。",
+  "aliases": [
+    "后厨通道卫生安全监管",
+    "后厨通道卫生检测",
+    "后厨通道卫生监管",
+    "后厨通道卫生安全检测"
+  ],
+  "category": "vision",
+  "icon": "shield",
+  "agent_name": "default",
+  "workflow": "parking_abnormal_review",
+  "selected_skills": [
+    "17803963378248hh02dvt",
+    "garbage-overflow-review",
+    "fire-flame-review"
+  ],
+  "selected_mcp_tools": [],
+  "runtime_options": {
+    "config_options": {
+      "force_model_config": true
+    }
+  },
+  "prompt_examples": [
+    "请判断后厨通道是否存在杂物堆放、通行受阻或卫生不达标问题，并给出视觉证据。",
+    "识别厨房过道、操作间通道是否有垃圾、积水、物品乱放或阻塞风险。",
+    "根据告警图片判断是否存在后厨通道卫生合规问题，并输出证据和处置建议。"
+  ],
+  "tags": [
+    "后厨通道",
+    "卫生检测",
+    "杂物堆放",
+    "合规检测",
+    "证据优先"
+  ],
+  "model_tags": [
+    "chat",
+    "vision",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://218.67.242.10:59202/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

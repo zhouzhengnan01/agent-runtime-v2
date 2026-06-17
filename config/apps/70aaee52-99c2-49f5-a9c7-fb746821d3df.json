@@ -27,6 +27,6 @@
     "tool_choice" : "auto",
     "temperature" : 0.4,
     "max_tokens" : 2048,
-    "request_timeout_seconds" : 180
+    "request_timeout_seconds" : 300
   } ]
 }

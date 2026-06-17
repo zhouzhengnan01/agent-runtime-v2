@@ -7,7 +7,10 @@ import logging
 import mimetypes
 import os
 import re
-from collections.abc import AsyncIterator
+import threading
+import time
+from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -45,6 +48,16 @@ from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Mess
 logger = logging.getLogger("uvicorn.error")
 REMOTE_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024
 REMOTE_ATTACHMENT_TIMEOUT_SECONDS = 30.0
+WORKFLOW_THREAD_WORKERS = max(1, int(os.getenv("JETLINKS_WORKFLOW_THREAD_WORKERS", "16") or "16"))
+PARKING_REVIEW_THREAD_WORKERS = max(
+    1,
+    int(os.getenv("JETLINKS_PARKING_REVIEW_THREAD_WORKERS", "4") or "4"),
+)
+WORKFLOW_QUEUE_WARN_SECONDS = max(0.0, float(os.getenv("JETLINKS_WORKFLOW_QUEUE_WARN_SECONDS", "1") or "1"))
+PARKING_REVIEW_MAX_QUEUE_BACKLOG = max(0, int(os.getenv("PARKING_REVIEW_MAX_QUEUE_BACKLOG", "16") or "16"))
+_WORKFLOW_QUEUE_LOCK = threading.Lock()
+_WORKFLOW_QUEUE_PENDING = 0
+_PARKING_REVIEW_QUEUE_PENDING = 0
 FIXED_REPLY_ENV = "JETLINKS_AGENT_FIXED_REPLY"
 FIXED_REPLY_ENABLED_ENV = "JETLINKS_AGENT_FIXED_REPLY_ENABLED"
 FIXED_REPLY_FOREVER_ENV = "JETLINKS_AGENT_FIXED_REPLY_FOREVER"
@@ -55,6 +68,176 @@ DEFAULT_FIXED_REPLY = (
     '"hit":0,'
     '"result":"联调固定响应：agent-v2 已收到请求并返回固定内容。"}]'
 )
+
+
+@dataclass
+class RuntimeQueueSnapshot:
+    name: str
+    pending: int
+    workers: int
+    max_backlog: int | None
+    overloaded: bool
+    rejected_total: int
+    last_overloaded_at: float | None
+    last_rejected_at: float | None
+    last_reject_reason: str | None
+
+
+class RuntimeQueueState:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending_by_queue: dict[str, int] = {}
+        self._rejected_total_by_queue: dict[str, int] = {}
+        self._last_overloaded_at_by_queue: dict[str, float] = {}
+        self._last_rejected_at_by_queue: dict[str, float] = {}
+        self._last_reject_reason_by_queue: dict[str, str] = {}
+
+    def increment(self, queue_name: str) -> int:
+        with self._lock:
+            backlog = self._pending_by_queue.get(queue_name, 0)
+            self._pending_by_queue[queue_name] = backlog + 1
+            return backlog
+
+    def backlog(self, queue_name: str) -> int:
+        with self._lock:
+            return self._pending_by_queue.get(queue_name, 0)
+
+    def decrement(self, queue_name: str) -> int:
+        with self._lock:
+            backlog = max(0, self._pending_by_queue.get(queue_name, 0) - 1)
+            self._pending_by_queue[queue_name] = backlog
+            return backlog
+
+    def record_rejection(self, queue_name: str, *, reason: str) -> None:
+        now = time.time()
+        with self._lock:
+            self._rejected_total_by_queue[queue_name] = self._rejected_total_by_queue.get(queue_name, 0) + 1
+            self._last_rejected_at_by_queue[queue_name] = now
+            self._last_reject_reason_by_queue[queue_name] = reason
+
+    def rejected_total(self, queue_name: str) -> int:
+        with self._lock:
+            return self._rejected_total_by_queue.get(queue_name, 0)
+
+    def last_overloaded_at(self, queue_name: str) -> float | None:
+        with self._lock:
+            return self._last_overloaded_at_by_queue.get(queue_name)
+
+    def last_rejected_at(self, queue_name: str) -> float | None:
+        with self._lock:
+            return self._last_rejected_at_by_queue.get(queue_name)
+
+    def last_reject_reason(self, queue_name: str) -> str | None:
+        with self._lock:
+            return self._last_reject_reason_by_queue.get(queue_name)
+
+    def snapshot(
+        self,
+        *,
+        queue_name: str,
+        workers: int,
+        max_backlog: int | None = None,
+    ) -> RuntimeQueueSnapshot:
+        with self._lock:
+            pending = self._pending_by_queue.get(queue_name, 0)
+            overloaded = max_backlog is not None and max_backlog > 0 and pending >= max_backlog
+            if overloaded:
+                self._last_overloaded_at_by_queue[queue_name] = time.time()
+        return RuntimeQueueSnapshot(
+            name=queue_name,
+            pending=pending,
+            workers=workers,
+            max_backlog=max_backlog,
+            overloaded=overloaded,
+            rejected_total=self.rejected_total(queue_name),
+            last_overloaded_at=self.last_overloaded_at(queue_name),
+            last_rejected_at=self.last_rejected_at(queue_name),
+            last_reject_reason=self.last_reject_reason(queue_name),
+        )
+
+
+RUNTIME_QUEUE_STATE = RuntimeQueueState()
+
+
+def _extract_review_source_id_for_overload(text: str) -> str:
+    payload = _parse_json_object_for_overload(text)
+    if isinstance(payload, dict):
+        for key in ("reviewSourceId", "review_source_id", "sourceId", "source_id"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        headers = payload.get("headers")
+        if isinstance(headers, dict):
+            for key in ("reviewSourceId", "review_source_id"):
+                value = headers.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    for pattern in (
+        r"reviewSourceId为\[([^\]]+)\]",
+        r"复判事件来源reviewSourceId为\[([^\]]+)\]",
+        r"复判事件来源id为\[([^\]]+)\]",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _parse_json_object_for_overload(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        value = json.loads(stripped)
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _workflow_queue_increment() -> int:
+    global _WORKFLOW_QUEUE_PENDING
+    backlog = RUNTIME_QUEUE_STATE.increment("default_workflow")
+    with _WORKFLOW_QUEUE_LOCK:
+        _WORKFLOW_QUEUE_PENDING = RUNTIME_QUEUE_STATE.backlog("default_workflow")
+    return backlog
+
+
+def _workflow_queue_backlog() -> int:
+    backlog = RUNTIME_QUEUE_STATE.backlog("default_workflow")
+    with _WORKFLOW_QUEUE_LOCK:
+        _WORKFLOW_QUEUE_PENDING = backlog
+    return backlog
+
+
+def _workflow_queue_decrement() -> int:
+    global _WORKFLOW_QUEUE_PENDING
+    backlog = RUNTIME_QUEUE_STATE.decrement("default_workflow")
+    with _WORKFLOW_QUEUE_LOCK:
+        _WORKFLOW_QUEUE_PENDING = backlog
+    return backlog
+
+
+def _parking_review_queue_increment() -> int:
+    global _PARKING_REVIEW_QUEUE_PENDING
+    backlog = RUNTIME_QUEUE_STATE.increment("parking_review")
+    with _WORKFLOW_QUEUE_LOCK:
+        _PARKING_REVIEW_QUEUE_PENDING = RUNTIME_QUEUE_STATE.backlog("parking_review")
+    return backlog
+
+
+def _parking_review_queue_backlog() -> int:
+    backlog = RUNTIME_QUEUE_STATE.backlog("parking_review")
+    with _WORKFLOW_QUEUE_LOCK:
+        _PARKING_REVIEW_QUEUE_PENDING = backlog
+    return backlog
+
+
+def _parking_review_queue_decrement() -> int:
+    global _PARKING_REVIEW_QUEUE_PENDING
+    backlog = RUNTIME_QUEUE_STATE.decrement("parking_review")
+    with _WORKFLOW_QUEUE_LOCK:
+        _PARKING_REVIEW_QUEUE_PENDING = backlog
+    return backlog
 
 
 @dataclass(frozen=True)
@@ -96,6 +279,18 @@ class AgentRuntime:
         self.session_manager = session_manager or AgentSessionManager()
         self.workflow_registry = workflow_registry or WorkflowRegistry.builtin(self.artifact_store)
         self.workflow_router = workflow_router
+        self.workflow_executor = ThreadPoolExecutor(
+            max_workers=WORKFLOW_THREAD_WORKERS,
+            thread_name_prefix="jetlinks-workflow",
+        )
+        self.parking_review_executor = ThreadPoolExecutor(
+            max_workers=PARKING_REVIEW_THREAD_WORKERS,
+            thread_name_prefix="jetlinks-parking-review",
+        )
+        self.workflow_executors: dict[str, str] = {
+            "default_workflow": "workflow_executor",
+            "parking_review": "parking_review_executor",
+        }
         self.model_config, self._model_config_fields = self._normalize_model_config(model_config)
         self.app_template_registry = app_template_registry or AppTemplateRegistry()
         self.secret_codec = SecretCodec(self.app_template_registry.root_dir)
@@ -164,28 +359,15 @@ class AgentRuntime:
             )
             return result, events
         if execution.workflow_name is not None:
+            overload_result = self._parking_review_queue_overload_result(execution)
+            if overload_result is not None:
+                return overload_result
             # Workflow path: a named workflow owns the full execution instead of
             # the generic tool-calling loop.
-            workflow = self.workflow_registry.get(execution.workflow_name)
-            if workflow is None:
-                raise ValueError(f"Workflow is not registered: {execution.workflow_name}")
-            result, events = workflow.run_with_events(
-                agent_config=execution.agent_config,
-                messages=self._workflow_messages(execution.conversation),
-                attachments=execution.request.attachments,
-                thread_id=execution.paths.thread_id,
-                workflow_name=execution.workflow_name,
-                runtime_options=execution.request.runtime_options,
+            return await self._run_workflow_in_executor(
+                lambda: self._run_workflow_with_events_sync(execution),
+                execution,
             )
-            self.session_store.save(
-                execution.paths,
-                self._conversation_with_result(execution.conversation, result),
-                run_id=self._run_id(events),
-            )
-            self._enrich_required_inputs(result, execution.request)
-            self._replace_final_result_event(events, result)
-            self._persist_events(execution.agent_config, execution.request, result.thread_id, events, result)
-            return result, events
 
         # Default path: merge thread history and let the agent loop decide when
         # to answer directly versus when to call tools.
@@ -270,6 +452,12 @@ class AgentRuntime:
         if execution.workflow_name is not None:
             if self.workflow_registry.get(execution.workflow_name) is None:
                 raise ValueError(f"Workflow is not registered: {execution.workflow_name}")
+            overload_result = self._parking_review_queue_overload_result(execution)
+            if overload_result is not None:
+                _result, events = overload_result
+                for event in events:
+                    yield event
+                return
             async for event in self._stream_workflow_events(execution):
                 yield event
             return
@@ -284,6 +472,10 @@ class AgentRuntime:
         final_result: AgentRunResult | None = None
 
         def on_event(event: ChatEvent) -> None:
+            if event.type == "run.started":
+                queue_metrics = getattr(execution, "_workflow_queue_metrics", None)
+                if isinstance(queue_metrics, dict):
+                    event.data.update(queue_metrics)
             captured_events.append(event)
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
@@ -304,12 +496,13 @@ class AgentRuntime:
                 )
                 if not captured_events:
                     captured_events = list(returned_events)
+                    self._apply_workflow_queue_metrics(captured_events, execution)
             except BaseException as exc:
                 loop.call_soon_threadsafe(queue.put_nowait, exc)
             finally:
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
-        task = asyncio.create_task(asyncio.to_thread(run_workflow))
+        task = asyncio.create_task(self._run_workflow_in_executor(run_workflow, execution))
         try:
             while True:
                 item = await queue.get()
@@ -336,6 +529,244 @@ class AgentRuntime:
                         run_id=self._run_id(captured_events),
                     )
                 self._persist_events(execution.agent_config, execution.request, thread_id, captured_events, final_result)
+
+    async def _run_workflow_in_executor(self, func: Callable[[], Any], execution: ExecutionContext) -> Any:
+        loop = asyncio.get_running_loop()
+        queued_at = time.monotonic()
+        queue_name = self._workflow_queue_name(execution)
+        queued_backlog = self._workflow_queue_increment(execution)
+        queue_workers = self._workflow_queue_workers(execution)
+        logger.info(
+            "workflow queue submitted workflow=%s thread_id=%s queue=%s workers=%s queue_backlog=%s",
+            execution.workflow_name,
+            execution.paths.thread_id,
+            queue_name,
+            queue_workers,
+            queued_backlog,
+        )
+
+        def wrapped() -> Any:
+            wait_seconds = time.monotonic() - queued_at
+            start_backlog = self._workflow_queue_decrement(execution)
+            object.__setattr__(
+                execution,
+                "_workflow_queue_metrics",
+                {
+                    "queue_backlog": start_backlog,
+                    "queue_wait_ms": round(wait_seconds * 1000, 1),
+                    "queue_workers": queue_workers,
+                    "queue_name": queue_name,
+                },
+            )
+            log = logger.warning if wait_seconds >= WORKFLOW_QUEUE_WARN_SECONDS else logger.info
+            log(
+                "workflow queue acquired workflow=%s thread_id=%s queue=%s wait_ms=%.1f workers=%s queue_backlog=%s",
+                execution.workflow_name,
+                execution.paths.thread_id,
+                queue_name,
+                wait_seconds * 1000,
+                queue_workers,
+                start_backlog,
+            )
+            started_at = time.monotonic()
+            try:
+                return func()
+            except Exception:
+                logger.exception(
+                    "workflow execution failed workflow=%s thread_id=%s elapsed_ms=%.1f",
+                    execution.workflow_name,
+                    execution.paths.thread_id,
+                    (time.monotonic() - started_at) * 1000,
+                )
+                raise
+            finally:
+                logger.info(
+                    "workflow execution finished workflow=%s thread_id=%s queue=%s elapsed_ms=%.1f",
+                    execution.workflow_name,
+                    execution.paths.thread_id,
+                    queue_name,
+                    (time.monotonic() - started_at) * 1000,
+                )
+
+        return await loop.run_in_executor(self._workflow_executor_for(execution), wrapped)
+
+    def _run_workflow_with_events_sync(self, execution: ExecutionContext) -> tuple[AgentRunResult, list[ChatEvent]]:
+        workflow = self.workflow_registry.get(execution.workflow_name or "")
+        if workflow is None:
+            raise ValueError(f"Workflow is not registered: {execution.workflow_name}")
+        result, events = workflow.run_with_events(
+            agent_config=execution.agent_config,
+            messages=self._workflow_messages(execution.conversation),
+            attachments=execution.request.attachments,
+            thread_id=execution.paths.thread_id,
+            workflow_name=execution.workflow_name,
+            runtime_options=execution.request.runtime_options,
+        )
+        self._apply_workflow_queue_metrics(events, execution)
+        self.session_store.save(
+            execution.paths,
+            self._conversation_with_result(execution.conversation, result),
+            run_id=self._run_id(events),
+        )
+        self._enrich_required_inputs(result, execution.request)
+        self._replace_final_result_event(events, result)
+        self._persist_events(execution.agent_config, execution.request, result.thread_id, events, result)
+        return result, events
+
+    @staticmethod
+    def _apply_workflow_queue_metrics(events: list[ChatEvent], execution: ExecutionContext) -> None:
+        queue_metrics = getattr(execution, "_workflow_queue_metrics", None)
+        if not isinstance(queue_metrics, dict):
+            return
+        for event in events:
+            if event.type == "run.started":
+                event.data.update(queue_metrics)
+                return
+
+    def _parking_review_queue_overload_result(
+        self,
+        execution: ExecutionContext,
+    ) -> tuple[AgentRunResult, list[ChatEvent]] | None:
+        if execution.workflow_name != "parking_abnormal_review":
+            return None
+        if PARKING_REVIEW_MAX_QUEUE_BACKLOG <= 0:
+            return None
+        queue_backlog = _parking_review_queue_backlog()
+        if queue_backlog < PARKING_REVIEW_MAX_QUEUE_BACKLOG:
+            return None
+        self.queue_state().record_rejection("parking_review", reason="parking_review_queue_overloaded")
+
+        recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
+        workflow = execution.workflow_name
+        recorder.emit(
+            "run.started",
+            {
+                "run_id": recorder.run_id,
+                "workflow": workflow,
+                "execution_mode": workflow,
+                "queue_backlog": queue_backlog,
+                "queue_wait_ms": 0.0,
+                "queue_workers": PARKING_REVIEW_THREAD_WORKERS,
+                "queue_name": "parking_review",
+                "queue_rejected": True,
+                "queue_reject_reason": "parking_review_queue_overloaded",
+            },
+        )
+        reply = self._parking_review_overload_reply(execution)
+        recorder.emit(
+            "review.skill_invocation.failed",
+            {
+                "skill_name": "",
+                "reason": "parking_review_queue_overloaded",
+                "queue_backlog": queue_backlog,
+                "queue_workers": PARKING_REVIEW_THREAD_WORKERS,
+            },
+        )
+        artifact = self.artifact_store.write_text_artifact(
+            execution.paths,
+            "parking_abnormal_review_result.json",
+            reply,
+        )
+        recorder.emit(
+            "artifact.created",
+            {"path": f"outputs/{artifact.name}", "name": artifact.name, "mime_type": artifact.mime_type},
+        )
+        recorder.emit("agent.message", {"text": reply})
+        result = AgentRunResult(
+            agent=execution.agent_config.name,
+            thread_id=execution.paths.thread_id,
+            status="completed",
+            reply=reply,
+            artifacts=[artifact],
+            metadata={
+                "workflow": workflow,
+                "queue_backlog": queue_backlog,
+                "queue_workers": PARKING_REVIEW_THREAD_WORKERS,
+                "queue_name": "parking_review",
+                "queue_rejected": True,
+                "artifact_path": f"outputs/{artifact.name}",
+            },
+        )
+        recorder.emit("run.completed", {"result": result.model_dump()})
+        self.session_store.save(
+            execution.paths,
+            self._conversation_with_result(execution.conversation, result),
+            run_id=recorder.run_id,
+        )
+        self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, recorder.events, result)
+        logger.warning(
+            "parking review queue overloaded thread_id=%s queue_backlog=%s workers=%s max_queue_backlog=%s",
+            execution.paths.thread_id,
+            queue_backlog,
+            PARKING_REVIEW_THREAD_WORKERS,
+            PARKING_REVIEW_MAX_QUEUE_BACKLOG,
+        )
+        return result, recorder.events
+
+    @staticmethod
+    def _workflow_queue_name(execution: ExecutionContext) -> str:
+        if execution.workflow_name == "parking_abnormal_review":
+            return "parking_review"
+        return "default_workflow"
+
+    @staticmethod
+    def _workflow_queue_workers(execution: ExecutionContext) -> int:
+        if execution.workflow_name == "parking_abnormal_review":
+            return PARKING_REVIEW_THREAD_WORKERS
+        return WORKFLOW_THREAD_WORKERS
+
+    def _workflow_queue_increment(self, execution: ExecutionContext) -> int:
+        if execution.workflow_name == "parking_abnormal_review":
+            return _parking_review_queue_increment()
+        return _workflow_queue_increment()
+
+    def _workflow_queue_decrement(self, execution: ExecutionContext) -> int:
+        if execution.workflow_name == "parking_abnormal_review":
+            return _parking_review_queue_decrement()
+        return _workflow_queue_decrement()
+
+    def _workflow_executor_for(self, execution: ExecutionContext) -> ThreadPoolExecutor:
+        executor_attr = self.workflow_executors[self._workflow_queue_name(execution)]
+        return cast(ThreadPoolExecutor, getattr(self, executor_attr))
+
+    @staticmethod
+    def queue_state() -> RuntimeQueueState:
+        return RUNTIME_QUEUE_STATE
+
+    def queue_state_snapshot(self) -> dict[str, RuntimeQueueSnapshot]:
+        return {
+            "default_workflow": self.queue_state().snapshot(
+                queue_name="default_workflow",
+                workers=WORKFLOW_THREAD_WORKERS,
+                max_backlog=None,
+            ),
+            "parking_review": self.queue_state().snapshot(
+                queue_name="parking_review",
+                workers=PARKING_REVIEW_THREAD_WORKERS,
+                max_backlog=PARKING_REVIEW_MAX_QUEUE_BACKLOG,
+            ),
+        }
+
+    @staticmethod
+    def _parking_review_overload_reply(execution: ExecutionContext) -> str:
+        prompt_text = next(
+            (message.content for message in reversed(execution.request.messages) if message.role == "user"),
+            "",
+        )
+        review_source_id = _extract_review_source_id_for_overload(prompt_text)
+        review_event_id = f"{review_source_id}_event_1" if review_source_id else "queue_overloaded_event_1"
+        return json.dumps(
+            [
+                {
+                    "reviewSourceId": review_source_id,
+                    "reviewEventId": review_event_id,
+                    "hit": 0,
+                    "result": "系统复判任务积压，已按证据不足处理，请稍后重试。",
+                }
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     async def _stream_agent_loop_events(self, execution: ExecutionContext) -> AsyncIterator[ChatEvent]:
         conversation = self._conversation_with_vision_attachments(execution.conversation, execution.request.attachments, execution.paths)
@@ -608,7 +1039,7 @@ class AgentRuntime:
             config_auto_execute
             or skill.auto_execute is True
         )
-        logger.info(
+        logger.debug(
             "primary skill auto-execute decision thread_id=%s skill=%s app_template=%s config_auto=%s skill_auto=%s executable=%s selected_skills=%s",
             execution.paths.thread_id,
             skill_name,
@@ -1177,7 +1608,7 @@ class AgentRuntime:
         runtime_options = self._runtime_options_with_app_template_defaults(runtime_options)
         runtime_options = self._effective_runtime_options(runtime_options)
         runtime_options = self._runtime_options_with_composite_skills(runtime_options)
-        attachments = request.attachments
+        attachments = self._expanded_video_record_attachments(request.attachments)
         if not attachments and runtime_options.thread_id:
             attachments = self._thread_file_attachments(runtime_options.thread_id)
         if attachments and runtime_options.thread_id:
@@ -1324,8 +1755,115 @@ class AgentRuntime:
                         mime_type=guess_mime_type(file_path),
                         metadata={"size": file_path.stat().st_size, "scope": scope, "thread_file": True},
                     )
-                )
+                    )
         return attachments
+
+    @classmethod
+    def _expanded_video_record_attachments(cls, attachments: list[Attachment]) -> list[Attachment]:
+        expanded: list[Attachment] = list(attachments)
+        seen_refs: set[str] = set()
+        for attachment in attachments:
+            ref = cls._attachment_reference(attachment)
+            if ref:
+                seen_refs.add(ref)
+        changed = False
+        for attachment in attachments:
+            derived = cls._attachment_record_video(attachment)
+            if derived is None:
+                continue
+            ref = cls._attachment_reference(derived)
+            if ref and ref in seen_refs:
+                continue
+            if ref:
+                seen_refs.add(ref)
+            expanded.append(derived)
+            changed = True
+        return expanded if changed else attachments
+
+    @classmethod
+    def _attachment_record_video(cls, attachment: Attachment) -> Attachment | None:
+        metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+        others = metadata.get("others")
+        if not isinstance(others, dict):
+            return None
+        record = others.get("record")
+        if isinstance(record, str):
+            uri = record.strip()
+            source_meta: dict[str, Any] = {"value": uri}
+        elif isinstance(record, dict):
+            uri = cls._first_string(record.get("url"), record.get("uri"), record.get("path"), record.get("internalUrl"))
+            source_meta = record
+        else:
+            return None
+        if not uri:
+            return None
+        mime_type = cls._record_video_mime_type(uri, source_meta)
+        if not mime_type.startswith("video/"):
+            return None
+        record_name = cls._record_video_name(uri, source_meta, attachment.name)
+        derived_metadata = dict(metadata)
+        derived_metadata.update(
+            {
+                "source": "attachment_record_video",
+                "record_source": "metadata.others.record",
+                "record_parent_name": attachment.name,
+                "record_parent_mime_type": attachment.mime_type,
+                "original_uri": uri,
+            }
+        )
+        return Attachment(
+            name=record_name,
+            path=uri,
+            mime_type=mime_type,
+            metadata=derived_metadata,
+        )
+
+    @staticmethod
+    def _attachment_reference(attachment: Attachment) -> str:
+        path = str(attachment.path or "").strip()
+        if path:
+            return f"path:{path}"
+        data_base64 = str(attachment.data_base64 or "").strip()
+        if data_base64:
+            return f"data:{attachment.name}:{attachment.mime_type}:{len(data_base64)}"
+        return ""
+
+    @staticmethod
+    def _record_video_mime_type(uri: str, metadata: dict[str, Any]) -> str:
+        explicit = AgentRuntime._first_string(
+            metadata.get("mime_type"),
+            metadata.get("mimeType"),
+            metadata.get("media_type"),
+            metadata.get("mediaType"),
+            metadata.get("content_type"),
+            metadata.get("contentType"),
+        )
+        if explicit:
+            clean = explicit.split(";", 1)[0].strip().lower()
+            if clean:
+                return clean
+        guessed = guess_mime_type(Path(urlparse(uri).path or "record.mp4"))
+        return guessed.split(";", 1)[0].strip().lower() if guessed else ""
+
+    @staticmethod
+    def _record_video_name(uri: str, metadata: dict[str, Any], fallback_name: str) -> str:
+        explicit = AgentRuntime._first_string(metadata.get("name"), metadata.get("filename"), metadata.get("fileName"))
+        if explicit:
+            return explicit
+        parsed_name = Path(unquote(urlparse(uri).path)).name
+        if parsed_name:
+            return parsed_name
+        fallback = Path(fallback_name or "record").stem or "record"
+        return f"{fallback}.mp4"
+
+    @staticmethod
+    def _first_string(*values: object) -> str:
+        for value in values:
+            if isinstance(value, str):
+                clean = value.strip()
+                if clean:
+                    return clean
+        return ""
 
     def _materialize_remote_attachments(self, attachments: list[Attachment], thread_id: str) -> list[Attachment]:
         paths = self.artifact_store.prepare_thread(thread_id)
@@ -1346,8 +1884,20 @@ class AgentRuntime:
                     exc,
                 )
                 metadata = dict(attachment.metadata)
-                metadata["download_error"] = str(exc)
-                materialized.append(attachment.model_copy(update={"metadata": metadata}, deep=True))
+                metadata["download_error"] = self._redacted_remote_attachment_error(str(exc), attachment.path)
+                metadata["original_uri"] = metadata.get("uri") or attachment.path
+                metadata["remote_download_failed"] = True
+                materialized.append(
+                    attachment.model_copy(
+                        update={
+                            "path": None,
+                            "data_base64": None,
+                            "metadata": metadata,
+                        },
+                        deep=True,
+                    )
+                )
+                changed = True
                 continue
             materialized.append(updated)
             changed = True
@@ -1474,6 +2024,17 @@ class AgentRuntime:
         return name[:180]
 
     @staticmethod
+    def _redacted_remote_attachment_error(error: str, raw_url: str | None) -> str:
+        redacted = error
+        if raw_url:
+            clean_url = raw_url.strip()
+            if clean_url:
+                parsed = urlparse(clean_url)
+                safe_url = parsed._replace(query="", fragment="").geturl() if parsed.scheme and parsed.netloc else "<remote-url>"
+                redacted = redacted.replace(clean_url, safe_url)
+        return redacted[:1000]
+
+    @staticmethod
     def _fingerprinted_remote_attachment_filename(filename: str, fingerprint: str) -> str:
         path = Path(filename)
         stem = path.stem or "attachment"
@@ -1531,9 +2092,15 @@ class AgentRuntime:
             data_id = metadata.get("dataId") or metadata.get("data_id")
             timestamp = metadata.get("timestamp")
             sha1 = metadata.get("sha1")
+            remote_download_failed = metadata.get("remote_download_failed")
+            download_error = metadata.get("download_error")
             metadata_parts = []
-            if isinstance(original_uri, str) and original_uri:
+            if isinstance(original_uri, str) and original_uri and not remote_download_failed:
                 metadata_parts.append(f"original_uri={original_uri}")
+            if remote_download_failed:
+                metadata_parts.append("remote_download_failed=true")
+            if isinstance(download_error, str) and download_error:
+                metadata_parts.append(f"download_error={download_error[:200]}")
             if isinstance(source_id, str) and source_id:
                 metadata_parts.append(f"sourceId={source_id}")
             if isinstance(data_id, str) and data_id:

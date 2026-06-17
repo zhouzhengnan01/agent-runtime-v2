@@ -13,3 +13,9 @@ config/*.local.json
 config/sandbox/*.local.json
 frontend/workbench/dist/
 frontend/workbench/node_modules/
+config/upload/
+plugins/upload/
+static/upload/
+*.bak-*
+*bak-codex*
+.tmp*

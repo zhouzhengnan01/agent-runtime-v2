@@ -64,6 +64,7 @@ class AppTemplate(BaseModel):
     workflow: str | None = None
     selected_skills: list[str] = Field(default_factory=list)
     selected_mcp_tools: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
     prompt_examples: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     model_tags: list[str] = Field(default_factory=list)
@@ -82,6 +83,13 @@ class AppTemplate(BaseModel):
     @classmethod
     def validate_model_tags(cls, value: object) -> list[str]:
         return normalize_model_tags(value)
+
+    @field_validator("aliases", mode="before")
+    @classmethod
+    def validate_aliases(cls, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
 
     def to_payload(self) -> dict[str, Any]:
         payload = self.model_dump(mode="json")

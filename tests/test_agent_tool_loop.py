@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import subprocess
 from pathlib import Path
@@ -20,7 +21,7 @@ from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import LlmChatResponse, LlmToolCall, OpenAICompatibleClient
 from app.core.skills import SkillRegistry, SkillRunner
 from app.core.skills.context_files import load_skill_markdown_context
-from app.core.tools import ToolInvocationService, ToolRegistry
+from app.core.tools import ToolInvocationResult, ToolInvocationService, ToolRegistry
 from app.schemas import ChatRequest, Message, RuntimeOptions
 
 
@@ -502,7 +503,15 @@ def test_agent_loop_runs_gpu_training_orchestrator_plugin_runner(
     calls = 0
     seen_tools: list[str] = []
 
-    def fake_training_subprocess_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+    class FakeTrainingProcess:
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("YOLO summary (fused)\nClass Images Instances Box(P\nall 2 2 0.9\n")
+            self.stderr = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    def fake_training_subprocess_popen(command: list[str], **kwargs: Any) -> FakeTrainingProcess:
         del kwargs
         request_arg = "-InputJsonPath" if "-InputJsonPath" in command else "--input"
         request_path = Path(command[command.index(request_arg) + 1])
@@ -528,14 +537,9 @@ def test_agent_loop_runs_gpu_training_orchestrator_plugin_runner(
                 },
                 ensure_ascii=False,
             ),
-            encoding="utf-8",
-        )
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=0,
-            stdout=b"YOLO summary (fused)\nClass Images Instances Box(P\nall 2 2 0.9\n",
-            stderr=b"",
-        )
+                encoding="utf-8",
+            )
+        return FakeTrainingProcess()
 
     async def fake_complete_with_tools(
         self: OpenAICompatibleClient,
@@ -570,7 +574,7 @@ def test_agent_loop_runs_gpu_training_orchestrator_plugin_runner(
             )
         return LlmChatResponse(content="训练完成。", finish_reason="stop")
 
-    monkeypatch.setattr(subprocess, "run", fake_training_subprocess_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_training_subprocess_popen)
     monkeypatch.setattr(OpenAICompatibleClient, "complete_with_tools", fake_complete_with_tools)
     artifact_store = ArtifactStore(root_dir=tmp_path / "runtime")
     runtime = AgentRuntime(artifact_store=artifact_store)
@@ -601,7 +605,7 @@ def test_agent_loop_runs_gpu_training_orchestrator_plugin_runner(
     assert result.metadata["tool_call_count"] == 1
     assert "gpu-training-orchestrator" in seen_tools
     assert (outputs / "training_runs" / "agent-loop-yolo" / "runs" / "train" / "weights" / "best.pt").is_file()
-    request_payload = json.loads((outputs.parent / "workspace" / "gpu-training-orchestrator-input.json").read_text())
+    request_payload = json.loads((outputs.parent / "workspace" / "gpu-training-orchestrator-training-input.json").read_text())
     assert request_payload["training"]["epochs"] == 1
     assert request_payload["training"]["device"] == "cpu"
     assert request_payload["training"]["amp"] is False
@@ -832,6 +836,18 @@ def test_agent_loop_marks_completed_prompt_only_primary_skill(
     assert result.metadata["primary_skill_completion_status"] == "completed"
 
 
+def test_agent_loop_omits_internal_prompt_only_artifacts() -> None:
+    result = ToolInvocationResult(
+        content=[{"type": "text", "text": "prompt ready"}],
+        structured_content={
+            "data": {"execution_type": "prompt_only"},
+            "artifacts": [{"path": "/tmp/reflective-vest-review-prompt.md", "name": "prompt.md"}],
+        },
+    )
+
+    assert ToolCallingAgentLoop._artifacts_from_tool_result(result, seen=[]) == []
+
+
 def test_agent_loop_explore_phase_prefers_read_only_tools(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -1044,7 +1060,7 @@ def test_agent_loop_injects_primary_skill_markdown_declared_references(
     assert "### references/components/custom-chart.json" in prompt
     context_event = next(event for event in recorder.events if event.type == "skill.context.loaded")
     assert context_event.data["skill_name"] == "generate-screen-skill"
-    assert context_event.data["skill_md_path"].endswith("plugins/skills/1780049181817h6isu9jw/SKILL.md")
+    assert context_event.data["skill_md_path"].endswith("plugins/skills/generate-screen-skill/SKILL.md")
     assert context_event.data["reference_count"] >= 10
     reference_paths = [item["path"] for item in context_event.data["references"]]
     assert "references/blueprint-standard.md" in reference_paths
@@ -1136,7 +1152,7 @@ def test_agent_loop_passes_selected_skill_roots_to_local_tools(
     assert seen_arguments
     skill_roots = seen_arguments[0]["_skill_roots"]
     assert len(skill_roots) == 1
-    assert skill_roots[0].endswith("plugins/skills/1780049181817h6isu9jw")
+    assert skill_roots[0].endswith("plugins/skills/generate-screen-skill")
 
 
 def test_agent_loop_keeps_primary_skill_guidance_alongside_composite_guidance(
@@ -2963,6 +2979,8 @@ def test_yolo_blocks_selected_skill_when_no_tool_is_available(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
+    missing_skill = "missing-platform-skill-id"
+
     async def fake_complete(
         self: OpenAICompatibleClient,
         system_prompt: str,
@@ -2980,19 +2998,19 @@ def test_yolo_blocks_selected_skill_when_no_tool_is_available(
     )
     request = ChatRequest(
         messages=[Message(role="user", content="帮我把棕榈果检测算法全流程跑起来")],
-        runtime_options=RuntimeOptions(
-            thread_id="missing-selected-skill",
-            mode="yolo",
-            selected_skills=["1778483741456a5glxkmk"],
-        ),
-    )
+            runtime_options=RuntimeOptions(
+                thread_id="missing-selected-skill",
+                mode="yolo",
+                selected_skills=[missing_skill],
+            ),
+        )
 
     result = asyncio.run(runtime.run(agent, request))
 
     assert "没有可用工具可执行" in result.reply
     assert "平台侧 ID" in result.reply
     assert result.metadata["unavailable_selected_skills_blocked"] is True
-    assert result.metadata["selected_skills"] == ["1778483741456a5glxkmk"]
+    assert result.metadata["selected_skills"] == [missing_skill]
 
 
 def test_yolo_blocks_composite_completion_without_artifact_evidence(

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from app.core.artifacts import ArtifactStore, ThreadPaths
+from app.core.resources import ResourceRoots, merged_json_paths
 from app.core.skills.plugin_execution import (
     call_runner as _call_runner,
     invoke_hook as _invoke_hook,
@@ -114,8 +115,11 @@ class SkillPluginManager:
     def __init__(self, root_dir: Path | None = None) -> None:
         self.project_root = Path(__file__).resolve().parents[3]
         self.root_dir = root_dir or self.project_root
-        self.plugin_dir = self.root_dir / "plugins" / "skills"
-        self.config_dir = self.root_dir / "config" / "skills"
+        self.resources = ResourceRoots.from_project_root(self.root_dir)
+        self.plugin_dirs = self.resources.plugin_dirs("skills")
+        self.config_dirs = self.resources.config_dirs("skills")
+        self.plugin_dir = self.resources.writable_plugin_dir("skills")
+        self.config_dir = self.resources.writable_config_dir("skills")
 
     def list_plugins(self) -> list[SkillPlugin]:
         plugins: list[SkillPlugin] = []
@@ -382,14 +386,7 @@ class SkillPluginManager:
         return loaded
 
     def _config_entity_paths(self) -> list[Path]:
-        paths_by_name: dict[str, Path] = {}
-        project_config_dir = self.project_root / "config" / "skills"
-        for config_dir in self._unique_dirs(project_config_dir, self.config_dir):
-            if not config_dir.is_dir():
-                continue
-            for entity_path in sorted(config_dir.glob("*.json")):
-                paths_by_name[entity_path.stem] = entity_path
-        return [paths_by_name[name] for name in sorted(paths_by_name)]
+        return merged_json_paths(self.config_dirs)
 
     def run_skill(
         self,
@@ -511,10 +508,8 @@ class SkillPluginManager:
 
     def _plugin_roots(self) -> list[Path]:
         roots: list[Path] = []
-        project_plugins = self.project_root / "plugins" / "skills"
-        parents = self._unique_dirs(self.plugin_dir, project_plugins)
         seen_names: set[str] = set()
-        for parent in parents:
+        for parent in self.plugin_dirs:
             if not parent.is_dir():
                 continue
             for child in sorted(parent.iterdir()):

@@ -1,0 +1,68 @@
+{
+  "name": "FireLaneComplianceDetection",
+  "title": "消防通道合规检测",
+  "description": "兼容 ACP 平台模板名 FireLaneComplianceDetection，使用专用视觉复判技能判断消防通道、杂物、火焰/明火、抽烟等事件。",
+  "aliases": [
+    "消防通道监管",
+    "消防通道检测",
+    "消防通道占用检测",
+    "消防通道堵塞检测",
+    "消防通道安全监管"
+  ],
+  "category": "vision",
+  "icon": "shield",
+  "agent_name": "default",
+  "workflow": "parking_abnormal_review",
+  "selected_skills": [
+    "fire-lane-compliance-review",
+    "17803963378248hh02dvt",
+    "fire-flame-review",
+    "smoking-review"
+  ],
+  "selected_mcp_tools": [],
+  "runtime_options": {
+    "config_options": {
+      "force_model_config": true
+    }
+  },
+  "prompt_examples": [
+    "请判断消防通道是否被车辆或杂物占用，并给出视觉证据。",
+    "识别消防通道堵塞、违规停放或通行受阻风险。",
+    "根据告警图片判断是否存在消防通道合规问题，并输出证据和处置建议。"
+  ],
+  "tags": [
+    "消防通道",
+    "合规检测",
+    "占道",
+    "安全",
+    "证据优先"
+  ],
+  "model_tags": [
+    "chat",
+    "vision",
+    "tool_call"
+  ],
+  "models": [
+    {
+      "name": "Qwen3.6-35B-A3B",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat"
+      ],
+      "priority_features": [
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "Qwen3.6-35B-A3B",
+      "base_url": "http://218.67.242.10:59202/v1",
+      "default_model": "Qwen3.6-35B-A3B",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 2048,
+      "api_key": "abc@123"
+    }
+  ]
+}

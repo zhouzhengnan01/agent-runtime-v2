@@ -41,6 +41,7 @@ SKILL_ARTIFACT_PATTERNS = {
     "drawio-generation": ["*.drawio", "*.png"],
     "emoji": ["*.md"],
     "excel-generation": ["*.xlsx"],
+    "ai-vis-page": ["generated-bigscreen/page.json"],
     "generate-screen-skill": ["generate-screen-skill-prompt.md"],
     "markdown-rendering": ["*.md"],
     "pptx-generation": ["*.pptx"],

@@ -10,3 +10,9 @@ __pycache__
 test-results
 tests
 Ultralytics
+config/upload
+plugins/upload
+static/upload
+*.bak-*
+*bak-codex*
+.tmp*

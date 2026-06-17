@@ -39,12 +39,47 @@ def test_video_attachments_are_detected_by_mime_type() -> None:
     assert workflow._video_attachments([image, video, text]) == [video]
 
 
+def test_media_attachments_are_detected_by_name_or_url_when_mime_missing() -> None:
+    workflow = _load_workflow_module()
+    image_by_name = Attachment(name="image.jpg")
+    image_by_url = Attachment(name="snapshot", path="https://example.test/files/snapshot.png?token=abc")
+    video_by_url = Attachment(name="record", path="https://example.test/files/record.mp4?token=abc")
+    text = Attachment(name="note.txt")
+
+    assert workflow._image_attachments([image_by_name, image_by_url, video_by_url, text]) == [
+        image_by_name,
+        image_by_url,
+    ]
+    assert workflow._video_attachments([image_by_name, image_by_url, video_by_url, text]) == [video_by_url]
+
+
+def test_review_source_id_can_come_from_attachment_metadata() -> None:
+    workflow = _load_workflow_module()
+    attachments = [
+        Attachment(
+            name="image.jpg",
+            mime_type="image/jpeg",
+            metadata={"headers": {"reviewSourceId": "source-from-metadata"}},
+        )
+    ]
+
+    assert workflow._review_source_id("请复判图片", attachments) == "source-from-metadata"
+
+
 def test_candidate_frame_indices_are_uniformly_sampled() -> None:
     workflow = _load_workflow_module()
 
     indices = workflow._candidate_frame_indices(100, 5)
 
     assert indices == [0, 25, 50, 74, 99]
+
+
+def test_effective_video_candidate_count_prefers_small_sampling_budget() -> None:
+    workflow = _load_workflow_module()
+
+    assert workflow._effective_video_candidate_count(max_frames=6, max_candidates=24) == 12
+    assert workflow._effective_video_candidate_count(max_frames=2, max_candidates=24) == 4
+    assert workflow._effective_video_candidate_count(max_frames=20, max_candidates=10) == 10
 
 
 def test_video_frame_selection_prefers_distinct_high_quality_frames() -> None:
@@ -79,6 +114,63 @@ def test_video_frame_selection_prefers_distinct_high_quality_frames() -> None:
     assert [candidate.frame_index for candidate in selected] == [1, 2, 3]
 
 
+def test_read_target_video_frame_candidates_scans_short_video_sequentially() -> None:
+    workflow = _load_workflow_module()
+
+    class FakeCapture:
+        def __init__(self) -> None:
+            self.index = 0
+            self.grab_calls = 0
+            self.read_calls = 0
+
+        def grab(self) -> bool:
+            self.grab_calls += 1
+            self.index += 1
+            return True
+
+        def read(self) -> tuple[bool, float]:
+            self.read_calls += 1
+            frame = float(self.index)
+            return True, frame
+
+        def get(self, prop: Any) -> float:
+            return 0.0
+
+    class FakeCv2:
+        CAP_PROP_POS_MSEC = object()
+
+    fake_capture = FakeCapture()
+    requested: list[int] = []
+
+    def fake_candidate(_: Any, frame: Any, *, frame_index: int, timestamp_ms: float) -> Any:
+        requested.append(frame_index)
+        return workflow.VideoFrameCandidate(
+            frame_index=frame_index,
+            timestamp_ms=timestamp_ms,
+            sharpness=frame,
+            brightness=frame,
+            score=frame,
+            thumbnail=frame,
+            frame=frame,
+        )
+
+    workflow._video_frame_candidate = fake_candidate  # type: ignore[attr-defined]
+
+    candidates = workflow._read_target_video_frame_candidates(
+        FakeCv2(),
+        fake_capture,
+        fps=10.0,
+        frame_count=100,
+        max_candidates=5,
+        deadline=10**9,
+    )
+
+    assert requested == [0, 25, 50, 74, 99]
+    assert [candidate.frame_index for candidate in candidates] == requested
+    assert fake_capture.grab_calls == 95
+    assert fake_capture.read_calls == 5
+
+
 def test_video_frame_attachments_convert_extracted_frames_to_image_attachments(
     tmp_path: Path,
     monkeypatch: Any,
@@ -91,10 +183,17 @@ def test_video_frame_attachments_convert_extracted_frames_to_image_attachments(
     frame = paths.workspace / "frame-001.jpg"
     frame.write_bytes(b"fake-jpeg")
 
-    def fake_extract_video_frames(video_path: Path, output_dir: Path, *, prefix: str) -> list[Any]:
+    def fake_extract_video_frames(
+        video_path: Path,
+        output_dir: Path,
+        *,
+        prefix: str,
+        timeout_seconds: int,
+    ) -> list[Any]:
         assert video_path == video
         assert output_dir == paths.workspace / workflow.VIDEO_FRAME_OUTPUT_DIR
         assert prefix.startswith("video_1_clip_")
+        assert timeout_seconds == workflow.VIDEO_FRAME_TIMEOUT_SECONDS
         return [
             workflow.ExtractedVideoFrame(
                 path=frame,
@@ -146,7 +245,13 @@ def test_video_frame_attachments_report_missing_opencv(tmp_path: Path, monkeypat
     video = paths.uploads / "clip.mp4"
     video.write_bytes(b"fake-video")
 
-    def missing_opencv(video_path: Path, output_dir: Path, *, prefix: str) -> list[Any]:
+    def missing_opencv(
+        video_path: Path,
+        output_dir: Path,
+        *,
+        prefix: str,
+        timeout_seconds: int,
+    ) -> list[Any]:
         raise RuntimeError("OpenCV is unavailable; install opencv-python to enable video frame extraction.")
 
     monkeypatch.setattr(workflow, "_extract_video_frames", missing_opencv)
@@ -159,6 +264,40 @@ def test_video_frame_attachments_report_missing_opencv(tmp_path: Path, monkeypat
     assert attachments == []
     assert reports[0]["status"] == "failed"
     assert reports[0]["error_code"] == "opencv_unavailable"
+
+
+def test_video_frame_attachments_skip_when_image_inputs_are_enough(tmp_path: Path, monkeypatch: Any) -> None:
+    workflow = _load_workflow_module()
+    artifact_store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = artifact_store.prepare_thread("thread-video-skip")
+    image_attachments = [
+        Attachment(name=f"image-{index}.jpg", path=f"/mnt/user-data/uploads/image-{index}.jpg", mime_type="image/jpeg")
+        for index in range(workflow.VIDEO_FRAME_SKIP_WHEN_IMAGE_COUNT_AT_LEAST)
+    ]
+    video_attachments = [
+        Attachment(name="clip.mp4", path="/mnt/user-data/uploads/clip.mp4", mime_type="video/mp4")
+    ]
+
+    def fail_extract_video_frames(*_: Any, **__: Any) -> list[Any]:
+        raise AssertionError("video extraction should be skipped when image inputs are enough")
+
+    monkeypatch.setattr(workflow, "_extract_video_frames", fail_extract_video_frames)
+
+    attachments, reports = workflow._video_frame_attachments_for_review(image_attachments, video_attachments, paths)
+
+    assert attachments == []
+    assert workflow._review_error_summary("", reports) == []
+    assert reports == [
+        {
+            "name": "clip.mp4",
+            "mime_type": "video/mp4",
+            "path": "/mnt/user-data/uploads/clip.mp4",
+            "status": "skipped",
+            "error_code": "image_attachments_preferred",
+            "image_attachment_count": workflow.VIDEO_FRAME_SKIP_WHEN_IMAGE_COUNT_AT_LEAST,
+            "threshold": workflow.VIDEO_FRAME_SKIP_WHEN_IMAGE_COUNT_AT_LEAST,
+        }
+    ]
 
 
 def test_review_skill_candidates_expand_composite_and_score_objective() -> None:
@@ -253,9 +392,10 @@ def test_review_objective_and_skill_score_use_task_target_payload() -> None:
     )
 
     assert workflow._objective(prompt_text) == "FallDetection"
-    assert [candidate.skill.name for candidate in candidates] == ["smoking-review", "fall-review"]
-    assert candidates[1].score > candidates[0].score
-    assert "keyword=人员跌倒/倒地检测" in candidates[1].score_reasons
+    by_name = {candidate.skill.name: candidate for candidate in candidates}
+    assert candidates[0].skill.name == "fall-review"
+    assert by_name["fall-review"].score > by_name["smoking-review"].score
+    assert "keyword=人员跌倒/倒地检测" in by_name["fall-review"].score_reasons
 
 
 def test_review_objective_prefers_fall_target_over_smoking_summary_text() -> None:
@@ -298,8 +438,565 @@ def test_review_objective_prefers_fall_target_over_smoking_summary_text() -> Non
     )
 
     assert objective == "FallDetection"
-    assert candidates[1].skill.name == "fall-review"
-    assert candidates[1].score > candidates[0].score
+    by_name = {candidate.skill.name: candidate for candidate in candidates}
+    assert candidates[0].skill.name == "fall-review"
+    assert by_name["fall-review"].score > by_name["smoking-review"].score
+
+
+def test_sanitize_review_prompt_text_removes_summary_sections_and_fields() -> None:
+    workflow = _load_workflow_module()
+    text_prompt = """
+    场景
+    车辆违停检测
+    告警摘要
+    画面中央存在白色杂物堆积，符合杂物检测命中特征。
+    置信度
+    car
+    91%
+    """
+    json_prompt = (
+        '{"taskTarget":{"value":"ParkingViolationDetection","text":"车辆违停检测"},'
+        '"summary":"画面中央存在白色杂物堆积","result":"符合杂物检测命中特征",'
+        '"schemaResults":{"alarmBox":[1,2,3,4]}}'
+    )
+
+    sanitized_text = workflow._sanitize_review_prompt_text(text_prompt)
+    sanitized_json = workflow._sanitize_review_prompt_text(json_prompt)
+
+    assert "白色杂物堆积" not in sanitized_text
+    assert "告警摘要" not in sanitized_text
+    assert "车辆违停检测" in sanitized_text
+    assert "置信度" in sanitized_text
+    assert '"summary"' not in sanitized_json
+    assert '"result"' not in sanitized_json
+    assert '"taskTarget"' in sanitized_json
+    assert '"schemaResults"' in sanitized_json
+
+
+def test_review_objective_uses_edge_detection_type_format() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = (
+        "当前复判事件来源reviewSourceId为[source-1]，"
+        "检测类型为[IllegalParkingDetection/车辆违停]。"
+        "这是边端真实历史车辆违停高分视频。"
+    )
+
+    assert workflow._objective(prompt_text) == "ParkingViolationDetection"
+
+
+def test_parking_review_skill_score_routes_parking_violation_and_congestion_targets() -> None:
+    workflow = _load_workflow_module()
+
+    violation_skill = SkillDefinition(
+        name="parking-violation-review",
+        description="车辆违停 违规停车 ParkingViolationDetection",
+        output_kind="markdown",
+        routing={"keywords": ["违规停车", "车辆违停", "车辆违停检测", "ParkingViolationDetection"]},
+    )
+    congestion_skill = SkillDefinition(
+        name="parking-congestion-review",
+        description="停车场通道拥堵检测 车辆拥堵 ParkingCongestionDetection",
+        output_kind="markdown",
+        routing={"keywords": ["停车场通道拥堵检测", "车辆拥堵", "ParkingCongestionDetection"]},
+    )
+    violation_prompt = (
+        '{"taskTarget":{"value":"ParkingViolationDetection","text":"车辆违停检测"},'
+        '"modelName":"车场异常事件监控"}'
+    )
+    congestion_prompt = (
+        '{"taskTarget":{"value":"ParkingCongestionDetection","text":"停车场通道拥堵检测"},'
+        '"modelName":"车场异常事件监控"}'
+    )
+
+    assert workflow._objective(violation_prompt) == "ParkingViolationDetection"
+    assert workflow._objective(congestion_prompt) == "ParkingCongestionDetection"
+
+    violation_score, violation_reasons = workflow._score_review_skill(
+        violation_skill,
+        workflow._skill_context(violation_skill),
+        objective=workflow._objective(violation_prompt),
+        prompt_text=violation_prompt,
+    )
+    wrong_violation_score, _ = workflow._score_review_skill(
+        congestion_skill,
+        workflow._skill_context(congestion_skill),
+        objective=workflow._objective(violation_prompt),
+        prompt_text=violation_prompt,
+    )
+    congestion_score, congestion_reasons = workflow._score_review_skill(
+        congestion_skill,
+        workflow._skill_context(congestion_skill),
+        objective=workflow._objective(congestion_prompt),
+        prompt_text=congestion_prompt,
+    )
+    wrong_congestion_score, _ = workflow._score_review_skill(
+        violation_skill,
+        workflow._skill_context(violation_skill),
+        objective=workflow._objective(congestion_prompt),
+        prompt_text=congestion_prompt,
+    )
+
+    assert violation_score > wrong_violation_score
+    assert congestion_score > wrong_congestion_score
+    assert "keyword=车辆违停检测" in violation_reasons
+    assert "keyword=停车场通道拥堵检测" in congestion_reasons
+
+
+def test_kitchen_hygiene_task_name_does_not_guess_clutter_review_skill() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = """
+    视频接入名称
+    温州印象城网关·D29-L5-21后门
+    任务名称
+    后厨通道卫生安全监管
+    模型名称
+    后厨通道卫生安全监管
+    来源
+    device
+    """
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "17803963378248hh02dvt": SkillDefinition(
+                    name="17803963378248hh02dvt",
+                    description="用于机器视觉复判杂物检测识别目标的情况。",
+                    output_kind="markdown",
+                    routing={
+                        "keywords": [
+                            "杂物检测",
+                            "杂物",
+                            "后厨通道卫生",
+                            "通道卫生",
+                            "乱堆乱放",
+                            "ClutterDetection",
+                        ]
+                    },
+                ),
+                "garbage-overflow-review": SkillDefinition(
+                    name="garbage-overflow-review",
+                    description="用于机器视觉复判垃圾桶满溢、垃圾外溢、垃圾堆积等后厨通道卫生事件。",
+                    output_kind="markdown",
+                    routing={"keywords": ["垃圾满溢", "垃圾外溢", "垃圾堆积", "GarbageOverflowDetection"]},
+                ),
+                "smoking-review": SkillDefinition(
+                    name="smoking-review",
+                    description="抽烟 SmokingDetection 复判",
+                    output_kind="markdown",
+                    routing={"keywords": ["抽烟", "SmokingDetection"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+    objective = workflow._objective(prompt_text)
+    candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["17803963378248hh02dvt", "garbage-overflow-review", "smoking-review"],
+        objective=objective,
+        prompt_text=prompt_text,
+    )
+
+    assert objective == "KitchenAisleHygieneDetection"
+    assert "smoking-review" not in {candidate.skill.name for candidate in candidates}
+
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(ArtifactStore(), skill_registry=FakeRegistry())
+    selection = review_workflow._select_review_skill(
+        AgentConfig(name="default", display_name="Default"),
+        RuntimeOptions(selected_skills=["17803963378248hh02dvt", "garbage-overflow-review", "smoking-review"]),
+        prompt_text=prompt_text,
+        review_source_id="source-kitchen-generic",
+        objective=objective,
+    )
+    assert selection is None
+
+
+def test_kitchen_hygiene_result_text_does_not_enable_smoking_review_skill() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = """
+    视频接入名称
+    温州印象城网关·D29-L5-19后门
+    任务名称
+    后厨通道卫生安全监管
+    模型名称
+    后厨通道卫生安全监管
+    来源
+    device
+    识别结果
+    画面中可见人员手中持有细长条状物体，但经观察并非香烟，未见烟雾或典型吸烟动作。
+    """
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "17803963378248hh02dvt": SkillDefinition(
+                    name="17803963378248hh02dvt",
+                    description="用于机器视觉复判杂物检测识别目标的情况。",
+                    output_kind="markdown",
+                    routing={"keywords": ["杂物检测", "后厨通道卫生", "ClutterDetection"]},
+                ),
+                "smoking-review": SkillDefinition(
+                    name="smoking-review",
+                    description="用于机器视觉复判抽烟、吸烟、持烟等行为事件。",
+                    output_kind="markdown",
+                    routing={"keywords": ["抽烟", "吸烟", "香烟", "SmokingDetection"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+    candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["17803963378248hh02dvt", "smoking-review"],
+        objective=workflow._objective(prompt_text),
+        prompt_text=prompt_text,
+    )
+
+    assert workflow._objective(prompt_text) == "KitchenAisleHygieneDetection"
+    assert "smoking-review" not in {candidate.skill.name for candidate in candidates}
+
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(ArtifactStore(), skill_registry=FakeRegistry())
+    selection = review_workflow._select_review_skill(
+        AgentConfig(name="default", display_name="Default"),
+        RuntimeOptions(selected_skills=["17803963378248hh02dvt", "smoking-review"]),
+        prompt_text=prompt_text,
+        review_source_id="source-kitchen-smoking-summary",
+        objective=workflow._objective(prompt_text),
+    )
+    assert selection is None
+
+
+def test_kitchen_garbage_overflow_model_overrides_hygiene_category_and_person_summary() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = """
+    任务名称
+    后厨通道卫生安全监管
+    模型名称
+    垃圾满溢检测
+    场景
+    垃圾满溢检测
+    置信度
+    garbage_bin
+    89%
+    告警摘要
+    检测框区域（bbox: 210, 123, 326, 407）内清晰可见一名身穿黑色长裤和白色鞋子的人员正在走廊行走。
+    """
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "17803963378248hh02dvt": SkillDefinition(
+                    name="17803963378248hh02dvt",
+                    description="用于机器视觉复判杂物检测识别目标的情况。",
+                    output_kind="markdown",
+                    routing={"keywords": ["杂物检测", "后厨通道卫生", "ClutterDetection"]},
+                ),
+                "garbage-overflow-review": SkillDefinition(
+                    name="garbage-overflow-review",
+                    description="用于机器视觉复判垃圾桶满溢、垃圾外溢、垃圾堆积等后厨通道卫生事件。",
+                    output_kind="markdown",
+                    routing={"keywords": ["垃圾满溢检测", "垃圾满溢", "垃圾桶满溢", "GarbageOverflowDetection"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+    objective = workflow._objective(prompt_text)
+    candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["17803963378248hh02dvt", "garbage-overflow-review"],
+        objective=objective,
+        prompt_text=prompt_text,
+    )
+
+    assert objective == "GarbageOverflowDetection"
+    assert candidates[0].skill.name == "garbage-overflow-review"
+
+
+def test_kitchen_garbage_overflow_uses_uploaded_chinese_skill_alias() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = """
+    任务名称
+    后厨通道卫生安全监管
+    模型名称
+    垃圾漫溢检测
+    场景
+    垃圾桶漫溢
+    """
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "杂物检测": SkillDefinition(
+                    name="杂物检测",
+                    description="发现区域内乱堆乱放杂物",
+                    output_kind="markdown",
+                    routing={"keywords": ["杂物检测", "杂物", "ClutterDetection"]},
+                ),
+                "垃圾满溢检测": SkillDefinition(
+                    name="垃圾满溢检测",
+                    description="监测垃圾桶垃圾是否超出容量",
+                    output_kind="markdown",
+                    routing={"keywords": ["垃圾满溢检测", "垃圾漫溢", "垃圾桶漫溢", "GarbageOverflowDetection"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+    objective = workflow._objective(prompt_text)
+    candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["17803963378248hh02dvt", "garbage-overflow-review"],
+        objective=objective,
+        prompt_text=prompt_text,
+    )
+
+    assert objective == "GarbageOverflowDetection"
+    assert candidates[0].skill.name == "垃圾满溢检测"
+
+
+def test_review_objective_uses_scene_template_names_instead_of_unknown() -> None:
+    workflow = _load_workflow_module()
+
+    examples = {
+        "任务名称\n顾客行为检测\n模型名称\n顾客行为监管": "CustomerBehaviorDetection",
+        "任务名称\n消防通道监管\n模型名称\n消防通道监管": "FireLaneComplianceDetection",
+        "任务名称\n车场异常监控\n模型名称\n车场异常监控": "ParkingAbnormalDetection",
+        "任务名称\n车场异常事件监管\n模型名称\n--": "ParkingAbnormalDetection",
+        "任务名称\n后厨通道卫生安全监管\n模型名称\n后厨通道卫生安全监管": "KitchenAisleHygieneDetection",
+    }
+
+    for prompt_text, expected_objective in examples.items():
+        assert workflow._objective(prompt_text) == expected_objective
+
+
+def test_scene_template_name_keeps_relevant_review_skill_candidates() -> None:
+    workflow = _load_workflow_module()
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "smoking-review": SkillDefinition(
+                    name="smoking-review",
+                    description="抽烟 SmokingDetection 复判",
+                    output_kind="markdown",
+                    routing={"keywords": ["抽烟", "SmokingDetection"]},
+                ),
+                "fall-review": SkillDefinition(
+                    name="fall-review",
+                    description="跌倒 FallDetection 复判",
+                    output_kind="markdown",
+                    routing={"keywords": ["跌倒", "FallDetection"]},
+                ),
+                "fight-review": SkillDefinition(
+                    name="fight-review",
+                    description="争吵 打架 FightDetection 复判",
+                    output_kind="markdown",
+                    routing={"keywords": ["争吵", "打架", "FightDetection"]},
+                ),
+                "fire-lane-compliance-review": SkillDefinition(
+                    name="fire-lane-compliance-review",
+                    description="消防通道合规检测 消防通道监管 FireLaneComplianceDetection",
+                    output_kind="markdown",
+                    routing={"keywords": ["消防通道合规检测", "消防通道监管", "FireLaneComplianceDetection"]},
+                ),
+                "parking-violation-review": SkillDefinition(
+                    name="parking-violation-review",
+                    description="车辆违停 违规停车 ParkingViolationDetection",
+                    output_kind="markdown",
+                    routing={"keywords": ["车辆违停", "违规停车", "ParkingViolationDetection"]},
+                ),
+                "parking-congestion-review": SkillDefinition(
+                    name="parking-congestion-review",
+                    description="停车场通道拥堵检测 车辆拥堵 ParkingCongestionDetection",
+                    output_kind="markdown",
+                    routing={"keywords": ["停车场通道拥堵检测", "车辆拥堵", "ParkingCongestionDetection"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+    fire_candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["fire-lane-compliance-review", "smoking-review"],
+        objective=workflow._objective("任务名称\n消防通道监管\n模型名称\n消防通道监管"),
+        prompt_text="任务名称\n消防通道监管\n模型名称\n消防通道监管",
+    )
+    parking_candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["parking-violation-review", "parking-congestion-review"],
+        objective=workflow._objective("任务名称\n车场异常监控\n模型名称\n车场异常监控"),
+        prompt_text="任务名称\n车场异常监控\n模型名称\n车场异常监控",
+    )
+    behavior_candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["smoking-review", "fall-review", "fight-review"],
+        objective=workflow._objective("任务名称\n顾客行为检测\n模型名称\n顾客行为监管"),
+        prompt_text="任务名称\n顾客行为检测\n模型名称\n顾客行为监管",
+    )
+
+    assert fire_candidates[0].skill.name == "fire-lane-compliance-review"
+    assert {candidate.skill.name for candidate in parking_candidates} == {
+        "parking-violation-review",
+        "parking-congestion-review",
+    }
+    assert {candidate.skill.name for candidate in behavior_candidates} == {
+        "smoking-review",
+        "fall-review",
+        "fight-review",
+    }
+
+
+def test_customer_behavior_generic_person_summary_does_not_select_fall_review() -> None:
+    workflow = _load_workflow_module()
+    prompt_text = """
+    基础信息
+    视频接入名称
+    温州印象城网关·D29-L1-17门口
+    任务名称
+    顾客行为监管
+    模型名称
+    顾客行为监管
+    来源
+    device
+    识别结果
+    图片中检测框区域（坐标182,218,243,316）内清晰可见一名身穿浅色上衣和深色长裤的人员，该人员正站立在商场通道区域，符合目标特征。
+    """
+
+    class FakeRegistry:
+        def get(self, name: str) -> SkillDefinition:
+            if name == "smoking-review":
+                return SkillDefinition(
+                    name="smoking-review",
+                    description="抽烟 SmokingDetection 复判",
+                    output_kind="markdown",
+                    routing={"keywords": ["抽烟", "SmokingDetection"]},
+                )
+            if name == "fall-review":
+                return SkillDefinition(
+                    name="fall-review",
+                    description="跌倒 FallDetection 复判，人员跌倒/倒地检测",
+                    output_kind="markdown",
+                    routing={"keywords": ["跌倒", "FallDetection", "人员跌倒/倒地检测"]},
+                )
+            if name == "fight-review":
+                return SkillDefinition(
+                    name="fight-review",
+                    description="争吵 打架 FightDetection 复判",
+                    output_kind="markdown",
+                    routing={"keywords": ["争吵", "打架", "FightDetection"]},
+                )
+            raise KeyError(name)
+
+    objective = workflow._objective(prompt_text)
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(ArtifactStore(), skill_registry=FakeRegistry())
+    selection = review_workflow._select_review_skill(
+        AgentConfig(name="default", display_name="Default"),
+        RuntimeOptions(selected_skills=["smoking-review", "fall-review", "fight-review"]),
+        prompt_text=prompt_text,
+        review_source_id="source-customer-generic",
+        objective=objective,
+    )
+
+    assert objective == "CustomerBehaviorDetection"
+    assert selection is None
+
+
+def test_generic_objective_without_specific_skill_returns_conservative_mismatch(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    workflow = _load_workflow_module()
+
+    def unexpected_complete_review(**kwargs: Any) -> str:
+        raise AssertionError("generic objective without selected skill should not call llm")
+
+    monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(unexpected_complete_review))
+
+    class FakeRegistry:
+        def get(self, name: str) -> SkillDefinition:
+            if name == "smoking-review":
+                return SkillDefinition(name="smoking-review", description="抽烟 SmokingDetection 复判", output_kind="markdown")
+            if name == "fall-review":
+                return SkillDefinition(name="fall-review", description="跌倒 FallDetection 复判", output_kind="markdown")
+            if name == "fight-review":
+                return SkillDefinition(name="fight-review", description="争吵 FightDetection 复判", output_kind="markdown")
+            raise KeyError(name)
+
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("thread-generic-objective")
+    image = paths.uploads / "image.jpg"
+    image.write_bytes(b"fake-image")
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(store, skill_registry=FakeRegistry())
+
+    result, events = review_workflow.run_with_events(
+        AgentConfig(name="default", display_name="Default"),
+        [
+            Message(
+                role="user",
+                content=(
+                    "当前复判事件来源reviewSourceId为[source-customer-generic]。\n"
+                    "任务名称\n顾客行为监管\n模型名称\n顾客行为监管\n识别结果\n画面中可见一名人员站立。"
+                ),
+            )
+        ],
+        [Attachment(name="image.jpg", path="/mnt/user-data/uploads/image.jpg", mime_type="image/jpeg")],
+        "thread-generic-objective",
+        runtime_options=RuntimeOptions(selected_skills=["smoking-review", "fall-review", "fight-review"]),
+    )
+
+    assert '"reviewSourceId":"source-customer-generic"' in result.reply
+    assert '"hit":0' in result.reply
+    assert "无法确定具体复判技能" in result.reply
+    event_payloads = {event.type: event.data for event in events}
+    assert event_payloads["review.skill_selection.completed"]["reason"] == "no_candidate_skill"
+    assert "review.llm.raw_reply" not in event_payloads
+
+
+def test_review_skill_candidates_do_not_auto_expand_when_selected_skills_exist() -> None:
+    workflow = _load_workflow_module()
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skills = {
+                "parking-violation-review": SkillDefinition(
+                    name="parking-violation-review",
+                    description="车辆违停 违规停车 ParkingViolationDetection",
+                    output_kind="markdown",
+                    routing={"keywords": ["违规停车", "车辆违停", "车辆违停检测", "ParkingViolationDetection"]},
+                ),
+                "17803963378248hh02dvt": SkillDefinition(
+                    name="17803963378248hh02dvt",
+                    description="杂物检测 ClutterDetection",
+                    output_kind="markdown",
+                    routing={"keywords": ["杂物", "杂物检测", "ClutterDetection"]},
+                ),
+            }
+
+        def get(self, name: str) -> SkillDefinition:
+            return self.skills[name]
+
+        def list(self, executable_only: bool = True) -> list[SkillDefinition]:
+            return list(self.skills.values())
+
+    prompt_text = (
+        '{"taskTarget":{"value":"ParkingViolationDetection","text":"车辆违停检测"},'
+        '"modelName":"车场异常事件监控","summary":"画面中央存在白色杂物堆积"}'
+    )
+
+    candidates = workflow._review_skill_candidates(
+        FakeRegistry(),
+        ["parking-violation-review"],
+        objective="ParkingViolationDetection",
+        prompt_text=prompt_text,
+    )
+
+    assert [candidate.skill.name for candidate in candidates] == ["parking-violation-review"]
 
 
 def test_parking_review_invokes_one_selected_skill_and_injects_result(
@@ -349,6 +1046,7 @@ def test_parking_review_invokes_one_selected_skill_and_injects_result(
         paths: Any,
         review_source_id: str,
         objective: str,
+        visual_regions: list[dict[str, Any]],
         skill_selection: Any,
         skill_result: SkillRunResult | None,
         skill_error: str,
@@ -413,6 +1111,7 @@ def test_parking_review_logs_llm_raw_reply_and_normalized_result(
         paths: Any,
         review_source_id: str,
         objective: str,
+        visual_regions: list[dict[str, Any]],
         skill_selection: Any,
         skill_result: SkillRunResult | None,
         skill_error: str,
@@ -446,14 +1145,11 @@ def test_parking_review_logs_llm_raw_reply_and_normalized_result(
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert result.reply == '[{"reviewSourceId":"source-log","reviewEventId":"event-log","hit":1,"result":"模型判定命中"}]'
-    assert "parking review llm raw reply review_source_id=source-log" in logs
-    assert "raw_chars=" in logs
+    assert "parking review final result review_source_id=source-log" in logs
     assert "模型判定命中" in logs
-    assert "复判归一化结果 | parking review normalized result" in logs
-    assert "复判最终结果 | parking review final result" in logs
-    assert "reviewSourceId: source-log" in logs
-    assert '"result": "模型判定命中"' in logs
-    assert "结果字符数:" in logs
+    assert "result_chars=" in logs
+    assert "runtime event type=review.normalized_result" not in logs
+    assert "parking review llm raw reply" not in logs
     event_payloads = {event.type: event.data for event in events}
     assert event_payloads["review.llm.raw_reply"]["raw_reply"] == (
         '[{"reviewSourceId":"source-log","reviewEventId":"event-log","hit":1,"result":"模型判定命中"}]'
@@ -467,6 +1163,7 @@ def test_parking_review_logs_image_sources(
     caplog: Any,
 ) -> None:
     workflow = _load_workflow_module()
+    monkeypatch.setattr(workflow, "PARKING_REVIEW_LOG_INPUT_SUMMARY", True)
 
     def fake_complete_review(
         agent_config: AgentConfig,
@@ -476,10 +1173,12 @@ def test_parking_review_logs_image_sources(
         paths: Any,
         review_source_id: str,
         objective: str,
+        visual_regions: list[dict[str, Any]],
         skill_selection: Any,
         skill_result: SkillRunResult | None,
         skill_error: str,
     ) -> str:
+        assert review_source_id == "source-camera-1"
         return '[{"reviewSourceId":"source-image","reviewEventId":"event-image","hit":0,"result":"未命中"}]'
 
     monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(fake_complete_review))
@@ -499,7 +1198,7 @@ def test_parking_review_logs_image_sources(
                     role="user",
                     content=(
                         "当前复判事件来源reviewSourceId为[source-image]。\n"
-                        "本次复判的识别目标为[ParkingAbnormalDetection]"
+                        "本次复判的识别目标为[ParkingViolationDetection]"
                     ),
                 )
             ],
@@ -523,11 +1222,405 @@ def test_parking_review_logs_image_sources(
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     assert result.reply == '[{"reviewSourceId":"source-image","reviewEventId":"event-image","hit":0,"result":"未命中"}]'
-    assert "复判图片来源 | parking review image sources" in logs
-    assert "图片链接/路径:" in logs
-    assert image_url in logs
-    assert '"dataId": "data-1"' in logs
-    assert "复判最终结果 | parking review final result" in logs
+    assert "parking review input summary review_source_id=source-camera-1" in logs
+    assert "link_count=1" in logs
+    assert "remote_link_count=1" in logs
+    assert "https://example.test/api/ai/task/history/_read/image.jpg?..." in logs
+    assert '"dataId":"data-1"' in logs
+    assert "parking review final result review_source_id=source-camera-1" in logs
     event_payloads = {event.type: event.data for event in events}
+    assert event_payloads["review.input"]["review_source_id"] == "source-camera-1"
     assert event_payloads["review.input"]["image_sources"][0]["url"] == image_url
     assert event_payloads["review.input"]["image_sources"][0]["dataId"] == "data-1"
+
+
+def test_parking_review_logs_and_passes_visual_regions(
+    tmp_path: Path,
+    monkeypatch: Any,
+    caplog: Any,
+) -> None:
+    workflow = _load_workflow_module()
+    monkeypatch.setattr(workflow, "PARKING_REVIEW_LOG_INPUT_SUMMARY", True)
+    captured: dict[str, Any] = {}
+
+    class FakeRegistry:
+        def get(self, name: str) -> SkillDefinition:
+            if name == "parking-violation-review":
+                return SkillDefinition(
+                    name="parking-violation-review",
+                    description="违规停车 车辆违停",
+                    output_kind="markdown",
+                    routing={"keywords": ["违规停车", "车辆违停"]},
+                )
+            raise KeyError(name)
+
+    class FakeRunner:
+        def run(self, skill_name: str, spec: dict[str, Any], paths: Any, on_event: Any = None) -> SkillRunResult:
+            captured["skill_name"] = skill_name
+            captured["spec"] = spec
+            return SkillRunResult(skill_name=skill_name, data={"review_decision": "needs_model"})
+
+    def fake_complete_review(
+        *,
+        agent_config: AgentConfig,
+        runtime_options: RuntimeOptions,
+        prompt_text: str,
+        image_attachments: list[Attachment],
+        paths: Any,
+        review_source_id: str,
+        objective: str,
+        visual_regions: list[dict[str, Any]],
+        skill_selection: Any,
+        skill_result: SkillRunResult | None,
+        skill_error: str,
+    ) -> str:
+        captured["visual_regions"] = visual_regions
+        return '[{"reviewSourceId":"source-region","reviewEventId":"event-region","hit":0,"result":"未命中"}]'
+
+    monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(fake_complete_review))
+
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("thread-region")
+    image = paths.uploads / "image-region.jpg"
+    image.write_bytes(b"fake-image")
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(
+        store,
+        skill_registry=FakeRegistry(),
+        skill_runner=FakeRunner(),
+    )
+    prompt_text = (
+        '{"reviewSourceId":"source-region","taskTarget":{"value":"ParkingViolationDetection","text":"车辆违停检测"},'
+        '"schemaResults":{"roi":[[0,0],[100,0],[100,100],[0,100]],"alarmBox":[10,20,80,90]}}'
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        result, events = review_workflow.run_with_events(
+            AgentConfig(name="default", display_name="Default"),
+            [Message(role="user", content=prompt_text)],
+            [
+                Attachment(
+                    name="image.jpg",
+                    path="/mnt/user-data/uploads/image-region.jpg",
+                    mime_type="image/jpeg",
+                    metadata={
+                        "original_uri": "https://example.test/image.jpg",
+                        "dataId": "data-region",
+                        "bbox": [11, 22, 33, 44],
+                        "roi": {"points": [[1, 2], [3, 4], [5, 6]]},
+                    },
+                )
+            ],
+            "thread-region",
+            runtime_options=RuntimeOptions(selected_skills=["parking-violation-review"]),
+        )
+
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    event_payloads = {event.type: event.data for event in events}
+    assert result.reply == '[{"reviewSourceId":"source-region","reviewEventId":"event-region","hit":0,"result":"未命中"}]'
+    assert captured["skill_name"] == "parking-violation-review"
+    assert captured["spec"]["visual_regions"] == captured["visual_regions"]
+    assert captured["visual_regions"][0]["source"] == "attachment_metadata"
+    assert captured["visual_regions"][0]["regions"]["bbox"] == [11, 22, 33, 44]
+    assert captured["visual_regions"][1]["source"] == "prompt_json"
+    assert captured["visual_regions"][1]["regions"]["alarm_box"] == [10, 20, 80, 90]
+    assert "parking review input summary review_source_id=source-region" in logs
+    assert "region_count=2" in logs
+    assert "parking review final result review_source_id=source-region" in logs
+    assert event_payloads["review.input"]["visual_regions"] == captured["visual_regions"]
+
+
+def test_parking_violation_review_prompt_rejects_marked_parking_spaces(monkeypatch: Any) -> None:
+    workflow = _load_workflow_module()
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, agent_config: AgentConfig, runtime_options: RuntimeOptions | None = None) -> None:
+            pass
+
+        def complete_sync(self, system_prompt: str, messages: list[dict[str, Any]]) -> str:
+            captured["system_prompt"] = system_prompt
+            captured["user_prompt"] = messages[0]["content"]
+            return '[{"reviewSourceId":"source-parking","reviewEventId":"event-parking","hit":0,"result":"未发现明确违规停车证据"}]'
+
+    monkeypatch.setattr(workflow, "OpenAICompatibleClient", FakeClient)
+    selection = workflow.ReviewSkillSelection(
+        skill_name="parking-violation-review",
+        method="single_candidate",
+        confidence=1.0,
+        reason="test",
+        candidates=(),
+        selected_context=(
+            "skill_name: parking-violation-review\n"
+            "如果车辆停在正常车位、停车线内、划定停车区域内，应判定为不命中。"
+        ),
+    )
+
+    reply = workflow.ParkingAbnormalReviewWorkflow._complete_review(
+        agent_config=AgentConfig(name="default", display_name="Default"),
+        runtime_options=RuntimeOptions(),
+        prompt_text=(
+            '{"reviewSourceId":"source-parking",'
+            '"taskTarget":{"value":"ParkingViolationDetection","text":"车辆违停检测"},'
+            '"schemaResults":{"alarmBox":[10,20,80,90],"area":[[0,0],[100,0],[100,100],[0,100]]}}'
+        ),
+        image_attachments=[Attachment(name="parking.jpg", mime_type="image/jpeg")],
+        paths=None,
+        review_source_id="source-parking",
+        objective="ParkingViolationDetection",
+        visual_regions=[
+            {
+                "source": "prompt_json",
+                "regions": {
+                    "alarm_box": [10, 20, 80, 90],
+                    "area": [[0, 0], [100, 0], [100, 100], [0, 100]],
+                },
+            }
+        ],
+        skill_selection=selection,
+        skill_result=SkillRunResult(skill_name="parking-violation-review", data={"review_decision": "needs_model"}),
+        skill_error="",
+    )
+
+    assert '"hit":0' in reply
+    assert "车辆违停专项硬规则" in captured["user_prompt"]
+    assert "正常停车位、停车线内、划定停车区域内，必须判定 hit=0" in captured["user_prompt"]
+    assert "告警框、检测框、bbox 通常只是车辆检测框" in captured["user_prompt"]
+    assert "ROI/area 可能只是算法识别范围" in captured["user_prompt"]
+    assert "不能把框内有车当作违停证据" in captured["user_prompt"]
+    assert "未发现明确违规停车证据" in captured["user_prompt"]
+
+
+def test_parking_violation_review_prompt_strips_clutter_summary_and_marks_it_as_history(monkeypatch: Any) -> None:
+    workflow = _load_workflow_module()
+    captured: dict[str, Any] = {}
+
+    class FakeClient:
+        def __init__(self, agent_config: AgentConfig, runtime_options: RuntimeOptions | None = None) -> None:
+            pass
+
+        def complete_sync(self, system_prompt: str, messages: list[dict[str, Any]]) -> str:
+            captured["user_prompt"] = messages[0]["content"]
+            return '[{"reviewSourceId":"source-history","reviewEventId":"event-history","hit":0,"result":"未发现明确违规停车证据"}]'
+
+    monkeypatch.setattr(workflow, "OpenAICompatibleClient", FakeClient)
+    selection = workflow.ReviewSkillSelection(
+        skill_name="parking-violation-review",
+        method="single_candidate",
+        confidence=1.0,
+        reason="test",
+        candidates=(),
+        selected_context="skill_name: parking-violation-review\n仅判断车辆违停。",
+    )
+
+    workflow.ParkingAbnormalReviewWorkflow._complete_review(
+        agent_config=AgentConfig(name="default", display_name="Default"),
+        runtime_options=RuntimeOptions(),
+        prompt_text=(
+            "场景\n"
+            "车辆违停检测\n"
+            "告警摘要\n"
+            "画面中央行车通道地面上存在明显的白色杂物堆积，形状类似废弃的塑料托盘或框架。\n"
+            "置信度\n"
+            "car\n"
+            "91%"
+        ),
+        image_attachments=[Attachment(name="parking.jpg", mime_type="image/jpeg")],
+        paths=None,
+        review_source_id="source-history",
+        objective="ParkingViolationDetection",
+        visual_regions=[],
+        skill_selection=selection,
+        skill_result=SkillRunResult(skill_name="parking-violation-review", data={"review_decision": "needs_model"}),
+        skill_error="",
+    )
+
+    assert "白色杂物堆积" not in captured["user_prompt"]
+    assert "塑料托盘" not in captured["user_prompt"]
+    assert "历史摘要或旧结果" in captured["user_prompt"]
+    assert "不可作为本次命中的判定依据" in captured["user_prompt"]
+
+
+def test_parking_review_caps_llm_timeout(monkeypatch: Any) -> None:
+    workflow = _load_workflow_module()
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(workflow, "REVIEW_LLM_TIMEOUT_SECONDS", 60)
+
+    class FakeClient:
+        def __init__(self, agent_config: AgentConfig, runtime_options: RuntimeOptions | None = None) -> None:
+            captured["timeout"] = runtime_options.request_timeout_seconds if runtime_options is not None else None
+
+        def complete_sync(self, system_prompt: str, messages: list[dict[str, Any]]) -> str:
+            return '[{"reviewSourceId":"source-timeout","reviewEventId":"event-timeout","hit":0,"result":"未命中"}]'
+
+    monkeypatch.setattr(workflow, "OpenAICompatibleClient", FakeClient)
+
+    workflow.ParkingAbnormalReviewWorkflow._complete_review(
+        agent_config=AgentConfig(name="default", display_name="Default"),
+        runtime_options=RuntimeOptions(request_timeout_seconds=180),
+        prompt_text="当前复判事件来源reviewSourceId为[source-timeout]",
+        image_attachments=[Attachment(name="image.jpg", mime_type="image/jpeg")],
+        paths=None,
+        review_source_id="source-timeout",
+        objective="ClutterDetection",
+        visual_regions=[],
+        skill_selection=None,
+        skill_result=None,
+        skill_error="",
+    )
+
+    assert captured["timeout"] == 60
+
+
+def test_parking_review_returns_conservative_json_when_llm_fails(
+    tmp_path: Path,
+    monkeypatch: Any,
+    caplog: Any,
+) -> None:
+    workflow = _load_workflow_module()
+
+    def failing_complete_review(**kwargs: Any) -> str:
+        raise TimeoutError("upstream timed out")
+
+    monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(failing_complete_review))
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("thread-llm-failed")
+    image = paths.uploads / "image.jpg"
+    image.write_bytes(b"fake-image")
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(store)
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        result, events = review_workflow.run_with_events(
+            AgentConfig(name="default", display_name="Default"),
+            [Message(role="user", content="当前复判事件来源reviewSourceId为[source-failed]。\n本次复判的识别目标为[ClutterDetection]")],
+            [Attachment(name="image.jpg", path="/mnt/user-data/uploads/image.jpg", mime_type="image/jpeg")],
+            "thread-llm-failed",
+            runtime_options=RuntimeOptions(),
+        )
+
+    assert '"reviewSourceId":"source-failed"' in result.reply
+    assert '"hit":0' in result.reply
+    assert "模型请求失败或超时" in result.reply
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "parking review failed review_source_id=source-failed" in logs
+    assert "reason=模型请求失败或超时，已按证据不足处理。" in logs
+    assert "error=upstream timed out" in logs
+    event_payloads = {event.type: event.data for event in events}
+    assert event_payloads["review.llm.failed"]["error"] == "upstream timed out"
+    assert event_payloads["review.normalized_result"]["result"] == result.reply
+
+
+def test_parking_review_logs_routing_details(
+    tmp_path: Path,
+    monkeypatch: Any,
+    caplog: Any,
+) -> None:
+    workflow = _load_workflow_module()
+
+    class FakeRegistry:
+        def get(self, name: str) -> SkillDefinition:
+            if name == "parking-violation-review":
+                return SkillDefinition(
+                    name="parking-violation-review",
+                    description="车辆违停 违规停车 ParkingViolationDetection",
+                    output_kind="markdown",
+                    routing={"keywords": ["违规停车", "车辆违停", "车辆违停检测", "ParkingViolationDetection"]},
+                )
+            raise KeyError(name)
+
+    class FakeRunner:
+        def run(self, skill_name: str, spec: dict[str, Any], paths: Any, on_event: Any = None) -> SkillRunResult:
+            return SkillRunResult(skill_name=skill_name, data={"review_decision": "needs_model"})
+
+    def fake_complete_review(**kwargs: Any) -> str:
+        return '[{"reviewSourceId":"source-routing","reviewEventId":"event-routing","hit":0,"result":"未命中"}]'
+
+    monkeypatch.setattr(workflow.ParkingAbnormalReviewWorkflow, "_complete_review", staticmethod(fake_complete_review))
+    store = ArtifactStore(root_dir=tmp_path / "threads")
+    paths = store.prepare_thread("thread-routing")
+    image = paths.uploads / "image.jpg"
+    image.write_bytes(b"fake-image")
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(
+        store,
+        skill_registry=FakeRegistry(),
+        skill_runner=FakeRunner(),
+    )
+
+    with caplog.at_level("INFO", logger="uvicorn.error"):
+        result, events = review_workflow.run_with_events(
+            AgentConfig(name="default", display_name="Default"),
+            [
+                Message(
+                    role="user",
+                    content=(
+                        '{"reviewSourceId":"source-routing",'
+                        '"taskTarget":{"value":"ParkingViolationDetection","text":"车辆违停检测"},'
+                        '"summary":"画面中央存在白色杂物堆积"}'
+                    ),
+                )
+            ],
+            [Attachment(name="image.jpg", path="/mnt/user-data/uploads/image.jpg", mime_type="image/jpeg")],
+            "thread-routing",
+            runtime_options=RuntimeOptions(
+                app_template_name="ParkingAbnormalEventMonitoring",
+                selected_skills=["parking-violation-review"],
+            ),
+        )
+
+    assert result.reply == '[{"reviewSourceId":"source-routing","reviewEventId":"event-routing","hit":0,"result":"未命中"}]'
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    assert "parking review routing review_source_id=source-routing" in logs
+    assert "app_template=ParkingAbnormalEventMonitoring" in logs
+    assert "objective=ParkingViolationDetection" in logs
+    assert "prompt_sanitized=True" in logs
+    event_payloads = {event.type: event.data for event in events}
+    assert event_payloads["review.input"]["app_template_name"] == "ParkingAbnormalEventMonitoring"
+    assert event_payloads["review.input"]["configured_selected_skills"] == ["parking-violation-review"]
+    assert event_payloads["review.input"]["prompt_sanitized"] is True
+
+
+def test_parking_review_skill_router_skips_llm_by_default(monkeypatch: Any) -> None:
+    workflow = _load_workflow_module()
+    monkeypatch.setattr(workflow, "REVIEW_ENABLE_LLM_SKILL_ROUTER", False)
+
+    def unexpected_llm_router(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("llm skill router should be disabled by default")
+
+    monkeypatch.setattr(workflow, "_llm_select_review_skill", unexpected_llm_router)
+
+    class FakeRegistry:
+        def list(self, executable_only: bool = False) -> list[SkillDefinition]:
+            return []
+
+        def get(self, name: str) -> SkillDefinition:
+            if name == "smoking-review":
+                return SkillDefinition(
+                    name="smoking-review",
+                    description="抽烟 吸烟 smoking",
+                    output_kind="markdown",
+                    routing={"keywords": ["抽烟", "吸烟", "smoking"]},
+                )
+            if name == "fall-review":
+                return SkillDefinition(
+                    name="fall-review",
+                    description="跌倒 摔倒 fall",
+                    output_kind="markdown",
+                    routing={"keywords": ["跌倒", "摔倒", "fall"]},
+                )
+            raise KeyError(name)
+
+    review_workflow = workflow.ParkingAbnormalReviewWorkflow(
+        ArtifactStore(),
+        skill_registry=FakeRegistry(),
+    )
+
+    selection = review_workflow._select_review_skill(
+        AgentConfig(name="default", display_name="Default"),
+        RuntimeOptions(selected_skills=["smoking-review", "fall-review"]),
+        prompt_text="本次复判的识别目标为[SmokingDetection]",
+        review_source_id="source-router",
+        objective="SmokingDetection",
+    )
+
+    assert selection is not None
+    assert selection.skill_name == "smoking-review"
+    assert selection.method in {"keyword_score", "score_fallback"}
