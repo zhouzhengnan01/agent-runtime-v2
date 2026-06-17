@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.config import AgentConfig
@@ -29,6 +30,8 @@ VIDEO_FRAME_MAX_ATTACHMENTS = 6
 VIDEO_FRAME_MAX_CANDIDATES = 24
 VIDEO_FRAME_MAX_WIDTH = 1280
 VIDEO_FRAME_MIN_DIFFERENCE = 8.0
+RECORD_VIDEO_MAX_BYTES = max(1024 * 1024, env_int("PARKING_REVIEW_RECORD_VIDEO_MAX_BYTES", 50 * 1024 * 1024))
+RECORD_VIDEO_DOWNLOAD_TIMEOUT_SECONDS = max(1, env_int("PARKING_REVIEW_RECORD_VIDEO_DOWNLOAD_TIMEOUT_SECONDS", 30))
 SKILL_CONTEXT_MAX_CHARS = 6000
 SKILL_LLM_SELECTION_SCORE_GAP = 3.0
 SKILL_AUTO_CANDIDATE_MIN_SCORE = 2.0
@@ -131,16 +134,16 @@ OBJECTIVE_METADATA_SKIP_KEYS = {
 SCENE_OBJECTIVE_SKILLS: dict[str, str] = {
     "HelmetDetection": "helmet-review",
     "WorkwearDetection": "reflective-vest-review",
-    "FireDetection": "fire-flame-review",
+    "FallDetection": "fall-review",
+    "FightDetection": "fight-review",
     "SmokingDetection": "smoking-review",
     "SmokingBehaviorDetection": "smoking-review",
-}
-CV_LABEL_OBJECTIVE_ALIASES: dict[str, str] = {
-    "no_helmet": "HelmetDetection",
-    "nohelmet": "HelmetDetection",
-    "reflection": "WorkwearDetection",
-    "reflective_vest": "WorkwearDetection",
-    "reflectivevest": "WorkwearDetection",
+    "ClutterDetection": "17803963378248hh02dvt",
+    "GarbageOverflowDetection": "garbage-overflow-review",
+    "FireDetection": "fire-flame-review",
+    "FireLaneComplianceDetection": "fire-lane-compliance-review",
+    "ParkingViolationDetection": "parking-violation-review",
+    "ParkingCongestionDetection": "parking-congestion-review",
 }
 
 
@@ -222,7 +225,11 @@ class ParkingAbnormalReviewWorkflow:
         prompt_text = _last_user_text(messages)
         review_source_id = _review_source_id(prompt_text)
         objective, objective_source = _objective_with_source(prompt_text, attachments)
-        video_frame_attachments, video_frame_reports = _video_frame_attachments(video_attachments, paths)
+        video_frame_attachments, video_frame_reports = _review_video_frame_attachments(
+            image_attachments,
+            video_attachments,
+            paths,
+        )
         review_attachments = [*image_attachments, *video_frame_attachments]
         image_sources = _attachment_source_payloads(review_attachments)
         visual_regions = _visual_region_payloads(review_attachments, prompt_text)
@@ -409,21 +416,15 @@ class ParkingAbnormalReviewWorkflow:
             candidate_by_name = {candidate.skill.name: candidate for candidate in candidates}
             candidate = candidate_by_name.get(scene_skill_name)
             if candidate is not None:
-                from_cv_label_alias = "cv_label_alias" in objective_source
                 return ReviewSkillSelection(
                     skill_name=candidate.skill.name,
-                    method="cv_label_alias" if from_cv_label_alias else "scene_task_target",
+                    method="scene_task_target",
                     confidence=1.0,
-                    reason=(
-                        "未拿到明确场景任务目标，使用 CV 标签别名兜底选择复判 skill。"
-                        if from_cv_label_alias
-                        else "根据场景任务目标优先选择复判 skill，CV 标签仅作辅助。"
-                    ),
+                    reason="根据场景任务目标优先选择复判 skill，CV 标签仅作辅助。",
                     candidates=tuple(candidates),
                     selected_context=candidate.context,
                 )
-            if "cv_label_alias" not in objective_source:
-                return None
+            return None
 
         if len(candidates) == 1:
             candidate = candidates[0]
@@ -608,41 +609,34 @@ def _objective(text: str) -> str:
 
 def _objective_with_source(text: str, attachments: list[Attachment]) -> tuple[str, str]:
     objective, source = _objective_from_text_with_source(text)
-    if objective and source != "prompt.cv_label_alias":
+    if objective:
         return objective, source
     metadata_objective, metadata_source = _objective_from_attachments(attachments)
     if metadata_objective:
         return metadata_objective, metadata_source
-    if objective:
-        return objective, source
     return "UnknownDetection", "unknown"
 
 
 def _objective_from_text_with_source(text: str) -> tuple[str, str]:
-    cv_label_objective = ""
     match = re.search(r"识别目标为\[([^\]]+)\]", text)
     if match:
         target = match.group(1).strip()
-        bracket_cv_label_objective = _cv_label_objective(target)
-        if bracket_cv_label_objective:
-            cv_label_objective = bracket_cv_label_objective
-        else:
-            return _canonical_objective(target), "prompt.bracket_target"
+        canonical = _canonical_objective(target)
+        inferred = _objective_from_text(target)
+        if canonical != target:
+            return canonical, "prompt.bracket_target"
+        if inferred:
+            return inferred, "prompt.bracket_target"
     payload = _parse_json_object(text)
     target = _target_from_payload(payload)
     if target:
         return _canonical_objective(target), "prompt.json_target"
     labeled_target = _objective_from_labeled_text(text)
     if labeled_target:
-        if _cv_label_objective_from_text(text) == labeled_target:
-            return labeled_target, "prompt.cv_label_alias"
         return labeled_target, "prompt.labeled_text"
     inferred = _objective_from_text(text)
     if inferred:
         return inferred, "prompt.keyword"
-    cv_label_objective = cv_label_objective or _cv_label_objective_from_text(text)
-    if cv_label_objective:
-        return cv_label_objective, "prompt.cv_label_alias"
     return "", ""
 
 
@@ -656,17 +650,11 @@ def _objective_from_attachments(attachments: list[Attachment]) -> tuple[str, str
 
 
 def _objective_from_metadata(metadata: dict[str, Any]) -> tuple[str, str]:
-    cv_label_objective = ""
-    cv_label_source = ""
     for key in OBJECTIVE_METADATA_KEYS:
         if key not in metadata:
             continue
         objective = _objective_from_metadata_value(metadata[key])
         if not objective:
-            continue
-        if _is_cv_label_objective_metadata(key, metadata[key], objective):
-            cv_label_objective = cv_label_objective or objective
-            cv_label_source = cv_label_source or key
             continue
         if objective:
             return objective, key
@@ -677,12 +665,6 @@ def _objective_from_metadata(metadata: dict[str, Any]) -> tuple[str, str]:
         inferred = _objective_from_text(value)
         if inferred:
             return inferred, key
-        fallback = _cv_label_objective(value)
-        if fallback and not cv_label_objective:
-            cv_label_objective = fallback
-            cv_label_source = key
-    if cv_label_objective:
-        return cv_label_objective, f"{cv_label_source}.cv_label_alias"
     return "", ""
 
 
@@ -694,7 +676,7 @@ def _objective_from_metadata_value(value: Any) -> str:
         canonical = _canonical_objective(text)
         if canonical != text:
             return canonical
-        return _objective_from_text(text) or _cv_label_objective(text)
+        return _objective_from_text(text)
     if isinstance(value, dict):
         for item in value.values():
             objective = _objective_from_metadata_value(item)
@@ -742,12 +724,16 @@ def _canonical_objective(value: str) -> str:
         "人员倒地": "FallDetection",
         "人员跌倒/倒地检测": "FallDetection",
         "人员跌倒倒地检测": "FallDetection",
+        "摔倒监测": "FallDetection",
+        "跌倒监测": "FallDetection",
         "smoking": "SmokingDetection",
         "smoke": "SmokingDetection",
         "smokingdetection": "SmokingDetection",
         "smokingbehaviordetection": "SmokingBehaviorDetection",
         "抽烟": "SmokingDetection",
         "吸烟": "SmokingDetection",
+        "抽烟监测": "SmokingDetection",
+        "吸烟监测": "SmokingDetection",
         "抽烟检测": "SmokingDetection",
         "吸烟检测": "SmokingDetection",
         "抽烟行为检测": "SmokingBehaviorDetection",
@@ -776,18 +762,28 @@ def _canonical_objective(value: str) -> str:
         "disputedetection": "FightDetection",
         "争吵": "FightDetection",
         "争吵检测": "FightDetection",
+        "争吵监测": "FightDetection",
         "打架": "FightDetection",
         "打架检测": "FightDetection",
         "肢体冲突": "FightDetection",
         "杂物": "ClutterDetection",
         "杂物检测": "ClutterDetection",
+        "杂物监测": "ClutterDetection",
         "杂物堆积": "ClutterDetection",
         "clutter": "ClutterDetection",
         "clutterdetection": "ClutterDetection",
         "垃圾满溢": "GarbageOverflowDetection",
         "垃圾满溢检测": "GarbageOverflowDetection",
         "垃圾桶满溢": "GarbageOverflowDetection",
+        "overflow": "GarbageOverflowDetection",
+        "garbage_overflow": "GarbageOverflowDetection",
         "garbageoverflow": "GarbageOverflowDetection",
+        "trash_overflow": "GarbageOverflowDetection",
+        "trashoverflow": "GarbageOverflowDetection",
+        "bin_overflow": "GarbageOverflowDetection",
+        "binoverflow": "GarbageOverflowDetection",
+        "garbage_bin": "GarbageOverflowDetection",
+        "trash_bin": "GarbageOverflowDetection",
         "garbageoverflowdetection": "GarbageOverflowDetection",
         "火焰": "FireDetection",
         "明火": "FireDetection",
@@ -884,7 +880,19 @@ def _objective_from_text(text: str) -> str:
     clutter_terms = ("clutterdetection", "clutter", "杂物检测", "杂物堆积", "杂物", "堆积", "占道")
     if any(_normalize_match_text(term) in normalized for term in clutter_terms):
         return "ClutterDetection"
-    garbage_terms = ("garbageoverflowdetection", "garbageoverflow", "垃圾满溢检测", "垃圾满溢", "垃圾桶满溢")
+    garbage_terms = (
+        "garbageoverflowdetection",
+        "garbageoverflow",
+        "garbage_overflow",
+        "trashoverflow",
+        "trash_overflow",
+        "binoverflow",
+        "bin_overflow",
+        "overflow",
+        "垃圾满溢检测",
+        "垃圾满溢",
+        "垃圾桶满溢",
+    )
     if any(_normalize_match_text(term) in normalized for term in garbage_terms):
         return "GarbageOverflowDetection"
     fire_terms = ("firedetection", "fire", "火焰/明火检测", "火焰检测", "明火检测", "火焰", "明火")
@@ -1030,10 +1038,6 @@ def _target_from_payload(payload: dict[str, Any] | None) -> str:
         inferred = _objective_from_text(candidate)
         if inferred:
             return inferred
-    for candidate in candidates:
-        fallback = _cv_label_objective(candidate)
-        if fallback:
-            return fallback
     return candidates[0] if candidates else ""
 
 
@@ -1295,6 +1299,83 @@ def _video_attachments(attachments: list[Attachment]) -> list[Attachment]:
     ]
 
 
+def _record_video_attachments(image_attachments: list[Attachment], paths: ThreadPaths) -> tuple[list[Attachment], list[dict[str, Any]]]:
+    videos: list[Attachment] = []
+    reports: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, attachment in enumerate(image_attachments, start=1):
+        metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+        record_url = _record_video_url(metadata)
+        if not record_url or record_url in seen:
+            continue
+        seen.add(record_url)
+        target = paths.uploads / _record_video_filename(record_url, index=index)
+        report: dict[str, Any] = {
+            "name": attachment.name,
+            "source": "attachment_metadata.record",
+            "record_ref": _redacted_log_ref(record_url),
+            "target_path": str(target),
+        }
+        try:
+            _download_record_video(record_url, target)
+        except Exception as exc:
+            report.update({"status": "failed", "error_code": "record_video_download_failed", "error": str(exc)[:500]})
+            reports.append(report)
+            continue
+        report.update({"status": "downloaded", "size": target.stat().st_size})
+        reports.append(report)
+        videos.append(
+            Attachment(
+                name=target.name,
+                path=str(target),
+                mime_type="video/mp4",
+                metadata={
+                    "source": "attachment_metadata.record",
+                    "source_image": attachment.name,
+                    "source_image_path": attachment.path,
+                },
+            )
+        )
+    return videos, reports
+
+
+def _record_video_url(metadata: dict[str, Any]) -> str:
+    for key in ("record", "recordUrl", "record_url", "video", "videoUrl", "video_url"):
+        value = metadata.get(key)
+        if isinstance(value, str) and _is_http_url(value):
+            return value.strip()
+    return ""
+
+
+def _record_video_filename(record_url: str, *, index: int) -> str:
+    parsed = urlparse(record_url)
+    suffix = Path(parsed.path).suffix.lower()
+    if suffix not in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+        suffix = ".mp4"
+    return f"record-video-{index}-{hashlib.sha1(record_url.encode('utf-8')).hexdigest()[:12]}{suffix}"
+
+
+def _download_record_video(record_url: str, target: Path) -> None:
+    if target.is_file() and target.stat().st_size > 0:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_suffix(target.suffix + ".tmp")
+    request = Request(record_url, headers={"User-Agent": "jetlinks-agent-runtime/parking-review"})
+    total = 0
+    with urlopen(request, timeout=RECORD_VIDEO_DOWNLOAD_TIMEOUT_SECONDS) as response, temp.open("wb") as handle:
+        while True:
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > RECORD_VIDEO_MAX_BYTES:
+                raise ValueError(f"record video exceeds max bytes: {RECORD_VIDEO_MAX_BYTES}")
+            handle.write(chunk)
+    if total <= 0:
+        raise ValueError("record video download returned empty content")
+    temp.replace(target)
+
+
 def _scene_skill_name_for_objective(objective: str) -> str:
     canonical = _canonical_objective(objective)
     return SCENE_OBJECTIVE_SKILLS.get(canonical) or SCENE_OBJECTIVE_SKILLS.get(objective)
@@ -1505,31 +1586,6 @@ def _objective_terms(objective: str, prompt_text: str) -> list[str]:
             terms.append(cleaned)
             seen.add(normalized)
     return terms
-
-
-def _cv_label_objective(value: str) -> str:
-    return CV_LABEL_OBJECTIVE_ALIASES.get(_normalize_match_text(value), "")
-
-
-def _cv_label_objective_from_text(text: str) -> str:
-    normalized = _normalize_match_text(text)
-    for label, objective in CV_LABEL_OBJECTIVE_ALIASES.items():
-        if label and label in normalized:
-            return objective
-    return ""
-
-
-def _is_cv_label_objective_metadata(key: str, value: Any, objective: str) -> bool:
-    if objective not in set(CV_LABEL_OBJECTIVE_ALIASES.values()):
-        return False
-    key_normalized = _normalize_match_text(key)
-    if key_normalized not in {"label", "labels", "class", "classname", "confidence", "confidencelabel"}:
-        return False
-    if isinstance(value, str):
-        return bool(_cv_label_objective(value))
-    if isinstance(value, list):
-        return any(isinstance(item, str) and _cv_label_objective(item) for item in value)
-    return False
 
 
 def _target_terms_from_payload(payload: dict[str, Any]) -> list[str]:
@@ -1776,31 +1832,21 @@ def _video_frame_attachments(
             report.update({"status": "failed", "error_code": _video_extract_error_code(exc), "error": str(exc)[:500]})
             reports.append(report)
             continue
-        source_metadata = dict(attachment.metadata or {})
-        source_attachment_type = source_metadata.get("source")
         for frame in frames:
-            frame_metadata = dict(source_metadata)
-            if source_attachment_type:
-                frame_metadata.setdefault("source_attachment_source", source_attachment_type)
-            frame_metadata.update(
-                {
-                    "source": "video_frame",
-                    "source_video": frame.source_video,
-                    "source_video_attachment": attachment.name,
-                    "source_video_mime_type": attachment.mime_type,
-                    "frame_index": frame.frame_index,
-                    "timestamp_ms": round(frame.timestamp_ms, 3),
-                    "sharpness": round(frame.sharpness, 3),
-                    "brightness": round(frame.brightness, 3),
-                    "score": round(frame.score, 3),
-                }
-            )
             frame_attachments.append(
                 Attachment(
                     name=frame.path.name,
                     path=str(frame.path),
                     mime_type="image/jpeg",
-                    metadata=frame_metadata,
+                    metadata={
+                        "source": "video_frame",
+                        "source_video": frame.source_video,
+                        "frame_index": frame.frame_index,
+                        "timestamp_ms": round(frame.timestamp_ms, 3),
+                        "sharpness": round(frame.sharpness, 3),
+                        "brightness": round(frame.brightness, 3),
+                        "score": round(frame.score, 3),
+                    },
                 )
             )
         report.update(
@@ -1821,6 +1867,32 @@ def _video_frame_attachments(
         )
         reports.append(report)
     return frame_attachments, reports
+
+
+def _review_video_frame_attachments(
+    image_attachments: list[Attachment],
+    video_attachments: list[Attachment],
+    paths: ThreadPaths,
+) -> tuple[list[Attachment], list[dict[str, Any]]]:
+    if len(image_attachments) >= 3:
+        reports = [
+            {
+                "name": attachment.name,
+                "mime_type": attachment.mime_type,
+                "path": attachment.path,
+                "status": "skipped",
+                "error_code": "enough_image_attachments",
+                "reason": "已提供至少 3 张图片，按图片直接复判，不再抽取视频帧。",
+            }
+            for attachment in video_attachments
+        ]
+        return [], reports
+    record_video_attachments, record_video_reports = _record_video_attachments(image_attachments, paths)
+    video_inputs = [*video_attachments, *record_video_attachments]
+    if not video_inputs:
+        return [], record_video_reports
+    frame_attachments, frame_reports = _video_frame_attachments(video_inputs, paths)
+    return frame_attachments, [*record_video_reports, *frame_reports]
 
 
 def _extract_video_frames(
@@ -2061,7 +2133,12 @@ def _attachment_evidence_context(attachments: list[Attachment]) -> str:
         video_frames.append(f"{index}. {attachment.name}，来源视频抽帧，时间点 {timestamp_text}")
     if not video_frames:
         return ""
-    return "\n视频抽帧说明：\n" + "\n".join(video_frames) + "\n"
+    return (
+        "\n视频抽帧说明：\n"
+        + "\n".join(video_frames)
+        + "\n这些图片按视频时间顺序排列；复判时必须综合连续帧中的动作、位置和状态变化，"
+        "result 中应尽量描述多帧动态证据，而不是只依据单帧截图下结论。\n"
+    )
 
 
 def _visual_region_prompt_context(visual_regions: list[dict[str, Any]]) -> str:
