@@ -103,7 +103,7 @@ class McpStreamableHttpToolProvider:
         resources_available = False
         errors: list[str] = []
 
-        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             next_id, initialized = _initialize_mcp_session(
                 client, url, headers, next_id, protocol_version
             )
@@ -280,7 +280,7 @@ class McpStreamableHttpToolProvider:
         headers = _headers(tool, arguments, protocol_version)
         next_id = 1
 
-        with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             next_id, _initialized = _initialize_mcp_session(
                 client, url, headers, next_id, protocol_version
             )

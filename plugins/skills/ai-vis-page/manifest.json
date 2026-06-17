@@ -1,5 +1,0 @@
-{
-  "name" : "ai-vis-page",
-  "description" : "渐进式可视化大屏生成流程契约，由 workflow 按阶段注入平台 JSON 规则",
-  "generation" : true
-}

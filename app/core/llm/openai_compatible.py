@@ -80,13 +80,6 @@ class OpenAICompatibleClient:
         self.temperature = runtime_options.temperature if runtime_options.temperature is not None else model_config.temperature
         self.top_p = runtime_options.top_p if runtime_options.top_p is not None else model_config.top_p
         self.max_tokens = runtime_options.max_tokens if runtime_options.max_tokens is not None else model_config.max_tokens
-        self.reasoning_effort = _config_string(
-            runtime_options.config_options,
-            "reasoning_effort",
-            "reasoningEffort",
-            "model_reasoning_effort",
-            "modelReasoningEffort",
-        )
         self.request_timeout_seconds = _bounded_float(
             runtime_options.request_timeout_seconds
             if runtime_options.request_timeout_seconds is not None
@@ -136,7 +129,7 @@ class OpenAICompatibleClient:
         payload = self._chat_payload(system_prompt, messages)
         self._log_request("complete", payload)
         async with self._request_deadline("complete"):
-            async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
                 response = await self._post_chat_completion(client, "complete", payload)
                 self._raise_for_status(response)
                 data = response.json()
@@ -163,7 +156,7 @@ class OpenAICompatibleClient:
         payload = self._chat_payload(system_prompt, messages, tools=tools)
         self._log_request("complete_with_tools", payload)
         async with self._request_deadline("complete_with_tools"):
-            async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
                 response = await self._post_chat_completion(client, "complete_with_tools", payload)
                 if tools and self._is_auto_tool_choice_unsupported(response):
                     fallback_payload = self._chat_payload(system_prompt, messages)
@@ -214,7 +207,7 @@ class OpenAICompatibleClient:
         started_at = time.perf_counter()
         chunk_count = 0
         content_chars = 0
-        async with httpx.AsyncClient(timeout=self.request_timeout_seconds, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
             async with self._request_deadline("stream_complete"):
                 async with client.stream(
                     "POST",
@@ -464,8 +457,6 @@ class OpenAICompatibleClient:
         }
         if self.top_p is not None:
             payload["top_p"] = self.top_p
-        if self.reasoning_effort:
-            payload["reasoning_effort"] = self.reasoning_effort
         if tools and self.tool_choice == "auto":
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
@@ -638,14 +629,6 @@ def _first_defined(*values: str | None) -> str:
     return ""
 
 
-def _config_string(config: dict[str, Any], *keys: str) -> str:
-    for key in keys:
-        value = config.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
 def _bounded_float(value: object, *, default: float, minimum: float, maximum: float) -> float:
     try:
         parsed = float(value)
@@ -766,7 +749,8 @@ def _attachment_image_url(attachment: dict[str, Any], mime_type: str) -> str:
     if _is_data_uri(clean_path):
         return clean_path
     if _is_http_url(clean_path):
-        return clean_path
+        logger.warning("llm image attachment skipped because remote url was not materialized url=%s", clean_path[:500])
+        return ""
     local_path = _local_attachment_path(clean_path)
     if local_path is None or not local_path.is_file():
         return ""

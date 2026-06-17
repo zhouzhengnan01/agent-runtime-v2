@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,46 +22,14 @@ PLATFORM_SKILL_ALIASES: dict[str, list[str]] = {
         "deployment-candidate-reviewer",
         "experiment-ledger",
     ],
-    "1780654477379uykyzod7": ["ai-vis-page"],
-    "1780988275767z1lxtrd1": ["ai-vis-page"],
-    "CustomerBehaviorDetection": ["smoking-review", "fall-review", "fight-review"],
-    "顾客行为监管": ["smoking-review", "fall-review", "fight-review"],
-    "DisputeDetection": ["fight-review"],
-    "ArgumentDetection": ["fight-review"],
-    "FightDetection": ["fight-review"],
-    "SmokingDetection": ["smoking-review"],
-    "SmokingBehaviorDetection": ["smoking-review"],
-    "抽烟检测": ["smoking-review"],
-    "抽烟行为检测": ["smoking-review"],
-    "吸烟检测": ["smoking-review"],
-    "吸烟行为检测": ["smoking-review"],
-    "HelmetDetection": ["helmet-review"],
-    "安全帽佩戴检测": ["helmet-review"],
-    "安全帽检测": ["helmet-review"],
-    "未戴安全帽检测": ["helmet-review"],
-    "WorkwearDetection": ["reflective-vest-review"],
-    "反光衣/作业服穿戴检测": ["reflective-vest-review"],
-    "反光衣穿戴检测": ["reflective-vest-review"],
-    "作业服穿戴检测": ["reflective-vest-review"],
-    "反光衣检测": ["reflective-vest-review"],
-    "作业服检测": ["reflective-vest-review"],
-    "FireDetection": ["fire-flame-review"],
-    "火焰检测": ["fire-flame-review"],
-    "明火检测": ["fire-flame-review"],
-    "火焰/明火检测": ["fire-flame-review"],
+    "1780988275767z1lxtrd1": ["generate-screen-skill"],
 }
 
 
-def expand_skill_aliases(
-    values: list[str],
-    root_dir: Path | None = None,
-    *,
-    extra_aliases: object = None,
-) -> list[str]:
+def expand_skill_aliases(values: list[str], root_dir: Path | None = None) -> list[str]:
     expanded: list[str] = []
     seen: set[str] = set()
     aliases = skill_aliases(root_dir)
-    aliases.update(normalize_skill_aliases(extra_aliases))
     for value in values:
         names = aliases.get(value, [value])
         for name in names:
@@ -79,41 +46,10 @@ def skill_aliases(root_dir: Path | None = None) -> dict[str, list[str]]:
     return aliases
 
 
-def normalize_skill_aliases(value: object) -> dict[str, list[str]]:
-    if not isinstance(value, dict):
-        return {}
-    aliases: dict[str, list[str]] = {}
-    for raw_key, raw_value in value.items():
-        key = str(raw_key).strip()
-        if not key:
-            continue
-        names = _alias_names(raw_value)
-        if names:
-            aliases[key] = names
-    return aliases
-
-
-def _alias_names(value: object) -> list[str]:
-    if isinstance(value, str):
-        name = value.strip()
-        return [name] if name else []
-    if isinstance(value, list):
-        names: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            name = str(item).strip()
-            if name and name not in seen:
-                names.append(name)
-                seen.add(name)
-        return names
-    return []
-
-
 def invalidate_skill_alias_cache() -> None:
-    _plugin_skill_aliases.cache_clear()
+    return None
 
 
-@lru_cache(maxsize=16)
 def _plugin_skill_aliases(root_dir: str) -> dict[str, list[str]]:
     manager = _manager(Path(root_dir))
     aliases: dict[str, list[str]] = {}

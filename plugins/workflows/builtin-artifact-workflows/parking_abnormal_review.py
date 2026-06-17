@@ -30,12 +30,33 @@ VIDEO_FRAME_MAX_ATTACHMENTS = 6
 VIDEO_FRAME_MAX_CANDIDATES = 24
 VIDEO_FRAME_MAX_WIDTH = 1280
 VIDEO_FRAME_MIN_DIFFERENCE = 8.0
+VIDEO_FRAME_CANDIDATE_MULTIPLIER = max(1, env_int("PARKING_REVIEW_VIDEO_FRAME_CANDIDATE_MULTIPLIER", 2))
+VIDEO_FRAME_MIN_CANDIDATES = max(1, env_int("PARKING_REVIEW_VIDEO_FRAME_MIN_CANDIDATES", 8))
+VIDEO_FRAME_SEQUENTIAL_SCAN_MAX_FRAMES = max(
+    1,
+    env_int("PARKING_REVIEW_VIDEO_FRAME_SEQUENTIAL_SCAN_MAX_FRAMES", 1800),
+)
 RECORD_VIDEO_MAX_BYTES = max(1024 * 1024, env_int("PARKING_REVIEW_RECORD_VIDEO_MAX_BYTES", 50 * 1024 * 1024))
-RECORD_VIDEO_DOWNLOAD_TIMEOUT_SECONDS = max(1, env_int("PARKING_REVIEW_RECORD_VIDEO_DOWNLOAD_TIMEOUT_SECONDS", 30))
 SKILL_CONTEXT_MAX_CHARS = 6000
 SKILL_LLM_SELECTION_SCORE_GAP = 3.0
 SKILL_AUTO_CANDIDATE_MIN_SCORE = 2.0
 REVIEW_SKILL_EXCLUDED_NAMES = frozenset({"behavior-detection"})
+SMOKING_REVIEW_SKILL_NAME = "smoking-review"
+SMOKING_OBJECTIVE = "smokingdetection"
+SMOKING_EXPLICIT_TERMS = ("SmokingDetection", "抽烟检测", "吸烟检测", "持烟检测", "抽烟", "吸烟", "持烟")
+SMOKING_EXCLUDED_OBJECTIVES = frozenset(
+    {
+        "clutterdetection",
+        "garbageoverflowdetection",
+        "firedetection",
+        "parkingabnormaldetection",
+        "parkingviolationdetection",
+        "parkingcongestiondetection",
+    }
+)
+REVIEW_LLM_TIMEOUT_SECONDS = max(1, env_int("PARKING_REVIEW_LLM_TIMEOUT_SECONDS", 120))
+REVIEW_ENABLE_LLM_SKILL_ROUTER = env_flag("PARKING_REVIEW_ENABLE_LLM_SKILL_ROUTER", "0")
+VIDEO_FRAME_TIMEOUT_SECONDS = max(1, env_int("PARKING_REVIEW_VIDEO_FRAME_TIMEOUT_SECONDS", 30))
 REVIEW_LLM_REPLY_LOG_MAX_CHARS = max(200, env_int("PARKING_REVIEW_REPLY_LOG_MAX_CHARS", 1200))
 PARKING_REVIEW_TRACE_DETAILS = env_flag("PARKING_REVIEW_TRACE_DETAILS", "0")
 PARKING_REVIEW_LOG_INPUT_SUMMARY = env_flag("PARKING_REVIEW_LOG_INPUT_SUMMARY", "0")
@@ -44,30 +65,36 @@ OBJECTIVE_LABEL_ALIASES = frozenset(
     _normalize
     for _normalize in (
         "场景",
+        "任务名称",
+        "模型名称",
         "识别目标",
         "检测目标",
+        "任务目标",
+        "taskTarget",
+        "taskTargetName",
         "算法",
         "算法模型",
         "模型",
-        "置信度",
     )
 )
 OBJECTIVE_METADATA_KEYS = (
     "target",
     "targetName",
     "target_name",
+    "taskTargetName",
+    "task_target_name",
     "taskTarget",
     "task_target",
-    "event_semantics",
-    "eventSemantics",
-    "event_semantic",
-    "eventSemantic",
     "cvTaskName",
     "cv_task_name",
     "applicationScene",
     "application_scene",
     "eventTypeName",
     "event_type_name",
+    "targetSkill",
+    "target_skill",
+    "eventSemantics",
+    "event_semantics",
     "taskName",
     "task_name",
     "sourceTaskName",
@@ -92,14 +119,6 @@ OBJECTIVE_METADATA_KEYS = (
     "model_name",
     "modelId",
     "model_id",
-    "label",
-    "labels",
-    "class",
-    "className",
-    "class_name",
-    "confidence",
-    "confidenceLabel",
-    "confidence_label",
     "alarmType",
     "alarm_type",
     "alarmName",
@@ -110,6 +129,37 @@ OBJECTIVE_METADATA_KEYS = (
     "event_name",
     "description",
     "title",
+)
+REVIEW_TARGET_METADATA_KEYS = (
+    "taskTargetName",
+    "task_target_name",
+    "targetName",
+    "target_name",
+    "target",
+    "taskTarget",
+    "task_target",
+    "cvTaskName",
+    "cv_task_name",
+    "applicationScene",
+    "application_scene",
+    "eventTypeName",
+    "event_type_name",
+    "targetSkill",
+    "target_skill",
+    "eventSemantics",
+    "event_semantics",
+    "taskName",
+    "task_name",
+    "sourceTaskName",
+    "source_task_name",
+    "edgeTaskName",
+    "edge_task_name",
+    "modelName",
+    "model_name",
+)
+REVIEW_TARGET_ALIAS_MAP_KEYS = (
+    "target_skill_aliases",
+    "scene_skill_aliases",
 )
 OBJECTIVE_METADATA_SKIP_KEYS = {
     "accessKey",
@@ -125,26 +175,63 @@ OBJECTIVE_METADATA_SKIP_KEYS = {
     "fileContent",
     "file_content",
     "original_uri",
+    "objects",
     "path",
     "sha1",
     "token",
     "uri",
     "url",
 }
-SCENE_OBJECTIVE_SKILLS: dict[str, str] = {
-    "HelmetDetection": "helmet-review",
-    "WorkwearDetection": "reflective-vest-review",
-    "FallDetection": "fall-review",
-    "FightDetection": "fight-review",
-    "SmokingDetection": "smoking-review",
-    "SmokingBehaviorDetection": "smoking-review",
-    "ClutterDetection": "17803963378248hh02dvt",
-    "GarbageOverflowDetection": "garbage-overflow-review",
-    "FireDetection": "fire-flame-review",
-    "FireLaneComplianceDetection": "fire-lane-compliance-review",
-    "ParkingViolationDetection": "parking-violation-review",
-    "ParkingCongestionDetection": "parking-congestion-review",
-}
+SUMMARY_FIELD_KEYS = frozenset(
+    {
+        "summary",
+        "result",
+        "resulttext",
+        "result_text",
+        "alarmsummary",
+        "alarm_summary",
+        "alarmresult",
+        "alarm_result",
+        "reviewsummary",
+        "review_summary",
+        "reviewresult",
+        "review_result",
+        "告警摘要",
+        "告警结果",
+        "复判摘要",
+        "复判结果",
+    }
+)
+SUMMARY_SECTION_LABELS = frozenset(
+    _normalize
+    for _normalize in (
+        "告警摘要",
+        "告警结果",
+        "复判摘要",
+        "复判结果",
+        "alarm summary",
+        "alarm result",
+        "review summary",
+        "review result",
+        "summary",
+        "result",
+    )
+)
+PROMPT_SECTION_BOUNDARY_LABELS = frozenset(
+    {
+        *(_normalize for _normalize in OBJECTIVE_LABEL_ALIASES),
+        "reviewsourceid",
+        "reviewsource",
+        "tasktarget",
+        "tasktargetname",
+        "schemaresults",
+        "modelid",
+        "modelname",
+        "taskname",
+        "sourcetaskname",
+        "edgetaskname",
+    }
+)
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -223,13 +310,17 @@ class ParkingAbnormalReviewWorkflow:
         image_attachments = _image_attachments(attachments)
         video_attachments = _video_attachments(attachments)
         prompt_text = _last_user_text(messages)
+        sanitized_prompt_text = _sanitize_review_prompt_text(prompt_text)
+        prompt_sanitized = sanitized_prompt_text != prompt_text
         review_source_id = _review_source_id(prompt_text)
-        objective, objective_source = _objective_with_source(prompt_text, attachments)
-        video_frame_attachments, video_frame_reports = _review_video_frame_attachments(
-            image_attachments,
-            video_attachments,
+        objective, objective_source = _objective_with_source(prompt_text, attachments, runtime_options)
+        review_target = _review_target_from_runtime_or_attachments(runtime_options.config_options, attachments)
+        record_video_attachments, record_video_reports = _record_video_attachments(image_attachments, paths)
+        video_frame_attachments, video_frame_reports = _video_frame_attachments(
+            [*video_attachments, *record_video_attachments],
             paths,
         )
+        video_frame_reports = [*record_video_reports, *video_frame_reports]
         review_attachments = [*image_attachments, *video_frame_attachments]
         image_sources = _attachment_source_payloads(review_attachments)
         visual_regions = _visual_region_payloads(review_attachments, prompt_text)
@@ -239,7 +330,7 @@ class ParkingAbnormalReviewWorkflow:
             prompt_text,
             review_source_id,
             objective,
-            objective_source,
+            review_target,
         )
         skill_result, skill_error = self._invoke_review_skill(
             skill_selection,
@@ -257,6 +348,10 @@ class ParkingAbnormalReviewWorkflow:
                 "review_source_id": review_source_id,
                 "objective": objective,
                 "objective_source": objective_source,
+                "review_target": _review_target_event_payload(review_target),
+                "app_template_name": runtime_options.app_template_name,
+                "configured_selected_skills": runtime_options.selected_skills,
+                "prompt_sanitized": prompt_sanitized,
                 "selected_skill": skill_selection.skill_name if skill_selection is not None else "",
                 "skill_selection": _skill_selection_event_payload(skill_selection),
                 "skill_error": skill_error,
@@ -269,16 +364,42 @@ class ParkingAbnormalReviewWorkflow:
                 "video_frame_reports": video_frame_reports,
             },
         )
+        logger.info(
+            "parking review routing review_source_id=%s app_template=%s objective=%s objective_source=%s "
+            "review_target=%s prompt_sanitized=%s configured_selected_skills=%s selected_skill=%s "
+            "method=%s confidence=%s candidates=%s",
+            review_source_id,
+            runtime_options.app_template_name or "",
+            objective,
+            objective_source,
+            _compact_payload_json(_review_target_event_payload(review_target)),
+            prompt_sanitized,
+            ",".join(runtime_options.selected_skills or []),
+            skill_selection.skill_name if skill_selection is not None else "",
+            skill_selection.method if skill_selection is not None else "",
+            skill_selection.confidence if skill_selection is not None else 0.0,
+            _compact_payload_json(
+                [
+                    {
+                        "skill_name": candidate.skill.name,
+                        "score": candidate.score,
+                        "score_reasons": list(candidate.score_reasons),
+                    }
+                    for candidate in (skill_selection.candidates if skill_selection is not None else ())
+                ]
+            ),
+        )
         link_summary = _attachment_link_summary(image_sources)
         error_summary = _review_error_summary(skill_error, video_frame_reports)
         if PARKING_REVIEW_LOG_INPUT_SUMMARY:
             logger.info(
-                "parking review input summary review_source_id=%s objective=%s objective_source=%s skill_name=%s "
+                "parking review input summary review_source_id=%s objective=%s objective_source=%s review_target=%s skill_name=%s "
                 "attachments=%s image_inputs=%s video_inputs=%s video_frames=%s link_count=%s "
                 "remote_link_count=%s local_path_count=%s region_count=%s links=%s errors=%s",
                 review_source_id,
                 objective,
                 objective_source,
+                _compact_payload_json(_review_target_event_payload(review_target)),
                 skill_selection.skill_name if skill_selection is not None else "",
                 len(attachments),
                 len(image_attachments),
@@ -312,19 +433,50 @@ class ParkingAbnormalReviewWorkflow:
                 ]
             )
         else:
-            raw_reply = self._complete_review(
-                agent_config=agent_config,
-                runtime_options=runtime_options,
-                prompt_text=prompt_text,
-                image_attachments=review_attachments,
-                paths=paths,
-                review_source_id=review_source_id,
-                objective=objective,
-                visual_regions=visual_regions,
-                skill_selection=skill_selection,
-                skill_result=skill_result,
-                skill_error=skill_error,
-            )
+            try:
+                raw_reply = self._complete_review(
+                    agent_config=agent_config,
+                    runtime_options=runtime_options,
+                    prompt_text=prompt_text,
+                    image_attachments=review_attachments,
+                    paths=paths,
+                    review_source_id=review_source_id,
+                    objective=objective,
+                    visual_regions=visual_regions,
+                    skill_selection=skill_selection,
+                    skill_result=skill_result,
+                    skill_error=skill_error,
+                )
+            except Exception as exc:
+                error = str(exc)
+                failure_reason = "模型请求失败或超时，已按证据不足处理。"
+                recorder.emit(
+                    "review.llm.failed",
+                    {
+                        "review_source_id": review_source_id,
+                        "objective": objective,
+                        "skill_name": skill_selection.skill_name if skill_selection is not None else "",
+                        "error": error[:1000],
+                    },
+                )
+                logger.warning(
+                    "parking review failed review_source_id=%s objective=%s skill_name=%s reason=%s error=%s",
+                    review_source_id,
+                    objective,
+                    skill_selection.skill_name if skill_selection is not None else "",
+                    failure_reason,
+                    error[:1000],
+                )
+                raw_reply = _json_reply(
+                    [
+                        {
+                            "reviewSourceId": review_source_id,
+                            "reviewEventId": _review_event_id(review_source_id, objective),
+                            "hit": 0,
+                            "result": f"无法完成复判：{failure_reason}",
+                        }
+                    ]
+                )
             if PARKING_REVIEW_TRACE_DETAILS:
                 logger.info(
                     "parking review llm raw reply review_source_id=%s objective=%s attachment_count=%s "
@@ -400,8 +552,32 @@ class ParkingAbnormalReviewWorkflow:
         prompt_text: str,
         review_source_id: str,
         objective: str,
-        objective_source: str = "",
+        review_target: dict[str, str],
     ) -> ReviewSkillSelection | None:
+        target_skill = _review_target_skill_candidate(
+            self.skill_registry,
+            runtime_options.selected_skills,
+            runtime_options.config_options,
+            review_target,
+        )
+        if target_skill is not None:
+            context = _skill_context(target_skill)
+            target_source = review_target.get("source") or "target"
+            return ReviewSkillSelection(
+                skill_name=target_skill.name,
+                method="review_target",
+                confidence=1.0,
+                reason=f"根据复判目标字段 {target_source} 直接选择同名或映射 skill。",
+                candidates=(
+                    ReviewSkillCandidate(
+                        skill=target_skill,
+                        context=context,
+                        score=100.0,
+                        score_reasons=(f"review_target={review_target.get('value', '')}",),
+                    ),
+                ),
+                selected_context=context,
+            )
         candidates = _review_skill_candidates(
             self.skill_registry,
             runtime_options.selected_skills,
@@ -410,22 +586,6 @@ class ParkingAbnormalReviewWorkflow:
         )
         if not candidates:
             return None
-
-        scene_skill_name = _scene_skill_name_for_objective(objective)
-        if scene_skill_name:
-            candidate_by_name = {candidate.skill.name: candidate for candidate in candidates}
-            candidate = candidate_by_name.get(scene_skill_name)
-            if candidate is not None:
-                return ReviewSkillSelection(
-                    skill_name=candidate.skill.name,
-                    method="scene_task_target",
-                    confidence=1.0,
-                    reason="根据场景任务目标优先选择复判 skill，CV 标签仅作辅助。",
-                    candidates=tuple(candidates),
-                    selected_context=candidate.context,
-                )
-            return None
-
         if len(candidates) == 1:
             candidate = candidates[0]
             return ReviewSkillSelection(
@@ -444,7 +604,7 @@ class ParkingAbnormalReviewWorkflow:
                 skill_name=ranked[0].skill.name,
                 method="keyword_score",
                 confidence=min(1.0, max(0.35, ranked[0].score / 12.0)),
-                reason="根据识别目标、CV 标签和 skill 描述关键词匹配选择。",
+                reason="根据 CV 标签、识别目标和 skill 描述关键词匹配选择。",
                 candidates=tuple(ranked),
                 selected_context=ranked[0].context,
             )
@@ -452,22 +612,23 @@ class ParkingAbnormalReviewWorkflow:
         if ranked[0].score <= 0:
             return None
 
-        llm_selection = _llm_select_review_skill(
-            agent_config,
-            runtime_options,
-            prompt_text=prompt_text,
-            review_source_id=review_source_id,
-            objective=objective,
-            candidates=ranked,
-        )
-        if llm_selection is not None:
-            return llm_selection
+        if REVIEW_ENABLE_LLM_SKILL_ROUTER:
+            llm_selection = _llm_select_review_skill(
+                agent_config,
+                runtime_options,
+                prompt_text=prompt_text,
+                review_source_id=review_source_id,
+                objective=objective,
+                candidates=ranked,
+            )
+            if llm_selection is not None:
+                return llm_selection
 
         return ReviewSkillSelection(
             skill_name=ranked[0].skill.name,
             method="score_fallback",
             confidence=min(1.0, max(0.2, ranked[0].score / 12.0)),
-            reason="大模型选择不可用，使用最高关键词匹配分数的 skill。",
+            reason="使用最高关键词匹配分数的 skill。",
             candidates=tuple(ranked),
             selected_context=ranked[0].context,
         )
@@ -529,19 +690,26 @@ class ParkingAbnormalReviewWorkflow:
         skill_result: SkillRunResult | None,
         skill_error: str,
     ) -> str:
-        client = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+        client = OpenAICompatibleClient(agent_config, runtime_options=_review_llm_runtime_options(runtime_options))
         evidence_context = _attachment_evidence_context(image_attachments)
         visual_region_context = _visual_region_prompt_context(visual_regions)
         skill_context = _review_skill_prompt_context(skill_selection, skill_result, skill_error)
-        objective_rule_context = _objective_review_prompt_context(objective, skill_selection)
+        raw_prompt_text = str(prompt_text or "")
+        sanitized_prompt_text = _sanitize_review_prompt_text(raw_prompt_text)
+        objective_rule_context = _objective_review_prompt_context(
+            objective,
+            prompt_text=raw_prompt_text,
+            selection=skill_selection,
+        )
         system_prompt = (
             "你是机器视觉异常事件复判工作流。"
-            "必须只基于用户文本和随附图片/视频抽帧中可直接看见的内容判断识别目标是否命中。"
+            "必须只基于用户文本、随附图片和视频抽帧中可直接看见的内容判断识别目标是否命中。"
+            "视频文件会以若干按时间采样的图片帧形式提供；这些视频抽帧是有效视觉证据，必须纳入判断。"
             "不要根据应用名称、场所类型、识别目标名称或经验常识推断画面外信息。"
             "只返回 JSON 数组，不要 Markdown，不要解释文字。"
         )
         user_prompt = (
-            f"{prompt_text}\n\n"
+            f"{sanitized_prompt_text}\n\n"
             "输出要求：\n"
             "- 只输出 JSON 数组。\n"
             "- reviewSourceId 必须原样回填为："
@@ -549,12 +717,13 @@ class ParkingAbnormalReviewWorkflow:
             "- hit 只能是 0 或 1。\n"
             "- 没有命中时 hit=0，命中时 hit=1。\n"
             "- result 用中文说明复判依据。\n"
-            "- CV 标签是候选检测结果，不代表最终事实；最终 hit 必须依据图像/视频中目标是否符合当前场景定义判断。\n"
-            "- result 必须描述图片/视频抽帧中清晰可见的证据；画面中不可确认的内容不要编造。\n"
-            "- 如果图片来自视频抽帧，应综合所有抽帧画面判断，不要只依据单帧偶然现象下结论。\n"
+            "- result 必须描述原始图片或视频抽帧中清晰可见的证据；不可确认的内容不要编造。\n"
+            "- 如果存在视频抽帧，必须综合原始告警图和全部视频抽帧判断，不要只依据单帧偶然现象下结论。\n"
+            "- 如果存在视频抽帧，result 中必须明确说明已结合视频抽帧，并概括关键帧或时间点证据；不要只笼统写“画面中”。\n"
+            "- 如果原始图片与视频抽帧证据不一致，应优先说明多帧连续证据和差异，再给出 hit。\n"
             "- 如果提供了告警框、检测框或 ROI 区域，应优先查看这些区域，但不能仅凭框或 ROI 存在就判定命中；仍必须依据画面中可见证据判断。\n"
             "- 如存在已调用的复判 skill，必须优先遵循该 skill 的规则、判定边界和返回数据。\n"
-            "- 不要使用“空旷路面”“停车位”“商场通道”“墙边堆放”等场景描述，除非这些内容在图片/视频中清晰可见。\n"
+            "- 不要使用“空旷路面”“停车位”“商场通道”“墙边堆放”等场景描述，除非这些内容在图片中清晰可见。\n"
             f"- 本次目标：{objective}\n"
             f"{objective_rule_context}"
             f"{skill_context}"
@@ -574,6 +743,14 @@ def _last_user_text(messages: list[Message]) -> str:
         if message.role == "user":
             return message.content
     return ""
+
+
+def _review_llm_runtime_options(runtime_options: RuntimeOptions) -> RuntimeOptions:
+    current = runtime_options.request_timeout_seconds
+    capped = float(REVIEW_LLM_TIMEOUT_SECONDS)
+    if current is not None:
+        capped = min(float(current), capped)
+    return runtime_options.model_copy(update={"request_timeout_seconds": capped}, deep=True)
 
 
 def _review_source_id(text: str) -> str:
@@ -607,7 +784,16 @@ def _objective(text: str) -> str:
     return objective or "UnknownDetection"
 
 
-def _objective_with_source(text: str, attachments: list[Attachment]) -> tuple[str, str]:
+def _objective_with_source(text: str, attachments: list[Attachment], runtime_options: RuntimeOptions) -> tuple[str, str]:
+    target_objective, target_source = _objective_from_runtime_target(runtime_options.config_options)
+    if target_objective:
+        return target_objective, target_source
+    review_target = _review_target_from_attachments(attachments)
+    if review_target:
+        target_value = review_target.get("value", "")
+        canonical = _canonical_objective(target_value)
+        if canonical:
+            return canonical, review_target.get("source", "attachment.metadata.target")
     objective, source = _objective_from_text_with_source(text)
     if objective:
         return objective, source
@@ -617,16 +803,152 @@ def _objective_with_source(text: str, attachments: list[Attachment]) -> tuple[st
     return "UnknownDetection", "unknown"
 
 
+def _objective_from_runtime_target(config_options: dict[str, Any]) -> tuple[str, str]:
+    review_target = config_options.get("review_target") if isinstance(config_options, dict) else None
+    value = ""
+    source = "runtime.config_options.review_target"
+    if isinstance(review_target, dict):
+        raw_source = review_target.get("source")
+        if isinstance(raw_source, str) and raw_source.strip():
+            source = f"runtime.config_options.review_target.{raw_source.strip()}"
+        raw_value = review_target.get("value")
+        if isinstance(raw_value, str):
+            value = raw_value.strip()
+    elif isinstance(review_target, str):
+        value = review_target.strip()
+    if not value:
+        return "", ""
+    canonical = _canonical_objective(value)
+    if canonical:
+        return canonical, source
+    return value, source
+
+
+def _review_target_from_runtime_or_attachments(
+    config_options: dict[str, Any],
+    attachments: list[Attachment],
+) -> dict[str, str]:
+    runtime_target = _review_target_from_config_options(config_options)
+    if runtime_target:
+        return runtime_target
+    return _review_target_from_attachments(attachments)
+
+
+def _review_target_from_config_options(config_options: dict[str, Any]) -> dict[str, str]:
+    review_target = config_options.get("review_target") if isinstance(config_options, dict) else None
+    if isinstance(review_target, str):
+        value = review_target.strip()
+        return {"value": value, "source": "runtime.config_options.review_target"} if value else {}
+    if isinstance(review_target, dict):
+        value = _review_target_text(review_target.get("value"))
+        if value:
+            source = _review_target_text(review_target.get("source")) or "runtime.config_options.review_target"
+            if not source.startswith("runtime."):
+                source = f"runtime.config_options.review_target.{source}"
+            return {"value": value, "source": source}
+        field_target = _review_target_from_mapping(review_target)
+        if field_target:
+            field_target["source"] = f"runtime.config_options.review_target.{field_target['source']}"
+            return field_target
+    return {}
+
+
+def _review_target_from_attachments(attachments: list[Attachment]) -> dict[str, str]:
+    for attachment_index, attachment in enumerate(attachments, start=1):
+        metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+        target = _review_target_from_mapping(metadata)
+        if target:
+            target["source"] = f"attachment[{attachment_index}].metadata.{target['source']}"
+            return target
+        objects = metadata.get("objects")
+        if not isinstance(objects, list):
+            continue
+        for object_index, item in enumerate(objects[:20]):
+            if not isinstance(item, dict):
+                continue
+            others = item.get("others")
+            if isinstance(others, dict):
+                target = _review_target_from_mapping(others)
+                if target:
+                    target["source"] = (
+                        f"attachment[{attachment_index}].metadata.objects[{object_index}].others.{target['source']}"
+                    )
+                    return target
+                for nested_key in ("_meta", "others", "event_semantics", "eventSemantics"):
+                    nested = _parse_json_mapping(others.get(nested_key))
+                    if not nested:
+                        continue
+                    target = _review_target_from_mapping(nested)
+                    if target:
+                        target["source"] = (
+                            f"attachment[{attachment_index}].metadata.objects[{object_index}].others."
+                            f"{nested_key}.{target['source']}"
+                        )
+                        return target
+    return {}
+
+
+def _review_target_from_mapping(payload: dict[str, Any]) -> dict[str, str]:
+    for key in REVIEW_TARGET_METADATA_KEYS:
+        if key not in payload:
+            continue
+        value = _review_target_text(payload.get(key))
+        if value:
+            return {"value": value, "source": key}
+    for container_key in ("schemaResults", "headers"):
+        nested = payload.get(container_key)
+        if isinstance(nested, dict):
+            target = _review_target_from_mapping(nested)
+            if target:
+                target["source"] = f"{container_key}.{target['source']}"
+                return target
+    return {}
+
+
+def _parse_json_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    text = value.strip()
+    if not text or not text.startswith("{"):
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _review_target_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("text", "name", "value", "id", "code"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return ""
+
+
+def _review_target_event_payload(review_target: dict[str, str]) -> dict[str, str]:
+    value = _review_target_text(review_target.get("value")) if isinstance(review_target, dict) else ""
+    if not value:
+        return {}
+    source = _review_target_text(review_target.get("source")) if isinstance(review_target, dict) else ""
+    payload = {"value": value}
+    if source:
+        payload["source"] = source
+    return payload
+
+
 def _objective_from_text_with_source(text: str) -> tuple[str, str]:
     match = re.search(r"识别目标为\[([^\]]+)\]", text)
     if match:
-        target = match.group(1).strip()
-        canonical = _canonical_objective(target)
-        inferred = _objective_from_text(target)
-        if canonical != target:
-            return canonical, "prompt.bracket_target"
-        if inferred:
-            return inferred, "prompt.bracket_target"
+        return _canonical_objective(match.group(1).strip()), "prompt.bracket_target"
+    detection_type_match = re.search(r"检测类型为\[([^\]]+)\]", text)
+    if detection_type_match:
+        return _canonical_objective(detection_type_match.group(1).strip()), "prompt.detection_type"
     payload = _parse_json_object(text)
     target = _target_from_payload(payload)
     if target:
@@ -654,8 +976,6 @@ def _objective_from_metadata(metadata: dict[str, Any]) -> tuple[str, str]:
         if key not in metadata:
             continue
         objective = _objective_from_metadata_value(metadata[key])
-        if not objective:
-            continue
         if objective:
             return objective, key
     for key, value in _iter_metadata_strings(metadata):
@@ -712,7 +1032,10 @@ def _iter_metadata_strings(value: Any, *, prefix: str = "", depth: int = 0) -> l
 
 
 def _canonical_objective(value: str) -> str:
-    normalized = _normalize_match_text(value)
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return raw_value
+    normalized = _normalize_match_text(raw_value)
     aliases = {
         "fall": "FallDetection",
         "fallen": "FallDetection",
@@ -724,52 +1047,39 @@ def _canonical_objective(value: str) -> str:
         "人员倒地": "FallDetection",
         "人员跌倒/倒地检测": "FallDetection",
         "人员跌倒倒地检测": "FallDetection",
-        "摔倒监测": "FallDetection",
-        "跌倒监测": "FallDetection",
         "smoking": "SmokingDetection",
         "smoke": "SmokingDetection",
         "smokingdetection": "SmokingDetection",
-        "smokingbehaviordetection": "SmokingBehaviorDetection",
         "抽烟": "SmokingDetection",
         "吸烟": "SmokingDetection",
-        "抽烟监测": "SmokingDetection",
-        "吸烟监测": "SmokingDetection",
         "抽烟检测": "SmokingDetection",
         "吸烟检测": "SmokingDetection",
-        "抽烟行为检测": "SmokingBehaviorDetection",
-        "吸烟行为检测": "SmokingBehaviorDetection",
-        "安全帽佩戴检测": "HelmetDetection",
-        "安全帽检测": "HelmetDetection",
-        "未戴安全帽检测": "HelmetDetection",
-        "安全帽": "HelmetDetection",
-        "helmet": "HelmetDetection",
-        "helmetdetection": "HelmetDetection",
-        "反光衣穿戴检测": "WorkwearDetection",
-        "作业服穿戴检测": "WorkwearDetection",
-        "反光衣/作业服穿戴检测": "WorkwearDetection",
-        "反光衣检测": "WorkwearDetection",
-        "作业服检测": "WorkwearDetection",
-        "反光衣": "WorkwearDetection",
-        "作业服": "WorkwearDetection",
-        "workwear": "WorkwearDetection",
-        "workweardetection": "WorkwearDetection",
         "fight": "FightDetection",
         "fighting": "FightDetection",
         "fightdetection": "FightDetection",
         "argument": "FightDetection",
         "argumentdetection": "FightDetection",
-        "dispute": "FightDetection",
-        "disputedetection": "FightDetection",
         "争吵": "FightDetection",
         "争吵检测": "FightDetection",
-        "争吵监测": "FightDetection",
         "打架": "FightDetection",
         "打架检测": "FightDetection",
         "肢体冲突": "FightDetection",
+        "顾客行为监管": "CustomerBehaviorDetection",
+        "顾客行为检测": "CustomerBehaviorDetection",
+        "客户行为监管": "CustomerBehaviorDetection",
+        "客户行为检测": "CustomerBehaviorDetection",
+        "顾客行为安全监管": "CustomerBehaviorDetection",
+        "客户行为安全监管": "CustomerBehaviorDetection",
+        "customerbehaviordetection": "CustomerBehaviorDetection",
         "杂物": "ClutterDetection",
         "杂物检测": "ClutterDetection",
-        "杂物监测": "ClutterDetection",
         "杂物堆积": "ClutterDetection",
+        "后厨通道卫生": "ClutterDetection",
+        "后厨通道卫生检测": "ClutterDetection",
+        "后厨通道卫生监管": "ClutterDetection",
+        "后厨通道卫生安全监管": "ClutterDetection",
+        "后厨通道卫生安全检测": "ClutterDetection",
+        "通道卫生": "ClutterDetection",
         "clutter": "ClutterDetection",
         "clutterdetection": "ClutterDetection",
         "垃圾满溢": "GarbageOverflowDetection",
@@ -792,12 +1102,64 @@ def _canonical_objective(value: str) -> str:
         "明火检测": "FireDetection",
         "fire": "FireDetection",
         "firedetection": "FireDetection",
+        "安全帽": "HelmetDetection",
+        "安全帽检测": "HelmetDetection",
+        "安全帽穿戴": "HelmetDetection",
+        "安全帽穿戴检测": "HelmetDetection",
+        "安全帽佩戴": "HelmetDetection",
+        "安全帽佩戴检测": "HelmetDetection",
+        "未戴安全帽": "HelmetDetection",
+        "未佩戴安全帽": "HelmetDetection",
+        "未规范佩戴安全帽": "HelmetDetection",
+        "helmet": "HelmetDetection",
+        "hardhat": "HelmetDetection",
+        "hard_hat": "HelmetDetection",
+        "safety_helmet": "HelmetDetection",
+        "no_helmet": "HelmetDetection",
+        "nohelmet": "HelmetDetection",
+        "helmetdetection": "HelmetDetection",
+        "safetyhelmetdetection": "HelmetDetection",
+        "hardhatdetection": "HelmetDetection",
+        "ppehelmetdetection": "HelmetDetection",
+        "反光衣": "ReflectiveVestDetection",
+        "反光衣检测": "ReflectiveVestDetection",
+        "反光衣穿戴": "ReflectiveVestDetection",
+        "反光衣穿戴检测": "ReflectiveVestDetection",
+        "反光背心": "ReflectiveVestDetection",
+        "反光背心检测": "ReflectiveVestDetection",
+        "作业服": "ReflectiveVestDetection",
+        "作业服检测": "ReflectiveVestDetection",
+        "作业服穿戴": "ReflectiveVestDetection",
+        "作业服穿戴检测": "ReflectiveVestDetection",
+        "reflective_vest": "ReflectiveVestDetection",
+        "reflectivevest": "ReflectiveVestDetection",
+        "safety_vest": "ReflectiveVestDetection",
+        "safetyvest": "ReflectiveVestDetection",
+        "workwear": "ReflectiveVestDetection",
+        "reflectivevestdetection": "ReflectiveVestDetection",
+        "safetyvestdetection": "ReflectiveVestDetection",
+        "workweardetection": "ReflectiveVestDetection",
         "消防通道占用": "FireLaneComplianceDetection",
         "消防通道占用检测": "FireLaneComplianceDetection",
         "消防通道堵塞": "FireLaneComplianceDetection",
+        "消防通道堵塞检测": "FireLaneComplianceDetection",
+        "消防通道监管": "FireLaneComplianceDetection",
+        "消防通道检测": "FireLaneComplianceDetection",
         "消防通道合规检测": "FireLaneComplianceDetection",
+        "消防通道安全监管": "FireLaneComplianceDetection",
         "firelane": "FireLaneComplianceDetection",
         "firelanecompliancedetection": "FireLaneComplianceDetection",
+        "车场异常事件监控": "ParkingAbnormalDetection",
+        "车场异常事件监管": "ParkingAbnormalDetection",
+        "车场异常监控": "ParkingAbnormalDetection",
+        "车场异常监管": "ParkingAbnormalDetection",
+        "停车场异常事件监控": "ParkingAbnormalDetection",
+        "停车场异常事件监管": "ParkingAbnormalDetection",
+        "停车场异常监控": "ParkingAbnormalDetection",
+        "停车场异常监管": "ParkingAbnormalDetection",
+        "车场异常事件检测": "ParkingAbnormalDetection",
+        "停车场异常事件检测": "ParkingAbnormalDetection",
+        "parkingabnormaldetection": "ParkingAbnormalDetection",
         "违规停车": "ParkingViolationDetection",
         "车辆违停": "ParkingViolationDetection",
         "违停": "ParkingViolationDetection",
@@ -823,7 +1185,16 @@ def _canonical_objective(value: str) -> str:
         "vehiclecongestion": "ParkingCongestionDetection",
         "vehiclecongestiondetection": "ParkingCongestionDetection",
     }
-    return aliases.get(normalized, value)
+    canonical = aliases.get(normalized)
+    if canonical:
+        return canonical
+    split_candidates = re.split(r"[/|,，;；]", raw_value)
+    for candidate in split_candidates:
+        normalized_candidate = _normalize_match_text(candidate)
+        canonical = aliases.get(normalized_candidate)
+        if canonical:
+            return canonical
+    return raw_value
 
 
 def _objective_from_text(text: str) -> str:
@@ -831,53 +1202,36 @@ def _objective_from_text(text: str) -> str:
     fall_terms = ("人员跌倒/倒地检测", "人员跌倒", "人员倒地", "跌倒", "摔倒", "倒地", "falldetection", "fall")
     if any(_normalize_match_text(term) in normalized for term in fall_terms):
         return "FallDetection"
-    smoking_terms = (
-        "smokingbehaviordetection",
-        "smokingdetection",
-        "抽烟行为检测",
-        "吸烟行为检测",
-        "抽烟检测",
-        "吸烟检测",
-        "抽烟",
-        "吸烟",
-        "smoking",
-        "smoke",
-    )
+    smoking_terms = ("smokingdetection", "抽烟检测", "吸烟检测", "抽烟", "吸烟", "smoking", "smoke")
     if any(_normalize_match_text(term) in normalized for term in smoking_terms):
-        return "SmokingBehaviorDetection" if "behavior" in normalized or "行为" in normalized else "SmokingDetection"
-    workwear_terms = (
-        "workweardetection",
-        "workwear",
-        "反光衣/作业服穿戴检测",
-        "反光衣穿戴检测",
-        "作业服穿戴检测",
-        "反光衣检测",
-        "作业服检测",
-        "反光衣",
-        "作业服",
-    )
-    if any(_normalize_match_text(term) in normalized for term in workwear_terms):
-        return "WorkwearDetection"
-    helmet_terms = ("helmetdetection", "安全帽佩戴检测", "未戴安全帽检测", "安全帽检测", "安全帽")
-    if any(_normalize_match_text(term) in normalized for term in helmet_terms):
-        return "HelmetDetection"
-    fight_terms = (
-        "fightdetection",
-        "argumentdetection",
-        "disputedetection",
-        "争吵检测",
-        "打架检测",
-        "争吵",
-        "打架",
-        "肢体冲突",
-        "fighting",
-        "fight",
-        "argument",
-        "dispute",
-    )
+        return "SmokingDetection"
+    fight_terms = ("fightdetection", "argumentdetection", "争吵检测", "打架检测", "争吵", "打架", "肢体冲突", "fighting", "fight", "argument")
     if any(_normalize_match_text(term) in normalized for term in fight_terms):
         return "FightDetection"
-    clutter_terms = ("clutterdetection", "clutter", "杂物检测", "杂物堆积", "杂物", "堆积", "占道")
+    behavior_terms = (
+        "customerbehaviordetection",
+        "顾客行为监管",
+        "顾客行为检测",
+        "客户行为监管",
+        "客户行为检测",
+        "顾客行为安全监管",
+        "客户行为安全监管",
+    )
+    if any(_normalize_match_text(term) in normalized for term in behavior_terms):
+        return "CustomerBehaviorDetection"
+    clutter_terms = (
+        "clutterdetection",
+        "clutter",
+        "杂物检测",
+        "杂物堆积",
+        "杂物",
+        "后厨通道卫生安全监管",
+        "后厨通道卫生检测",
+        "后厨通道卫生",
+        "通道卫生",
+        "堆积",
+        "占道",
+    )
     if any(_normalize_match_text(term) in normalized for term in clutter_terms):
         return "ClutterDetection"
     garbage_terms = (
@@ -898,13 +1252,57 @@ def _objective_from_text(text: str) -> str:
     fire_terms = ("firedetection", "fire", "火焰/明火检测", "火焰检测", "明火检测", "火焰", "明火")
     if any(_normalize_match_text(term) in normalized for term in fire_terms):
         return "FireDetection"
+    helmet_terms = (
+        "helmetdetection",
+        "safetyhelmetdetection",
+        "hardhatdetection",
+        "ppehelmetdetection",
+        "helmet",
+        "hardhat",
+        "hard_hat",
+        "safety_helmet",
+        "no_helmet",
+        "nohelmet",
+        "安全帽穿戴检测",
+        "安全帽佩戴检测",
+        "安全帽检测",
+        "安全帽",
+        "未戴安全帽",
+        "未佩戴安全帽",
+        "未规范佩戴安全帽",
+    )
+    if any(_normalize_match_text(term) in normalized for term in helmet_terms):
+        return "HelmetDetection"
+    reflective_vest_terms = (
+        "reflectivevestdetection",
+        "reflectivevest",
+        "reflective_vest",
+        "safetyvestdetection",
+        "safetyvest",
+        "safety_vest",
+        "workweardetection",
+        "workwear",
+        "反光衣穿戴检测",
+        "反光衣检测",
+        "反光衣",
+        "反光背心",
+        "作业服穿戴检测",
+        "作业服检测",
+        "作业服",
+    )
+    if any(_normalize_match_text(term) in normalized for term in reflective_vest_terms):
+        return "ReflectiveVestDetection"
     fire_lane_terms = (
         "firelanecompliancedetection",
         "firelane",
         "消防通道合规检测",
         "消防通道占用检测",
         "消防通道占用",
+        "消防通道堵塞检测",
         "消防通道堵塞",
+        "消防通道监管",
+        "消防通道检测",
+        "消防通道安全监管",
     )
     if any(_normalize_match_text(term) in normalized for term in fire_lane_terms):
         return "FireLaneComplianceDetection"
@@ -940,6 +1338,21 @@ def _objective_from_text(text: str) -> str:
     )
     if any(_normalize_match_text(term) in normalized for term in parking_congestion_terms):
         return "ParkingCongestionDetection"
+    parking_abnormal_terms = (
+        "parkingabnormaldetection",
+        "车场异常事件监控",
+        "车场异常事件监管",
+        "车场异常监控",
+        "车场异常监管",
+        "停车场异常事件监控",
+        "停车场异常事件监管",
+        "停车场异常监控",
+        "停车场异常监管",
+        "车场异常事件检测",
+        "停车场异常事件检测",
+    )
+    if any(_normalize_match_text(term) in normalized for term in parking_abnormal_terms):
+        return "ParkingAbnormalDetection"
     return ""
 
 
@@ -985,35 +1398,26 @@ def _target_from_payload(payload: dict[str, Any] | None) -> str:
         return ""
     candidates: list[str] = []
     for path in (
+        ("target",),
+        ("targetName",),
+        ("target_name",),
+        ("taskTargetName",),
+        ("task_target_name",),
         ("taskTarget", "text"),
         ("taskTarget", "value"),
-        ("event_semantics",),
-        ("eventSemantics",),
-        ("cvTaskName",),
-        ("cv_task_name",),
-        ("applicationScene",),
-        ("application_scene",),
-        ("eventTypeName",),
-        ("event_type_name",),
+        ("schemaResults", "target"),
+        ("schemaResults", "targetName"),
+        ("schemaResults", "target_name"),
+        ("schemaResults", "taskTargetName"),
+        ("schemaResults", "task_target_name"),
         ("schemaResults", "taskTarget", "text"),
         ("schemaResults", "taskTarget", "value"),
-        ("schemaResults", "event_semantics"),
-        ("schemaResults", "eventSemantics"),
-        ("schemaResults", "cvTaskName"),
-        ("schemaResults", "cv_task_name"),
-        ("schemaResults", "applicationScene"),
-        ("schemaResults", "application_scene"),
-        ("schemaResults", "eventTypeName"),
-        ("schemaResults", "event_type_name"),
         ("headers", "target"),
-        ("headers", "event_semantics"),
-        ("headers", "eventSemantics"),
-        ("headers", "cvTaskName"),
-        ("headers", "cv_task_name"),
-        ("headers", "applicationScene"),
-        ("headers", "application_scene"),
-        ("headers", "eventTypeName"),
-        ("headers", "event_type_name"),
+        ("headers", "targetName"),
+        ("headers", "target_name"),
+        ("headers", "taskTargetName"),
+        ("headers", "task_target_name"),
+        ("headers", "taskTarget"),
         ("headers", "taskName"),
         ("headers", "sourceTaskName"),
         ("headers", "edgeTaskName"),
@@ -1306,7 +1710,9 @@ def _record_video_attachments(image_attachments: list[Attachment], paths: Thread
     for index, attachment in enumerate(image_attachments, start=1):
         metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
         record_url = _record_video_url(metadata)
-        if not record_url or record_url in seen:
+        if not record_url:
+            continue
+        if record_url in seen:
             continue
         seen.add(record_url)
         target = paths.uploads / _record_video_filename(record_url, index=index)
@@ -1362,7 +1768,7 @@ def _download_record_video(record_url: str, target: Path) -> None:
     temp = target.with_suffix(target.suffix + ".tmp")
     request = Request(record_url, headers={"User-Agent": "jetlinks-agent-runtime/parking-review"})
     total = 0
-    with urlopen(request, timeout=RECORD_VIDEO_DOWNLOAD_TIMEOUT_SECONDS) as response, temp.open("wb") as handle:
+    with urlopen(request, timeout=VIDEO_FRAME_TIMEOUT_SECONDS) as response, temp.open("wb") as handle:
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
@@ -1374,12 +1780,6 @@ def _download_record_video(record_url: str, target: Path) -> None:
     if total <= 0:
         raise ValueError("record video download returned empty content")
     temp.replace(target)
-
-
-def _scene_skill_name_for_objective(objective: str) -> str:
-    canonical = _canonical_objective(objective)
-    return SCENE_OBJECTIVE_SKILLS.get(canonical) or SCENE_OBJECTIVE_SKILLS.get(objective)
-
 
 def _review_skill_candidates(
     skill_registry: SkillRegistry,
@@ -1397,6 +1797,8 @@ def _review_skill_candidates(
             continue
         if skill.name in REVIEW_SKILL_EXCLUDED_NAMES:
             continue
+        if not _review_skill_allowed(skill.name, objective=objective, prompt_text=prompt_text):
+            continue
         context = _skill_context(skill)
         score, reasons = _score_review_skill(skill, context, objective=objective, prompt_text=prompt_text)
         candidates[skill.name] = ReviewSkillCandidate(
@@ -1405,12 +1807,16 @@ def _review_skill_candidates(
             score=score,
             score_reasons=tuple((*reasons, "template_candidate")),
         )
+    if candidates:
+        return sorted(candidates.values(), key=lambda item: item.score, reverse=True)
     list_skills = getattr(skill_registry, "list", None)
     if callable(list_skills):
         for skill in list_skills(executable_only=True):
             if skill.name in REVIEW_SKILL_EXCLUDED_NAMES:
                 continue
             if skill.name in candidates:
+                continue
+            if not _review_skill_allowed(skill.name, objective=objective, prompt_text=prompt_text):
                 continue
             context = _skill_context(skill)
             score, reasons = _score_review_skill(skill, context, objective=objective, prompt_text=prompt_text)
@@ -1423,6 +1829,139 @@ def _review_skill_candidates(
                 score_reasons=tuple((*reasons, "auto_candidate")),
             )
     return sorted(candidates.values(), key=lambda item: item.score, reverse=True)
+
+
+def _review_target_skill_candidate(
+    skill_registry: SkillRegistry,
+    selected_skills: list[str],
+    config_options: dict[str, Any],
+    review_target: dict[str, str],
+) -> SkillDefinition | None:
+    target = _review_target_value(review_target) or _review_target_value(config_options)
+    if not target:
+        return None
+    normalized_target = _normalize_match_text(target)
+    canonical_target = _canonical_objective(target)
+    normalized_canonical = _normalize_match_text(canonical_target) if canonical_target else ""
+    candidate_names = _expanded_candidate_skill_names(skill_registry, selected_skills)
+    for name in candidate_names:
+        try:
+            skill = skill_registry.get(name)
+        except KeyError:
+            continue
+        if skill.name in REVIEW_SKILL_EXCLUDED_NAMES:
+            continue
+        normalized_skill_name = _normalize_match_text(skill.name)
+        if normalized_skill_name == normalized_target:
+            return skill
+        if normalized_canonical and normalized_skill_name == normalized_canonical:
+            return skill
+    alias_candidate_names = _review_target_candidate_skill_names(config_options, target)
+    for name in alias_candidate_names:
+        skill = _review_skill_from_candidate(skill_registry, name)
+        if skill is not None:
+            return skill
+    return None
+
+
+def _review_skill_from_candidate(skill_registry: SkillRegistry, name: str) -> SkillDefinition | None:
+    candidate = str(name or "").strip()
+    if not candidate:
+        return None
+    try:
+        skill = skill_registry.get(candidate)
+    except KeyError:
+        return None
+    if skill.name in REVIEW_SKILL_EXCLUDED_NAMES:
+        return None
+    return skill
+
+
+def _review_target_candidate_skill_names(config_options: dict[str, Any], target: str) -> list[str]:
+    normalized_target = _normalize_match_text(target)
+    names: list[str] = []
+    seen: set[str] = set()
+    for key in REVIEW_TARGET_ALIAS_MAP_KEYS:
+        aliases = config_options.get(key) if isinstance(config_options, dict) else None
+        if not isinstance(aliases, dict):
+            continue
+        for alias, value in aliases.items():
+            if _normalize_match_text(str(alias or "")) != normalized_target:
+                continue
+            if isinstance(value, str):
+                _append_unique(names, seen, value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str):
+                        _append_unique(names, seen, item)
+    return names
+
+
+def _review_target_value(source: dict[str, Any]) -> str:
+    if not isinstance(source, dict):
+        return ""
+    value = source.get("value")
+    if isinstance(value, str):
+        return value.strip()
+    review_target = source.get("review_target")
+    if isinstance(review_target, str):
+        return review_target.strip()
+    if isinstance(review_target, dict):
+        value = review_target.get("value")
+        if isinstance(value, str):
+            return value.strip()
+    return ""
+
+
+def _review_skill_allowed(skill_name: str, *, objective: str, prompt_text: str) -> bool:
+    if skill_name != SMOKING_REVIEW_SKILL_NAME:
+        return True
+    normalized_objective = _normalize_match_text(objective)
+    if normalized_objective == SMOKING_OBJECTIVE:
+        return True
+    if _prompt_explicitly_targets_smoking(prompt_text):
+        return True
+    return normalized_objective not in SMOKING_EXCLUDED_OBJECTIVES
+
+
+
+def _prompt_explicitly_targets_smoking(prompt_text: str) -> bool:
+    payload = _parse_json_object(prompt_text)
+    if payload is not None:
+        for term in _target_terms_from_payload(payload):
+            if _text_has_smoking_target(term):
+                return True
+    if _text_has_smoking_target(_labeled_objective_text(prompt_text)):
+        return True
+    bracket_targets = re.findall(r"(?:识别目标|检测类型)为\[([^\]]+)\]", prompt_text)
+    return any(_text_has_smoking_target(term) for term in bracket_targets)
+
+
+def _labeled_objective_text(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines()]
+    normalized_labels = {_normalize_match_text(item) for item in OBJECTIVE_LABEL_ALIASES}
+    for index, line in enumerate(lines):
+        if not line:
+            continue
+        normalized_line = _normalize_match_text(line).strip(":：")
+        if normalized_line not in normalized_labels:
+            continue
+        for candidate in lines[index + 1 : index + 4]:
+            if candidate:
+                return candidate
+    for pattern in (
+        r"(?:场景|识别目标|检测目标|算法|算法模型|模型)\s*[:：]\s*([^\n，,;；]+)",
+        r"(?:置信度|标签|类别)\s*[:：]?\s*([A-Za-z][A-Za-z0-9_-]+)",
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _text_has_smoking_target(value: str) -> bool:
+    normalized = _normalize_match_text(value)
+    return any(_normalize_match_text(term) in normalized for term in SMOKING_EXPLICIT_TERMS)
 
 
 def _expanded_candidate_skill_names(skill_registry: SkillRegistry, selected_skills: list[str]) -> list[str]:
@@ -1518,25 +2057,38 @@ def _objective_terms(objective: str, prompt_text: str) -> list[str]:
     if payload is not None:
         raw_terms.extend(_target_terms_from_payload(payload))
     aliases = {
-        "helmetdetection": ["helmet", "安全帽", "安全帽佩戴检测", "未戴安全帽检测", "安全帽检测"],
-        "workweardetection": [
-            "workwear",
-            "reflective vest",
-            "reflective-vest",
-            "反光衣",
-            "反光衣检测",
-            "反光衣穿戴检测",
-            "作业服",
-            "作业服检测",
-            "作业服穿戴检测",
-            "反光衣/作业服穿戴检测",
+        "clutterdetection": [
+            "clutter",
+            "杂物",
+            "杂物检测",
+            "堆积",
+            "占道",
+            "后厨通道卫生",
+            "后厨通道卫生检测",
+            "后厨通道卫生安全监管",
+            "通道卫生",
+            "垃圾袋",
+            "乱堆乱放",
+            "塑料筐",
+            "托盘",
         ],
-        "clutterdetection": ["clutter", "杂物", "杂物检测", "堆积", "占道"],
         "smokingdetection": ["smoking", "smoke", "抽烟", "吸烟"],
-        "smokingbehaviordetection": ["smoking", "smoke", "抽烟", "吸烟", "抽烟行为检测", "吸烟行为检测"],
         "fightdetection": ["fight", "fighting", "argument", "争吵", "争吵检测", "打架", "斗殴", "冲突", "肢体冲突"],
-        "disputedetection": ["dispute", "argument", "争吵", "争吵检测", "打架", "斗殴", "冲突", "肢体冲突"],
         "falldetection": ["fall", "fallen", "跌倒", "摔倒", "倒地", "人员跌倒", "人员跌倒/倒地检测"],
+        "customerbehaviordetection": [
+            "顾客行为",
+            "顾客行为监管",
+            "顾客行为检测",
+            "客户行为",
+            "客户行为监管",
+            "客户行为检测",
+            "抽烟",
+            "吸烟",
+            "跌倒",
+            "倒地",
+            "争吵",
+            "打架",
+        ],
         "garbageoverflowdetection": ["garbage", "overflow", "垃圾满溢", "垃圾满溢检测", "垃圾桶满溢"],
         "firedetection": ["fire", "flame", "火焰", "明火", "火焰检测", "明火检测", "火焰/明火检测"],
         "firelanecompliancedetection": [
@@ -1545,7 +2097,27 @@ def _objective_terms(objective: str, prompt_text: str) -> list[str]:
             "消防通道占用",
             "消防通道占用检测",
             "消防通道堵塞",
+            "消防通道堵塞检测",
+            "消防通道监管",
+            "消防通道检测",
             "消防通道合规检测",
+        ],
+        "parkingabnormaldetection": [
+            "车场异常",
+        "车场异常事件监控",
+        "车场异常事件监管",
+        "车场异常监控",
+        "车场异常监管",
+        "停车场异常事件监控",
+        "停车场异常事件监管",
+        "停车场异常监控",
+        "停车场异常监管",
+        "违规停车",
+        "车辆违停",
+            "车辆违停检测",
+            "停车场通道拥堵检测",
+            "车辆拥堵",
+            "通道拥堵",
         ],
         "parkingviolationdetection": [
             "ParkingViolation",
@@ -1591,8 +2163,18 @@ def _objective_terms(objective: str, prompt_text: str) -> list[str]:
 def _target_terms_from_payload(payload: dict[str, Any]) -> list[str]:
     terms: list[str] = []
     for path in (
+        ("target",),
+        ("targetName",),
+        ("target_name",),
+        ("taskTargetName",),
+        ("task_target_name",),
         ("taskTarget", "value"),
         ("taskTarget", "text"),
+        ("schemaResults", "target"),
+        ("schemaResults", "targetName"),
+        ("schemaResults", "target_name"),
+        ("schemaResults", "taskTargetName"),
+        ("schemaResults", "task_target_name"),
         ("schemaResults", "taskTarget", "value"),
         ("schemaResults", "taskTarget", "text"),
         ("value",),
@@ -1603,6 +2185,11 @@ def _target_terms_from_payload(payload: dict[str, Any]) -> list[str]:
         ("sourceTaskName",),
         ("edgeTaskName",),
         ("headers", "target"),
+        ("headers", "targetName"),
+        ("headers", "target_name"),
+        ("headers", "taskTargetName"),
+        ("headers", "task_target_name"),
+        ("headers", "taskTarget"),
         ("headers", "taskName"),
         ("headers", "sourceTaskName"),
         ("headers", "edgeTaskName"),
@@ -1633,7 +2220,7 @@ def _llm_select_review_skill(
     objective: str,
     candidates: list[ReviewSkillCandidate],
 ) -> ReviewSkillSelection | None:
-    client = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    client = OpenAICompatibleClient(agent_config, runtime_options=_review_llm_runtime_options(runtime_options))
     if not client.configured:
         return None
     allowed = {candidate.skill.name: candidate for candidate in candidates}
@@ -1784,6 +2371,8 @@ def _review_skill_prompt_context(
 
 def _objective_review_prompt_context(
     objective: str,
+    *,
+    prompt_text: str,
     selection: ReviewSkillSelection | None,
 ) -> str:
     selected_skill_name = selection.skill_name if selection is not None else ""
@@ -1802,6 +2391,22 @@ def _objective_review_prompt_context(
         "除非区域信息或画面清晰表明该区域是禁停区/通行通道，否则不能把框内有车当作违停证据。\n"
         "- 如果无法确认车辆是否越出车位、占用通道、位于禁停区或阻碍通行，必须判定 hit=0，"
         "result 写“未发现明确违规停车证据”。\n"
+        f"{_cross_objective_summary_prompt_context(objective, prompt_text)}"
+    )
+
+
+def _cross_objective_summary_prompt_context(objective: str, prompt_text: str) -> str:
+    normalized_objective = _normalize_match_text(objective)
+    normalized_prompt = _normalize_match_text(prompt_text)
+    if normalized_objective != "parkingviolationdetection":
+        return ""
+    clutter_terms = ("杂物检测", "杂物堆积", "杂物", "clutterdetection")
+    garbage_terms = ("垃圾满溢", "垃圾桶满溢", "garbageoverflowdetection")
+    if not any(term in normalized_prompt for term in tuple(_normalize_match_text(item) for item in (*clutter_terms, *garbage_terms))):
+        return ""
+    return (
+        "- 如果输入文本里出现“杂物检测”“杂物堆积”“垃圾满溢”等与车辆违停目标不一致的历史摘要或旧结果，"
+        "这些文本只能视为历史上下文，不可作为本次命中的判定依据；仍必须只依据当前图片/视频中可见的车辆违停证据判断。\n"
     )
 
 
@@ -1827,6 +2432,7 @@ def _video_frame_attachments(
                 source_path,
                 paths.workspace / VIDEO_FRAME_OUTPUT_DIR,
                 prefix=f"video_{index}_{_safe_name(source_path.stem)}_{_short_hash(source_path)}",
+                timeout_seconds=VIDEO_FRAME_TIMEOUT_SECONDS,
             )
         except Exception as exc:
             report.update({"status": "failed", "error_code": _video_extract_error_code(exc), "error": str(exc)[:500]})
@@ -1869,32 +2475,6 @@ def _video_frame_attachments(
     return frame_attachments, reports
 
 
-def _review_video_frame_attachments(
-    image_attachments: list[Attachment],
-    video_attachments: list[Attachment],
-    paths: ThreadPaths,
-) -> tuple[list[Attachment], list[dict[str, Any]]]:
-    if len(image_attachments) >= 3:
-        reports = [
-            {
-                "name": attachment.name,
-                "mime_type": attachment.mime_type,
-                "path": attachment.path,
-                "status": "skipped",
-                "error_code": "enough_image_attachments",
-                "reason": "已提供至少 3 张图片，按图片直接复判，不再抽取视频帧。",
-            }
-            for attachment in video_attachments
-        ]
-        return [], reports
-    record_video_attachments, record_video_reports = _record_video_attachments(image_attachments, paths)
-    video_inputs = [*video_attachments, *record_video_attachments]
-    if not video_inputs:
-        return [], record_video_reports
-    frame_attachments, frame_reports = _video_frame_attachments(video_inputs, paths)
-    return frame_attachments, [*record_video_reports, *frame_reports]
-
-
 def _extract_video_frames(
     video_path: Path,
     output_dir: Path,
@@ -1902,7 +2482,9 @@ def _extract_video_frames(
     prefix: str,
     max_frames: int = VIDEO_FRAME_MAX_ATTACHMENTS,
     max_candidates: int = VIDEO_FRAME_MAX_CANDIDATES,
+    timeout_seconds: int = VIDEO_FRAME_TIMEOUT_SECONDS,
 ) -> list[ExtractedVideoFrame]:
+    deadline = time.monotonic() + max(1, timeout_seconds)
     cv2 = _import_cv2()
     output_dir.mkdir(parents=True, exist_ok=True)
     for stale in output_dir.glob(f"{prefix}_*.jpg"):
@@ -1914,12 +2496,14 @@ def _extract_video_frames(
             raise ValueError(f"OpenCV cannot open video: {video_path}")
         fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
         frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        target_candidates = _effective_video_candidate_count(max_frames=max_frames, max_candidates=max_candidates)
         candidates = _read_video_frame_candidates(
             cv2,
             capture,
             fps=fps,
             frame_count=frame_count,
-            max_candidates=max_candidates,
+            max_candidates=target_candidates,
+            deadline=deadline,
         )
     finally:
         capture.release()
@@ -1930,6 +2514,7 @@ def _extract_video_frames(
     selected = _select_video_frame_candidates(cv2, candidates, max_frames=max_frames)
     extracted: list[ExtractedVideoFrame] = []
     for output_index, candidate in enumerate(selected, start=1):
+        _raise_if_video_frame_timeout(deadline)
         resized = _resize_frame(cv2, candidate.frame, max_width=VIDEO_FRAME_MAX_WIDTH)
         frame_path = output_dir / f"{prefix}_{output_index:02d}_{int(candidate.timestamp_ms):07d}ms.jpg"
         if not cv2.imwrite(str(frame_path), resized):
@@ -1950,9 +2535,26 @@ def _extract_video_frames(
 
 def _import_cv2() -> Any:
     try:
-        return importlib.import_module("cv2")
+        cv2 = importlib.import_module("cv2")
     except ImportError as exc:
         raise RuntimeError("OpenCV is unavailable; install opencv-python to enable video frame extraction.") from exc
+    _suppress_cv2_video_logs(cv2)
+    return cv2
+
+
+def _suppress_cv2_video_logs(cv2: Any) -> None:
+    set_log_level = getattr(cv2, "setLogLevel", None)
+    if not callable(set_log_level):
+        return
+    level = getattr(cv2, "LOG_LEVEL_ERROR", None)
+    if level is None:
+        level = getattr(cv2, "LOG_LEVEL_SILENT", None)
+    if level is None:
+        return
+    try:
+        set_log_level(level)
+    except Exception:
+        return
 
 
 def _read_video_frame_candidates(
@@ -1962,18 +2564,63 @@ def _read_video_frame_candidates(
     fps: float,
     frame_count: int,
     max_candidates: int,
+    deadline: float,
 ) -> list[VideoFrameCandidate]:
     if frame_count > 0:
-        return [
-            candidate
-            for index in _candidate_frame_indices(frame_count, max_candidates)
-            if (candidate := _read_video_frame_at(cv2, capture, index, fps=fps)) is not None
-        ]
-    return _read_sequential_video_frame_candidates(cv2, capture, fps=fps, max_candidates=max_candidates)
+        if frame_count <= VIDEO_FRAME_SEQUENTIAL_SCAN_MAX_FRAMES:
+            return _read_target_video_frame_candidates(
+                cv2,
+                capture,
+                fps=fps,
+                frame_count=frame_count,
+                max_candidates=max_candidates,
+                deadline=deadline,
+            )
+        candidates: list[VideoFrameCandidate] = []
+        for index in _candidate_frame_indices(frame_count, max_candidates):
+            _raise_if_video_frame_timeout(deadline)
+            candidate = _read_video_frame_at(cv2, capture, index, fps=fps, deadline=deadline)
+            if candidate is not None:
+                candidates.append(candidate)
+        return candidates
+    return _read_sequential_video_frame_candidates(cv2, capture, fps=fps, max_candidates=max_candidates, deadline=deadline)
 
 
-def _read_video_frame_at(cv2: Any, capture: Any, frame_index: int, *, fps: float) -> VideoFrameCandidate | None:
+def _read_target_video_frame_candidates(
+    cv2: Any,
+    capture: Any,
+    *,
+    fps: float,
+    frame_count: int,
+    max_candidates: int,
+    deadline: float,
+) -> list[VideoFrameCandidate]:
+    targets = _candidate_frame_indices(frame_count, max_candidates)
+    if not targets:
+        return []
+    candidates: list[VideoFrameCandidate] = []
+    current_index = 0
+    for target in targets:
+        while current_index < target:
+            _raise_if_video_frame_timeout(deadline)
+            if not capture.grab():
+                return candidates
+            current_index += 1
+        _raise_if_video_frame_timeout(deadline)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            current_index += 1
+            continue
+        timestamp_ms = (target / fps * 1000.0) if fps > 0 else float(capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0)
+        candidates.append(_video_frame_candidate(cv2, frame, frame_index=target, timestamp_ms=timestamp_ms))
+        current_index += 1
+    return candidates
+
+
+def _read_video_frame_at(cv2: Any, capture: Any, frame_index: int, *, fps: float, deadline: float) -> VideoFrameCandidate | None:
+    _raise_if_video_frame_timeout(deadline)
     capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+    _raise_if_video_frame_timeout(deadline)
     ok, frame = capture.read()
     if not ok or frame is None:
         return None
@@ -1987,12 +2634,14 @@ def _read_sequential_video_frame_candidates(
     *,
     fps: float,
     max_candidates: int,
+    deadline: float,
 ) -> list[VideoFrameCandidate]:
     candidates: list[VideoFrameCandidate] = []
     frame_index = 0
     stride = 15
     max_reads = max_candidates * stride * 2
     while len(candidates) < max_candidates and frame_index < max_reads:
+        _raise_if_video_frame_timeout(deadline)
         ok, frame = capture.read()
         if not ok or frame is None:
             break
@@ -2005,6 +2654,11 @@ def _read_sequential_video_frame_candidates(
             candidates.append(_video_frame_candidate(cv2, frame, frame_index=frame_index, timestamp_ms=timestamp_ms))
         frame_index += 1
     return candidates
+
+
+def _raise_if_video_frame_timeout(deadline: float) -> None:
+    if time.monotonic() > deadline:
+        raise TimeoutError("video frame extraction timed out")
 
 
 def _video_frame_candidate(cv2: Any, frame: Any, *, frame_index: int, timestamp_ms: float) -> VideoFrameCandidate:
@@ -2032,6 +2686,12 @@ def _candidate_frame_indices(frame_count: int, max_candidates: int) -> list[int]
     if count == 1:
         return [0]
     return sorted({round(index * (frame_count - 1) / (count - 1)) for index in range(count)})
+
+
+def _effective_video_candidate_count(*, max_frames: int, max_candidates: int) -> int:
+    if max_candidates <= 0:
+        return 0
+    return min(max_candidates, max(VIDEO_FRAME_MIN_CANDIDATES, max_frames * VIDEO_FRAME_CANDIDATE_MULTIPLIER))
 
 
 def _select_video_frame_candidates(
@@ -2133,12 +2793,7 @@ def _attachment_evidence_context(attachments: list[Attachment]) -> str:
         video_frames.append(f"{index}. {attachment.name}，来源视频抽帧，时间点 {timestamp_text}")
     if not video_frames:
         return ""
-    return (
-        "\n视频抽帧说明：\n"
-        + "\n".join(video_frames)
-        + "\n这些图片按视频时间顺序排列；复判时必须综合连续帧中的动作、位置和状态变化，"
-        "result 中应尽量描述多帧动态证据，而不是只依据单帧截图下结论。\n"
-    )
+    return "\n视频抽帧说明：\n" + "\n".join(video_frames) + "\n"
 
 
 def _visual_region_prompt_context(visual_regions: list[dict[str, Any]]) -> str:
@@ -2281,6 +2936,103 @@ def _parse_json_object(value: str) -> dict[str, Any] | None:
         if isinstance(parsed, dict):
             return parsed
     return None
+
+
+def _sanitize_review_prompt_text(prompt_text: str) -> str:
+    text = str(prompt_text or "").strip()
+    if not text:
+        return ""
+    sanitized_json = _sanitize_prompt_json_text(text)
+    if sanitized_json is not None:
+        return sanitized_json
+    sanitized_text = _strip_summary_sections_from_text(text)
+    return sanitized_text.strip() or text
+
+
+def _sanitize_prompt_json_text(text: str) -> str | None:
+    stripped = text.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
+    candidate = fenced.group(1).strip() if fenced else stripped
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        return None
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    sanitized = _remove_summary_fields(payload)
+    return json.dumps(sanitized, ensure_ascii=False, separators=(",", ":"))
+
+
+def _remove_summary_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = _normalize_prompt_label(str(key))
+            if normalized_key in {_normalize_prompt_label(name) for name in SUMMARY_FIELD_KEYS}:
+                continue
+            sanitized[key] = _remove_summary_fields(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_remove_summary_fields(item) for item in value]
+    return value
+
+
+def _strip_summary_sections_from_text(text: str) -> str:
+    lines = text.splitlines()
+    sanitized: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if _line_starts_summary_section(line):
+            index += 1
+            while index < len(lines):
+                candidate = lines[index]
+                stripped = candidate.strip()
+                if not stripped:
+                    index += 1
+                    continue
+                if _line_is_prompt_section_boundary(candidate):
+                    break
+                index += 1
+            continue
+        sanitized.append(line)
+        index += 1
+    return "\n".join(sanitized)
+
+
+def _line_starts_summary_section(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    match = re.match(r"^([A-Za-z\u4e00-\u9fff _-]+)\s*[:：]?(.*)$", stripped)
+    if match is None:
+        return False
+    label = _normalize_prompt_label(match.group(1))
+    if label not in SUMMARY_SECTION_LABELS:
+        return False
+    remainder = match.group(2).strip()
+    return not remainder or True
+
+
+def _line_is_prompt_section_boundary(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("{") or stripped.startswith("["):
+        return True
+    normalized = _normalize_prompt_label(stripped)
+    if normalized in PROMPT_SECTION_BOUNDARY_LABELS:
+        return True
+    match = re.match(r"^([A-Za-z\u4e00-\u9fff _-]+)\s*[:：]", stripped)
+    if match is None:
+        return False
+    return _normalize_prompt_label(match.group(1)) in PROMPT_SECTION_BOUNDARY_LABELS
+
+
+def _normalize_prompt_label(value: str) -> str:
+    return re.sub(r"[\s:：_-]+", "", value).lower()
 
 
 def _bounded_float(value: object, *, default: float, minimum: float, maximum: float) -> float:

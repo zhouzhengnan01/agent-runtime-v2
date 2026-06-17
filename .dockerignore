@@ -10,4 +10,9 @@ __pycache__
 test-results
 tests
 Ultralytics
-deploy/debug-frp/secret.local.yaml
+config/upload
+plugins/upload
+static/upload
+*.bak-*
+*bak-codex*
+.tmp*

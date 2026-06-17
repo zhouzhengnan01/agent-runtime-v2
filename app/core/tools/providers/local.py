@@ -142,7 +142,7 @@ class LocalToolProvider:
         )
         overwrite = bool(arguments.get("overwrite", True))
 
-        with httpx.Client(timeout=timeout_seconds, follow_redirects=True, trust_env=False) as client:
+        with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
             with client.stream("GET", url) as response:
                 response.raise_for_status()
                 content_length = self._content_length(response.headers.get("content-length"))

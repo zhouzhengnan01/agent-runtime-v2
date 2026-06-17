@@ -1,9 +1,0 @@
-{
-  "id": "reflective-vest-review",
-  "name": "反光衣/作业服穿戴检测",
-  "version": "0.1.0",
-  "description": "用于机器视觉复判反光衣、作业服等穿戴检测场景是否命中。",
-  "skills": [
-    "skills/reflective-vest-review/manifest.json"
-  ]
-}

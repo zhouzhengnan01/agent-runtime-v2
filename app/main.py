@@ -16,7 +16,6 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import acp, agents, apps, artifacts, cron, health, mcp, sandbox, skills, uploads, workflows
 from app.core.runtime import RuntimeBootstrapConfig, default_container
-from app.core.runtime.cleanup import start_runtime_cleanup_task, stop_runtime_cleanup_task
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -47,13 +46,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await cron.scheduler.start()
     logger.info("cron scheduler started")
-    cleanup_task = start_runtime_cleanup_task()
     try:
         yield
     finally:
         logger.info("runtime shutdown begin")
-        await stop_runtime_cleanup_task(cleanup_task)
-        logger.info("runtime cleanup stopped")
         await cron.scheduler.stop()
         logger.info("cron scheduler stopped")
 

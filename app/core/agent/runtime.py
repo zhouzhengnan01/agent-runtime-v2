@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import logging
@@ -11,7 +10,7 @@ import re
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -56,16 +55,6 @@ PARKING_REVIEW_THREAD_WORKERS = max(
 )
 WORKFLOW_QUEUE_WARN_SECONDS = max(0.0, float(os.getenv("JETLINKS_WORKFLOW_QUEUE_WARN_SECONDS", "1") or "1"))
 PARKING_REVIEW_MAX_QUEUE_BACKLOG = max(0, int(os.getenv("PARKING_REVIEW_MAX_QUEUE_BACKLOG", "16") or "16"))
-PARKING_REVIEW_DEDUP_ENABLED = os.getenv("PARKING_REVIEW_DEDUP_ENABLED", "1").strip().lower() not in {
-    "0",
-    "false",
-    "no",
-    "off",
-}
-PARKING_REVIEW_DEDUP_TTL_SECONDS = max(
-    0.0,
-    float(os.getenv("PARKING_REVIEW_DEDUP_TTL_SECONDS", "120") or "120"),
-)
 _WORKFLOW_QUEUE_LOCK = threading.Lock()
 _WORKFLOW_QUEUE_PENDING = 0
 _PARKING_REVIEW_QUEUE_PENDING = 0
@@ -258,26 +247,6 @@ class _DirectJsonArtifactIntent:
     reason: str
 
 
-@dataclass(frozen=True)
-class _WorkflowDedupEntry:
-    workflow_name: str
-    dedup_key: str
-    reply: str
-    status: str
-    metadata: dict[str, Any]
-    cached_at: float
-
-
-@dataclass(frozen=True)
-class _WorkflowDedupDecision:
-    workflow_name: str
-    dedup_key: str
-    source: str
-    owner_future: Future[_WorkflowDedupEntry] | None = None
-    wait_future: Future[_WorkflowDedupEntry] | None = None
-    cache_entry: _WorkflowDedupEntry | None = None
-
-
 class AgentRuntime:
     """Stateless runtime shared by HTTP and CLI entrypoints.
 
@@ -318,9 +287,6 @@ class AgentRuntime:
             max_workers=PARKING_REVIEW_THREAD_WORKERS,
             thread_name_prefix="jetlinks-parking-review",
         )
-        self._workflow_dedup_lock = threading.Lock()
-        self._workflow_inflight: dict[tuple[str, str], Future[_WorkflowDedupEntry]] = {}
-        self._workflow_cache: dict[tuple[str, str], _WorkflowDedupEntry] = {}
         self.workflow_executors: dict[str, str] = {
             "default_workflow": "workflow_executor",
             "parking_review": "parking_review_executor",
@@ -396,30 +362,16 @@ class AgentRuntime:
             overload_result = self._parking_review_queue_overload_result(execution)
             if overload_result is not None:
                 return overload_result
-            dedup_decision = self._workflow_dedup_decision(execution)
-            if dedup_decision is not None and dedup_decision.cache_entry is not None:
-                return self._workflow_dedup_materialize_result(execution, dedup_decision)
-            if dedup_decision is not None and dedup_decision.wait_future is not None:
-                return await self._workflow_dedup_wait_result(execution, dedup_decision)
             # Workflow path: a named workflow owns the full execution instead of
             # the generic tool-calling loop.
-            try:
-                result, events = await self._run_workflow_in_executor(
-                    lambda: self._run_workflow_with_events_sync(execution),
-                    execution,
-                )
-            except BaseException as exc:
-                if dedup_decision is not None:
-                    self._workflow_dedup_fail(dedup_decision, exc)
-                raise
-            if dedup_decision is not None:
-                self._workflow_dedup_complete(dedup_decision, result)
-            return result, events
+            return await self._run_workflow_in_executor(
+                lambda: self._run_workflow_with_events_sync(execution),
+                execution,
+            )
 
         # Default path: merge thread history and let the agent loop decide when
         # to answer directly versus when to call tools.
         conversation = self._conversation_with_vision_attachments(execution.conversation, execution.request.attachments, execution.paths)
-        conversation = self._mark_conversation_has_attachments(conversation, execution.request.attachments)
         recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
         recorder.emit(
             "run.started",
@@ -506,29 +458,9 @@ class AgentRuntime:
                 for event in events:
                     yield event
                 return
-            dedup_decision = self._workflow_dedup_decision(execution)
-            if dedup_decision is not None and dedup_decision.cache_entry is not None:
-                _result, events = self._workflow_dedup_materialize_result(execution, dedup_decision)
-                for event in events:
-                    yield event
-                return
-            if dedup_decision is not None and dedup_decision.wait_future is not None:
-                _result, events = await self._workflow_dedup_wait_result(execution, dedup_decision)
-                for event in events:
-                    yield event
-                return
-            try:
-                async for event in self._stream_workflow_events(execution):
-                    yield event
-            except BaseException as exc:
-                if dedup_decision is not None:
-                    self._workflow_dedup_fail(dedup_decision, exc)
-                raise
-            else:
-                result = getattr(execution, "_workflow_final_result", None)
-                if dedup_decision is not None and isinstance(result, AgentRunResult):
-                    self._workflow_dedup_complete(dedup_decision, result)
-                return
+            async for event in self._stream_workflow_events(execution):
+                yield event
+            return
 
         async for event in self._stream_agent_loop_events(execution):
             yield event
@@ -544,12 +476,6 @@ class AgentRuntime:
                 queue_metrics = getattr(execution, "_workflow_queue_metrics", None)
                 if isinstance(queue_metrics, dict):
                     event.data.update(queue_metrics)
-            if event.type in {"run.completed", "run.failed"}:
-                raw_result = event.data.get("result")
-                if isinstance(raw_result, dict):
-                    event_result = AgentRunResult.model_validate(raw_result)
-                    self._enrich_required_inputs(event_result, execution.request)
-                    event.data["result"] = event_result.model_dump()
             captured_events.append(event)
             loop.call_soon_threadsafe(queue.put_nowait, event)
 
@@ -603,8 +529,6 @@ class AgentRuntime:
                         run_id=self._run_id(captured_events),
                     )
                 self._persist_events(execution.agent_config, execution.request, thread_id, captured_events, final_result)
-                if final_result is not None:
-                    object.__setattr__(execution, "_workflow_final_result", final_result)
 
     async def _run_workflow_in_executor(self, func: Callable[[], Any], execution: ExecutionContext) -> Any:
         loop = asyncio.get_running_loop()
@@ -687,7 +611,6 @@ class AgentRuntime:
         self._enrich_required_inputs(result, execution.request)
         self._replace_final_result_event(events, result)
         self._persist_events(execution.agent_config, execution.request, result.thread_id, events, result)
-        object.__setattr__(execution, "_workflow_final_result", result)
         return result, events
 
     @staticmethod
@@ -779,208 +702,6 @@ class AgentRuntime:
             PARKING_REVIEW_MAX_QUEUE_BACKLOG,
         )
         return result, recorder.events
-
-    def _workflow_dedup_decision(self, execution: ExecutionContext) -> _WorkflowDedupDecision | None:
-        if not PARKING_REVIEW_DEDUP_ENABLED:
-            return None
-        if execution.workflow_name != "parking_abnormal_review":
-            return None
-        workflow = self.workflow_registry.get(execution.workflow_name or "")
-        if workflow is None:
-            return None
-        dedup_key = self._workflow_dedup_key(workflow, execution)
-        if dedup_key is None:
-            return None
-        registry_key = (execution.workflow_name, dedup_key)
-        now = time.monotonic()
-        with self._workflow_dedup_lock:
-            cache_entry = self._workflow_cache.get(registry_key)
-            if cache_entry is not None and now - cache_entry.cached_at <= PARKING_REVIEW_DEDUP_TTL_SECONDS:
-                logger.info(
-                    "workflow dedup cache hit workflow=%s dedup_key=%s thread_id=%s ttl_seconds=%.1f",
-                    execution.workflow_name,
-                    dedup_key,
-                    execution.paths.thread_id,
-                    PARKING_REVIEW_DEDUP_TTL_SECONDS,
-                )
-                return _WorkflowDedupDecision(
-                    workflow_name=execution.workflow_name,
-                    dedup_key=dedup_key,
-                    source="cache",
-                    cache_entry=cache_entry,
-                )
-            if cache_entry is not None:
-                self._workflow_cache.pop(registry_key, None)
-            wait_future = self._workflow_inflight.get(registry_key)
-            if wait_future is not None:
-                logger.info(
-                    "workflow dedup wait workflow=%s dedup_key=%s thread_id=%s",
-                    execution.workflow_name,
-                    dedup_key,
-                    execution.paths.thread_id,
-                )
-                return _WorkflowDedupDecision(
-                    workflow_name=execution.workflow_name,
-                    dedup_key=dedup_key,
-                    source="inflight",
-                    wait_future=wait_future,
-                )
-            owner_future: Future[_WorkflowDedupEntry] = Future()
-            self._workflow_inflight[registry_key] = owner_future
-            logger.info(
-                "workflow dedup owner workflow=%s dedup_key=%s thread_id=%s",
-                execution.workflow_name,
-                dedup_key,
-                execution.paths.thread_id,
-            )
-            return _WorkflowDedupDecision(
-                workflow_name=execution.workflow_name,
-                dedup_key=dedup_key,
-                source="owner",
-                owner_future=owner_future,
-            )
-
-    def _workflow_dedup_key(self, workflow: object, execution: ExecutionContext) -> str | None:
-        dedup_key = getattr(workflow, "dedup_key", None)
-        if not callable(dedup_key):
-            return None
-        try:
-            value = dedup_key(
-                self._workflow_messages(execution.conversation),
-                execution.request.attachments,
-                execution.request.runtime_options,
-            )
-        except Exception:
-            logger.exception(
-                "workflow dedup key failed workflow=%s thread_id=%s",
-                execution.workflow_name,
-                execution.paths.thread_id,
-            )
-            return None
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        return None
-
-    async def _workflow_dedup_wait_result(
-        self,
-        execution: ExecutionContext,
-        decision: _WorkflowDedupDecision,
-    ) -> tuple[AgentRunResult, list[ChatEvent]]:
-        if decision.wait_future is None:
-            raise RuntimeError("workflow dedup wait requires an inflight future")
-        entry = await asyncio.wrap_future(decision.wait_future)
-        return self._workflow_dedup_materialize_result(
-            execution,
-            _WorkflowDedupDecision(
-                workflow_name=decision.workflow_name,
-                dedup_key=decision.dedup_key,
-                source="inflight",
-                cache_entry=entry,
-            ),
-        )
-
-    def _workflow_dedup_materialize_result(
-        self,
-        execution: ExecutionContext,
-        decision: _WorkflowDedupDecision,
-    ) -> tuple[AgentRunResult, list[ChatEvent]]:
-        entry = decision.cache_entry
-        if entry is None:
-            raise RuntimeError("workflow dedup materialization requires a cached entry")
-        recorder = EventRecorder(agent=execution.agent_config.name, thread_id=execution.paths.thread_id)
-        workflow = execution.workflow_name or entry.workflow_name
-        recorder.emit(
-            "run.started",
-            {
-                "run_id": recorder.run_id,
-                "workflow": workflow,
-                "execution_mode": workflow,
-                "deduped": True,
-                "dedup_source": decision.source,
-                "dedup_key": entry.dedup_key,
-            },
-        )
-        artifact = self.artifact_store.write_text_artifact(
-            execution.paths,
-            "parking_abnormal_review_result.json",
-            entry.reply,
-        )
-        recorder.emit(
-            "artifact.created",
-            {"path": f"outputs/{artifact.name}", "name": artifact.name, "mime_type": artifact.mime_type},
-        )
-        recorder.emit("agent.message", {"text": entry.reply})
-        metadata = dict(entry.metadata)
-        metadata.update(
-            {
-                "workflow": workflow,
-                "artifact_path": f"outputs/{artifact.name}",
-                "deduped": True,
-                "dedup_source": decision.source,
-                "dedup_key": entry.dedup_key,
-            }
-        )
-        result = AgentRunResult(
-            agent=execution.agent_config.name,
-            thread_id=execution.paths.thread_id,
-            status=cast(Any, entry.status),
-            reply=entry.reply,
-            artifacts=[artifact],
-            metadata=metadata,
-        )
-        recorder.emit("run.completed", {"result": result.model_dump()})
-        self.session_store.save(
-            execution.paths,
-            self._conversation_with_result(execution.conversation, result),
-            run_id=recorder.run_id,
-        )
-        self._persist_events(execution.agent_config, execution.request, execution.paths.thread_id, recorder.events, result)
-        logger.info(
-            "workflow dedup materialized workflow=%s dedup_key=%s thread_id=%s source=%s",
-            workflow,
-            entry.dedup_key,
-            execution.paths.thread_id,
-            decision.source,
-        )
-        return result, recorder.events
-
-    def _workflow_dedup_complete(
-        self,
-        decision: _WorkflowDedupDecision,
-        result: AgentRunResult,
-    ) -> None:
-        if decision.owner_future is None:
-            return
-        entry = _WorkflowDedupEntry(
-            workflow_name=decision.workflow_name,
-            dedup_key=decision.dedup_key,
-            reply=result.reply,
-            status=result.status,
-            metadata={key: value for key, value in result.metadata.items() if key != "run_id"},
-            cached_at=time.monotonic(),
-        )
-        registry_key = (decision.workflow_name, decision.dedup_key)
-        with self._workflow_dedup_lock:
-            if not decision.owner_future.done():
-                decision.owner_future.set_result(entry)
-            if PARKING_REVIEW_DEDUP_TTL_SECONDS > 0:
-                self._workflow_cache[registry_key] = entry
-            self._workflow_inflight.pop(registry_key, None)
-        logger.info(
-            "workflow dedup completed workflow=%s dedup_key=%s reply_chars=%s",
-            decision.workflow_name,
-            decision.dedup_key,
-            len(result.reply),
-        )
-
-    def _workflow_dedup_fail(self, decision: _WorkflowDedupDecision, exc: BaseException) -> None:
-        if decision.owner_future is None:
-            return
-        registry_key = (decision.workflow_name, decision.dedup_key)
-        with self._workflow_dedup_lock:
-            if not decision.owner_future.done():
-                decision.owner_future.set_exception(exc)
-            self._workflow_inflight.pop(registry_key, None)
 
     @staticmethod
     def _workflow_queue_name(execution: ExecutionContext) -> str:
@@ -1761,20 +1482,6 @@ class AgentRuntime:
                 return updated
         return conversation
 
-    @staticmethod
-    def _mark_conversation_has_attachments(
-        conversation: list[dict[str, Any]],
-        attachments: list[Attachment],
-    ) -> list[dict[str, Any]]:
-        if not attachments or not conversation:
-            return conversation
-        updated = [dict(message) for message in conversation]
-        for index in range(len(updated) - 1, -1, -1):
-            if updated[index].get("role") == "user":
-                updated[index]["_has_attachments"] = True
-                return updated
-        return conversation
-
     @classmethod
     def _vision_attachment_payloads(cls, attachments: list[Attachment], paths: ThreadPaths) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
@@ -1823,7 +1530,6 @@ class AgentRuntime:
         for message in messages:
             clean = dict(message)
             clean.pop("_attachments", None)
-            clean.pop("_has_attachments", None)
             stripped.append(clean)
         return stripped
 
@@ -1880,7 +1586,6 @@ class AgentRuntime:
         selected_skills = self._normalize_skills(
             request.runtime_options.selected_skills,
             root_dir=self.app_template_registry.root_dir,
-            extra_aliases=self._runtime_skill_aliases(request.runtime_options),
         )
         if selected_skills:
             raw_skills = updates.get("skills")
@@ -1901,7 +1606,6 @@ class AgentRuntime:
         # message context.
         runtime_options = self._runtime_options_with_message_capabilities(request.runtime_options, request.messages)
         runtime_options = self._runtime_options_with_app_template_defaults(runtime_options)
-        runtime_options = self._runtime_options_with_skill_aliases(runtime_options)
         runtime_options = self._effective_runtime_options(runtime_options)
         runtime_options = self._runtime_options_with_composite_skills(runtime_options)
         attachments = self._expanded_video_record_attachments(request.attachments)
@@ -1909,9 +1613,7 @@ class AgentRuntime:
             attachments = self._thread_file_attachments(runtime_options.thread_id)
         if attachments and runtime_options.thread_id:
             attachments = self._materialize_remote_attachments(attachments, runtime_options.thread_id)
-        attachments = self._attachments_with_review_task_context(runtime_options, attachments)
         messages = self._messages_with_attachment_context(request.messages, attachments)
-        runtime_options = self._runtime_options_with_routed_primary_skill(runtime_options, messages, attachments)
         if runtime_options is request.runtime_options and messages is request.messages and attachments is request.attachments:
             return request
         return request.model_copy(
@@ -1949,17 +1651,8 @@ class AgentRuntime:
         if runtime_options.workflow and runtime_options.workflow not in {"agent_loop", "default"}:
             return runtime_options
         selected_skills = self._selected_skills_from_messages(messages)
-        if selected_skills:
-            # Preserve the original explicit-field set so downstream model
-            # resolution can still tell which runtime options were truly provided
-            # by the caller versus which ones are still eligible for app-template
-            # or bootstrap defaults.
-            return runtime_options.model_copy(update={"selected_skills": selected_skills}, deep=True)
-        if (runtime_options.app_template_name or "").strip():
-            return runtime_options
-        if self._has_runtime_mcp_config(runtime_options):
-            return runtime_options
-        selected_skills = self._selected_skills_from_routing(messages)
+        if not selected_skills:
+            selected_skills = self._selected_skills_from_routing(messages)
         if not selected_skills:
             return runtime_options
         # Preserve the original explicit-field set so downstream model
@@ -1968,31 +1661,11 @@ class AgentRuntime:
         # or bootstrap defaults.
         return runtime_options.model_copy(update={"selected_skills": selected_skills}, deep=True)
 
-    @staticmethod
-    def _has_runtime_mcp_config(runtime_options: RuntimeOptions) -> bool:
-        config_options = runtime_options.config_options
-        for key in ("mcpServers", "mcp_servers", "runtime_mcp_tools", "_runtime_mcp_tools"):
-            value = config_options.get(key)
-            if isinstance(value, list) and value:
-                return True
-        return False
-
-    def _runtime_options_with_skill_aliases(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
-        selected_skills = self._normalize_skills(
-            runtime_options.selected_skills,
-            root_dir=self.app_template_registry.root_dir,
-            extra_aliases=self._runtime_skill_aliases(runtime_options),
-        )
-        if selected_skills == runtime_options.selected_skills:
-            return runtime_options
-        return runtime_options.model_copy(update={"selected_skills": selected_skills or []}, deep=True)
-
     def _runtime_options_with_composite_skills(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
         raw_selected_skills = self._normalize_skills(runtime_options.selected_skills) or []
         selected_skills = self._normalize_skills(
             runtime_options.selected_skills,
             root_dir=self.app_template_registry.root_dir,
-            extra_aliases=self._runtime_skill_aliases(runtime_options),
         ) or []
         if not selected_skills:
             return runtime_options
@@ -2023,819 +1696,6 @@ class AgentRuntime:
             deep=True,
         )
 
-    def _runtime_options_with_routed_primary_skill(
-        self,
-        runtime_options: RuntimeOptions,
-        messages: list[Message],
-        attachments: list[Attachment],
-    ) -> RuntimeOptions:
-        selected_skills = [skill.strip() for skill in runtime_options.selected_skills if skill.strip()]
-        if len(selected_skills) <= 1:
-            return runtime_options
-        routing_text = "\n".join(message.content for message in messages if message.role == "user").strip()
-        if not routing_text:
-            return runtime_options
-        review_routing = self._is_review_runtime_options(runtime_options) or self._is_review_skill_routing_request(
-            routing_text,
-            attachments,
-        )
-        if not review_routing:
-            return runtime_options
-        try:
-            from app.core.skills.plugins import SkillPluginManager
-
-            plugin_manager = SkillPluginManager(self.app_template_registry.root_dir)
-            semantic_values = self._attachment_semantic_values(attachments)
-            labels = self._attachment_labels(attachments)
-            candidate = self._candidate_from_attachment_target_skill(attachments, selected_skills)
-            score = 120 if candidate else 0
-            source = "attachment_target_skill" if candidate else "message_attachment_context"
-            label_updates: dict[str, str] = {}
-            if not candidate:
-                candidate, score = self._candidate_from_attachment_semantics(
-                    plugin_manager,
-                    semantic_values,
-                    selected_skills,
-                )
-                if candidate:
-                    source = "attachment_event_semantics"
-            if not candidate:
-                candidate = self._candidate_from_skill_label_aliases(runtime_options, labels, selected_skills)
-                score = 100 if candidate else 0
-                if candidate:
-                    source = "skill_label_aliases"
-            if not candidate:
-                candidate, score, label_updates = self._candidate_from_attachment_labels(
-                    plugin_manager,
-                    labels,
-                    selected_skills,
-                )
-                if candidate:
-                    source = "attachment_object_labels"
-            if not candidate:
-                skill_metadata_routing_text = self._review_skill_metadata_routing_text(
-                    routing_text,
-                    semantic_values,
-                    labels,
-                    attachments,
-                )
-                candidate, score = plugin_manager.select_skill_candidate(
-                    skill_metadata_routing_text,
-                    list(attachments),
-                    selected_skills,
-                )
-                if candidate:
-                    source = "skill_json_metadata"
-                    label_updates = self._skill_label_alias_updates_for_candidate(
-                        plugin_manager,
-                        labels,
-                        selected_skills,
-                        candidate,
-                    )
-        except Exception as exc:
-            logger.warning("primary skill routing skipped selected_skills=%s error=%s", selected_skills, exc)
-            return runtime_options
-        if label_updates:
-            runtime_options = self._runtime_options_with_skill_label_alias_updates(runtime_options, label_updates)
-        if score <= 0 or not candidate or candidate == selected_skills[0] or candidate not in selected_skills:
-            if review_routing and (score <= 0 or not candidate):
-                config_options = dict(runtime_options.config_options)
-                config_options["skill_routing_error"] = {
-                    "reason": "no_skill_match",
-                    "source": source,
-                    "selected_skills": selected_skills,
-                    "semantic_values": semantic_values,
-                    "labels": labels,
-                    "message": (
-                        "No selected skill matched the review text, attachment event semantics, attachment object labels, "
-                        "or selected skill JSON metadata; "
-                        "the runtime refused to fall back to the first selected skill."
-                    ),
-                }
-                logger.warning(
-                    "primary skill routing failed selected_skills=%s attachments=%s",
-                    selected_skills,
-                    len(attachments),
-                )
-                return runtime_options.model_copy(
-                    update={"selected_skills": [], "config_options": config_options},
-                    deep=True,
-                )
-            return runtime_options
-        routed_skills = [candidate, *[skill for skill in selected_skills if skill != candidate]]
-        config_options = dict(runtime_options.config_options)
-        config_options["routed_primary_skill"] = {
-            "skill_name": candidate,
-            "score": score,
-            "source": source,
-            "semantic_values": semantic_values,
-            "labels": labels,
-        }
-        logger.info(
-            "primary skill routed skill=%s score=%s source=%s selected_skills=%s semantic_values=%s labels=%s",
-            candidate,
-            score,
-            source,
-            selected_skills,
-            semantic_values,
-            labels,
-        )
-        return runtime_options.model_copy(
-            update={"selected_skills": routed_skills, "config_options": config_options},
-            deep=True,
-        )
-
-    def _attachments_with_review_task_context(
-        self,
-        runtime_options: RuntimeOptions,
-        attachments: list[Attachment],
-    ) -> list[Attachment]:
-        if not attachments:
-            return attachments
-        task_mappings = self._review_task_mappings(runtime_options.config_options)
-        skill_aliases = self._review_task_skill_aliases(runtime_options.config_options)
-        event_aliases = self._review_task_event_aliases(runtime_options.config_options)
-        selected_skills = [skill.strip() for skill in runtime_options.selected_skills if skill.strip()]
-        app_template_name = (runtime_options.app_template_name or "").strip()
-        updated_attachments: list[Attachment] = []
-        changed = False
-        for attachment in attachments:
-            metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
-            task_context = self._attachment_review_task_context(attachment)
-            if not task_context:
-                updated_attachments.append(attachment)
-                continue
-            metadata_updates = self._review_task_metadata_updates(
-                task_context,
-                app_template_name=app_template_name,
-                task_mappings=task_mappings,
-                skill_aliases=skill_aliases,
-                event_aliases=event_aliases,
-                selected_skills=selected_skills,
-                runtime_options=runtime_options,
-            )
-            if not metadata_updates:
-                updated_attachments.append(attachment)
-                continue
-            merged_metadata = dict(metadata)
-            for key, value in metadata_updates.items():
-                if key in merged_metadata and str(merged_metadata.get(key) or "").strip():
-                    continue
-                merged_metadata[key] = value
-            if merged_metadata == metadata:
-                updated_attachments.append(attachment)
-                continue
-            updated_attachments.append(attachment.model_copy(update={"metadata": merged_metadata}, deep=True))
-            changed = True
-        return updated_attachments if changed else attachments
-
-    def _review_task_metadata_updates(
-        self,
-        task_context: dict[str, str],
-        *,
-        app_template_name: str,
-        task_mappings: dict[str, dict[str, str]],
-        skill_aliases: dict[str, str],
-        event_aliases: dict[str, dict[str, str]],
-        selected_skills: list[str],
-        runtime_options: RuntimeOptions,
-    ) -> dict[str, str]:
-        updates: dict[str, str] = {}
-        stream_id = task_context.get("streamId") or ""
-        task_id = task_context.get("cvTaskId") or ""
-        algorithm_id = task_context.get("algorithmId") or task_context.get("cvAlgorithmId") or ""
-        source_id = task_context.get("sourceId") or ""
-        if stream_id:
-            updates["streamId"] = stream_id
-        if task_id:
-            updates["cvTaskId"] = task_id
-        if algorithm_id:
-            updates["algorithmId"] = algorithm_id
-            updates["cvAlgorithmId"] = algorithm_id
-        if source_id:
-            updates["sourceId"] = source_id
-        raw_skill_name = ""
-        for key in self._review_task_alias_keys(app_template_name, task_context):
-            mapping = task_mappings.get(key)
-            if mapping:
-                raw_skill_name = mapping.get("targetSkill") or ""
-                for update_key, update_value in mapping.items():
-                    if update_key != "targetSkill":
-                        updates[update_key] = update_value
-                break
-        if not any(key in updates for key in ("applicationScene", "eventTypeName", "cvTaskName")):
-            for key in self._review_task_alias_keys(app_template_name, task_context):
-                event_update = event_aliases.get(key)
-                if event_update:
-                    updates.update(event_update)
-                    break
-        if not raw_skill_name:
-            for key in self._review_task_alias_keys(app_template_name, task_context):
-                raw_skill_name = skill_aliases.get(key) or ""
-                if raw_skill_name:
-                    break
-        if raw_skill_name:
-            allowed = set(selected_skills)
-            normalized = self._normalize_skills(
-                [raw_skill_name],
-                root_dir=self.app_template_registry.root_dir,
-                extra_aliases=self._runtime_skill_aliases(runtime_options),
-            ) or []
-            skill_name = normalized[0] if normalized else raw_skill_name
-            if not allowed or skill_name in allowed:
-                updates["targetSkill"] = skill_name
-        return updates
-
-    @classmethod
-    def _review_task_mappings(cls, config_options: dict[str, Any]) -> dict[str, dict[str, str]]:
-        value = config_options.get("review_task_mappings")
-        if not isinstance(value, dict):
-            return {}
-        mappings: dict[str, dict[str, str]] = {}
-        for raw_key, raw_value in value.items():
-            alias_key = str(raw_key or "").strip()
-            mapping = cls._review_task_mapping_update(raw_value)
-            if alias_key and mapping:
-                mappings[alias_key] = mapping
-        return mappings
-
-    @classmethod
-    def _review_task_mapping_update(cls, value: object) -> dict[str, str]:
-        if isinstance(value, str) and value.strip():
-            return {"targetSkill": value.strip()}
-        if not isinstance(value, dict):
-            return {}
-        updates: dict[str, str] = {}
-        event_value = value.get("event_semantics") or value.get("eventSemantics") or value.get("event") or value
-        updates.update(cls._review_task_event_update(event_value))
-        skill_name = cls._first_string(
-            value.get("skill_name"),
-            value.get("skillName"),
-            value.get("skill"),
-            value.get("targetSkill"),
-            value.get("target_skill"),
-        )
-        if skill_name:
-            updates["targetSkill"] = skill_name
-        return updates
-
-    @classmethod
-    def _review_task_skill_aliases(cls, config_options: dict[str, Any]) -> dict[str, str]:
-        aliases: dict[str, str] = {}
-        for key in ("review_task_skill_aliases", "task_skill_aliases", "cv_task_skill_aliases"):
-            value = config_options.get(key)
-            if not isinstance(value, dict):
-                continue
-            for raw_key, raw_value in value.items():
-                alias_key = str(raw_key or "").strip()
-                skill_name = cls._first_string(raw_value)
-                if alias_key and skill_name:
-                    aliases[alias_key] = skill_name
-        return aliases
-
-    @classmethod
-    def _review_task_event_aliases(cls, config_options: dict[str, Any]) -> dict[str, dict[str, str]]:
-        aliases: dict[str, dict[str, str]] = {}
-        for key in ("review_task_event_aliases", "task_event_aliases", "cv_task_event_aliases"):
-            value = config_options.get(key)
-            if not isinstance(value, dict):
-                continue
-            for raw_key, raw_value in value.items():
-                alias_key = str(raw_key or "").strip()
-                event_update = cls._review_task_event_update(raw_value)
-                if alias_key and event_update:
-                    aliases[alias_key] = event_update
-        return aliases
-
-    @classmethod
-    def _review_task_event_update(cls, value: object) -> dict[str, str]:
-        if isinstance(value, str) and value.strip():
-            clean = value.strip()
-            return {"applicationScene": clean, "eventTypeName": clean, "cvTaskName": clean}
-        if not isinstance(value, dict):
-            return {}
-        updates: dict[str, str] = {}
-        for key in (
-            "appTemplateName",
-            "applicationScene",
-            "eventTypeName",
-            "cvTaskName",
-            "taskName",
-            "taskTarget",
-            "task_target",
-            "objective",
-            "sceneName",
-            "algorithmName",
-            "targetSkillName",
-        ):
-            clean = cls._first_string(value.get(key))
-            if clean:
-                updates[key] = clean
-        return updates
-
-    @classmethod
-    def _review_task_alias_keys(cls, app_template_name: str, task_context: dict[str, str]) -> list[str]:
-        keys: list[str] = []
-        for value in (
-            task_context.get("streamId"),
-            task_context.get("cvTaskId"),
-            task_context.get("algorithmId"),
-            task_context.get("cvAlgorithmId"),
-        ):
-            clean = str(value or "").strip()
-            if not clean:
-                continue
-            if app_template_name:
-                keys.append(f"{app_template_name}:{clean}")
-            keys.append(clean)
-        return keys
-
-    @classmethod
-    def _attachment_review_task_context(cls, attachment: Attachment) -> dict[str, str]:
-        metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
-        stream_id = cls._first_string(
-            metadata.get("streamId"),
-            metadata.get("stream_id"),
-            metadata.get("stream"),
-        )
-        for value in cls._attachment_review_task_uri_candidates(attachment):
-            stream_id = stream_id or cls._stream_id_from_attachment_uri(value)
-            if stream_id:
-                break
-        stream_id = unquote(stream_id)
-        task_id = cls._first_string(
-            metadata.get("cvTaskId"),
-            metadata.get("cv_task_id"),
-            metadata.get("taskId"),
-            metadata.get("task_id"),
-        )
-        algorithm_id = cls._first_string(
-            metadata.get("algorithmId"),
-            metadata.get("algorithm_id"),
-            metadata.get("cvAlgorithmId"),
-            metadata.get("cv_algorithm_id"),
-            metadata.get("modelId"),
-            metadata.get("model_id"),
-            metadata.get("pluginId"),
-            metadata.get("plugin_id"),
-        )
-        source_id = cls._first_string(metadata.get("sourceId"), metadata.get("source_id"))
-        if stream_id:
-            parts = [part.strip() for part in stream_id.split("/") if part.strip()]
-            if len(parts) >= 1 and not task_id:
-                task_id = parts[0]
-            if len(parts) >= 2 and not algorithm_id:
-                algorithm_id = parts[1]
-            if len(parts) >= 3 and not source_id:
-                source_id = parts[2]
-        context: dict[str, str] = {}
-        if stream_id:
-            context["streamId"] = stream_id
-        if task_id:
-            context["cvTaskId"] = task_id
-        if algorithm_id:
-            context["algorithmId"] = algorithm_id
-            context["cvAlgorithmId"] = algorithm_id
-        if source_id:
-            context["sourceId"] = source_id
-        return context
-
-    @classmethod
-    def _attachment_review_task_uri_candidates(cls, attachment: Attachment) -> list[str]:
-        metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
-        candidates: list[str] = []
-        for value in (
-            metadata.get("original_uri"),
-            metadata.get("uri"),
-            metadata.get("url"),
-            metadata.get("path"),
-            attachment.path,
-        ):
-            clean = cls._first_string(value)
-            if clean and clean not in candidates:
-                candidates.append(clean)
-        return candidates
-
-    @classmethod
-    def _stream_id_from_attachment_uri(cls, uri: str) -> str:
-        decoded_uri = cls._decoded_edge_read_uri(uri) or uri
-        for text in (decoded_uri, unquote(decoded_uri)):
-            match = re.search(r"(?:[?&]|^)streamId=([^&]+)", text)
-            if match:
-                return unquote(match.group(1)).strip()
-        return ""
-
-    @classmethod
-    def _decoded_edge_read_uri(cls, uri: str) -> str:
-        marker = "/_read/"
-        if marker not in uri:
-            return ""
-        token = uri.split(marker, 1)[1].split("?", 1)[0]
-        if "." in token:
-            token = token.rsplit(".", 1)[0]
-        token = token.strip()
-        if not token:
-            return ""
-        try:
-            padded = token + "=" * ((4 - len(token) % 4) % 4)
-            return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
-        except Exception:
-            return ""
-
-    @classmethod
-    def _candidate_from_attachment_target_skill(
-        cls,
-        attachments: list[Attachment],
-        selected_skills: list[str],
-    ) -> str:
-        allowed = set(selected_skills)
-        matches: set[str] = set()
-        for attachment in attachments:
-            metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
-            target = cls._first_string(
-                metadata.get("targetSkill"),
-                metadata.get("target_skill"),
-                metadata.get("skillName"),
-                metadata.get("skill_name"),
-            )
-            if target and target in allowed:
-                matches.add(target)
-        return next(iter(matches)) if len(matches) == 1 else ""
-
-    @classmethod
-    def _candidate_from_attachment_semantics(
-        cls,
-        plugin_manager: Any,
-        semantic_values: list[str],
-        selected_skills: list[str],
-    ) -> tuple[str, int]:
-        if not semantic_values:
-            return "", 0
-        routing_text = "\n".join(semantic_values)
-        return plugin_manager.select_skill_candidate(routing_text, [], selected_skills)
-
-    @classmethod
-    def _candidate_from_skill_label_aliases(
-        cls,
-        runtime_options: RuntimeOptions,
-        labels: list[str],
-        selected_skills: list[str],
-    ) -> str:
-        if not labels:
-            return ""
-        aliases = cls._skill_label_aliases(runtime_options.config_options.get("skill_label_aliases"))
-        if not aliases:
-            return ""
-        allowed = set(selected_skills)
-        matches: set[str] = set()
-        for label in labels:
-            for key in {label.strip(), cls._label_key(label)}:
-                if not key:
-                    continue
-                for skill_name in aliases.get(key, []):
-                    if skill_name in allowed:
-                        matches.add(skill_name)
-        return next(iter(matches)) if len(matches) == 1 else ""
-
-    @classmethod
-    def _candidate_from_attachment_labels(
-        cls,
-        plugin_manager: Any,
-        labels: list[str],
-        selected_skills: list[str],
-    ) -> tuple[str, int, dict[str, str]]:
-        if not labels:
-            return "", 0, {}
-        matches: dict[str, tuple[str, int]] = {}
-        for label in labels:
-            candidate, score = plugin_manager.select_skill_candidate(
-                cls._label_routing_text(label),
-                [],
-                selected_skills,
-            )
-            if candidate and score > 0:
-                matches[cls._label_key(label)] = (candidate, score)
-        candidates = {candidate for candidate, _score in matches.values()}
-        if len(candidates) != 1:
-            return "", 0, {}
-        candidate = next(iter(candidates))
-        score = max(score for _candidate, score in matches.values())
-        updates = {label: candidate for label, (_candidate, _score) in matches.items()}
-        return candidate, score, updates
-
-    @classmethod
-    def _review_skill_metadata_routing_text(
-        cls,
-        routing_text: str,
-        semantic_values: list[str],
-        labels: list[str],
-        attachments: list[Attachment],
-    ) -> str:
-        parts: list[str] = []
-        cls._append_unique_text(parts, routing_text)
-        for value in semantic_values:
-            cls._append_unique_text(parts, value)
-        for label in labels:
-            for value in cls._label_routing_text(label).splitlines():
-                cls._append_unique_text(parts, value)
-        for attachment in attachments:
-            metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
-            for key, value in cls._attachment_review_task_context(attachment).items():
-                cls._append_unique_text(parts, value)
-                cls._append_unique_text(parts, f"{key}={value}")
-            for key in (
-                "targetSkill",
-                "target_skill",
-                "skillName",
-                "skill_name",
-                "appTemplateName",
-                "app_template_name",
-                "applicationScene",
-                "application_scene",
-                "eventTypeName",
-                "event_type_name",
-                "cvTaskName",
-                "cv_task_name",
-                "taskName",
-                "task_name",
-                "taskTarget",
-                "task_target",
-                "objective",
-                "sceneName",
-                "scene_name",
-                "algorithmName",
-                "algorithm_name",
-                "streamId",
-                "stream_id",
-                "cvTaskId",
-                "cv_task_id",
-                "algorithmId",
-                "algorithm_id",
-                "cvAlgorithmId",
-                "cv_algorithm_id",
-                "sourceId",
-                "source_id",
-            ):
-                value = cls._first_string(metadata.get(key))
-                if value:
-                    cls._append_unique_text(parts, value)
-                    cls._append_unique_text(parts, f"{key}={value}")
-            for uri in cls._attachment_review_task_uri_candidates(attachment):
-                cls._append_unique_text(parts, uri)
-            object_summary = cls._attachment_object_summary(metadata)
-            if object_summary:
-                cls._append_unique_text(parts, object_summary)
-                cls._append_unique_text(parts, f"objects={object_summary}")
-        return "\n".join(parts)
-
-    @classmethod
-    def _skill_label_alias_updates_for_candidate(
-        cls,
-        plugin_manager: Any,
-        labels: list[str],
-        selected_skills: list[str],
-        candidate: str,
-    ) -> dict[str, str]:
-        updates: dict[str, str] = {}
-        for label in labels:
-            skill_name, score = plugin_manager.select_skill_candidate(
-                cls._label_routing_text(label),
-                [],
-                selected_skills,
-            )
-            if skill_name == candidate and score > 0:
-                updates[cls._label_key(label)] = candidate
-        return updates
-
-    @classmethod
-    def _skill_label_aliases(cls, value: object) -> dict[str, list[str]]:
-        if not isinstance(value, dict):
-            return {}
-        aliases: dict[str, list[str]] = {}
-        for raw_key, raw_value in value.items():
-            key = cls._label_key(str(raw_key))
-            if not key:
-                continue
-            names: list[str] = []
-            if isinstance(raw_value, str):
-                clean = raw_value.strip()
-                if clean:
-                    names.append(clean)
-            elif isinstance(raw_value, list):
-                for item in raw_value:
-                    clean = str(item).strip()
-                    if clean and clean not in names:
-                        names.append(clean)
-            if names:
-                aliases[key] = names
-        return aliases
-
-    @classmethod
-    def _runtime_options_with_skill_label_alias_updates(
-        cls,
-        runtime_options: RuntimeOptions,
-        updates: dict[str, str],
-    ) -> RuntimeOptions:
-        if not updates:
-            return runtime_options
-        config_options = dict(runtime_options.config_options)
-        aliases = dict(config_options.get("skill_label_aliases")) if isinstance(config_options.get("skill_label_aliases"), dict) else {}
-        changed = False
-        for label, skill_name in sorted(updates.items()):
-            if aliases.get(label) == skill_name:
-                continue
-            aliases[label] = skill_name
-            changed = True
-        if not changed:
-            return runtime_options
-        config_options["skill_label_aliases"] = aliases
-        cls._persist_upload_app_skill_label_aliases(runtime_options.app_template_name, updates)
-        return runtime_options.model_copy(update={"config_options": config_options}, deep=True)
-
-    @classmethod
-    def _persist_upload_app_skill_label_aliases(cls, app_template_name: str | None, updates: dict[str, str]) -> None:
-        clean_name = str(app_template_name or "").strip()
-        if not clean_name or "/" in clean_name or "\\" in clean_name or clean_name in {".", ".."}:
-            return
-        path = Path(__file__).resolve().parents[3] / "config" / "upload" / "apps" / f"{clean_name}.json"
-        if not path.is_file():
-            return
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return
-            runtime_options = data.setdefault("runtime_options", {})
-            if not isinstance(runtime_options, dict):
-                runtime_options = {}
-                data["runtime_options"] = runtime_options
-            config_options = runtime_options.setdefault("config_options", {})
-            if not isinstance(config_options, dict):
-                config_options = {}
-                runtime_options["config_options"] = config_options
-            aliases = config_options.setdefault("skill_label_aliases", {})
-            if not isinstance(aliases, dict):
-                aliases = {}
-                config_options["skill_label_aliases"] = aliases
-            changed = False
-            for label, skill_name in sorted(updates.items()):
-                if aliases.get(label) == skill_name:
-                    continue
-                aliases[label] = skill_name
-                changed = True
-            if changed:
-                path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        except Exception as exc:
-            logger.warning("persist skill label aliases failed app_template=%s error=%s", clean_name, exc)
-
-    @classmethod
-    def _attachment_labels(cls, attachments: list[Attachment]) -> list[str]:
-        labels: list[str] = []
-        seen: set[str] = set()
-        for attachment in attachments:
-            metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
-            objects = metadata.get("objects")
-            if not isinstance(objects, list):
-                continue
-            for item in objects:
-                if not isinstance(item, dict):
-                    continue
-                label = cls._first_string(item.get("label"), item.get("name"), item.get("class"), item.get("type"))
-                others = item.get("others")
-                if isinstance(others, dict):
-                    label = label or cls._first_string(others.get("text"), others.get("label"))
-                key = cls._label_key(label)
-                if key and key not in seen:
-                    labels.append(label.strip())
-                    seen.add(key)
-        return labels
-
-    @classmethod
-    def _attachment_semantic_values(cls, attachments: list[Attachment]) -> list[str]:
-        values: list[str] = []
-        seen: set[str] = set()
-        for attachment in attachments:
-            metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
-            for value in cls._semantic_values_from_metadata(metadata):
-                key = value.casefold()
-                if key and key not in seen:
-                    values.append(value)
-                    seen.add(key)
-        return values
-
-    @classmethod
-    def _semantic_values_from_metadata(cls, metadata: dict[str, Any]) -> list[str]:
-        values: list[str] = []
-        semantic_keys = (
-            "appTemplateName",
-            "app_template_name",
-            "applicationScene",
-            "application_scene",
-            "eventTypeName",
-            "event_type_name",
-            "cvTaskName",
-            "cv_task_name",
-            "taskName",
-            "task_name",
-            "taskTarget",
-            "task_target",
-            "objective",
-            "sceneName",
-            "scene_name",
-            "algorithmName",
-            "algorithm_name",
-            "targetSkillName",
-            "target_skill_name",
-        )
-
-        def append_from_mapping(source: Any) -> None:
-            if not isinstance(source, dict):
-                return
-            for key in semantic_keys:
-                value = source.get(key)
-                if isinstance(value, str) and value.strip():
-                    cls._append_unique_text(values, value.strip())
-
-        def parse_mapping(value: Any) -> dict[str, Any] | None:
-            if isinstance(value, dict):
-                return value
-            if isinstance(value, str) and value.strip().startswith("{"):
-                try:
-                    parsed = json.loads(value)
-                except Exception:
-                    return None
-                if isinstance(parsed, dict):
-                    return parsed
-            return None
-
-        def append_from_object(item: Any) -> None:
-            obj = parse_mapping(item)
-            if obj is None:
-                return
-            append_from_mapping(obj)
-            for nested_key in ("others", "extra", "metadata", "_meta", "annotations"):
-                nested = parse_mapping(obj.get(nested_key))
-                if nested is not None:
-                    append_from_mapping(nested)
-            for nested_key in ("objects", "targets", "detections"):
-                nested_items = obj.get(nested_key)
-                if isinstance(nested_items, list):
-                    for nested_item in nested_items:
-                        append_from_object(nested_item)
-
-        append_from_mapping(metadata)
-        nested_meta = parse_mapping(metadata.get("_meta"))
-        if nested_meta is not None:
-            append_from_mapping(nested_meta)
-        for nested_key in ("objects", "targets", "detections"):
-            nested_items = metadata.get(nested_key)
-            if isinstance(nested_items, list):
-                for item in nested_items:
-                    append_from_object(item)
-        for nested_key in ("others", "extra", "metadata", "annotations"):
-            nested = parse_mapping(metadata.get(nested_key))
-            if nested is not None:
-                append_from_mapping(nested)
-                append_from_object(nested)
-        return values
-
-    @classmethod
-    def _label_routing_text(cls, label: str) -> str:
-        clean = label.strip()
-        normalized = cls._label_key(clean)
-        spaced = re.sub(r"[_\-.]+", " ", clean).strip()
-        return "\n".join(part for part in (clean, normalized, spaced) if part)
-
-    @staticmethod
-    def _label_key(label: str) -> str:
-        clean = str(label or "").strip().casefold().replace("-", "_")
-        clean = re.sub(r"\s+", "_", clean)
-        return clean.strip("_")
-
-    @staticmethod
-    def _is_review_skill_routing_request(routing_text: str, attachments: list[Attachment]) -> bool:
-        if not attachments:
-            return False
-        text = routing_text.casefold()
-        return any(
-            marker in text
-            for marker in (
-                "reviewsourceid",
-                "review source",
-                "复判",
-                "审核",
-                "匹配对应的skill",
-                "匹配对应的 skill",
-                "智能体审核",
-            )
-        )
-
-    @staticmethod
-    def _is_review_runtime_options(runtime_options: RuntimeOptions) -> bool:
-        workflow = str(runtime_options.workflow or "").strip().casefold()
-        if workflow and ("review" in workflow or "复判" in workflow):
-            return True
-        return workflow == "parking_abnormal_review"
-
     @staticmethod
     def _append_unique(target: list[str], seen: set[str], value: str) -> None:
         normalized = value.strip()
@@ -2843,16 +1703,6 @@ class AgentRuntime:
             return
         target.append(normalized)
         seen.add(normalized)
-
-    @staticmethod
-    def _append_unique_text(target: list[str], value: str) -> None:
-        normalized = value.strip()
-        if not normalized:
-            return
-        seen = {item.casefold() for item in target}
-        if normalized.casefold() in seen:
-            return
-        target.append(normalized)
 
     @staticmethod
     def _composite_skill_context(skill: SkillDefinition) -> dict[str, object]:
@@ -2890,7 +1740,7 @@ class AgentRuntime:
     def _thread_file_attachments(self, thread_id: str) -> list[Attachment]:
         paths = self.artifact_store.prepare_thread(thread_id)
         attachments: list[Attachment] = []
-        for root, scope in ((paths.uploads, "uploads"),):
+        for root, scope in ((paths.uploads, "uploads"), (paths.outputs, "outputs")):
             for file_path in sorted(root.rglob("*")):
                 if not file_path.is_file():
                     continue
@@ -3066,7 +1916,7 @@ class AgentRuntime:
 
     def _download_remote_attachment(self, attachment: Attachment, paths: ThreadPaths) -> Attachment:
         url = str(attachment.path or "").strip()
-        with httpx.Client(timeout=REMOTE_ATTACHMENT_TIMEOUT_SECONDS, follow_redirects=True, trust_env=False) as client:
+        with httpx.Client(timeout=REMOTE_ATTACHMENT_TIMEOUT_SECONDS, follow_redirects=True) as client:
             with client.stream("GET", url) as response:
                 response.raise_for_status()
                 content_length = self._remote_content_length(response.headers.get("content-length"))
@@ -3238,9 +2088,6 @@ class AgentRuntime:
             path_text = f", path={attachment.path}" if attachment.path else ""
             mime_text = f", mime_type={attachment.mime_type}" if attachment.mime_type else ""
             original_uri = metadata.get("original_uri")
-            stream_id = metadata.get("streamId") or metadata.get("stream_id")
-            cv_task_id = metadata.get("cvTaskId") or metadata.get("cv_task_id") or metadata.get("taskId") or metadata.get("task_id")
-            algorithm_id = metadata.get("algorithmId") or metadata.get("algorithm_id") or metadata.get("cvAlgorithmId") or metadata.get("cv_algorithm_id")
             source_id = metadata.get("sourceId") or metadata.get("source_id")
             data_id = metadata.get("dataId") or metadata.get("data_id")
             timestamp = metadata.get("timestamp")
@@ -3254,12 +2101,6 @@ class AgentRuntime:
                 metadata_parts.append("remote_download_failed=true")
             if isinstance(download_error, str) and download_error:
                 metadata_parts.append(f"download_error={download_error[:200]}")
-            if isinstance(stream_id, str) and stream_id:
-                metadata_parts.append(f"streamId={stream_id}")
-            if isinstance(cv_task_id, str) and cv_task_id:
-                metadata_parts.append(f"cvTaskId={cv_task_id}")
-            if isinstance(algorithm_id, str) and algorithm_id:
-                metadata_parts.append(f"algorithmId={algorithm_id}")
             if isinstance(source_id, str) and source_id:
                 metadata_parts.append(f"sourceId={source_id}")
             if isinstance(data_id, str) and data_id:
@@ -3268,12 +2109,6 @@ class AgentRuntime:
                 metadata_parts.append(f"timestamp={timestamp}")
             if isinstance(sha1, str) and sha1:
                 metadata_parts.append(f"sha1={sha1[:12]}")
-            semantic_values = cls._semantic_values_from_metadata(metadata)
-            if semantic_values:
-                metadata_parts.append(f"event_semantics={'; '.join(semantic_values[:8])}")
-            object_summary = cls._attachment_object_summary(metadata)
-            if object_summary:
-                metadata_parts.append(f"objects={object_summary}")
             metadata_text = ", " + ", ".join(metadata_parts) if metadata_parts else ""
             lines.append(f"{index}. name={attachment.name}{path_text}{mime_text}{size_text}{metadata_text}")
         if not lines:
@@ -3286,49 +2121,6 @@ class AgentRuntime:
                 updated[index] = message.model_copy(update={"content": message.content + context})
                 return updated
         return messages
-
-    @classmethod
-    def _attachment_object_summary(cls, metadata: dict[str, Any]) -> str:
-        objects = metadata.get("objects")
-        if not isinstance(objects, list):
-            return ""
-        parts: list[str] = []
-        for item in objects[:12]:
-            if not isinstance(item, dict):
-                continue
-            label = cls._first_string(item.get("label"), item.get("name"), item.get("class"), item.get("type"))
-            others = item.get("others")
-            if isinstance(others, dict):
-                label = label or cls._first_string(others.get("text"), others.get("label"))
-            if not label:
-                continue
-            fields = [f"label={label}"]
-            score = item.get("score")
-            if isinstance(score, int | float):
-                fields.append(f"score={score:.3g}")
-            elif isinstance(score, str) and score.strip():
-                fields.append(f"score={score.strip()[:24]}")
-            box = item.get("box") or item.get("bbox")
-            if isinstance(box, list) and box:
-                fields.append(f"box={cls._compact_number_list(box[:4])}")
-            parts.append("{" + ", ".join(fields) + "}")
-        if len(objects) > len(parts):
-            remaining = len(objects) - len(parts)
-            if remaining > 0:
-                parts.append(f"...(+{remaining} objects)")
-        return "[" + "; ".join(parts) + "]" if parts else ""
-
-    @staticmethod
-    def _compact_number_list(values: list[Any]) -> str:
-        rendered: list[str] = []
-        for value in values:
-            if isinstance(value, int):
-                rendered.append(str(value))
-            elif isinstance(value, float):
-                rendered.append(f"{value:.3g}")
-            elif isinstance(value, str) and value.strip():
-                rendered.append(value.strip()[:16])
-        return "[" + ",".join(rendered) + "]"
 
     def _effective_runtime_options(self, runtime_options: RuntimeOptions) -> RuntimeOptions:
         updates = self._app_model_runtime_option_updates(runtime_options)
@@ -3545,31 +2337,18 @@ class AgentRuntime:
         return value.strip() if isinstance(value, str) else ""
 
     @staticmethod
-    def _normalize_skills(
-        skills: list[str] | None,
-        *,
-        root_dir: str | os.PathLike[str] | None = None,
-        extra_aliases: object = None,
-    ) -> list[str] | None:
+    def _normalize_skills(skills: list[str] | None, *, root_dir: str | os.PathLike[str] | None = None) -> list[str] | None:
         if skills is None:
             return None
         normalized = []
         seen = set()
-        for skill in expand_skill_aliases(
-            skills,
-            Path(root_dir) if root_dir is not None else None,
-            extra_aliases=extra_aliases,
-        ):
+        for skill in expand_skill_aliases(skills, Path(root_dir) if root_dir is not None else None):
             name = skill.strip()
             if not name or name in seen:
                 continue
             seen.add(name)
             normalized.append(name)
         return normalized
-
-    @staticmethod
-    def _runtime_skill_aliases(runtime_options: RuntimeOptions) -> object:
-        return runtime_options.config_options.get("skill_aliases")
 
     @staticmethod
     def _explicit_workflow_name(request: ChatRequest) -> str | None:

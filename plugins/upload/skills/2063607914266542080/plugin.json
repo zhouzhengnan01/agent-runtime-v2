@@ -1,7 +1,0 @@
-{
-  "id" : "2063607914266542080",
-  "name" : "抽烟监测",
-  "version" : "0.1.0",
-  "description" : "识别现场人员吸烟行为",
-  "skills" : [ "manifest.json" ]
-}

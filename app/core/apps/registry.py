@@ -82,33 +82,10 @@ class AppTemplateRegistry:
         return list(templates_by_name.values())
 
     def _load_template(self, path: Path) -> AppTemplate:
-        data = self._load_template_overlay(path)
+        data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"App template must be a JSON object: {path}")
         return _normalize_template(AppTemplate.model_validate(data), self.root_dir)
-
-    def _load_template_overlay(self, path: Path) -> dict[str, object]:
-        paths = [
-            candidate
-            for candidate in (directory / path.name for directory in reversed(self.config_dirs))
-            if candidate.is_file()
-        ]
-        if not paths:
-            paths = [path]
-        merged: dict[str, object] = {}
-        top_data: dict[str, object] | None = None
-        for candidate in paths:
-            data = json.loads(candidate.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                raise ValueError(f"App template must be a JSON object: {candidate}")
-            merged = _deep_merge_dicts(merged, data)
-            top_data = data
-        if len(paths) > 1 and isinstance(top_data, dict) and "workflow" not in top_data:
-            merged.pop("workflow", None)
-            runtime_options = merged.get("runtime_options")
-            if isinstance(runtime_options, dict):
-                runtime_options.pop("workflow", None)
-        return merged
 
     def _load_template_collection(self, path: Path) -> builtins.list[AppTemplate]:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -153,32 +130,7 @@ class AppTemplateRegistry:
 
 
 def _normalize_template(template: AppTemplate, root_dir: Path | None = None) -> AppTemplate:
-    selected_skills = expand_skill_aliases(
-        template.selected_skills,
-        root_dir,
-        extra_aliases=_template_skill_aliases(template),
-    )
+    selected_skills = expand_skill_aliases(template.selected_skills, root_dir)
     if selected_skills == template.selected_skills:
         return template
     return template.model_copy(update={"selected_skills": selected_skills}, deep=True)
-
-
-def _deep_merge_dicts(base: dict[str, object], override: dict[str, object]) -> dict[str, object]:
-    merged = dict(base)
-    for key, value in override.items():
-        base_value = merged.get(key)
-        if isinstance(base_value, dict) and isinstance(value, dict):
-            merged[key] = _deep_merge_dicts(base_value, value)
-            continue
-        merged[key] = value
-    return merged
-
-
-def _template_skill_aliases(template: AppTemplate) -> object:
-    runtime_options = template.runtime_options
-    if not isinstance(runtime_options, dict):
-        return None
-    config_options = runtime_options.get("config_options")
-    if not isinstance(config_options, dict):
-        return None
-    return config_options.get("skill_aliases")

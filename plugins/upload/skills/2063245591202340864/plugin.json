@@ -1,7 +1,0 @@
-{
-  "id" : "2063245591202340864",
-  "name" : "违规停车",
-  "version" : "0.1.0",
-  "description" : "判定车辆是否在禁停区域停放",
-  "skills" : [ "manifest.json" ]
-}

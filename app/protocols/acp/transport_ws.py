@@ -74,62 +74,32 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
     )
     sessions: dict[str, AcpWebSocketSession] = {}
     prompt_tasks: dict[str, asyncio.Task[None]] = {}
-    prompt_task_sessions: dict[str, str] = {}
-    prompt_task_ids = itertools.count(1)
     keepalive_sessions: set[str] = set()
+    platform_sessions: set[str] = set()
+    platform_response_ids: dict[str, str] = {}
     send_lock = asyncio.Lock()
-    connection_closed = asyncio.Event()
     active_dispatcher = dispatcher or AcpDispatcher()
 
-    def mark_connection_closed(reason: str) -> None:
-        if not connection_closed.is_set():
-            logger.info("acp ws marked closed connection_id=%s reason=%s", connection_id, reason)
-        connection_closed.set()
-
-    async def send_update(session_id: str, update: dict[str, Any]) -> bool:
-        async with send_lock:
-            sent = await _send_session_update(websocket, session_id, update, connection_id=connection_id)
-        if not sent:
-            mark_connection_closed("session_update_send_failed")
-        return sent
-
-    async def send_prompt_update(
-        session_id: str,
-        update: dict[str, Any],
-        *,
-        platform_events_enabled: bool,
-        platform_response_id: str | None,
-    ) -> bool:
+    async def send_update(session_id: str, update: dict[str, Any]) -> None:
         async with send_lock:
             if not await _send_session_update(websocket, session_id, update, connection_id=connection_id):
-                sent = False
-            elif platform_events_enabled:
-                sent = await _send_platform_update(
+                return
+            if session_id in platform_sessions:
+                await _send_platform_update(
                     websocket,
                     session_id,
                     update,
-                    response_id=platform_response_id,
+                    response_id=platform_response_ids.get(session_id),
                     connection_id=connection_id,
                 )
-            else:
-                sent = True
-        if not sent:
-            mark_connection_closed("prompt_update_send_failed")
-        return sent
 
-    async def send_result(request_id: JsonRpcId, result: dict[str, Any]) -> bool:
+    async def send_result(request_id: JsonRpcId, result: dict[str, Any]) -> None:
         async with send_lock:
-            sent = await _send_result(websocket, request_id, result, connection_id=connection_id)
-        if not sent:
-            mark_connection_closed("result_send_failed")
-        return sent
+            await _send_result(websocket, request_id, result, connection_id=connection_id)
 
-    async def send_error(request_id: JsonRpcId, code: int, message: str) -> bool:
+    async def send_error(request_id: JsonRpcId, code: int, message: str) -> None:
         async with send_lock:
-            sent = await _send_error(websocket, request_id, code, message, connection_id=connection_id)
-        if not sent:
-            mark_connection_closed("error_send_failed")
-        return sent
+            await _send_error(websocket, request_id, code, message, connection_id=connection_id)
 
     async def run_prompt(
         request_id: JsonRpcId,
@@ -147,12 +117,6 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
         prompt_result_sent = False
         platform_final_send_lock = asyncio.Lock()
         platform_event_request_id = platform_request_id if platform_request_id is not None else request_id
-        platform_response_id: str | None = None
-        owner_task = asyncio.current_task()
-
-        def raise_if_connection_closed() -> None:
-            if connection_closed.is_set():
-                raise asyncio.CancelledError()
 
         async def send_platform_final_result(
             session_id: str,
@@ -165,7 +129,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             async with platform_final_send_lock:
                 if platform_final_sent and (request_id is None or prompt_result_sent):
                     return False
-                if platform_events_enabled:
+                if platform_events_enabled and session_id in platform_sessions:
                     _dump_platform_event(
                         session_id,
                         "jetlinks.review_result.finalized",
@@ -175,74 +139,42 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                             "status": _result_status(final_result),
                             "replyChars": _result_reply_chars(final_result),
                         },
-                        response_id=platform_response_id,
+                        response_id=platform_response_ids.get(session_id),
                         connection_id=connection_id,
                         delivery="internal.final_result",
                     )
                 if keepalive_task is not None:
                     keepalive_task.cancel()
-                if platform_events_enabled and not platform_final_sent:
-                    await send_platform_result_chunks(
-                        session_id,
-                        final_result,
-                        response_id=platform_response_id,
-                    )
+                if platform_events_enabled and session_id in platform_sessions and not platform_final_sent:
+                    await send_platform_result_chunks(session_id, final_result)
                 if request_id is not None and not prompt_result_sent:
                     await send_result(request_id, final_result)
                     prompt_result_sent = True
-                if platform_events_enabled and not platform_final_sent:
-                    await send_platform_response_end(
-                        session_id,
-                        platform_event_request_id,
-                        final_result,
-                        response_id=platform_response_id,
-                    )
+                if platform_events_enabled and session_id in platform_sessions and not platform_final_sent:
+                    await send_platform_response_end(session_id, platform_event_request_id, final_result)
                     platform_final_sent = True
                 if keepalive_task is not None:
                     await asyncio.gather(keepalive_task, return_exceptions=True)
                 if cancel_prompt_task:
+                    prompt_task = prompt_tasks.get(session_id)
                     current_task = asyncio.current_task()
-                    if owner_task is not None and owner_task is not current_task and not owner_task.done():
-                        owner_task.cancel()
+                    if prompt_task is not None and prompt_task is not current_task and not prompt_task.done():
+                        prompt_task.cancel()
                 return True
 
         if task_session_id is not None:
-            if platform_events_enabled:
-                platform_response_id = _platform_response_id_for_prompt(
+            if platform_events_enabled and task_session_id in platform_sessions:
+                platform_response_ids[task_session_id] = _platform_response_id_for_prompt(
                     task_session_id,
                     platform_event_request_id,
                     params,
                 )
-                if not await send_platform_response_start(
-                    task_session_id,
-                    platform_event_request_id,
-                    response_id=platform_response_id,
-                ):
-                    raise asyncio.CancelledError()
+                await send_platform_response_start(task_session_id, platform_event_request_id)
                 platform_stream_started = True
             if ACP_PROMPT_KEEPALIVE_ENABLED:
-                if not await send_prompt_progress(
-                    task_session_id,
-                    sequence=0,
-                    platform_events_enabled=platform_events_enabled,
-                    platform_response_id=platform_response_id,
-                ):
-                    raise asyncio.CancelledError()
-                if not await send_prompt_wait_message(
-                    task_session_id,
-                    sequence=0,
-                    platform_events_enabled=platform_events_enabled,
-                    platform_response_id=platform_response_id,
-                ):
-                    raise asyncio.CancelledError()
-                keepalive_task = asyncio.create_task(
-                    send_prompt_keepalive(
-                        task_session_id,
-                        platform_keepalive_chunks=platform_keepalive_chunks,
-                        platform_events_enabled=platform_events_enabled,
-                        platform_response_id=platform_response_id,
-                    )
-                )
+                await send_prompt_progress(task_session_id, sequence=0)
+                await send_prompt_wait_message(task_session_id, sequence=0)
+                keepalive_task = asyncio.create_task(send_prompt_keepalive(task_session_id))
             if (
                 _should_watch_review_result_file(sessions, task_session_id)
                 and ACP_REVIEW_RESULT_FILE_WATCH_ENABLED
@@ -253,18 +185,10 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
         logger.debug("acp prompt started session_id=%s request_id=%s", task_session_id, request_id)
         try:
             async def dispatch_update(session_id: str, update: dict[str, Any]) -> None:
-                raise_if_connection_closed()
-                sent = await send_prompt_update(
-                    session_id,
-                    update,
-                    platform_events_enabled=platform_events_enabled,
-                    platform_response_id=platform_response_id,
-                )
-                if not sent and session_id == task_session_id:
-                    raise asyncio.CancelledError()
-                if not platform_events_enabled or session_id != task_session_id or platform_final_sent:
+                await send_update(session_id, update)
+                if session_id != task_session_id or platform_final_sent:
                     return
-                final_result = _platform_final_result_from_update(update, sessions.get(session_id))
+                final_result = _platform_final_result_from_update(update)
                 if final_result is None:
                     return
                 await send_platform_final_result(session_id, final_result, source="runtime_update")
@@ -289,12 +213,11 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             if request_id is not None and not prompt_result_sent:
                 await send_result(request_id, {"stopReason": "cancelled"})
                 prompt_result_sent = True
-            if platform_events_enabled and task_session_id is not None:
+            if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
                 await send_platform_response_end(
                     task_session_id,
                     platform_event_request_id,
                     {"stopReason": "cancelled", "result": {"reply": "请求已取消。"}},
-                    response_id=platform_response_id,
                 )
         except FileNotFoundError as exc:
             logger.warning(
@@ -305,13 +228,8 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             )
             if request_id is not None:
                 await send_error(request_id, -32004, str(exc))
-            if platform_events_enabled and task_session_id is not None:
-                await send_platform_error_end(
-                    task_session_id,
-                    platform_event_request_id,
-                    str(exc),
-                    response_id=platform_response_id,
-                )
+            if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
+                await send_platform_error_end(task_session_id, platform_event_request_id, str(exc))
         except ValidationError as exc:
             error_message = exc.errors()[0]["msg"]
             logger.warning(
@@ -322,13 +240,8 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             )
             if request_id is not None:
                 await send_error(request_id, -32602, error_message)
-            if platform_events_enabled and task_session_id is not None:
-                await send_platform_error_end(
-                    task_session_id,
-                    platform_event_request_id,
-                    error_message,
-                    response_id=platform_response_id,
-                )
+            if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
+                await send_platform_error_end(task_session_id, platform_event_request_id, error_message)
         except ValueError as exc:
             logger.warning(
                 "acp prompt value error session_id=%s request_id=%s error=%s",
@@ -338,13 +251,8 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             )
             if request_id is not None:
                 await send_error(request_id, -32602, str(exc))
-            if platform_events_enabled and task_session_id is not None:
-                await send_platform_error_end(
-                    task_session_id,
-                    platform_event_request_id,
-                    str(exc),
-                    response_id=platform_response_id,
-                )
+            if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
+                await send_platform_error_end(task_session_id, platform_event_request_id, str(exc))
         except Exception as exc:
             error_message = _user_visible_error_message(exc)
             user_text = f"请求处理失败：{error_message}"
@@ -353,18 +261,13 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 task_session_id,
                 request_id,
             )
-            if not platform_events_enabled and task_session_id is not None:
-                await send_prompt_error_message(task_session_id, error_message)
             if request_id is not None and not prompt_result_sent:
                 await send_result(request_id, _prompt_error_result(sessions, task_session_id, user_text, error_message))
                 prompt_result_sent = True
-            if platform_events_enabled and task_session_id is not None:
-                await send_platform_error_end(
-                    task_session_id,
-                    platform_event_request_id,
-                    error_message,
-                    response_id=platform_response_id,
-                )
+            if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
+                await send_platform_error_end(task_session_id, platform_event_request_id, error_message)
+            elif task_session_id is not None:
+                await send_prompt_error_message(task_session_id, error_message)
         else:
             logger.info(
                 "acp prompt completed session_id=%s request_id=%s stop_reason=%s thread_id=%s run_id=%s "
@@ -379,30 +282,17 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 _result_content_items(result),
                 diagnostic_json(result, max_chars=ACP_WS_RESULT_PREVIEW_MAX_CHARS),
             )
-            if platform_events_enabled and task_session_id is not None:
+            if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
                 if not platform_final_sent and not platform_stream_started:
-                    await send_platform_response_start(
-                        task_session_id,
-                        platform_event_request_id,
-                        response_id=platform_response_id,
-                    )
+                    await send_platform_response_start(task_session_id, platform_event_request_id)
                 if not platform_final_sent:
-                    await send_platform_result_chunks(
-                        task_session_id,
-                        result,
-                        response_id=platform_response_id,
-                    )
+                    await send_platform_result_chunks(task_session_id, result)
             if request_id is not None and not prompt_result_sent:
                 await send_result(request_id, result)
                 prompt_result_sent = True
-            if platform_events_enabled and task_session_id is not None:
+            if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
                 if not platform_final_sent:
-                    await send_platform_response_end(
-                        task_session_id,
-                        platform_event_request_id,
-                        result,
-                        response_id=platform_response_id,
-                    )
+                    await send_platform_response_end(task_session_id, platform_event_request_id, result)
                     platform_final_sent = True
         finally:
             if review_result_watch_task is not None:
@@ -416,58 +306,27 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     and task_session_id in sessions
                     and task_session_id in keepalive_sessions
                 ):
-                    await send_prompt_keepalive_completed(
-                        task_session_id,
-                        platform_events_enabled=platform_events_enabled,
-                        platform_response_id=platform_response_id,
-                    )
+                    await send_prompt_keepalive_completed(task_session_id)
                     keepalive_sessions.discard(task_session_id)
-            current_task = asyncio.current_task()
-            for task_key, task in list(prompt_tasks.items()):
-                if task is current_task:
-                    prompt_tasks.pop(task_key, None)
-                    prompt_task_sessions.pop(task_key, None)
-                    break
+            if task_session_id is not None and prompt_tasks.get(task_session_id) is asyncio.current_task():
+                prompt_tasks.pop(task_session_id, None)
+                platform_response_ids.pop(task_session_id, None)
+                platform_sessions.discard(task_session_id)
 
-    async def send_prompt_keepalive(
-        session_id: str,
-        *,
-        platform_keepalive_chunks: bool,
-        platform_events_enabled: bool,
-        platform_response_id: str | None,
-    ) -> None:
+    async def send_prompt_keepalive(session_id: str) -> None:
         sequence = 0
         while True:
             await asyncio.sleep(ACP_PROMPT_KEEPALIVE_SECONDS)
-            if connection_closed.is_set():
-                return
             if session_id not in sessions:
                 return
             sequence += 1
             keepalive_sessions.add(session_id)
             logger.debug("acp prompt keepalive session_id=%s sequence=%s", session_id, sequence)
-            if platform_keepalive_chunks and platform_events_enabled:
-                if not await send_platform_keepalive_chunk(
-                    session_id,
-                    sequence=sequence,
-                    response_id=platform_response_id,
-                ):
-                    return
-            if not await send_prompt_progress(
-                session_id,
-                sequence=sequence,
-                platform_events_enabled=platform_events_enabled,
-                platform_response_id=platform_response_id,
-            ):
-                return
-            if not await send_prompt_wait_message(
-                session_id,
-                sequence=sequence,
-                platform_events_enabled=platform_events_enabled,
-                platform_response_id=platform_response_id,
-            ):
-                return
-            sent = await send_prompt_update(
+            if platform_keepalive_chunks and session_id in platform_sessions:
+                await send_platform_keepalive_chunk(session_id, sequence=sequence)
+            await send_prompt_progress(session_id, sequence=sequence)
+            await send_prompt_wait_message(session_id, sequence=sequence)
+            await send_update(
                 session_id,
                 {
                     "sessionUpdate": "tool_call" if sequence == 1 else "tool_call_update",
@@ -482,11 +341,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                         }
                     },
                 },
-                platform_events_enabled=platform_events_enabled,
-                platform_response_id=platform_response_id,
             )
-            if not sent:
-                return
 
     async def watch_review_result_file(session_id: str, on_result: Any) -> None:
         deadline = time.monotonic() + ACP_REVIEW_RESULT_FILE_WATCH_SECONDS
@@ -508,16 +363,10 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 return
             await asyncio.sleep(ACP_REVIEW_RESULT_FILE_POLL_SECONDS)
 
-    async def send_prompt_progress(
-        session_id: str,
-        *,
-        sequence: int,
-        platform_events_enabled: bool = False,
-        platform_response_id: str | None = None,
-    ) -> bool:
+    async def send_prompt_progress(session_id: str, *, sequence: int) -> None:
         if session_id not in sessions:
-            return False
-        return await send_prompt_update(
+            return
+        await send_update(
             session_id,
             {
                 "sessionUpdate": "agent_thought_chunk",
@@ -529,21 +378,13 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     }
                 },
             },
-            platform_events_enabled=platform_events_enabled,
-            platform_response_id=platform_response_id,
         )
 
-    async def send_prompt_wait_message(
-        session_id: str,
-        *,
-        sequence: int,
-        platform_events_enabled: bool = False,
-        platform_response_id: str | None = None,
-    ) -> bool:
+    async def send_prompt_wait_message(session_id: str, *, sequence: int) -> None:
         if session_id not in sessions:
-            return False
+            return
         text = ACP_PROMPT_WAITING_TEXT if sequence <= 0 else ACP_PROMPT_STILL_WAITING_TEXT
-        return await send_prompt_update(
+        await send_update(
             session_id,
             {
                 "sessionUpdate": "agent_thought_chunk",
@@ -555,20 +396,12 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     }
                 },
             },
-            platform_events_enabled=platform_events_enabled,
-            platform_response_id=platform_response_id,
         )
 
-    async def send_prompt_error_message(
-        session_id: str,
-        message: str,
-        *,
-        platform_events_enabled: bool = False,
-        platform_response_id: str | None = None,
-    ) -> bool:
+    async def send_prompt_error_message(session_id: str, message: str) -> None:
         if session_id not in sessions:
-            return False
-        return await send_prompt_update(
+            return
+        await send_update(
             session_id,
             {
                 "sessionUpdate": "agent_message_chunk",
@@ -580,17 +413,10 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     }
                 },
             },
-            platform_events_enabled=platform_events_enabled,
-            platform_response_id=platform_response_id,
         )
 
-    async def send_prompt_keepalive_completed(
-        session_id: str,
-        *,
-        platform_events_enabled: bool = False,
-        platform_response_id: str | None = None,
-    ) -> bool:
-        return await send_prompt_update(
+    async def send_prompt_keepalive_completed(session_id: str) -> None:
+        await send_update(
             session_id,
             {
                 "sessionUpdate": "tool_call_update",
@@ -605,77 +431,44 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     }
                 },
             },
-            platform_events_enabled=platform_events_enabled,
-            platform_response_id=platform_response_id,
         )
 
-    async def send_platform_keepalive_chunk(
-        session_id: str,
-        *,
-        sequence: int,
-        response_id: str | None = None,
-    ) -> bool:
+    async def send_platform_keepalive_chunk(session_id: str, *, sequence: int) -> None:
         text = ACP_PROMPT_WAITING_TEXT if sequence == 1 else ACP_PROMPT_STILL_WAITING_TEXT
         async with send_lock:
-            sent = await _send_platform_event(
+            await _send_platform_event(
                 websocket,
                 session_id,
                 "session.response_chunk",
                 {"chunk": {"content": text}},
-                response_id=response_id,
+                response_id=platform_response_ids.get(session_id),
                 connection_id=connection_id,
             )
-        if not sent:
-            mark_connection_closed("platform_keepalive_send_failed")
-        return sent
 
-    async def send_platform_response_start(
-        session_id: str,
-        request_id: JsonRpcId,
-        *,
-        response_id: str | None = None,
-    ) -> bool:
+    async def send_platform_response_start(session_id: str, request_id: JsonRpcId) -> None:
         async with send_lock:
-            sent = await _send_platform_event(
+            await _send_platform_event(
                 websocket,
                 session_id,
                 "session.response_start",
                 {"requestId": request_id},
-                response_id=response_id,
+                response_id=platform_response_ids.get(session_id),
                 connection_id=connection_id,
             )
-        if not sent:
-            mark_connection_closed("platform_start_send_failed")
-        return sent
 
-    async def send_platform_result_chunks(
-        session_id: str,
-        result: dict[str, Any],
-        *,
-        response_id: str | None = None,
-    ) -> bool:
+    async def send_platform_result_chunks(session_id: str, result: dict[str, Any]) -> None:
         for chunk in _platform_chunks_from_result(result):
             async with send_lock:
-                sent = await _send_platform_event(
+                await _send_platform_event(
                     websocket,
                     session_id,
                     "session.response_chunk",
                     {"chunk": {"content": chunk}},
-                    response_id=response_id,
+                    response_id=platform_response_ids.get(session_id),
                     connection_id=connection_id,
                 )
-            if not sent:
-                mark_connection_closed("platform_chunk_send_failed")
-                return False
-        return True
 
-    async def send_platform_response_end(
-        session_id: str,
-        request_id: JsonRpcId,
-        result: dict[str, Any],
-        *,
-        response_id: str | None = None,
-    ) -> bool:
+    async def send_platform_response_end(session_id: str, request_id: JsonRpcId, result: dict[str, Any]) -> None:
         end_params = _platform_response_end_params(request_id, result)
         logger.info(
             "\n===== ACP 平台响应结束 | platform response_end =====\n"
@@ -695,7 +488,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             connection_id,
             session_id,
             request_id,
-            response_id,
+            platform_response_ids.get(session_id),
             end_params.get("stopReason"),
             end_params.get("threadId"),
             end_params.get("status"),
@@ -707,42 +500,33 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             diagnostic_json(end_params, max_chars=ACP_WS_RESULT_PREVIEW_MAX_CHARS),
         )
         async with send_lock:
-            sent = await _send_platform_event(
+            await _send_platform_event(
                 websocket,
                 session_id,
                 "session.response_end",
                 end_params,
-                response_id=response_id,
+                response_id=platform_response_ids.get(session_id),
                 connection_id=connection_id,
             )
-        if not sent:
-            mark_connection_closed("platform_end_send_failed")
-        return sent
 
-    async def send_platform_error_end(
-        session_id: str,
-        request_id: JsonRpcId,
-        message: str,
-        *,
-        response_id: str | None = None,
-    ) -> bool:
+    async def send_platform_error_end(session_id: str, request_id: JsonRpcId, message: str) -> None:
         logger.warning(
             "acp platform response error session_id=%s request_id=%s response_id=%s error=%s",
             session_id,
             request_id,
-            response_id,
+            platform_response_ids.get(session_id),
             message,
         )
         async with send_lock:
-            chunk_sent = await _send_platform_event(
+            await _send_platform_event(
                 websocket,
                 session_id,
                 "session.response_chunk",
                 {"chunk": {"content": f"请求处理失败：{message}"}},
-                response_id=response_id,
+                response_id=platform_response_ids.get(session_id),
                 connection_id=connection_id,
             )
-            end_sent = await _send_platform_event(
+            await _send_platform_event(
                 websocket,
                 session_id,
                 "session.response_end",
@@ -751,13 +535,9 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     "stopReason": "error",
                     "error": message,
                 },
-                response_id=response_id,
+                response_id=platform_response_ids.get(session_id),
                 connection_id=connection_id,
             )
-        sent = chunk_sent and end_sent
-        if not sent:
-            mark_connection_closed("platform_error_send_failed")
-        return sent
 
     try:
         while True:
@@ -803,6 +583,8 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     params = {**params, "sessionId": task_session_id}
                 incoming_platform_response_id = _string_or_empty(params.get("_platformResponseId"))
                 platform_prompt = normalized_method == "agent.command" and task_session_id is not None
+                if platform_prompt and task_session_id is not None:
+                    platform_sessions.add(task_session_id)
                 task_request_id = request_id
                 if platform_prompt and task_session_id is not None:
                     params = {
@@ -821,9 +603,10 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     )
                 )
                 if task_session_id is not None:
-                    task_key = _prompt_task_key(task_session_id, task_request_id, next(prompt_task_ids))
-                    prompt_tasks[task_key] = task
-                    prompt_task_sessions[task_key] = task_session_id
+                    previous = prompt_tasks.get(task_session_id)
+                    if previous is not None and not previous.done():
+                        previous.cancel()
+                    prompt_tasks[task_session_id] = task
                 continue
 
             if normalized_method == "session.init":
@@ -835,24 +618,16 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             if normalized_method in {"cancel", "session/cancel"}:
                 session_id = _session_id(params)
                 if session_id is not None:
-                    for task_key, task_session_id in list(prompt_task_sessions.items()):
-                        if task_session_id != session_id:
-                            continue
-                        cancel_task = prompt_tasks.pop(task_key, None)
-                        prompt_task_sessions.pop(task_key, None)
-                        if cancel_task is not None and not cancel_task.done():
-                            cancel_task.cancel()
+                    cancel_task = prompt_tasks.pop(session_id) if session_id in prompt_tasks else None
+                    if cancel_task is not None and not cancel_task.done():
+                        cancel_task.cancel()
 
             if normalized_method in {"close_session", "session/close"}:
                 session_id = _session_id(params)
                 if session_id is not None:
-                    for task_key, task_session_id in list(prompt_task_sessions.items()):
-                        if task_session_id != session_id:
-                            continue
-                        close_task = prompt_tasks.pop(task_key, None)
-                        prompt_task_sessions.pop(task_key, None)
-                        if close_task is not None and not close_task.done():
-                            close_task.cancel()
+                    close_task = prompt_tasks.pop(session_id) if session_id in prompt_tasks else None
+                    if close_task is not None and not close_task.done():
+                        close_task.cancel()
 
             try:
                 result = await active_dispatcher.dispatch(sessions, method, params, send_update)
@@ -892,12 +667,13 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
         await active_dispatcher.close(sessions)
         logger.debug(
             "acp ws cleanup complete connection_id=%s client=%s duration_ms=%s closed_sessions=%s "
-            "cancelled_prompt_tasks=%s keepalive_sessions=%s",
+            "cancelled_prompt_tasks=%s platform_sessions=%s keepalive_sessions=%s",
             connection_id,
             client_label,
             int((time.monotonic() - connected_at) * 1000),
             active_sessions,
             pending_prompt_count,
+            sorted(platform_sessions),
             sorted(keepalive_sessions),
         )
 
@@ -946,11 +722,11 @@ async def _send_platform_update(
     *,
     response_id: str | None = None,
     connection_id: str | None = None,
-) -> bool:
+) -> None:
     event_type = _platform_type_for_update(update)
     if event_type is None:
-        return True
-    return await _send_platform_event(
+        return
+    await _send_platform_event(
         websocket,
         session_id,
         event_type,
@@ -968,7 +744,7 @@ async def _send_platform_event(
     *,
     response_id: str | None = None,
     connection_id: str | None = None,
-) -> bool:
+) -> None:
     event_params = params or {}
     resolved_response_id = response_id or _platform_response_id(session_id, None)
     headers = {
@@ -1030,7 +806,7 @@ async def _send_platform_event(
             delivery="session.event.skipped",
             error="send_failed",
         )
-        return False
+        return
     _dump_platform_event(
         session_id,
         event_type,
@@ -1064,7 +840,7 @@ async def _send_platform_event(
             delivery="agent.message.skipped",
             error="send_failed",
         )
-        return False
+        return
     _dump_platform_event(
         session_id,
         event_type,
@@ -1073,7 +849,6 @@ async def _send_platform_event(
         connection_id=connection_id,
         delivery="agent.message.sent",
     )
-    return True
 
 
 async def _send_result(
@@ -1082,7 +857,7 @@ async def _send_result(
     result: dict[str, Any],
     *,
     connection_id: str | None = None,
-) -> bool:
+) -> None:
     result_payload = result.get("result")
     result_data = result_payload if isinstance(result_payload, dict) else {}
     reply = result_data.get("reply")
@@ -1115,7 +890,7 @@ async def _send_result(
     )
     payload = {"jsonrpc": "2.0", "id": request_id, "result": result}
     _log_ws_trace("send", payload, connection_id=connection_id, method="result", request_id=request_id)
-    return await _safe_send_json(
+    await _safe_send_json(
         websocket,
         payload,
         connection_id=connection_id,
@@ -1131,7 +906,7 @@ async def _send_error(
     message: str,
     *,
     connection_id: str | None = None,
-) -> bool:
+) -> None:
     logger.info("acp ws send error request_id=%s code=%s message=%s", request_id, code, message)
     payload = {
         "jsonrpc": "2.0",
@@ -1142,7 +917,7 @@ async def _send_error(
         },
     }
     _log_ws_trace("send", payload, connection_id=connection_id, method="error", request_id=request_id)
-    return await _safe_send_json(
+    await _safe_send_json(
         websocket,
         payload,
         connection_id=connection_id,
@@ -1304,12 +1079,6 @@ def _single_active_session_id(sessions: dict[str, AcpWebSocketSession]) -> str |
     return next(iter(sessions))
 
 
-def _prompt_task_key(session_id: str, request_id: JsonRpcId, sequence: int) -> str:
-    if request_id is None:
-        return f"{session_id}:notification:{sequence}"
-    return f"{session_id}:{request_id}:{sequence}"
-
-
 def _platform_response_id(session_id: str, request_id: JsonRpcId) -> str:
     if request_id is None:
         return f"{session_id}:platform-response"
@@ -1433,10 +1202,7 @@ def _platform_update_content(update: dict[str, Any]) -> str:
     return ""
 
 
-def _platform_final_result_from_update(
-    update: dict[str, Any],
-    session: AcpWebSocketSession | None = None,
-) -> dict[str, Any] | None:
+def _platform_final_result_from_update(update: dict[str, Any]) -> dict[str, Any] | None:
     meta = update.get("_meta")
     if not isinstance(meta, dict):
         return None
@@ -1449,7 +1215,7 @@ def _platform_final_result_from_update(
     raw_result = data.get("result")
     if not isinstance(raw_result, dict):
         return None
-    result_payload = _normalize_structured_json_result_payload(raw_result, session)
+    result_payload = raw_result
     content = result_payload.get("content")
     if not isinstance(content, list):
         reply = result_payload.get("reply")
@@ -1461,85 +1227,6 @@ def _platform_final_result_from_update(
         "content": content,
         "result": result_payload,
     }
-
-
-def _normalize_structured_json_result_payload(
-    result_payload: dict[str, Any],
-    session: AcpWebSocketSession | None,
-) -> dict[str, Any]:
-    if not _should_normalize_structured_json_payload(session):
-        return result_payload
-    reply = result_payload.get("reply")
-    if not isinstance(reply, str):
-        return result_payload
-    normalized_reply = _validated_json_text_from_reply(reply)
-    if normalized_reply is None or normalized_reply == reply:
-        return result_payload
-    normalized = dict(result_payload)
-    normalized["reply"] = normalized_reply
-    normalized["content"] = _replace_primary_text_content(result_payload.get("content"), reply, normalized_reply)
-    return normalized
-
-
-def _should_normalize_structured_json_payload(session: AcpWebSocketSession | None) -> bool:
-    if session is None:
-        return False
-    runtime_options = session.runtime_options if isinstance(session.runtime_options, dict) else {}
-    response_format = runtime_options.get("response_format") or runtime_options.get("responseFormat")
-    app_template_name = (
-        session.app_template_name
-        or runtime_options.get("app_template_name")
-        or runtime_options.get("appTemplateName")
-    )
-    return response_format == "json" or app_template_name == "ParkingAbnormalEventMonitoring"
-
-
-def _validated_json_text_from_reply(reply: str) -> str | None:
-    candidate = _extract_fenced_json(reply.strip())
-    if candidate is None:
-        candidate = reply.strip()
-    if not candidate:
-        return None
-    try:
-        value = json.loads(candidate)
-    except json.JSONDecodeError:
-        return None
-    return json.dumps(value, ensure_ascii=False, indent=2)
-
-
-def _extract_fenced_json(text: str) -> str | None:
-    if not text.startswith("```"):
-        return None
-    lines = text.splitlines()
-    if len(lines) < 2 or not lines[0].strip().startswith("```"):
-        return None
-    closing_index: int | None = None
-    for index in range(len(lines) - 1, 0, -1):
-        if lines[index].strip() == "```":
-            closing_index = index
-            break
-    if closing_index is None:
-        return None
-    return "\n".join(lines[1:closing_index]).strip()
-
-
-def _replace_primary_text_content(raw_content: Any, old_text: str, new_text: str) -> list[dict[str, Any]]:
-    content = raw_content if isinstance(raw_content, list) else []
-    updated: list[dict[str, Any]] = []
-    replaced = False
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        if not replaced and block.get("type") == "text" and block.get("text") == old_text:
-            next_block = dict(block)
-            next_block["text"] = new_text
-            updated.append(next_block)
-            replaced = True
-            continue
-        updated.append(block)
-    if not replaced:
-        return [{"type": "text", "text": new_text}, *updated]
-    return updated
 
 
 def _should_watch_review_result_file(

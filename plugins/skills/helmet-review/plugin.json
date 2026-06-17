@@ -1,9 +1,0 @@
-{
-  "id": "helmet-review",
-  "name": "安全帽佩戴检测",
-  "version": "0.1.0",
-  "description": "用于机器视觉复判人员是否按安全帽佩戴检测场景命中。",
-  "skills": [
-    "skills/helmet-review/manifest.json"
-  ]
-}

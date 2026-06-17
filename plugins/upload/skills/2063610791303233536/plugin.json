@@ -1,7 +1,0 @@
-{
-  "id" : "2063610791303233536",
-  "name" : "争吵检测",
-  "version" : "0.1.0",
-  "description" : "识别人员肢体冲突、争吵打闹",
-  "skills" : [ "manifest.json" ]
-}

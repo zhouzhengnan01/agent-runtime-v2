@@ -16,10 +16,10 @@ from app.core.agent import AgentRuntime
 from app.core.apps import AppTemplate, AppTemplateRegistry
 from app.core.artifacts import ThreadPaths
 from app.core.config import AgentConfigLoader
-from app.core.diagnostics import diagnostic_json, env_flag, env_int
+from app.core.diagnostics import diagnostic_json, env_flag, env_int, redact_diagnostic_value
 from app.core.runtime import ModelManager
 from app.core.skills.aliases import expand_skill_aliases
-from app.protocols.acp.content import attachments_from_payload_fields, prompt_parts_from_dict_blocks
+from app.protocols.acp.content import prompt_parts_from_dict_blocks
 from app.protocols.acp.external_backend import ExternalAcpSession, prompt_blocks_from_params, prompt_response_payload
 from app.protocols.acp.input_required import stop_reason_for_result
 from app.protocols.acp.schemas import AcpTerminal, AcpWebSocketSession
@@ -32,6 +32,7 @@ logger = logging.getLogger("uvicorn.error")
 ACP_ADAPTER_TRACE_PAYLOADS = env_flag("ACP_ADAPTER_TRACE_PAYLOADS", "0")
 ACP_ADAPTER_TRACE_MAX_CHARS = env_int("ACP_ADAPTER_TRACE_MAX_CHARS", 100)
 ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS = env_int("ACP_ADAPTER_RESULT_PREVIEW_MAX_CHARS", 1200)
+ACP_ADAPTER_SESSION_LOG_MAX_CHARS = env_int("ACP_ADAPTER_SESSION_LOG_MAX_CHARS", 1200)
 
 _RUNTIME_OPTION_ALIASES = {
     "threadId": "thread_id",
@@ -74,6 +75,24 @@ _RUNTIME_OPTION_ALIASES = {
     "sandboxProfile": "sandbox_profile",
     "sandbox_profile": "sandbox_profile",
 }
+
+_REVIEW_TARGET_KEYS = (
+    "target",
+    "targetName",
+    "target_name",
+    "taskTargetName",
+    "task_target_name",
+    "taskTarget",
+    "task_target",
+    "cvTaskName",
+    "cv_task_name",
+    "applicationScene",
+    "application_scene",
+    "eventTypeName",
+    "event_type_name",
+    "targetSkill",
+    "target_skill",
+)
 
 _RUNTIME_OPTION_RESPONSE_ALIASES = {
     "thread_id": "threadId",
@@ -155,7 +174,6 @@ class AcpRuntimeAdapter:
                 "loadSession": True,
                 "promptCapabilities": {
                     "image": True,
-                    "video": True,
                     "audio": True,
                     "embeddedContext": True,
                 },
@@ -241,7 +259,7 @@ class AcpRuntimeAdapter:
             stored_runtime_options = self._resolve_model_runtime_options(stored_runtime_options)
         model_name = _string(stored_runtime_options.get("model_name"))
         mcp_servers = _mcp_servers_from_params(params)
-        logger.info(
+        logger.debug(
             "acp session new session_id=%s thread_id=%s agent=%s app_template=%s selected_skills=%s mode=%s config_option_keys=%s param_keys=%s meta_keys=%s bridge_container_keys=%s",
             session_id,
             thread_id,
@@ -253,6 +271,33 @@ class AcpRuntimeAdapter:
             sorted(params.keys()),
             sorted(_params(params.get("_meta")).keys()),
             _bridge_container_key_summary(params),
+        )
+        logger.info(
+            "acp session new detail session_id=%s thread_id=%s agent=%s app_template=%s runtime_options=%s mcp_servers=%s params_summary=%s",
+            session_id,
+            thread_id,
+            agent_name,
+            app_template.name if app_template is not None else None,
+            diagnostic_json(
+                _runtime_options_response(stored_runtime_options),
+                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
+            ),
+            diagnostic_json(
+                _mcp_servers_response(mcp_servers),
+                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
+            ),
+            diagnostic_json(
+                _acp_param_log_summary(params),
+                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
+            ),
+        )
+        _dump_acp_request_debug(
+            thread_id,
+            "session.new",
+            params,
+            app_template=app_template.name if app_template is not None else None,
+            workflow=stored_runtime_options.get("workflow") if isinstance(stored_runtime_options, dict) else None,
+            selected_skills=stored_runtime_options.get("selected_skills") if isinstance(stored_runtime_options, dict) else None,
         )
         sessions[session_id] = AcpWebSocketSession(
             session_id=session_id,
@@ -294,8 +339,23 @@ class AcpRuntimeAdapter:
     ) -> dict[str, Any]:
         session_id = _string(params.get("sessionId") or params.get("session_id"))
         if not session_id or session_id not in sessions:
-            session_result = self.new_session(sessions, params)
-            session_id = str(session_result["sessionId"])
+            if session_id:
+                restored_params = _restored_session_new_params(session_id)
+                if restored_params is not None:
+                    logger.info(
+                        "acp prompt restored missing session from thread files session_id=%s restored_app_template=%s",
+                        session_id,
+                        _app_template_name(restored_params),
+                    )
+                    self.new_session(sessions, restored_params)
+                else:
+                    logger.warning(
+                        "acp prompt missing session and no persisted session.new found session_id=%s",
+                        session_id,
+                    )
+            if not session_id or session_id not in sessions:
+                session_result = self.new_session(sessions, params)
+                session_id = str(session_result["sessionId"])
 
         session = sessions[session_id]
         agent_name = _agent_name_from_meta(params) or session.agent_name
@@ -322,9 +382,27 @@ class AcpRuntimeAdapter:
                 session.model_name = model_name
             agent_name = session.agent_name
             agent = self.loader.load(agent_name)
+        logger.info(
+            "acp prompt app routing session_id=%s thread_id=%s review_source_id=%s app_template=%s agent=%s selected_skills=%s workflow=%s",
+            session_id,
+            session.thread_id,
+            _review_source_id_from_params(params) or "",
+            session.app_template_name or "",
+            agent_name,
+            session.runtime_options.get("selected_skills") if isinstance(session.runtime_options, dict) else None,
+            session.runtime_options.get("workflow") if isinstance(session.runtime_options, dict) else None,
+        )
+        _dump_acp_request_debug(
+            session.thread_id,
+            "session.prompt",
+            params,
+            app_template=session.app_template_name,
+            workflow=session.runtime_options.get("workflow") if isinstance(session.runtime_options, dict) else None,
+            selected_skills=session.runtime_options.get("selected_skills") if isinstance(session.runtime_options, dict) else None,
+        )
         thread_id = _resolve_thread_id(params, session)
         runtime_options = self._prompt_runtime_options(params, session, thread_id)
-        logger.info(
+        logger.debug(
             "acp prompt routing session_id=%s thread_id=%s agent=%s app_template=%s selected_skills=%s selected_mcp_tools=%s mode=%s config_option_keys=%s param_keys=%s meta_keys=%s bridge_container_keys=%s",
             session_id,
             thread_id,
@@ -337,6 +415,29 @@ class AcpRuntimeAdapter:
             sorted(params.keys()),
             sorted(_params(params.get("_meta")).keys()),
             _bridge_container_key_summary(params),
+        )
+        logger.info(
+            "acp prompt detail-lite session_id=%s thread_id=%s agent=%s app_template=%s runtime_options=%s session_mcp_servers=%s prompt_mcp_servers=%s params_summary=%s",
+            session_id,
+            thread_id,
+            agent_name,
+            session.app_template_name,
+            diagnostic_json(
+                runtime_options.model_dump(mode="python", exclude_none=True, exclude={"api_key"}),
+                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
+            ),
+            diagnostic_json(
+                _mcp_servers_response(session.mcp_servers),
+                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
+            ),
+            diagnostic_json(
+                _mcp_servers_response(_mcp_servers_from_params(params)),
+                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
+            ),
+            diagnostic_json(
+                _acp_param_log_summary(params),
+                max_chars=ACP_ADAPTER_SESSION_LOG_MAX_CHARS,
+            ),
         )
         if agent.backend.type == "acp_stdio":
             return await self._prompt_external(session, agent.backend, params, send_update, runtime_options.workflow)
@@ -919,6 +1020,9 @@ class AcpRuntimeAdapter:
         raw_config_options = merged.get("config_options")
         config_options = dict(raw_config_options) if isinstance(raw_config_options, dict) else {}
         config_options["session_cwd"] = session.cwd
+        review_target = _review_target_payload(params)
+        if review_target:
+            config_options["review_target"] = review_target
         if session.mcp_servers:
             config_options["mcpServers"] = list(session.mcp_servers)
         merged["config_options"] = config_options
@@ -1000,27 +1104,26 @@ class AcpRuntimeAdapter:
     def _app_template_from_name(self, template_name: str | None) -> AppTemplate | None:
         if template_name is None:
             return None
-        try:
-            return self.app_registry.get(template_name)
-        except KeyError as exc:
-            raise ValueError(f"Unknown ACP app template: {template_name}") from exc
+        template = self.app_registry.find(template_name)
+        if template is not None:
+            return template
+        raise ValueError(f"Unknown ACP app template: {template_name}")
 
     def _app_template_name_from_review_source(self, params: dict[str, Any]) -> str | None:
         review_source_id = _review_source_id_from_params(params)
         if review_source_id is None:
             return None
         for candidate in _review_source_template_candidates(review_source_id):
-            try:
-                self.app_registry.get(candidate)
-            except (KeyError, ValueError):
+            template = self.app_registry.find(candidate)
+            if template is None:
                 continue
-            else:
-                logger.info(
-                    "acp inferred app template from reviewSourceId app_template=%s review_source_id=%s",
-                    candidate,
-                    review_source_id,
-                )
-                return candidate
+            logger.info(
+                "acp inferred app template from reviewSourceId app_template=%s review_source_id=%s candidate=%s",
+                template.name,
+                review_source_id,
+                candidate,
+            )
+            return template.name
         return None
 
 
@@ -1284,6 +1387,65 @@ def _runtime_options_from_source(source: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _review_target_payload(params: dict[str, Any]) -> dict[str, str]:
+    sources = _review_target_sources(params)
+    for source in sources:
+        for key in _REVIEW_TARGET_KEYS:
+            if key not in source:
+                continue
+            value = _review_target_text(source.get(key))
+            if value:
+                return {"value": value, "source": key}
+    return {}
+
+
+def _review_target_sources(params: dict[str, Any]) -> list[dict[str, Any]]:
+    meta = _params(params.get("_meta"))
+    sources = [
+        params,
+        meta,
+        _params(params.get("runtimeOptions") or params.get("runtime_options")),
+        _params(meta.get("runtimeOptions") or meta.get("runtime_options")),
+    ]
+    sources.extend(_review_target_prompt_sources(params.get("prompt")))
+    for container in _bridge_payload_containers(params):
+        sources.append(container)
+        sources.append(_params(container.get("runtimeOptions") or container.get("runtime_options")))
+        sources.extend(_review_target_prompt_sources(container.get("prompt")))
+    return [source for source in sources if source]
+
+
+def _review_target_prompt_sources(prompt: Any) -> list[dict[str, Any]]:
+    if not isinstance(prompt, list):
+        return []
+    sources: list[dict[str, Any]] = []
+    for block in prompt:
+        if not isinstance(block, dict):
+            continue
+        sources.append(block)
+        meta = _params(block.get("_meta"))
+        if meta:
+            sources.append(meta)
+        resource = _params(block.get("resource"))
+        if resource:
+            sources.append(resource)
+            resource_meta = _params(resource.get("_meta"))
+            if resource_meta:
+                sources.append(resource_meta)
+    return sources
+
+
+def _review_target_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("text", "name", "value", "id", "code"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return ""
+
+
 def _session_init_tools_payload(params: dict[str, Any]) -> object:
     meta = _params(params.get("_meta"))
     runtime_options = _params(meta.get("runtimeOptions") or meta.get("runtime_options"))
@@ -1419,6 +1581,22 @@ def _runtime_options_response(runtime_options: dict[str, Any]) -> dict[str, Any]
     return response
 
 
+def _acp_param_log_summary(params: dict[str, Any]) -> dict[str, Any]:
+    meta = _params(params.get("_meta"))
+    runtime_options = _runtime_options_payload(params)
+    bridge_containers = _bridge_payload_containers(params)
+    return {
+        "param_keys": sorted(params.keys()),
+        "meta_keys": sorted(meta.keys()),
+        "bridge_container_keys": [sorted(container.keys()) for container in bridge_containers],
+        "runtime_options": _runtime_options_response(runtime_options),
+        "mcp_servers": _mcp_servers_response(_mcp_servers_from_params(params)),
+        "has_runtime_options": bool(runtime_options),
+        "has_mcp_servers": bool(_mcp_servers_from_params(params)),
+        "session_init_tools_present": _session_init_tools_payload(params) is not None,
+    }
+
+
 def _app_template_name(params: dict[str, Any]) -> str | None:
     meta = _params(params.get("_meta"))
     top_runtime_options = _params(params.get("runtimeOptions") or params.get("runtime_options"))
@@ -1453,9 +1631,76 @@ def _template_name_from_source(source: dict[str, Any]) -> str | None:
         or source.get("template_id")
         or source.get("appId")
         or source.get("app_id")
+        or source.get("taskName")
+        or source.get("task_name")
         or source.get("agentId")
         or source.get("agent_id")
     )
+
+
+def _dump_acp_request_debug(
+    thread_id: str,
+    phase: str,
+    params: dict[str, Any],
+    *,
+    app_template: str | None = None,
+    workflow: str | None = None,
+    selected_skills: object = None,
+) -> None:
+    if not thread_id:
+        return
+    try:
+        outputs_dir = Path(__file__).resolve().parents[3] / ".runtime" / "threads" / thread_id / "outputs"
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "phase": phase,
+            "threadId": thread_id,
+            "appTemplateName": app_template,
+            "reviewSourceId": _review_source_id_from_params(params),
+            "workflow": workflow,
+            "selectedSkills": selected_skills,
+            "params": redact_diagnostic_value(params),
+        }
+        with (outputs_dir / "acp-request-debug.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.exception("acp request debug dump failed thread_id=%s phase=%s", thread_id, phase)
+
+
+def _restored_session_new_params(session_id: str) -> dict[str, Any] | None:
+    try:
+        debug_path = (
+            Path(__file__).resolve().parents[3]
+            / ".runtime"
+            / "threads"
+            / session_id
+            / "outputs"
+            / "acp-request-debug.jsonl"
+        )
+        if not debug_path.exists():
+            return None
+        restored: dict[str, Any] | None = None
+        for line in debug_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict) or record.get("phase") != "session.new":
+                continue
+            params = record.get("params")
+            if not isinstance(params, dict):
+                continue
+            restored = dict(params)
+            restored.setdefault("sessionId", session_id)
+            restored.setdefault("threadId", session_id)
+            app_template = _string(record.get("appTemplateName"))
+            if app_template is not None and _app_template_name(restored) is None:
+                meta = _params(restored.get("_meta"))
+                restored["_meta"] = {**meta, "appTemplateName": app_template}
+        return restored
+    except Exception:
+        logger.exception("acp persisted session restore failed session_id=%s", session_id)
+        return None
 
 
 def _review_source_id_from_params(params: dict[str, Any]) -> str | None:
@@ -1527,27 +1772,11 @@ def _message_matches_user_text(message: Message | None, text: str) -> bool:
 
 def _attachments_from_params(params: dict[str, Any]) -> list[Attachment]:
     _prompt_text, prompt_attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
-    attachments = list(prompt_attachments)
-    for source in (params, *_bridge_payload_containers(params)):
-        attachments.extend(attachments_from_payload_fields(source))
-    return _dedupe_attachments(attachments)
-
-
-def _dedupe_attachments(attachments: list[Attachment]) -> list[Attachment]:
-    deduped: list[Attachment] = []
-    seen: set[tuple[str, str, str, str]] = set()
-    for attachment in attachments:
-        identity = (
-            attachment.name,
-            attachment.path or "",
-            attachment.mime_type or "",
-            (attachment.data_base64 or "")[:64],
-        )
-        if identity in seen:
-            continue
-        seen.add(identity)
-        deduped.append(attachment)
-    return deduped
+    raw_attachments = params.get("attachments")
+    if not isinstance(raw_attachments, list):
+        return prompt_attachments
+    explicit_attachments = [Attachment.model_validate(item) for item in raw_attachments if isinstance(item, dict)]
+    return [*prompt_attachments, *explicit_attachments]
 
 
 def _normalize_structured_json_result(
