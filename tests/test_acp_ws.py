@@ -21,7 +21,7 @@ from app.core.runtime import ModelManager
 from app.schemas import AgentRunResult, ArtifactRef, ChatEvent, ChatRequest
 from app.schemas import Message
 from app.main import create_app
-from app.protocols.acp.adapter import _attachments_from_params, _event_to_update
+from app.protocols.acp.adapter import _app_template_name, _attachments_from_params, _event_to_update, _runtime_options_payload
 from app.protocols.acp import transport_ws as acp_transport_ws
 
 
@@ -657,7 +657,7 @@ def test_acp_websocket_new_session_defaults_session_id_to_thread_id() -> None:
     assert created["sessionId"] == thread_id
 
 
-def test_acp_websocket_prompt_returns_content_resource_links(
+def test_acp_websocket_prompt_returns_content_resource_links_without_duplicate_updates(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = ArtifactAcpRuntime(ArtifactStore(root_dir=tmp_path / "threads"))
@@ -707,13 +707,13 @@ def test_acp_websocket_prompt_returns_content_resource_links(
     assert content[1]["path"] == "outputs/reports/result.md"
     assert content[1]["name"] == "result.md"
     assert content[1]["mimeType"] == "text/markdown"
-    resource_update = next(
+    resource_updates = [
         update
         for update in updates
         if update.get("sessionUpdate") == "agent_message_chunk"
         and update.get("content", {}).get("type") == "resource_link"
-    )
-    assert resource_update["content"] == content[1]
+    ]
+    assert resource_updates == []
 
 
 def test_acp_websocket_skips_empty_agent_message_updates() -> None:
@@ -2332,6 +2332,106 @@ def test_acp_websocket_prompt_bridge_container_can_switch_app_template(
     assert options.app_template_name == "70aaee52-99c2-49f5-a9c7-fb746821d3df"
     assert options.selected_skills == ["generate-screen-skill"]
     assert options.config_options["auto_execute_primary_skill"] is True
+
+
+def test_acp_protocol_reads_runtime_options_from_platform_input_parameters() -> None:
+    params = {
+        "input": [
+            {
+                "context": [
+                    {
+                        "content": {
+                            "parameters": {
+                                "_meta": {
+                                    "appTemplateName": "algorithm-engineer-full-cycle-test",
+                                    "runtimeOptions": {
+                                        "workflow": "yolo_training_flow",
+                                        "appTemplateName": "algorithm-engineer-full-cycle-test",
+                                        "trainingModelId": "model-uploaded",
+                                        "maxSyntheticImages": 5,
+                                        "selectedSkills": ["gpu-training-orchestrator"],
+                                    },
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+    payload = _runtime_options_payload(params)
+
+    assert _app_template_name(params) == "algorithm-engineer-full-cycle-test"
+    assert payload["workflow"] == "yolo_training_flow"
+    assert payload["app_template_name"] == "algorithm-engineer-full-cycle-test"
+    assert payload["training_model_id"] == "model-uploaded"
+    assert payload["max_synthetic_images"] == 5
+    assert payload["selected_skills"] == ["gpu-training-orchestrator"]
+
+
+def test_acp_protocol_maps_platform_files_to_attachments() -> None:
+    params = {
+        "input": [
+            {
+                "context": [
+                    {
+                        "content": {
+                            "parameters": {
+                                "_meta": {
+                                    "runtimeOptions": {
+                                        "files": [
+                                            {
+                                                "fileName": "uploads/dataset.zip",
+                                                "fileUrl": ".runtime/threads/acp-platform/uploads/dataset.zip",
+                                                "mediaType": "application/zip",
+                                                "others": {
+                                                    "role": "dataset",
+                                                    "path": ".runtime/threads/acp-platform/uploads/dataset.zip",
+                                                },
+                                            },
+                                            {
+                                                "fileName": "uploads/image1.zip",
+                                                "fileUrl": ".runtime/threads/acp-platform/uploads/image1.zip",
+                                                "mediaType": "application/zip",
+                                                "others": {
+                                                    "role": "image1",
+                                                    "path": ".runtime/threads/acp-platform/uploads/image1.zip",
+                                                },
+                                            },
+                                            {
+                                                "fileName": "uploads/image2.zip",
+                                                "fileUrl": ".runtime/threads/acp-platform/uploads/image2.zip",
+                                                "mediaType": "application/zip",
+                                                "others": {
+                                                    "role": "image2",
+                                                    "path": ".runtime/threads/acp-platform/uploads/image2.zip",
+                                                },
+                                            },
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+    attachments = _attachments_from_params(params)
+
+    assert [attachment.name for attachment in attachments] == [
+        "uploads/dataset.zip",
+        "uploads/image1.zip",
+        "uploads/image2.zip",
+    ]
+    assert [attachment.path for attachment in attachments] == [
+        ".runtime/threads/acp-platform/uploads/dataset.zip",
+        ".runtime/threads/acp-platform/uploads/image1.zip",
+        ".runtime/threads/acp-platform/uploads/image2.zip",
+    ]
+    assert {attachment.metadata["others"]["role"] for attachment in attachments} == {"dataset", "image1", "image2"}
 
 
 def test_acp_websocket_rejects_prompt_like_app_template_name_without_path_error(

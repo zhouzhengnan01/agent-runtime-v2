@@ -8,7 +8,7 @@ from pathlib import Path
 from app.core.agent.input_required import required_inputs_for_request
 from app.core.artifacts import ArtifactStore
 from app.core.config.agent_config import AgentConfig
-from app.schemas import ChatRequest, Message, RuntimeOptions
+from app.schemas import Attachment, ChatRequest, Message, RuntimeOptions
 
 
 def _load_yolo_training_flow_module():
@@ -210,6 +210,34 @@ def test_yolo_training_flow_selects_uploaded_model_by_model_id(tmp_path: Path) -
     automatic, automatic_error = module._resolve_user_training_model(paths, "")
     assert automatic_error == ""
     assert automatic is None
+
+
+def test_yolo_training_flow_new_dataset_attachment_overrides_stale_marker(tmp_path: Path) -> None:
+    module = _load_yolo_training_flow_module()
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("stale-dataset-thread")
+    stale_path = paths.uploads / "dataset.zip"
+    current_path = paths.uploads / "datasets.zip"
+    current_path.write_bytes(b"current")
+    module._save_dataset_package_path(paths, str(stale_path))
+
+    attachment = Attachment(
+        name="uploads/dataset.zip",
+        path=".runtime/threads/stale-dataset-thread/uploads/datasets.zip",
+        mime_type="application/zip",
+        metadata={"others": {"role": "dataset"}},
+    )
+    dataset_attachment = module._find_dataset_package_attachment(
+        [attachment],
+        role_hints={},
+        include_thread_files=False,
+    )
+    assert dataset_attachment is not None
+
+    resolved = module._resolve_uploaded_local_path(paths.root, dataset_attachment.path)
+    module._save_dataset_package_path(paths, str(resolved))
+
+    assert module._load_dataset_package_path(paths) == str(current_path.resolve())
 
 
 def test_yolo_training_flow_rejects_model_id_outside_thread_models(tmp_path: Path) -> None:

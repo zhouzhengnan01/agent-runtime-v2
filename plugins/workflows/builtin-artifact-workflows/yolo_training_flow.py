@@ -77,7 +77,11 @@ class YoloTrainingWorkflow:
         spec_user_text = _combine_spec_user_text(objective_text, user_text)
         explicit_attachment_roles = _parse_attachment_role_hints(user_text)
 
-        dataset_attachment = _find_dataset_package_attachment(attachments, role_hints=explicit_attachment_roles, include_thread_files=False) if not existing_dataset_pkg else None
+        dataset_attachment = _find_dataset_package_attachment(
+            attachments,
+            role_hints=explicit_attachment_roles,
+            include_thread_files=False,
+        )
         composite_attachments = _find_composite_input_attachments(
             attachments,
             include_thread_files=False,

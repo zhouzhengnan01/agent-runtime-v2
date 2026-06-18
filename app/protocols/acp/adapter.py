@@ -503,8 +503,6 @@ class AcpRuntimeAdapter:
                 raw_result = event.data.get("result")
                 if isinstance(raw_result, dict):
                     result = AgentRunResult.model_validate(raw_result)
-                    for resource_update in _resource_content_updates(event, result.content):
-                        await send_update(session_id, resource_update)
                 last_error = _string(event.data.get("error")) or last_error
 
         if result is None:
@@ -1341,39 +1339,81 @@ def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+_BRIDGE_CONTAINER_KEYS = (
+    "parameters",
+    "parameter",
+    "params",
+    "expands",
+    "expand",
+    "extensions",
+    "metadata",
+    "meta",
+    "arguments",
+    "argument",
+    "context",
+    "extra",
+)
+
+
 def _bridge_payload_containers(params: dict[str, Any]) -> list[dict[str, Any]]:
     meta = _params(params.get("_meta"))
     containers: list[dict[str, Any]] = []
     seen: set[int] = set()
+
+    def add_container(container: dict[str, Any]) -> None:
+        if not container:
+            return
+        identity = id(container)
+        if identity in seen:
+            return
+        seen.add(identity)
+        containers.append(container)
+        nested = _params(container.get("_meta"))
+        if nested:
+            add_container(nested)
+
+    def add_content_parameters(container: dict[str, Any]) -> None:
+        content = _params(container.get("content"))
+        if content:
+            add_container(content)
+            parameters = _params(content.get("parameters"))
+            if parameters:
+                add_container(parameters)
+        parameters = _params(container.get("parameters"))
+        if parameters:
+            add_container(parameters)
+
+    def add_context_parts(value: object) -> None:
+        if isinstance(value, dict):
+            add_container(value)
+            add_content_parameters(value)
+            return
+        if not isinstance(value, list):
+            return
+        for item in value:
+            if isinstance(item, dict):
+                add_container(item)
+                add_content_parameters(item)
+
+    def add_platform_input_containers(source: dict[str, Any]) -> None:
+        raw_input = source.get("input")
+        inputs = raw_input if isinstance(raw_input, list) else [raw_input]
+        for item in inputs:
+            if not isinstance(item, dict):
+                continue
+            add_container(item)
+            add_content_parameters(item)
+            add_context_parts(item.get("context"))
+        add_context_parts(source.get("context"))
+        add_content_parameters(source)
+
     for source in (params, meta):
-        for key in (
-            "parameters",
-            "parameter",
-            "params",
-            "expands",
-            "expand",
-            "extensions",
-            "metadata",
-            "meta",
-            "arguments",
-            "argument",
-            "context",
-            "extra",
-        ):
+        for key in _BRIDGE_CONTAINER_KEYS:
             container = _params(source.get(key))
             if not container:
                 continue
-            identity = id(container)
-            if identity in seen:
-                continue
-            seen.add(identity)
-            containers.append(container)
-            nested = _params(container.get("_meta"))
-            if nested:
-                nested_identity = id(nested)
-                if nested_identity not in seen:
-                    seen.add(nested_identity)
-                    containers.append(nested)
+            add_container(container)
+        add_platform_input_containers(source)
     return containers
 
 
@@ -1777,11 +1817,151 @@ def _message_matches_user_text(message: Message | None, text: str) -> bool:
 
 def _attachments_from_params(params: dict[str, Any]) -> list[Attachment]:
     _prompt_text, prompt_attachments = prompt_parts_from_dict_blocks(params.get("prompt"))
-    raw_attachments = params.get("attachments")
-    if not isinstance(raw_attachments, list):
-        return prompt_attachments
-    explicit_attachments = [Attachment.model_validate(item) for item in raw_attachments if isinstance(item, dict)]
-    return [*prompt_attachments, *explicit_attachments]
+    attachments: list[Attachment] = []
+    index_by_key: dict[str, int] = {}
+
+    def add_attachment(attachment: Attachment) -> None:
+        key = _attachment_dedupe_key(attachment)
+        if key and key in index_by_key:
+            existing_index = index_by_key[key]
+            existing = attachments[existing_index]
+            attachments[existing_index] = existing.model_copy(
+                update={
+                    "name": attachment.name or existing.name,
+                    "path": attachment.path or existing.path,
+                    "mime_type": attachment.mime_type or existing.mime_type,
+                    "data_base64": attachment.data_base64 or existing.data_base64,
+                    "metadata": {**existing.metadata, **attachment.metadata},
+                }
+            )
+            return
+        if key:
+            index_by_key[key] = len(attachments)
+        attachments.append(attachment)
+
+    for attachment in prompt_attachments:
+        add_attachment(attachment)
+    for source in _attachment_source_containers(params):
+        for key, acp_type in (
+            ("attachments", "attachment"),
+            ("files", "file"),
+            ("fileResults", "file_result"),
+            ("file_results", "file_result"),
+        ):
+            raw_items = source.get(key)
+            if not isinstance(raw_items, list):
+                continue
+            for item in raw_items:
+                attachment = _attachment_from_source(item, acp_type=acp_type)
+                if attachment is not None:
+                    add_attachment(attachment)
+    return attachments
+
+
+def _attachment_source_containers(params: dict[str, Any]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def add(source: dict[str, Any]) -> None:
+        if not source:
+            return
+        identity = id(source)
+        if identity in seen:
+            return
+        seen.add(identity)
+        sources.append(source)
+        for key in ("runtimeOptions", "runtime_options", "configOptions", "config_options"):
+            nested = _params(source.get(key))
+            if nested:
+                add(nested)
+
+    meta = _params(params.get("_meta"))
+    add(params)
+    add(meta)
+    for container in _bridge_payload_containers(params):
+        add(container)
+    return sources
+
+
+_ATTACHMENT_BASE_KEYS = {
+    "name",
+    "fileName",
+    "filename",
+    "title",
+    "path",
+    "uri",
+    "url",
+    "fileUrl",
+    "accessUrl",
+    "mime_type",
+    "mimeType",
+    "mediaType",
+    "data_base64",
+    "dataBase64",
+    "data",
+    "blob",
+    "_meta",
+}
+
+
+def _attachment_from_source(item: object, *, acp_type: str) -> Attachment | None:
+    if not isinstance(item, dict):
+        return None
+    others = _params(item.get("others"))
+    path = _string(
+        item.get("path")
+        or item.get("uri")
+        or item.get("url")
+        or item.get("fileUrl")
+        or item.get("accessUrl")
+        or others.get("path")
+        or others.get("uri")
+        or others.get("url")
+        or others.get("fileUrl")
+        or others.get("accessUrl")
+    )
+    data_base64 = _string(item.get("data_base64") or item.get("dataBase64") or item.get("data") or item.get("blob"))
+    name = _string(
+        item.get("name")
+        or item.get("fileName")
+        or item.get("filename")
+        or item.get("title")
+        or others.get("name")
+        or others.get("fileName")
+        or others.get("filename")
+    )
+    if name is None:
+        name = _attachment_name_from_path(path) or "attachment"
+    mime_type = _string(
+        item.get("mime_type")
+        or item.get("mimeType")
+        or item.get("mediaType")
+        or others.get("mime_type")
+        or others.get("mimeType")
+        or others.get("mediaType")
+    )
+    metadata = dict(_params(item.get("_meta")))
+    for key, value in item.items():
+        if key not in _ATTACHMENT_BASE_KEYS:
+            metadata[key] = value
+    metadata.setdefault("acp_type", acp_type)
+    return Attachment(name=name, path=path, mime_type=mime_type, data_base64=data_base64, metadata=metadata)
+
+
+def _attachment_dedupe_key(attachment: Attachment) -> str:
+    if attachment.path:
+        return f"path:{attachment.path}"
+    if attachment.data_base64:
+        return f"data:{attachment.data_base64[:64]}"
+    return f"name:{attachment.name}"
+
+
+def _attachment_name_from_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    normalized = path.split("?", 1)[0].replace("\\", "/").rstrip("/")
+    name = normalized.rsplit("/", 1)[-1]
+    return name or None
 
 
 def _normalize_structured_json_result(
