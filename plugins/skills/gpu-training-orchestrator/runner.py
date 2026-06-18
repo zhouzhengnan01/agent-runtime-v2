@@ -35,12 +35,6 @@ KEY_WEIGHT_NAMES = {"best.pt", "last.pt"}
 MAX_BATCH_VISUALS = 8
 BATCH_VISUAL_RE = re.compile(r"^(?:train_batch|val_batch|predictions).*\.(?:png|jpg|jpeg)$", re.IGNORECASE)
 ULTRALYTICS_FONT_NAMES = ("Arial.ttf", "Arial.Unicode.ttf")
-ULTRALYTICS_FONT_CANDIDATES = [
-    Path(os.environ["WINDIR"]) / "Fonts" / "arial.ttf" if os.environ.get("WINDIR") else Path("C:/Windows/Fonts/arial.ttf"),
-    Path(os.environ["WINDIR"]) / "Fonts" / "segoeui.ttf" if os.environ.get("WINDIR") else Path("C:/Windows/Fonts/segoeui.ttf"),
-    Path(os.environ["WINDIR"]) / "Fonts" / "calibri.ttf" if os.environ.get("WINDIR") else Path("C:/Windows/Fonts/calibri.ttf"),
-    Path(os.environ["WINDIR"]) / "Fonts" / "simhei.ttf" if os.environ.get("WINDIR") else Path("C:/Windows/Fonts/simhei.ttf"),
-]
 
 
 def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any) -> dict[str, Any]:
@@ -213,13 +207,31 @@ def _ultralytics_config_dirs(config_dir: Path) -> list[Path]:
 
 
 def _find_local_font_source() -> Path | None:
-    for candidate in ULTRALYTICS_FONT_CANDIDATES:
+    for candidate in _ultralytics_font_candidates():
         try:
             if candidate.is_file() and candidate.stat().st_size > 0:
                 return candidate.resolve()
         except OSError:
             continue
     return None
+
+
+def _ultralytics_font_candidates() -> list[Path]:
+    project_root = Path(__file__).resolve().parents[3]
+    windir = os.environ.get("WINDIR")
+    windows_fonts = Path(windir) / "Fonts" if windir else Path("C:/Windows/Fonts")
+    return [
+        project_root / "Ultralytics" / "Arial.ttf",
+        project_root / "Ultralytics" / "Arial.Unicode.ttf",
+        windows_fonts / "arial.ttf",
+        windows_fonts / "segoeui.ttf",
+        windows_fonts / "calibri.ttf",
+        windows_fonts / "simhei.ttf",
+        Path("/usr/share/fonts/truetype/msttcorefonts/Arial.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+    ]
 
 
 def _run_command_with_live_logs(

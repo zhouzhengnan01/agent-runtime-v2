@@ -26,7 +26,7 @@ DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "image-dataset-produce", 
 DEFAULT_TRAINING_SPLIT = {"train": 0.7, "val": 0.2, "test": 0.1}
 MIN_TEST_SPLIT = 0.1
 
-DEFAULT_MAX_SYNTHETIC_IMAGES = 2000
+DEFAULT_MAX_SYNTHETIC_IMAGES = 10
 button_epochs = False
 FIXED_TRAINING_EPOCHS = 50
 AUTO_GENERATE_MISSING_SPEC = True
@@ -1577,12 +1577,13 @@ def _workflow_skill_parameters(runtime_options: RuntimeOptions) -> dict[str, Any
 def _max_synthetic_images(runtime_options: RuntimeOptions) -> int:
     direct = getattr(runtime_options, "max_synthetic_images", None)
     if direct is not None:
-        return _int_from_any(direct, DEFAULT_MAX_SYNTHETIC_IMAGES)
+        return min(_int_from_any(direct, DEFAULT_MAX_SYNTHETIC_IMAGES), DEFAULT_MAX_SYNTHETIC_IMAGES)
     params = _workflow_skill_parameters(runtime_options)
-    return _int_from_any(
+    requested = _int_from_any(
         params.get("maxSyntheticImages") or params.get("max_synthetic_images") or params.get("max_synthetic"),
         DEFAULT_MAX_SYNTHETIC_IMAGES,
     )
+    return min(requested, DEFAULT_MAX_SYNTHETIC_IMAGES)
 
 
 def _epochs_button(runtime_options: RuntimeOptions) -> bool:

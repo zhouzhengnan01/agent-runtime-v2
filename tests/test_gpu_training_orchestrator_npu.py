@@ -121,6 +121,24 @@ def test_cpu_is_used_when_no_accelerator_is_available() -> None:
     assert module._normalize_device_for_runtime("0", has_npu=False, has_cuda=False) == "cpu"
 
 
+def test_runner_copies_project_ultralytics_font_for_offline_training(tmp_path: Path, monkeypatch) -> None:
+    module = _load_runner_module()
+    fake_runner = tmp_path / "plugins" / "skills" / "gpu-training-orchestrator" / "runner.py"
+    fake_runner.parent.mkdir(parents=True)
+    monkeypatch.setattr(module, "__file__", str(fake_runner))
+    source = tmp_path / "Ultralytics" / "Arial.ttf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"project-font")
+    config_dir = tmp_path / "thread" / "workspace" / "ultralytics_config"
+
+    module._prepare_ultralytics_offline_assets(config_dir)
+
+    assert (config_dir / "Arial.ttf").read_bytes() == b"project-font"
+    assert (config_dir / "Arial.Unicode.ttf").read_bytes() == b"project-font"
+    assert (config_dir / "Ultralytics" / "Arial.ttf").read_bytes() == b"project-font"
+    assert (config_dir / "Ultralytics" / "Arial.Unicode.ttf").read_bytes() == b"project-font"
+
+
 def test_uploaded_model_load_failure_does_not_delete_or_fallback(tmp_path: Path) -> None:
     module = _load_prepared_training_module()
     model_path = tmp_path / "custom.pt"

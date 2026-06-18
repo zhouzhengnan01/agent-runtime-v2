@@ -110,7 +110,13 @@ def test_yolo_training_flow_fallback_keeps_test_split_for_small_dataset() -> Non
 def test_yolo_training_flow_reads_max_synthetic_images_from_runtime_options() -> None:
     module = _load_yolo_training_flow_module()
 
-    assert module._max_synthetic_images(RuntimeOptions(max_synthetic_images=12)) == 12
+    assert module._max_synthetic_images(RuntimeOptions(max_synthetic_images=8)) == 8
+    assert (
+        module._max_synthetic_images(
+            RuntimeOptions(max_synthetic_images=module.DEFAULT_MAX_SYNTHETIC_IMAGES + 1)
+        )
+        == module.DEFAULT_MAX_SYNTHETIC_IMAGES
+    )
     assert (
         module._max_synthetic_images(
             RuntimeOptions(
