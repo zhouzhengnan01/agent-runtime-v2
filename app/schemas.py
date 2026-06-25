@@ -32,6 +32,7 @@ class RuntimeOptions(BaseModel):
     model_type: str | None = None
     model_name: str | None = None
     training_model_id: str | None = None
+    deimv2_model_variant: str | None = Field(default=None, alias="deimv2ModelVariant")
     max_synthetic_images: int | None = None
     base_url: str | None = None
     api_key: str | None = None

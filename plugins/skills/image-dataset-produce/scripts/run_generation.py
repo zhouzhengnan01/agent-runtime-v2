@@ -21,7 +21,7 @@ IMAGE_GENERATE_SCRIPT = (
 )
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
-DEFAULT_API_URL = "http://192.168.33.92:8801/v1/flux2/generate"
+DEFAULT_API_URL = "http://218.67.242.10:58801/v1/flux2/generate"
 
 
 def _require_abs_path(path_str: str, field_name: str) -> Path:

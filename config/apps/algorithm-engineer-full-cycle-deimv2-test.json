@@ -1,0 +1,59 @@
+{
+  "name": "algorithm-engineer-full-cycle-deimv2-test",
+  "title": "算法工程师全流程-DEIMv2-test",
+  "description": "面向目标检测训练的 DEIMv2 全流程测试入口，复用自动标注、合成生图、合成图标注和数据划分，将训练后端切换为 DEIMv2-S DINOv3。",
+  "category": "algorithm-training",
+  "icon": "package",
+  "agent_name": "default",
+  "workflow": "yolo_training_flow",
+  "selected_skills": [
+    "data-auto-annotation",
+    "image-dataset-generation",
+    "image-dataset-produce",
+    "deimv2-auto-training"
+  ],
+  "selected_mcp_tools": [],
+  "prompt_examples": [
+    "帮我训练一个 DEIMv2 抽烟检测模型"
+  ],
+  "tags": [
+    "算法工程师",
+    "全流程",
+    "DEIMv2",
+    "DINOv3",
+    "训练",
+    "标注",
+    "合成"
+  ],
+  "model_tags": [
+    "chat",
+    "reasoning",
+    "tool_call",
+    "rerank"
+  ],
+  "models": [
+    {
+      "name": "qwen3.6-plus",
+      "features": [
+        "vision",
+        "reasoning",
+        "chat",
+        "tool_call"
+      ],
+      "priority_features": [
+        "tool_call",
+        "chat",
+        "reasoning"
+      ],
+      "priority": 0,
+      "provider": "openai-compatible",
+      "model": "qwen3.6-plus",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "default_model": "qwen3.6-plus",
+      "tool_choice": "auto",
+      "temperature": 0.4,
+      "max_tokens": 4096,
+      "api_key": "sk-d2509e1763544cb4ae5aa29703dcdc74"
+    }
+  ]
+}

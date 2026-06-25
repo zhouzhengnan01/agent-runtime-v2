@@ -1,0 +1,22 @@
+{
+  "id": "deimv2-auto-training",
+  "name": "deimv2-auto-training",
+  "version": "0.1.0",
+  "description": "Run DEIMv2-S DINOv3 object detection training from a prepared COCO dataset.",
+  "runner": "runner.py",
+  "spec_builder": "spec_builder.py",
+  "skills": [
+    "SKILL.md"
+  ],
+  "workflow_capabilities": [
+    "training",
+    "deimv2_training"
+  ],
+  "metadata": {
+    "workflow_capabilities": [
+      "training",
+      "deimv2_training"
+    ],
+    "training_backend": "deimv2"
+  }
+}

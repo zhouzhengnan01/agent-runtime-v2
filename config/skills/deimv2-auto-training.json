@@ -1,0 +1,45 @@
+{
+  "name": "deimv2-auto-training",
+  "description": "Train a DEIMv2-S DINOv3 detector from prepared COCO data, selecting CUDA GPU, then Ascend NPU, then CPU.",
+  "output_kind": "json",
+  "generation": true,
+  "routing": {
+    "summary": "Use for DEIMv2/DEIMv2-S/DINOv3 object detection training after data preparation.",
+    "keywords": [
+      "DEIMv2",
+      "DEIM",
+      "DINOv3",
+      "deimv2-auto-training",
+      "目标检测训练"
+    ],
+    "examples": [
+      "使用 DEIMv2-S 替代 YOLO 训练目标检测模型",
+      "复用自动标注和合成图片，只把训练后端换成 DEIMv2"
+    ]
+  },
+  "quality_template": [
+    "prepared_coco",
+    "real_only_val_test",
+    "model_generated_deimv2_yaml",
+    "hardware_priority",
+    "checkpoint_artifacts"
+  ],
+  "input_schema": {
+    "type": "object",
+    "additionalProperties": true
+  },
+  "output_schema": {
+    "type": "object",
+    "additionalProperties": true
+  },
+  "sandbox": {
+    "enabled": false,
+    "profile": null,
+    "request_schema_version": "skill-run.v1",
+    "fallback_to_local": true
+  },
+  "model_tags": [
+    "chat",
+    "reasoning"
+  ]
+}

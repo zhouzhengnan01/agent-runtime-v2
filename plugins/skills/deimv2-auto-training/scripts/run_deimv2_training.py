@@ -1,0 +1,607 @@
+from __future__ import annotations
+
+import argparse
+import ast
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import yaml
+from pathlib import Path
+from typing import Any
+
+
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = SKILL_ROOT.parents[2]
+PROJECT_MODELS_ROOT = PROJECT_ROOT / "models"
+VENDOR_DEIMV2_ROOT = SKILL_ROOT / "vendor" / "deimv2"
+DEFAULT_MODEL_VARIANT = "deimv2-dinov3-s"
+DEFAULT_BACKBONE_CHECKPOINT = Path("ckpts/vitt_distill.pt")
+MODEL_VARIANTS = {
+    "deimv2-dinov3-s": {
+        "template_config": Path("configs/deimv2/deimv2_dinov3_s_coco.yml"),
+        "tuning_checkpoint": Path("ckpts/deimv2_dinov3_s_coco.pth"),
+    },
+    "deimv2-dinov3-m": {
+        "template_config": Path("configs/deimv2/deimv2_dinov3_m_coco.yml"),
+        "tuning_checkpoint": Path("ckpts/deimv2_dinov3_m_coco.pth"),
+    },
+    "deimv2-dinov3-l": {
+        "template_config": Path("configs/deimv2/deimv2_dinov3_l_coco.yml"),
+        "tuning_checkpoint": Path("ckpts/deimv2_dinov3_l_coco.pth"),
+    },
+    "deimv2-dinov3-x": {
+        "template_config": Path("configs/deimv2/deimv2_dinov3_x_coco.yml"),
+        "tuning_checkpoint": Path("ckpts/deimv2_dinov3_x_coco.pth"),
+    },
+}
+
+
+def normalize_model_variant(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return DEFAULT_MODEL_VARIANT
+    normalized = raw.replace("_", "-").replace(" ", "")
+    normalized = re.sub(r"-coco$", "", normalized)
+    if normalized in {"s", "m", "l", "x"}:
+        return f"deimv2-dinov3-{normalized}"
+    if normalized in {"dinov3-s", "dinov3-m", "dinov3-l", "dinov3-x"}:
+        return f"deimv2-{normalized}"
+    return normalized if normalized in MODEL_VARIANTS else DEFAULT_MODEL_VARIANT
+
+
+def model_spec(training: dict[str, Any]) -> dict[str, Path]:
+    return MODEL_VARIANTS[normalize_model_variant(training.get("model_variant"))]
+
+
+def load_spec(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Input spec is not an object: {path}")
+    return payload
+
+
+def resolve_deimv2_root(spec: dict[str, Any]) -> Path:
+    candidates = [
+        os.environ.get("DEIMV2_ROOT", ""),
+        str(spec.get("deimv2_root") or ""),
+        str(VENDOR_DEIMV2_ROOT),
+    ]
+    for raw in candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser().resolve()
+        if (path / "train.py").is_file() and (path / "engine").is_dir():
+            return path
+    raise FileNotFoundError("DEIMv2 root not found. Set DEIMV2_ROOT or bundle vendor/deimv2.")
+
+
+def python_prefix(training: dict[str, Any]) -> list[str]:
+    explicit = str(training.get("python") or "").strip()
+    if explicit:
+        return [explicit]
+    conda_env = str(training.get("conda_env") or training.get("conda_env_name") or "").strip()
+    if conda_env and os.environ.get("CONDA_DEFAULT_ENV") != conda_env:
+        return [str(training.get("conda_exe") or "conda"), "run", "--no-capture-output", "-n", conda_env, "python"]
+    return [sys.executable]
+
+
+def detect_target_hardware(prefix: list[str]) -> dict[str, Any]:
+    cmd = prefix + [str(SKILL_ROOT / "scripts" / "detect_hardware.py")]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise RuntimeError(f"Hardware detection failed:\n{proc.stdout}\n{proc.stderr}")
+    start = proc.stdout.find("{")
+    if start < 0:
+        raise RuntimeError(f"Hardware detector returned no JSON: {proc.stdout}")
+    payload, _ = json.JSONDecoder().raw_decode(proc.stdout[start:])
+    return payload
+
+
+def choose_template(deim_root: Path, training: dict[str, Any]) -> Path:
+    requested = str(training.get("template_config") or "").strip()
+    path = Path(requested) if requested else model_spec(training)["template_config"]
+    path = path if path.is_absolute() else deim_root / path
+    if not path.is_file():
+        raise FileNotFoundError(f"DEIMv2 template not found: {path}")
+    if "dinov3" not in path.name.lower():
+        raise ValueError(f"Only DEIMv2 DINOv3 templates are allowed here: {path}")
+    return path.resolve()
+
+
+def resolve_checkpoint(
+    deim_root: Path,
+    value: str,
+    default: Path | None = None,
+    *,
+    env_name: str = "",
+) -> Path | None:
+    candidates: list[str] = []
+    env_value = os.environ.get(env_name, "").strip() if env_name else ""
+    if env_value:
+        candidates.append(env_value)
+    requested = Path(value).expanduser() if value else None
+    if requested is not None and requested.is_absolute():
+        candidates.append(value)
+    elif requested is not None:
+        candidates.extend(
+            [
+                str(PROJECT_ROOT / requested),
+                str(PROJECT_MODELS_ROOT / requested.name),
+            ]
+        )
+        if requested.parts and requested.parts[0].lower() != "models":
+            candidates.append(value)
+    if default is not None:
+        project_model_candidates = [
+            PROJECT_MODELS_ROOT / "deimv2" / default.name,
+            PROJECT_MODELS_ROOT / default.name,
+        ]
+        candidates.extend([
+            *(str(path) for path in project_model_candidates),
+            *([] if requested is None or requested.is_absolute() or value in candidates else [value]),
+            str(deim_root / default),
+            str(VENDOR_DEIMV2_ROOT / default),
+            str(Path("/models/deimv2") / default.name),
+        ])
+    for raw in candidates:
+        path = Path(raw).expanduser()
+        path = path if path.is_absolute() else deim_root / path
+        if path.is_file():
+            return path.resolve()
+    if value or default == DEFAULT_BACKBONE_CHECKPOINT:
+        raise FileNotFoundError(f"DEIMv2 checkpoint not found. Tried: {candidates}")
+    return None
+
+
+def resolve_tuning_checkpoint(deim_root: Path, training: dict[str, Any]) -> Path | None:
+    explicit = str(training.get("tuning_checkpoint") or "").strip()
+    if explicit or os.environ.get("DEIMV2_TUNING_CHECKPOINT"):
+        return resolve_checkpoint(deim_root, explicit, env_name="DEIMV2_TUNING_CHECKPOINT")
+    default_tuning_checkpoint = model_spec(training)["tuning_checkpoint"]
+    for raw in (
+        PROJECT_MODELS_ROOT / "deimv2" / default_tuning_checkpoint.name,
+        PROJECT_MODELS_ROOT / default_tuning_checkpoint.name,
+        deim_root / default_tuning_checkpoint,
+        VENDOR_DEIMV2_ROOT / default_tuning_checkpoint,
+        Path("/models/deimv2") / default_tuning_checkpoint.name,
+    ):
+        if raw.is_file():
+            return raw.resolve()
+    return None
+
+
+def merge_yaml_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    for key, value in override.items():
+        if key == "__include__":
+            continue
+        if isinstance(base.get(key), dict) and isinstance(value, dict):
+            merge_yaml_dict(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def load_yaml_payload(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        payload = yaml.load(handle, Loader=yaml.Loader) or {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def load_resolved_yaml(path: Path) -> dict[str, Any]:
+    payload = load_yaml_payload(path)
+    resolved: dict[str, Any] = {}
+    for include_path in resolve_yaml_include_paths(path, payload):
+        if include_path.is_file():
+            merge_yaml_dict(resolved, load_resolved_yaml(include_path.resolve()))
+    merge_yaml_dict(resolved, payload)
+    return resolved
+
+
+def resolve_yaml_include_paths(path: Path, payload: dict[str, Any] | None = None) -> list[Path]:
+    payload = payload if payload is not None else load_yaml_payload(path)
+    includes = payload.get("__include__") or []
+    if isinstance(includes, (str, Path)):
+        includes = [includes]
+    result: list[Path] = []
+    for raw_include in includes:
+        include_path = Path(str(raw_include)).expanduser()
+        if not include_path.is_absolute():
+            include_path = path.parent / include_path
+        result.append(include_path.resolve())
+    return result
+
+
+def visible_include_paths(train_yml: Path) -> list[str]:
+    payload = load_yaml_payload(train_yml)
+    visible: list[Path] = []
+    for include_path in resolve_yaml_include_paths(train_yml, payload):
+        include_payload = load_yaml_payload(include_path) if include_path.is_file() else {}
+        child_includes = resolve_yaml_include_paths(include_path, include_payload)
+        if child_includes:
+            visible.extend(child_includes)
+        else:
+            visible.append(include_path)
+    unique: list[str] = []
+    seen: set[str] = set()
+    for path in visible:
+        rel = os.path.relpath(path, train_yml.parent).replace("\\", "/")
+        if rel not in seen:
+            seen.add(rel)
+            unique.append(rel)
+    return unique
+
+
+def _float_training_value(training: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        value = training.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def apply_model_training_overrides(resolved: dict[str, Any], training: dict[str, Any]) -> None:
+    optimizer_override = training.get("optimizer") if isinstance(training.get("optimizer"), dict) else {}
+    if optimizer_override:
+        optimizer = resolved.get("optimizer") if isinstance(resolved.get("optimizer"), dict) else {}
+        merge_yaml_dict(optimizer, optimizer_override)
+        resolved["optimizer"] = optimizer
+    lr = _float_training_value(training, "lr", "learning_rate")
+    if lr is not None:
+        resolved.setdefault("optimizer", {})["lr"] = lr
+    weight_decay = _float_training_value(training, "weight_decay")
+    if weight_decay is not None:
+        resolved.setdefault("optimizer", {})["weight_decay"] = weight_decay
+    betas = training.get("betas")
+    if isinstance(betas, list) and betas:
+        resolved.setdefault("optimizer", {})["betas"] = betas
+
+
+def write_resolved_train_yaml(train_yml: Path, training: dict[str, Any]) -> None:
+    include_paths = visible_include_paths(train_yml.resolve())
+    resolved = load_resolved_yaml(train_yml.resolve())
+    apply_model_training_overrides(resolved, training)
+    output: dict[str, Any] = {"__include__": include_paths}
+    output.update(resolved)
+    train_yml.write_text(yaml.dump(output, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def ypath(path: Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def read_categories(dataset_root: Path) -> list[dict[str, Any]]:
+    train_json = dataset_root / "annotations" / "instances_train.json"
+    payload = json.loads(train_json.read_text(encoding="utf-8-sig"))
+    categories = payload.get("categories") if isinstance(payload, dict) else []
+    if not isinstance(categories, list) or not categories:
+        raise ValueError(f"No categories in {train_json}")
+    return [cat for cat in categories if isinstance(cat, dict)]
+
+
+def write_runtime_configs(
+    *,
+    configs_dir: Path,
+    template: Path,
+    dataset_root: Path,
+    output_dir: Path,
+    training: dict[str, Any],
+    hardware: str,
+    epochs: int,
+    backbone_checkpoint: Path,
+    stage: str,
+) -> Path:
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    categories = read_categories(dataset_root)
+    class_names = [str(cat.get("name") or "") for cat in categories]
+    img_size = int(training.get("img_size") or training.get("imgsz") or (640 if hardware == "cuda" else 320))
+    default_batch = 8 if hardware == "cuda" else (4 if hardware == "npu" else 1)
+    batch = max(1, int(training.get("batch") or default_batch))
+    workers = max(0, int(training.get("workers") if training.get("workers") is not None else (4 if hardware == "cuda" else 0)))
+    flat_epoch = int(training.get("flat_epoch") or max(1, epochs // 2))
+    no_aug_epoch = int(training.get("no_aug_epoch") if training.get("no_aug_epoch") is not None else 0)
+    policy_end = max(1, epochs)
+    warmup_iter = int(training.get("warmup_iter") or max(1, min(100, epochs)))
+    checkpoint_freq = int(training.get("checkpoint_freq") or max(1, epochs // 2))
+    dataset_yml = configs_dir / "dataset.yml"
+    train_yml = configs_dir / f"{stage}.yml"
+    annotations = dataset_root / "annotations"
+    dataset_yml.write_text(
+        "\n".join(
+            [
+                f"num_classes: {len(categories)}",
+                "remap_mscoco_category: False",
+                "train_dataloader:",
+                f"  total_batch_size: {batch}",
+                f"  num_workers: {workers}",
+                "  drop_last: False",
+                "  dataset:",
+                f"    img_folder: '{ypath(dataset_root / 'images' / 'train')}'",
+                f"    ann_file: '{ypath(annotations / 'instances_train.json')}'",
+                "val_dataloader:",
+                "  total_batch_size: 1",
+                f"  num_workers: {workers}",
+                "  dataset:",
+                f"    img_folder: '{ypath(dataset_root / 'images' / 'val')}'",
+                f"    ann_file: '{ypath(annotations / 'instances_val.json')}'",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    rel_template = os.path.relpath(template, configs_dir).replace("\\", "/")
+    rel_dataset = os.path.relpath(dataset_yml, configs_dir).replace("\\", "/")
+    train_yml.write_text(
+        f"""__include__: ['{rel_template}', '{rel_dataset}']
+
+output_dir: '{ypath(output_dir)}'
+epoches: {epochs}
+flat_epoch: {flat_epoch}
+no_aug_epoch: {no_aug_epoch}
+warmup_iter: {warmup_iter}
+checkpoint_freq: {checkpoint_freq}
+use_ema: False
+eval_spatial_size: [{img_size}, {img_size}]
+class_names: {json.dumps(class_names, ensure_ascii=False)}
+
+DINOv3STAs:
+  weights_path: '{ypath(backbone_checkpoint)}'
+
+PostProcessor:
+  num_top_queries: {int(training.get("num_top_queries") or 100)}
+
+train_dataloader:
+  dataset:
+    transforms:
+      ops:
+        - {{type: RandomHorizontalFlip}}
+        - {{type: Resize, size: [{img_size}, {img_size}]}}
+        - {{type: SanitizeBoundingBoxes, min_size: 1}}
+        - {{type: ConvertPILImage, dtype: 'float32', scale: True}}
+        - {{type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}}
+        - {{type: ConvertBoxes, fmt: 'cxcywh', normalize: True}}
+      policy:
+        epoch: [1, {flat_epoch}, {policy_end}]
+  collate_fn:
+    base_size: {img_size}
+    base_size_repeat: 1
+    stop_epoch: {epochs}
+    mixup_prob: 0.0
+    mixup_epochs: [1, {flat_epoch}]
+    copyblend_epochs: [1, 0]
+    ema_restart_decay: 0.9999
+
+val_dataloader:
+  dataset:
+    transforms:
+      ops:
+        - {{type: Resize, size: [{img_size}, {img_size}]}}
+        - {{type: ConvertPILImage, dtype: 'float32', scale: True}}
+        - {{type: Normalize, mean: [0.485, 0.456, 0.406], std: [0.229, 0.224, 0.225]}}
+""",
+        encoding="utf-8",
+    )
+    write_resolved_train_yaml(train_yml, training)
+    return train_yml
+
+
+def training_command(prefix: list[str], deim_root: Path, config: Path, hardware: str, tuning_checkpoint: Path | None) -> list[str]:
+    train_py = deim_root / "train.py"
+    if hardware == "npu":
+        cmd = prefix + [str(SKILL_ROOT / "scripts" / "npu_train_launcher.py"), "--train-py", str(train_py), "-c", str(config), "-d", "npu:0", "--seed", "0"]
+    else:
+        cmd = prefix + [str(train_py), "-c", str(config), "--seed", "0"]
+        if hardware == "cuda":
+            cmd.append("--use-amp")
+        else:
+            cmd.extend(["-d", "cpu"])
+    if tuning_checkpoint:
+        cmd.extend(["-t", str(tuning_checkpoint)])
+    return cmd
+
+
+def choose_hardware(training: dict[str, Any], detected: dict[str, Any]) -> str:
+    selected = str(detected.get("selected") or "cpu")
+    requested = str(training.get("device") or "auto").strip().lower()
+    aliases = {"gpu": "cuda", "cuda": "cuda", "0": "cuda", "npu": "npu", "cpu": "cpu", "auto": "auto", "": "auto"}
+    wanted = aliases.get(requested, requested)
+    if wanted in {"", "auto"}:
+        return selected
+    if wanted == "cuda" and not detected.get("cuda_available"):
+        raise RuntimeError("CUDA was explicitly requested but is unavailable")
+    if wanted == "npu" and not detected.get("npu_available"):
+        raise RuntimeError("NPU was explicitly requested but is unavailable")
+    return wanted
+
+
+def find_checkpoint(run_dir: Path) -> str:
+    preferred_names = ("best_stg2.pth", "best_stg1.pth", "last.pth")
+    for name in preferred_names:
+        matches = sorted(run_dir.rglob(name))
+        if matches:
+            return str(matches[-1])
+    matches = sorted(run_dir.rglob("*.pth"))
+    return str(matches[-1]) if matches else ""
+
+
+def _parse_float(value: str) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_deimv2_log_metrics(log_path: Path) -> dict[str, Any]:
+    if not log_path.is_file():
+        return {}
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    ap_pattern = re.compile(
+        r"Average Precision\s+\(AP\)\s+@\[\s*IoU=([0-9.:]+)\s*\|\s*area=\s*all\s*\|\s*maxDets=\s*(\d+)\s*\]\s*=\s*([-+0-9.]+)"
+    )
+    ar_pattern = re.compile(
+        r"Average Recall\s+\(AR\)\s+@\[\s*IoU=([0-9.:]+)\s*\|\s*area=\s*all\s*\|\s*maxDets=\s*(\d+)\s*\]\s*=\s*([-+0-9.]+)"
+    )
+    metrics: dict[str, Any] = {}
+    metric_lines: list[str] = []
+    for line in text.splitlines():
+        if "Average Precision" in line or "Average Recall" in line or "best_stat:" in line:
+            metric_lines.append(line.strip())
+        ap_match = ap_pattern.search(line)
+        if ap_match:
+            iou, max_dets, raw_value = ap_match.groups()
+            value = _parse_float(raw_value)
+            if value is None:
+                continue
+            if iou == "0.50:0.95" and max_dets == "100":
+                metrics["mAP50_95"] = value
+            elif iou == "0.50" and max_dets == "100":
+                metrics["mAP50"] = value
+            elif iou == "0.75" and max_dets == "100":
+                metrics["mAP75"] = value
+            continue
+        ar_match = ar_pattern.search(line)
+        if ar_match:
+            iou, max_dets, raw_value = ar_match.groups()
+            value = _parse_float(raw_value)
+            if value is None or iou != "0.50:0.95":
+                continue
+            if max_dets == "1":
+                metrics["AR1"] = value
+            elif max_dets == "10":
+                metrics["AR10"] = value
+            elif max_dets == "100":
+                metrics["AR100"] = value
+            continue
+        if "best_stat:" in line:
+            raw_best = line.split("best_stat:", 1)[1].strip()
+            try:
+                best_stat = ast.literal_eval(raw_best)
+            except (SyntaxError, ValueError):
+                best_stat = {}
+            if isinstance(best_stat, dict):
+                metrics["best_epoch"] = best_stat.get("epoch")
+                best_bbox = best_stat.get("coco_eval_bbox")
+                if best_bbox is not None:
+                    metrics["best_coco_eval_bbox"] = best_bbox
+                    metrics["fitness"] = best_bbox
+    if not metrics:
+        return {}
+    results_dict: dict[str, Any] = {}
+    if "mAP50_95" in metrics:
+        results_dict["metrics/mAP50-95(B)"] = metrics["mAP50_95"]
+    if "mAP50" in metrics:
+        results_dict["metrics/mAP50(B)"] = metrics["mAP50"]
+    if "AR100" in metrics:
+        results_dict["metrics/recall(B)"] = metrics["AR100"]
+    if "fitness" in metrics:
+        results_dict["fitness"] = metrics["fitness"]
+    return {
+        "metrics": metrics,
+        "results_dict": results_dict,
+        "eval_results": "\n".join(metric_lines[-16:]),
+    }
+
+
+def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+    deim_root = resolve_deimv2_root(spec)
+    dataset_root = Path(str(spec["dataset_root"])).resolve()
+    work_dir = Path(str(spec["work_dir"])).resolve()
+    training = spec.get("training") if isinstance(spec.get("training"), dict) else {}
+    prefix = python_prefix(training)
+    detected = detect_target_hardware(prefix)
+    hardware = choose_hardware(training, detected)
+    template = choose_template(deim_root, training)
+    backbone = resolve_checkpoint(
+        deim_root,
+        str(training.get("backbone_checkpoint") or ""),
+        DEFAULT_BACKBONE_CHECKPOINT,
+        env_name="DEIMV2_BACKBONE_CHECKPOINT",
+    )
+    assert backbone is not None
+    tuning = resolve_tuning_checkpoint(deim_root, training)
+    epochs = int(training.get("epochs") or 10)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    config_hash = hashlib.sha1(str(work_dir).encode("utf-8")).hexdigest()[:12]
+    configs_dir = work_dir / "configs" if work_dir.drive == deim_root.drive else deim_root / "outputs" / "codex-generated-configs" / config_hash
+    run_dir = work_dir / "runs"
+    logs_dir = work_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    stages: list[dict[str, Any]] = []
+
+    for stage, count in [("train", epochs)]:
+        output_dir = run_dir / stage
+        config = write_runtime_configs(
+            configs_dir=configs_dir,
+            template=template,
+            dataset_root=dataset_root,
+            output_dir=output_dir,
+            training=training,
+            hardware=hardware,
+            epochs=count,
+            backbone_checkpoint=backbone,
+            stage=stage,
+        )
+        cmd = training_command(prefix, deim_root, config, hardware, tuning)
+        stage_result: dict[str, Any] = {
+            "stage": stage,
+            "epochs": count,
+            "config": str(config),
+            "output_dir": str(output_dir),
+            "command": cmd,
+        }
+        stages.append(stage_result)
+        if dry_run:
+            stage_result["returncode"] = 0
+            continue
+        log_path = logs_dir / f"{stage}.log"
+        with log_path.open("w", encoding="utf-8") as log:
+            proc = subprocess.run(cmd, cwd=str(deim_root), stdout=log, stderr=subprocess.STDOUT, text=True)
+        stage_result["returncode"] = proc.returncode
+        stage_result["log"] = str(log_path)
+        if proc.returncode != 0:
+            raise RuntimeError(f"DEIMv2 {stage} failed. See {log_path}")
+
+    best_checkpoint = find_checkpoint(run_dir)
+    metric_payload = parse_deimv2_log_metrics(logs_dir / "train.log")
+    summary = {
+        "status": "completed",
+        "training_backend": "deimv2",
+        "model_variant": normalize_model_variant(training.get("model_variant")),
+        "deimv2_root": str(deim_root),
+        "dataset_root": str(dataset_root),
+        "hardware": detected,
+        "selected": hardware,
+        "template": str(template),
+        "backbone_checkpoint": str(backbone),
+        "tuning_checkpoint": str(tuning) if tuning else "",
+        "config": str(configs_dir / "train.yml"),
+        "dataset_config": str(configs_dir / "dataset.yml"),
+        "run_dir": str(run_dir),
+        "best_checkpoint": best_checkpoint,
+        "last_checkpoint": str((run_dir / "train" / "last.pth")) if (run_dir / "train" / "last.pth").is_file() else "",
+        "stages": stages,
+        "dry_run": dry_run,
+    }
+    summary.update(metric_payload)
+    (work_dir / "training_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    (work_dir / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate DEIMv2 runtime YAML and train.")
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    print(json.dumps(run_training(load_spec(Path(args.input).resolve()), dry_run=args.dry_run), ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

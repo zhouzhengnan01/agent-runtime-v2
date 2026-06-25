@@ -1,0 +1,84 @@
+__include__: [
+  '../dataset/cpu-dataset.yml',
+  '../runtime.yml',
+  '../base/dataloader.yml',
+  '../base/optimizer.yml',
+  '../base/deimv2.yml',
+]
+
+output_dir: ./outputs/deimv2_hgnetv2_atto_cpu_test
+
+DEIM:
+  backbone: HGNetv2
+
+HGNetv2:
+  name: B0
+  return_idx: [1, 2, 3]
+  freeze_at: -1
+  freeze_norm: false
+  use_lab: true
+  pretrained: false
+
+HybridEncoder:
+  in_channels: [256, 512, 1024]
+  hidden_dim: 128
+  dim_feedforward: 512
+  expansion: 0.34
+  depth_mult: 0.34
+
+DEIMTransformer:
+  feat_channels: [128, 128, 128]
+  hidden_dim: 128
+  dim_feedforward: 512
+  num_layers: 3
+  num_queries: 100
+  eval_idx: -1
+
+PostProcessor:
+  num_top_queries: 100
+
+eval_spatial_size: [320, 320]
+
+epoches: 10
+flat_epoch: 5
+no_aug_epoch: 2
+
+train_dataloader:
+  total_batch_size: 1
+  num_workers: 0
+  drop_last: False
+  dataset:
+    transforms:
+      ops:
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [320, 320]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        epoch: [1, 5, 10]
+  collate_fn:
+    base_size: 320
+    base_size_repeat: 1
+    stop_epoch: 10
+    mixup_prob: 0.0
+    mixup_epochs: [1, 5]
+    copyblend_epochs: [1, 0]
+    ema_restart_decay: 0.9999
+
+val_dataloader:
+  total_batch_size: 1
+  num_workers: 0
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [320, 320]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+
+use_ema: False
+
+DEIMCriterion:
+  matcher:
+    change_matcher: True
+    iou_order_alpha: 4.0
+    matcher_change_epoch: 7

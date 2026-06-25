@@ -9,7 +9,7 @@ from typing import Any
 import requests
 
 
-DEFAULT_API_URL = "http://192.168.33.92:8801/v1/flux2/generate"
+DEFAULT_API_URL = "http://218.67.242.10:58801/v1/flux2/generate"
 DEFAULT_MODEL = "flux2"
 DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 640

@@ -23,12 +23,35 @@ WORKFLOW_OUTPUT_DIR = "yolo_training_flow"
 PIPELINE_WORK_DIR = "pipeline_work"
 TRAINING_MODEL_REGISTRY = "training_models.json"
 DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "image-dataset-produce", "data-auto-annotation", "gpu-training-orchestrator"]
+DEIMV2_SELECTED_SKILLS = ["image-dataset-generation", "image-dataset-produce", "data-auto-annotation", "deimv2-auto-training"]
+YOLO_TRAINING_SKILL = "gpu-training-orchestrator"
+DEIMV2_TRAINING_SKILL = "deimv2-auto-training"
+DEIMV2_DEFAULT_MODEL_VARIANT = "deimv2-dinov3-s"
+DEIMV2_BACKBONE_CHECKPOINT = "models/deimv2/vitt_distill.pt"
+DEIMV2_MODEL_VARIANTS = {
+    "deimv2-dinov3-s": {
+        "template_config": "configs/deimv2/deimv2_dinov3_s_coco.yml",
+        "tuning_checkpoint": "models/deimv2/deimv2_dinov3_s_coco.pth",
+    },
+    "deimv2-dinov3-m": {
+        "template_config": "configs/deimv2/deimv2_dinov3_m_coco.yml",
+        "tuning_checkpoint": "models/deimv2/deimv2_dinov3_m_coco.pth",
+    },
+    "deimv2-dinov3-l": {
+        "template_config": "configs/deimv2/deimv2_dinov3_l_coco.yml",
+        "tuning_checkpoint": "models/deimv2/deimv2_dinov3_l_coco.pth",
+    },
+    "deimv2-dinov3-x": {
+        "template_config": "configs/deimv2/deimv2_dinov3_x_coco.yml",
+        "tuning_checkpoint": "models/deimv2/deimv2_dinov3_x_coco.pth",
+    },
+}
 DEFAULT_TRAINING_SPLIT = {"train": 0.7, "val": 0.2, "test": 0.1}
 MIN_TEST_SPLIT = 0.1
 
 DEFAULT_MAX_SYNTHETIC_IMAGES = 10
-button_epochs = False
-FIXED_TRAINING_EPOCHS = 50
+button_epochs = True
+FIXED_TRAINING_EPOCHS = 10
 AUTO_GENERATE_MISSING_SPEC = True
 
 
@@ -57,10 +80,13 @@ class YoloTrainingWorkflow:
 
         user_text = _last_user_text(messages)
         selected_skills = _selected_skills(runtime_options)
+        training_backend = _selected_training_backend(selected_skills, runtime_options, workflow)
         if _has_runtime_selected_skills(runtime_options):
             _save_selected_skills(paths, selected_skills)
         else:
             selected_skills = _load_selected_skills(paths) or selected_skills
+            training_backend = _selected_training_backend(selected_skills, runtime_options, workflow)
+        deimv2_model_selection = _select_deimv2_model_variant(runtime_options, recorder) if training_backend == "deimv2" else {}
         generation_enabled = _capability_enabled(selected_skills, "image_generation")
         training_enabled = _capability_enabled(selected_skills, "training")
         waiting_prompt = _is_waiting_prompt(paths)
@@ -70,6 +96,10 @@ class YoloTrainingWorkflow:
         existing_composite_image1 = _load_composite_image1_path(paths)
         existing_composite_image2 = _load_composite_image2_path(paths)
         current_objective = _training_objective_from_user_text(user_text)
+        if current_objective and workflow_completed and not waiting_prompt:
+            _reset_completed_request_state_for_new_training(paths)
+            workflow_completed = False
+            waiting_prompt = False
         if current_objective:
             _save_training_objective(paths, current_objective)
         stored_objective = _load_training_objective(paths)
@@ -161,12 +191,14 @@ class YoloTrainingWorkflow:
         if model_managed_spec:
             generation_enabled = True
             training_enabled = True
-            selected_skills = _ensure_full_cycle_skills(selected_skills)
-            request_spec = _generate_model_managed_yolo_training_intent_spec(
+            selected_skills = _ensure_full_cycle_skills(selected_skills, training_backend)
+            request_spec = _generate_model_managed_training_intent_spec(
                 user_text=spec_user_text,
                 agent_config=agent_config,
                 runtime_options=runtime_options,
                 recorder=recorder,
+                training_backend=training_backend,
+                deimv2_model_selection=deimv2_model_selection,
             )
             request_spec = _ensure_intent_labels(request_spec, spec_user_text)
             if _spec_string(request_spec, "generation_prompt"):
@@ -215,6 +247,8 @@ class YoloTrainingWorkflow:
             else:
                 labels = _load_annotation_labels(paths)
             training_cfg = _spec_training_config(request_spec)
+            if training_backend == "deimv2":
+                _apply_deimv2_model_selection_to_training_config(training_cfg, deimv2_model_selection)
             training_cfg_available = bool(training_cfg)
             if training_cfg:
                 _save_training_config(paths, training_cfg)
@@ -328,6 +362,7 @@ class YoloTrainingWorkflow:
 
         _reset_generated_dir(workflow_output_root / PIPELINE_WORK_DIR)
         _reset_generated_dir(workflow_output_root / "training_run")
+        _reset_generated_dir(workflow_output_root / "deimv2_training_run")
         _set_waiting_prompt(paths, False)
         recorder.emit("spec.started", {"selected_skills": selected_skills, "attachment_count": len(attachments)})
 
@@ -335,16 +370,26 @@ class YoloTrainingWorkflow:
         dataset_root = _unpack_dataset_archive(dataset_pkg, unpack_root, paths.root)
         dataset_facts = _analyze_uploaded_dataset(dataset_root, workflow_output_root / PIPELINE_WORK_DIR, labels, recorder)
         if model_managed_spec:
-            request_spec = _generate_dataset_aware_yolo_training_request_spec(
+            request_spec = _generate_dataset_aware_training_request_spec(
                 base_spec=request_spec,
                 dataset_facts=dataset_facts,
                 user_text=spec_user_text,
                 agent_config=agent_config,
                 runtime_options=runtime_options,
                 recorder=recorder,
+                training_backend=training_backend,
+                deimv2_model_selection=deimv2_model_selection,
             )
-            request_spec = _fallback_model_managed_yolo_training_request_spec(request_spec, spec_user_text, dataset_facts)
+            request_spec = _fallback_model_managed_training_request_spec(
+                request_spec,
+                spec_user_text,
+                dataset_facts,
+                training_backend=training_backend,
+                deimv2_model_selection=deimv2_model_selection,
+            )
             request_spec = _ensure_intent_labels(request_spec, spec_user_text)
+            if training_backend == "deimv2":
+                _apply_deimv2_model_selection_to_spec(request_spec, deimv2_model_selection)
             synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
             if synthetic_generation is not None:
                 generation_enabled = synthetic_generation
@@ -352,6 +397,8 @@ class YoloTrainingWorkflow:
             prompt_text = _spec_string(request_spec, "generation_prompt") or prompt_text
             labels = _normalize_detection_labels(_spec_string_list(request_spec, "labels") or labels)
             training_cfg = _spec_training_config(request_spec)
+            if training_backend == "deimv2":
+                _apply_deimv2_model_selection_to_training_config(training_cfg, deimv2_model_selection)
             training_cfg_available = bool(training_cfg)
             task_description = _spec_string(request_spec, "task_description") or task_description
             if prompt_text:
@@ -406,7 +453,8 @@ class YoloTrainingWorkflow:
             _save_training_config(paths, training_cfg)
 
         pipeline_work_dir = str((workflow_output_root / PIPELINE_WORK_DIR).resolve())
-        project_dir = str((workflow_output_root / "training_run").resolve())
+        project_dir_name = "deimv2_training_run" if training_backend == "deimv2" else "training_run"
+        project_dir = str((workflow_output_root / project_dir_name).resolve())
         run_name = "."
         if not task_description:
             task_description = _extract_detection_task_description(user_text, prompt_text, labels)
@@ -496,6 +544,7 @@ class YoloTrainingWorkflow:
             return result, recorder.events
 
         dataset_yaml = _resolve_prepared_dataset_yaml(data_prep_data, Path(data_prep_output_dir))
+        training_skill_name = _training_skill_for_backend(training_backend)
 
         if not training_enabled:
             _set_waiting_prompt(paths, False)
@@ -507,7 +556,7 @@ class YoloTrainingWorkflow:
             pipeline_paths = _read_pipeline_paths(paths)
             summary = _read_data_preparation_summary(paths)
             reply = (
-                "数据处理流程已完成，当前未选择 `gpu-training-orchestrator`，所以不会要求训练参数，也不会启动 YOLO 训练。\n\n"
+                f"数据处理流程已完成，当前未选择 `{training_skill_name}`，所以不会要求训练参数，也不会启动训练。\n\n"
                 f"- prepared_dataset: `{summary.get('prepared_dataset') or data_prep_output_dir}`\n"
                 f"- dataset.yaml: `{summary.get('dataset_yaml') or dataset_yaml}`\n"
                 f"- synthetic_plan: `{pipeline_paths.get('synthetic_plan') or '未生成或未启用生图'}`"
@@ -532,34 +581,73 @@ class YoloTrainingWorkflow:
             recorder.emit("run.completed", {"result": result.model_dump()})
             return result, recorder.events
 
-        training_spec = {
-            "skill_name": "gpu-training-orchestrator",
-            "overrides_text": user_text,
-            "data_yaml": dataset_yaml,
-            "project_dir": project_dir,
-            "run_name": run_name,
-            "training": training_cfg["training"],
-            "runtime": _current_runtime_config(training_cfg.get("runtime", {})),
-            "workflow_context": {
-                "dataset_yaml": dataset_yaml,
+        if training_backend == "deimv2":
+            prep_summary = _read_data_preparation_summary(paths)
+            training_coco = str(prep_summary.get("training_coco") or "")
+            training_root = str(prep_summary.get("training_root") or "")
+            if not training_coco or not training_root:
+                return self._model_spec_failed_result(
+                    recorder,
+                    agent_config.name,
+                    paths.thread_id,
+                    workflow,
+                    "数据准备结果缺少 training_coco 或 training_root，无法启动 DEIMv2 训练。",
+                    phase="deimv2_training_input_missing",
+                    metadata={"data_preparation_summary": prep_summary},
+                )
+            training_spec = {
+                "skill_name": training_skill_name,
+                "overrides_text": user_text,
+                "deimv2_root": "",
+                "dataset": {
+                    "root_dir": training_root,
+                    "coco_json": training_coco,
+                    "class_names": labels,
+                    "split": training_cfg["split"],
+                },
+                "project_dir": project_dir,
+                "training": training_cfg["training"],
+                "runtime": _current_runtime_config(training_cfg.get("runtime", {})),
+                "workflow_context": {
+                    "training_backend": "deimv2",
+                    "dataset_root": training_root,
+                    "coco_json": training_coco,
+                    "project_dir": project_dir,
+                    "run_name": run_name,
+                    "phase": "training",
+                    "deimv2_model_selection": deimv2_model_selection,
+                    "model_generated_spec": _model_generated_spec_payload(request_spec),
+                },
+            }
+        else:
+            training_spec = {
+                "skill_name": training_skill_name,
+                "overrides_text": user_text,
+                "data_yaml": dataset_yaml,
                 "project_dir": project_dir,
                 "run_name": run_name,
-                "phase": "training",
-            },
-        }
+                "training": training_cfg["training"],
+                "runtime": _current_runtime_config(training_cfg.get("runtime", {})),
+                "workflow_context": {
+                    "dataset_yaml": dataset_yaml,
+                    "project_dir": project_dir,
+                    "run_name": run_name,
+                    "phase": "training",
+                },
+            }
 
-        recorder.emit("skill.started", {"skill_name": "gpu-training-orchestrator", "attempt": 0})
-        training_result = self.skill_runner.run("gpu-training-orchestrator", training_spec, paths)
-        recorder.emit("skill.completed", {"skill_name": "gpu-training-orchestrator", "output_count": len(training_result.outputs)})
+        recorder.emit("skill.started", {"skill_name": training_skill_name, "attempt": 0})
+        training_result = self.skill_runner.run(training_skill_name, training_spec, paths)
+        recorder.emit("skill.completed", {"skill_name": training_skill_name, "output_count": len(training_result.outputs)})
 
-        outputs = _filter_training_run_artifacts(training_result.outputs)
+        outputs = _filter_training_run_artifacts(training_result.outputs, training_backend=training_backend)
         for artifact in outputs:
             recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
             recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
 
         pipeline_paths = _read_pipeline_paths(paths)
-        summary = _read_run_summary(paths)
-        best_pt = _find_best_pt(paths)
+        summary = _read_run_summary(paths, training_backend=training_backend)
+        best_pt = _find_best_checkpoint(paths, training_backend=training_backend)
         template_reply = ""
         if isinstance(training_result.data, dict):
             template_reply = str(training_result.data.get("final_reply") or "").strip()
@@ -577,6 +665,7 @@ class YoloTrainingWorkflow:
                 fallback_reply=template_reply,
                 best_pt=best_pt,
                 data_preparation_summary=_read_data_preparation_summary(paths),
+                training_backend=training_backend,
             )
             result = AgentRunResult(
                 agent=agent_config.name,
@@ -584,7 +673,7 @@ class YoloTrainingWorkflow:
                 status="failed",
                 reply=reply,
                 artifacts=outputs,
-                verification=VerificationResult(passed=False, retry_count=0, checks=[], failed_checks=["gpu-training-orchestrator failed"]),
+                verification=VerificationResult(passed=False, retry_count=0, checks=[], failed_checks=[f"{training_skill_name} failed"]),
                 metadata={
                     "workflow": workflow,
                     "phase": "training_failed",
@@ -593,6 +682,7 @@ class YoloTrainingWorkflow:
                     "training_summary": summary,
                     "training_result": training_result.data if isinstance(training_result.data, dict) else {},
                     "best_pt": best_pt,
+                    "best_checkpoint": best_pt,
                     "model_generated_spec": _model_generated_spec_payload(request_spec),
                     "merged_dataset_root": pipeline_paths.get("dataset_root") or str(dataset_root),
                     "merged_coco_json": pipeline_paths.get("coco_json") or "",
@@ -624,7 +714,7 @@ class YoloTrainingWorkflow:
             reply = template_reply or (
                 "训练已完成\n"
                 f"- 保存目录: {summary.get('train_save_dir') or project_dir}\n"
-                f"- best.pt: {best_pt if best_pt else '未生成'}"
+                f"- best checkpoint: {best_pt if best_pt else '未生成'}"
             )
         _set_waiting_prompt(paths, False)
         _set_workflow_completed(paths, True)
@@ -643,6 +733,7 @@ class YoloTrainingWorkflow:
                 "data_preparation_spec": data_prep_spec,
                 "training_summary": summary,
                 "best_pt": best_pt,
+                "best_checkpoint": best_pt,
                 "model_generated_spec": _model_generated_spec_payload(request_spec),
                 "merged_dataset_root": pipeline_paths.get("dataset_root") or str(dataset_root),
                 "merged_coco_json": pipeline_paths.get("coco_json") or "",
@@ -958,10 +1049,11 @@ def _generate_model_controlled_reply(
     system_prompt = (
         "你是算法工程师 Agent 的最终回复生成器。"
         "上游工作流已经完成技能调用，你只负责基于事实组织输出样式和表达。"
-        "要求：使用中文；不要编造事实；保留关键路径、best.pt、数据划分、类别和评估指标；"
+        "要求：使用中文；不要编造事实；保留关键路径、最佳模型权重、数据划分、类别和评估指标；"
         "合成数据状态必须以 dataset.synthetic_generation.status 为准；"
         "如果 status=merged 且 fallback 存在，说明主合成接口失败但 fallback 已成功补救，不要写成数据合成失败；"
-        "如果 evaluation.metrics 中存在 precision、recall、mAP50、mAP50_95、fitness，必须在回复中明确列出；"
+        "如果 evaluation.metrics 中存在 precision、recall、mAP50、mAP50_95、fitness、mAP75、AR100、best_coco_eval_bbox、best_epoch，必须在回复中明确列出；"
+        "DEIMv2 使用 COCO AP/AR 指标，precision 可能没有日志输出；不要因为 precision 不存在就说指标为空。"
         "如果某个类别指标很差或为 0，要温和指出可能是样本/标注不足；"
         "输出应像专业算法训练报告，但不要机械复述 JSON。"
     )
@@ -1255,6 +1347,151 @@ def _generate_model_managed_yolo_training_intent_spec(
         return {}
 
 
+def _generate_model_managed_training_intent_spec(
+    *,
+    user_text: str,
+    agent_config: Any,
+    runtime_options: RuntimeOptions,
+    recorder: EventRecorder,
+    training_backend: str,
+    deimv2_model_selection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if training_backend != "deimv2":
+        return _generate_model_managed_yolo_training_intent_spec(
+            user_text=user_text,
+            agent_config=agent_config,
+            runtime_options=runtime_options,
+            recorder=recorder,
+        )
+    llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_deimv2_model_managed_intent_spec"})
+    if not llm.configured:
+        recorder.emit("llm.completed", {"purpose": "workflow_deimv2_model_managed_intent_spec", "used_fallback": True, "reason": "not_configured"})
+        return {}
+    system_prompt = (
+        "你是 DEIMv2 DINOv3 目标检测训练工作流的前置意图规划器。"
+        "此阶段尚未分析数据集，因此禁止输出 batch、epochs、img_size、split 等依赖数据集的最终训练参数。"
+        "只返回 JSON 对象，不要解释。字段包含："
+        "task_description 字符串；use_synthetic_generation 布尔值，通常为 true；"
+        "generation_prompt 字符串；labels 字符串数组；training 空对象；runtime 空对象；split 空对象。"
+        "labels 必须是英文 ASCII 类名，只能使用小写英文、数字、下划线，禁止泛化 object/target。"
+        "合成提示词要适合 image2 目标自然合成到 image1 场景中，且适合后续 SAM3/COCO 标注。"
+    )
+    messages = [
+        Message(role="user", content=f"用户业务目标：{user_text}\n请输出 DEIMv2 自动训练托管规格。")
+    ]
+    try:
+        raw = llm.complete_sync(system_prompt, messages)
+        payload = _parse_json_object(raw)
+        spec = payload if isinstance(payload, dict) else {}
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_deimv2_model_managed_intent_spec",
+                "used_fallback": False,
+                "generated_keys": sorted(str(key) for key in spec.keys()),
+            },
+        )
+        return spec
+    except Exception as exc:
+        recorder.emit("llm.completed", {"purpose": "workflow_deimv2_model_managed_intent_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        return {}
+
+
+def _generate_dataset_aware_training_request_spec(
+    *,
+    base_spec: dict[str, Any],
+    dataset_facts: dict[str, Any],
+    user_text: str,
+    agent_config: Any,
+    runtime_options: RuntimeOptions,
+    recorder: EventRecorder,
+    training_backend: str,
+    deimv2_model_selection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if training_backend != "deimv2":
+        return _generate_dataset_aware_yolo_training_request_spec(
+            base_spec=base_spec,
+            dataset_facts=dataset_facts,
+            user_text=user_text,
+            agent_config=agent_config,
+            runtime_options=runtime_options,
+            recorder=recorder,
+        )
+    llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
+    recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_deimv2_dataset_aware_training_spec"})
+    if not llm.configured:
+        recorder.emit("llm.completed", {"purpose": "workflow_deimv2_dataset_aware_training_spec", "used_fallback": True, "reason": "not_configured"})
+        return base_spec
+    readme_excerpt = _deimv2_readme_for_prompt()
+    model_selection = deimv2_model_selection or _default_deimv2_model_selection()
+    vendor_config_context = _deimv2_vendor_config_context_for_prompt(model_selection)
+    model_variant = str(model_selection.get("effective_model_variant") or DEIMV2_DEFAULT_MODEL_VARIANT)
+    template_config = str(model_selection.get("template_config") or DEIMV2_MODEL_VARIANTS[DEIMV2_DEFAULT_MODEL_VARIANT]["template_config"])
+    tuning_checkpoint = str(model_selection.get("tuning_checkpoint") or "")
+    system_prompt = (
+        "你是资深计算机视觉算法工程师。现在要为 DEIMv2 DINOv3 目标检测训练生成可执行训练规格，"
+        "必须基于 dataset_facts、用户业务目标、DEIMv2 README 和 vendor/deimv2/configs 下的真实配置。只返回 JSON 对象，不要解释。"
+        "必须包含字段：task_description, use_synthetic_generation, generation_prompt, labels, training, runtime, split。"
+        f"training 必须含 model_variant='{model_variant}', template_config, epochs, img_size, batch, device, workers, "
+        "backbone_checkpoint, tuning_checkpoint。"
+        f"template_config 必须使用 {template_config}；"
+        f"backbone_checkpoint 默认 {DEIMV2_BACKBONE_CHECKPOINT}；tuning_checkpoint 使用 {tuning_checkpoint or '空字符串'}；"
+        "device 必须为 auto，表示插件按 CUDA GPU、NPU、CPU 顺序选择；runtime.enforce_conda_env=false。"
+        "split 必须含 train/val/test，合成图只能进入 train，val/test 必须用真实图。"
+        "batch 表示 train_dataloader.total_batch_size，必须结合 vendor 配置、数据量、img_size、类别数、目标大小和硬件选择；"
+        "CUDA 且 300 张以上图片不应机械固定为 1 或 2，可优先考虑 4 或 8；CPU/NPU 可更保守。"
+        "epochs 必须根据数据量、类别数、目标大小、用户是否明确要求快速测试来决定。"
+        "如果用户没有明确指定训练轮数，不要机械使用 10 epoch；小数据集正式训练通常至少 50 epoch。"
+        "img_size 通常 640。"
+        "README 关键内容如下：\n"
+        f"{readme_excerpt}\n\n"
+        "vendor/deimv2/configs 关键配置如下，包含选中模板及其 __include__ 递归依赖；生成 training 时必须以这些真实字段和结构为约束：\n"
+        f"{vendor_config_context}"
+    )
+    messages = [
+        Message(
+            role="user",
+            content=json.dumps(
+                {
+                    "user_text": user_text,
+                    "base_spec": base_spec,
+                    "dataset_facts": dataset_facts,
+                    "deimv2_model_selection": model_selection,
+                    "requirements": [
+                        "根据标注类别和合成图数量生成当前应用的 DEIMv2 dataset/training yml 所需规格。",
+                        "training 字段必须能映射到 runner 生成的 configs/train.yml 与 configs/dataset.yml，不能臆造 DEIMv2 不支持的配置项。",
+                        "优先依据 vendor config 的 total_batch_size、epoches、optimizer/lr 结构和 dataset loader 结构做推理。",
+                        "不要改成 YOLO 参数；不要输出 YOLO model/best.pt 字段。",
+                        "输出只要 JSON，不要 Markdown。",
+                    ],
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+    ]
+    try:
+        raw = llm.complete_sync(system_prompt, messages)
+        payload = _parse_json_object(raw)
+        generated = payload if isinstance(payload, dict) else {}
+        merged = _merge_deimv2_request_specs(base_spec, generated, override_nested=True)
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_deimv2_dataset_aware_training_spec",
+                "used_fallback": False,
+                "generated_keys": sorted(str(key) for key in generated.keys()),
+                "dataset_image_count": dataset_facts.get("image_count"),
+                "dataset_format": dataset_facts.get("format"),
+            },
+        )
+        return _apply_deimv2_dataset_epoch_reasoning(merged, dataset_facts, user_text)
+    except Exception as exc:
+        recorder.emit("llm.completed", {"purpose": "workflow_deimv2_dataset_aware_training_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        return _apply_deimv2_dataset_epoch_reasoning(base_spec, dataset_facts, user_text)
+
+
 def _generate_dataset_aware_yolo_training_request_spec(
     *,
     base_spec: dict[str, Any],
@@ -1350,6 +1587,144 @@ def _fallback_model_managed_yolo_training_request_spec(
         "split": fallback_training["split"],
     }
     return _merge_request_specs(fallback, spec)
+
+
+def _fallback_model_managed_training_request_spec(
+    spec: dict[str, Any],
+    user_text: str,
+    dataset_facts: dict[str, Any] | None = None,
+    *,
+    training_backend: str,
+    deimv2_model_selection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if training_backend != "deimv2":
+        return _fallback_model_managed_yolo_training_request_spec(spec, user_text, dataset_facts)
+    spec = _apply_deimv2_dataset_epoch_reasoning(spec, dataset_facts or {}, user_text)
+    if _request_spec_complete(spec):
+        return spec
+    labels = _spec_string_list(spec, "labels") or _infer_labels_from_training_intent(user_text) or ["object"]
+    labels = _normalize_detection_labels(labels) or ["object"]
+    fallback_training = _fallback_deimv2_training_from_dataset_facts(dataset_facts or {}, deimv2_model_selection)
+    fallback = {
+        "task_description": _spec_string(spec, "task_description") or f"{', '.join(labels)} detection",
+        "use_synthetic_generation": True,
+        "generation_prompt": _spec_string(spec, "generation_prompt")
+        or (
+            f"Use image1.zip as background/scene images and image2.zip as foreground target images for {', '.join(labels)}. "
+            "Naturally composite targets into realistic camera images with consistent lighting, scale, perspective, "
+            "and visible objects suitable for SAM3 COCO annotation."
+        ),
+        "labels": labels,
+        "training": fallback_training["training"],
+        "runtime": {"conda_env_name": "", "enforce_conda_env": False},
+        "split": fallback_training["split"],
+    }
+    return _merge_deimv2_request_specs(fallback, spec)
+
+
+def _apply_deimv2_dataset_epoch_reasoning(spec: dict[str, Any], dataset_facts: dict[str, Any] | None, user_text: str) -> dict[str, Any]:
+    training = spec.get("training") if isinstance(spec.get("training"), dict) else {}
+    if not _looks_like_deimv2_training(training):
+        return spec
+    training.pop("smoke_epochs", None)
+    if not _user_mentions_epoch_count(user_text):
+        desired_epochs = _deimv2_epochs_from_dataset_facts(dataset_facts or {})
+        current_epochs = _coerce_int(training.get("epochs"))
+        if current_epochs is None or current_epochs < desired_epochs:
+            training["epochs"] = desired_epochs
+    if not _user_mentions_batch_count(user_text):
+        desired_batch = _deimv2_batch_from_dataset_facts(dataset_facts or {}, training)
+        current_batch = _coerce_int(training.get("batch"))
+        if current_batch is None or current_batch < desired_batch:
+            training["batch"] = desired_batch
+    return spec
+
+
+def _user_mentions_batch_count(user_text: str) -> bool:
+    text = str(user_text or "")
+    return bool(re.search(r"(?i)(?:\bbatch(?:_size)?\b|批大小|批次大小|batch\s*=\s*\d+)", text))
+
+
+def _user_mentions_epoch_count(user_text: str) -> bool:
+    text = str(user_text or "")
+    return bool(
+        re.search(
+            r"(?i)(?:\bepochs?\b|训练轮数|训练\s*\d+\s*轮|跑\s*\d+\s*(?:个)?\s*epochs?|\d+\s*(?:个)?\s*epochs?|\d+\s*轮)",
+            text,
+        )
+    )
+
+
+def _deimv2_epochs_from_dataset_facts(dataset_facts: dict[str, Any]) -> int:
+    image_count = _safe_int(dataset_facts.get("image_count"))
+    label_count = _safe_int(dataset_facts.get("label_count") or dataset_facts.get("num_categories"))
+    bbox_summary = dataset_facts.get("bbox_size_summary") if isinstance(dataset_facts.get("bbox_size_summary"), dict) else {}
+    small_ratio = _coerce_float(bbox_summary.get("small_ratio")) or 0.0
+    if image_count <= 30:
+        epochs = 50
+    elif image_count <= 100:
+        epochs = 60
+    else:
+        epochs = 80
+    if label_count >= 4 or small_ratio >= 0.35:
+        epochs += 20
+    return min(120, epochs)
+
+
+def _deimv2_batch_from_dataset_facts(dataset_facts: dict[str, Any], training: dict[str, Any] | None = None) -> int:
+    training = training or {}
+    device = str(training.get("device") or "auto").strip().lower()
+    image_count = _safe_int(dataset_facts.get("image_count"))
+    img_size = _coerce_int(training.get("img_size") or training.get("imgsz")) or 640
+    bbox_summary = dataset_facts.get("bbox_size_summary") if isinstance(dataset_facts.get("bbox_size_summary"), dict) else {}
+    small_ratio = _coerce_float(bbox_summary.get("small_ratio")) or 0.0
+    if device == "cpu":
+        return 1
+    if device in {"npu", "ascend"}:
+        if image_count <= 100 or img_size >= 960:
+            return 2
+        return 4
+    max_batch = 8 if device in {"cuda", "gpu", "0"} else 4
+    if image_count <= 30:
+        batch = 1
+    elif image_count <= 100:
+        batch = 2
+    elif image_count <= 300:
+        batch = 4
+    else:
+        batch = 8
+    if img_size >= 960 or small_ratio >= 0.45:
+        batch = max(1, batch // 2)
+    return max(1, min(batch, max_batch))
+
+
+def _merge_deimv2_request_specs(base: dict[str, Any], generated: dict[str, Any], *, override_nested: bool = False) -> dict[str, Any]:
+    merged = dict(base)
+    for key in ("task_description", "generation_prompt"):
+        if not _spec_string(merged, key) and _spec_string(generated, key):
+            merged[key] = _spec_string(generated, key)
+    if _spec_optional_bool(merged, "use_synthetic_generation") is None:
+        generated_bool = _spec_optional_bool(generated, "use_synthetic_generation")
+        if generated_bool is not None:
+            merged["use_synthetic_generation"] = generated_bool
+    if not _spec_string_list(merged, "labels"):
+        labels = _spec_string_list(generated, "labels")
+        if labels:
+            merged["labels"] = labels
+    for key in ("training", "runtime", "split"):
+        current = merged.get(key)
+        generated_value = generated.get(key)
+        if not isinstance(generated_value, dict):
+            continue
+        if override_nested and isinstance(current, dict):
+            nested = dict(current)
+            for nested_key, nested_value in generated_value.items():
+                if nested_value not in (None, "", [], {}):
+                    nested[nested_key] = nested_value
+            merged[key] = nested
+        elif (not isinstance(current, dict) or not current):
+            merged[key] = dict(generated_value)
+    return merged
 
 
 def _complete_yolo_training_request_spec(
@@ -1517,8 +1892,9 @@ def _write_model_generated_spec_logs(
 def _model_generated_spec_payload(spec: dict[str, Any]) -> dict[str, Any]:
     training_cfg = _spec_training_config(spec)
     _force_current_runtime(training_cfg)
+    title = "模型思考生成的 DEIMv2 训练参数" if _looks_like_deimv2_training(training_cfg.get("training", {})) else "模型思考生成的 YOLO 训练参数"
     return {
-        "title": "模型思考生成的 YOLO 训练参数",
+        "title": title,
         "task_description": _spec_string(spec, "task_description"),
         "use_synthetic_generation": _spec_optional_bool(spec, "use_synthetic_generation"),
         "generation_prompt": _spec_string(spec, "generation_prompt"),
@@ -1575,7 +1951,146 @@ def _workflow_skill_parameters(runtime_options: RuntimeOptions) -> dict[str, Any
     if isinstance(workflow_params, dict):
         return workflow_params
     app_params = params.get("algorithm-engineer-full-cycle-test")
-    return app_params if isinstance(app_params, dict) else {}
+    if isinstance(app_params, dict):
+        return app_params
+    deimv2_app_params = params.get("algorithm-engineer-full-cycle-deimv2-test")
+    return deimv2_app_params if isinstance(deimv2_app_params, dict) else {}
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _deimv2_vendor_root() -> Path:
+    return _project_root() / "plugins" / "skills" / "deimv2-auto-training" / "vendor" / "deimv2"
+
+
+def _normalize_deimv2_model_variant(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return DEIMV2_DEFAULT_MODEL_VARIANT
+    normalized = raw.replace("_", "-").replace(" ", "")
+    normalized = re.sub(r"-coco$", "", normalized)
+    if normalized in {"s", "m", "l", "x"}:
+        return f"deimv2-dinov3-{normalized}"
+    if normalized in {"dinov3-s", "dinov3-m", "dinov3-l", "dinov3-x"}:
+        return f"deimv2-{normalized}"
+    return normalized
+
+
+def _requested_deimv2_model_variant(runtime_options: RuntimeOptions) -> str:
+    direct = (
+        getattr(runtime_options, "deimv2_model_variant", None)
+        or getattr(runtime_options, "deimv2ModelVariant", None)
+    )
+    if direct:
+        return str(direct).strip()
+    config_options = getattr(runtime_options, "config_options", None)
+    if isinstance(config_options, dict):
+        for key in ("deimv2ModelVariant", "deimv2_model_variant"):
+            value = str(config_options.get(key) or "").strip()
+            if value:
+                return value
+    params = _workflow_skill_parameters(runtime_options)
+    for key in ("deimv2ModelVariant", "deimv2_model_variant", "model_variant"):
+        value = str(params.get(key) or "").strip()
+        if value:
+            return value
+    return DEIMV2_DEFAULT_MODEL_VARIANT
+
+
+def _deimv2_model_spec(model_variant: str) -> dict[str, str]:
+    return dict(DEIMV2_MODEL_VARIANTS.get(model_variant) or DEIMV2_MODEL_VARIANTS[DEIMV2_DEFAULT_MODEL_VARIANT])
+
+
+def _deimv2_checkpoint_exists(relative_path: str) -> bool:
+    if not relative_path:
+        return False
+    requested = Path(relative_path)
+    candidates = [requested] if requested.is_absolute() else [
+        _project_root() / requested,
+        _project_root() / "models" / requested.name,
+        _deimv2_vendor_root() / "ckpts" / requested.name,
+        Path("/models/deimv2") / requested.name,
+    ]
+    return any(path.is_file() for path in candidates)
+
+
+def _deimv2_variant_unavailable_reason(model_variant: str) -> str:
+    spec = DEIMV2_MODEL_VARIANTS.get(model_variant)
+    if spec is None:
+        allowed = ", ".join(sorted(DEIMV2_MODEL_VARIANTS))
+        return f"unsupported model variant, allowed variants: {allowed}"
+    template = _deimv2_vendor_root() / str(spec.get("template_config") or "")
+    if not template.is_file():
+        return f"template config not found: {template}"
+    if model_variant != DEIMV2_DEFAULT_MODEL_VARIANT and not _deimv2_checkpoint_exists(str(spec.get("tuning_checkpoint") or "")):
+        return f"tuning checkpoint not found: {spec.get('tuning_checkpoint')}"
+    return ""
+
+
+def _default_deimv2_model_selection(requested: str | None = None, fallback_reason: str = "") -> dict[str, Any]:
+    spec = _deimv2_model_spec(DEIMV2_DEFAULT_MODEL_VARIANT)
+    return {
+        "requested_model_variant": requested or DEIMV2_DEFAULT_MODEL_VARIANT,
+        "effective_model_variant": DEIMV2_DEFAULT_MODEL_VARIANT,
+        "fallback_used": bool(fallback_reason),
+        "fallback_reason": fallback_reason,
+        "template_config": spec["template_config"],
+        "backbone_checkpoint": DEIMV2_BACKBONE_CHECKPOINT,
+        "tuning_checkpoint": spec["tuning_checkpoint"] if _deimv2_checkpoint_exists(spec["tuning_checkpoint"]) else "",
+        "available_variants": sorted(DEIMV2_MODEL_VARIANTS),
+    }
+
+
+def _select_deimv2_model_variant(runtime_options: RuntimeOptions, recorder: EventRecorder) -> dict[str, Any]:
+    requested_raw = _requested_deimv2_model_variant(runtime_options)
+    requested = _normalize_deimv2_model_variant(requested_raw)
+    reason = _deimv2_variant_unavailable_reason(requested)
+    if reason:
+        selection = _default_deimv2_model_selection(requested=requested, fallback_reason=reason)
+        recorder.emit("deimv2.model_variant.fallback", selection)
+        return selection
+    spec = _deimv2_model_spec(requested)
+    selection = {
+        "requested_model_variant": requested,
+        "effective_model_variant": requested,
+        "fallback_used": False,
+        "fallback_reason": "",
+        "template_config": spec["template_config"],
+        "backbone_checkpoint": DEIMV2_BACKBONE_CHECKPOINT,
+        "tuning_checkpoint": spec["tuning_checkpoint"] if _deimv2_checkpoint_exists(spec["tuning_checkpoint"]) else "",
+        "available_variants": sorted(DEIMV2_MODEL_VARIANTS),
+    }
+    recorder.emit("deimv2.model_variant.selected", selection)
+    return selection
+
+
+def _apply_deimv2_model_selection_to_spec(spec: dict[str, Any], selection: dict[str, Any] | None) -> None:
+    if not selection:
+        return
+    training = spec.get("training") if isinstance(spec.get("training"), dict) else {}
+    spec["training"] = training
+    training["model_variant"] = selection.get("effective_model_variant") or DEIMV2_DEFAULT_MODEL_VARIANT
+    training["template_config"] = selection.get("template_config") or DEIMV2_MODEL_VARIANTS[DEIMV2_DEFAULT_MODEL_VARIANT]["template_config"]
+    training["backbone_checkpoint"] = selection.get("backbone_checkpoint") or DEIMV2_BACKBONE_CHECKPOINT
+    training["tuning_checkpoint"] = selection.get("tuning_checkpoint") or ""
+    training["requested_model_variant"] = selection.get("requested_model_variant") or training["model_variant"]
+    training["model_variant_fallback_reason"] = selection.get("fallback_reason") or ""
+
+
+def _apply_deimv2_model_selection_to_training_config(training_cfg: dict[str, Any], selection: dict[str, Any] | None) -> None:
+    if not training_cfg or not selection:
+        return
+    training = training_cfg.get("training") if isinstance(training_cfg.get("training"), dict) else {}
+    if not training:
+        return
+    training["model_variant"] = selection.get("effective_model_variant") or DEIMV2_DEFAULT_MODEL_VARIANT
+    training["template_config"] = selection.get("template_config") or DEIMV2_MODEL_VARIANTS[DEIMV2_DEFAULT_MODEL_VARIANT]["template_config"]
+    training["backbone_checkpoint"] = selection.get("backbone_checkpoint") or DEIMV2_BACKBONE_CHECKPOINT
+    training["tuning_checkpoint"] = selection.get("tuning_checkpoint") or ""
+    training["requested_model_variant"] = selection.get("requested_model_variant") or training["model_variant"]
+    training["model_variant_fallback_reason"] = selection.get("fallback_reason") or ""
 
 
 def _max_synthetic_images(runtime_options: RuntimeOptions) -> int:
@@ -1937,6 +2452,56 @@ def _spec_training_config(spec: dict[str, Any]) -> dict[str, Any]:
     raw_split = spec.get("split") if isinstance(spec.get("split"), dict) else {}
     if not (raw_training or raw_runtime or raw_split):
         return {}
+    if _looks_like_deimv2_training(raw_training):
+        model_variant = _normalize_deimv2_model_variant(raw_training.get("model_variant"))
+        model_spec = _deimv2_model_spec(model_variant)
+        cfg = {
+            "split": dict(DEFAULT_TRAINING_SPLIT),
+            "training": {
+                "model_variant": model_variant,
+                "template_config": str(raw_training.get("template_config") or model_spec["template_config"]),
+                "epochs": 10,
+                "img_size": 640,
+                "batch": 1,
+                "device": "auto",
+                "workers": 0,
+                "backbone_checkpoint": str(raw_training.get("backbone_checkpoint") or DEIMV2_BACKBONE_CHECKPOINT),
+                "tuning_checkpoint": str(raw_training.get("tuning_checkpoint") or model_spec["tuning_checkpoint"]),
+            },
+            "runtime": {
+                "conda_env_name": "",
+                "enforce_conda_env": False,
+            },
+        }
+        for raw_key, out_key in (("epochs", "epochs"), ("img_size", "img_size"), ("imgsz", "img_size"), ("batch", "batch"), ("workers", "workers"), ("flat_epoch", "flat_epoch"), ("no_aug_epoch", "no_aug_epoch"), ("warmup_iter", "warmup_iter"), ("checkpoint_freq", "checkpoint_freq"), ("num_top_queries", "num_top_queries")):
+            value = _coerce_int(raw_training.get(raw_key))
+            if value is not None:
+                cfg["training"][out_key] = value
+
+        for raw_key, out_key in (("lr", "lr"), ("learning_rate", "lr"), ("weight_decay", "weight_decay")):
+            value = _coerce_float(raw_training.get(raw_key))
+            if value is not None:
+                cfg["training"][out_key] = value
+        if isinstance(raw_training.get("betas"), list):
+            cfg["training"]["betas"] = raw_training["betas"]
+        if isinstance(raw_training.get("optimizer"), dict):
+            cfg["training"]["optimizer"] = dict(raw_training["optimizer"])
+        for key in ("device", "template_config", "model_variant", "backbone_checkpoint", "tuning_checkpoint", "requested_model_variant", "model_variant_fallback_reason"):
+            value = raw_training.get(key)
+            if value not in (None, ""):
+                cfg["training"][key] = str(value).strip()
+        value = raw_runtime.get("conda_env_name") or raw_training.get("conda_env") or raw_training.get("conda_env_name")
+        if value not in (None, ""):
+            cfg["runtime"]["conda_env_name"] = str(value).strip()
+        value = _coerce_bool(raw_runtime.get("enforce_conda_env"))
+        if value is not None:
+            cfg["runtime"]["enforce_conda_env"] = value
+        for key in ("train", "val", "test"):
+            value = _coerce_float(raw_split.get(key))
+            if value is not None:
+                cfg["split"][key] = value
+        cfg["split"] = _normalize_training_split(cfg["split"])
+        return cfg
     cfg = _extract_training_config("")
     for key in ("task", "model", "device"):
         value = raw_training.get(key)
@@ -1959,6 +2524,14 @@ def _spec_training_config(spec: dict[str, Any]) -> dict[str, Any]:
             cfg["split"][key] = value
     cfg["split"] = _normalize_training_split(cfg["split"])
     return cfg if _training_config_has_required_fields(raw_training, raw_runtime) else {}
+
+
+def _looks_like_deimv2_training(raw_training: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(raw_training.get(key) or "")
+        for key in ("model_variant", "requested_model_variant", "template_config", "backbone_checkpoint", "tuning_checkpoint")
+    ).lower()
+    return "deimv2" in text or "dinov3" in text or "vitt_distill" in text
 
 
 def _normalize_training_split(split: dict[str, Any]) -> dict[str, float]:
@@ -2037,6 +2610,7 @@ def _training_failed_reply(
     fallback_reply: str,
     best_pt: str,
     data_preparation_summary: dict[str, Any],
+    training_backend: str = "yolo",
 ) -> str:
     parsed = _parse_json_object(fallback_reply)
     stderr_tail = str(parsed.get("stderr_tail") or "").strip()
@@ -2046,7 +2620,9 @@ def _training_failed_reply(
     prep = data_preparation_summary or summary
     synthetic = _synthetic_generation_facts(prep)
 
-    lines = ["YOLO 训练流程执行失败。", ""]
+    backend_name = "DEIMv2" if training_backend == "deimv2" else "YOLO"
+    checkpoint_label = "best checkpoint" if training_backend == "deimv2" else "best.pt"
+    lines = [f"{backend_name} 训练流程执行失败。", ""]
     if prep:
         lines.extend(
             [
@@ -2072,7 +2648,7 @@ def _training_failed_reply(
         [
             "训练阶段失败：",
             f"- returncode: `{returncode if returncode not in (None, '') else '-'}`",
-            f"- best.pt: `{best_pt or '未生成'}`",
+            f"- {checkpoint_label}: `{best_pt or '未生成'}`",
         ]
     )
     if error_tail:
@@ -2142,7 +2718,7 @@ def _human_fallback_reply(fallback_reply: str, summary: dict[str, Any], best_pt:
             "num_categories": summary.get("num_categories"),
             "split": summary.get("split_counts"),
             "train_dir": summary.get("train_save_dir"),
-            "best_pt": best_pt,
+            "best_pt": best_pt or summary.get("best_checkpoint"),
             "metrics": _extract_metric_summary(summary),
             "results_dict": _extract_results_dict(summary),
             "eval_error": summary.get("eval_error"),
@@ -2162,14 +2738,14 @@ def _human_fallback_reply(fallback_reply: str, summary: dict[str, Any], best_pt:
         f"- 数据规模：images={facts.get('num_images') or '-'} classes={facts.get('num_categories') or '-'}",
         f"- 数据划分：{split_text}",
         f"- 训练目录：`{facts.get('train_dir') or '-'}`",
-        f"- best.pt：`{facts.get('best_pt') or best_pt or '-'}`",
+        f"- 最佳模型权重：`{facts.get('best_pt') or best_pt or '-'}`",
     ]
     metrics = facts.get("metrics")
     if not isinstance(metrics, dict) or not metrics:
         metrics = _extract_metric_summary(summary)
     if isinstance(metrics, dict) and metrics:
         lines.extend(["", "关键评估指标："])
-        for key in ("precision", "recall", "mAP50", "mAP50_95", "fitness"):
+        for key in ("precision", "recall", "mAP50", "mAP50_95", "mAP75", "AR100", "best_coco_eval_bbox", "best_epoch", "fitness"):
             if key in metrics:
                 lines.append(f"- {key}: {_format_metric(metrics.get(key))}")
     eval_block = str(facts.get("eval_block") or "").strip()
@@ -2192,6 +2768,14 @@ def _extract_evaluation_facts(summary: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_metric_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    existing_metrics = summary.get("metrics")
+    metrics: dict[str, Any] = {}
+    if isinstance(existing_metrics, dict):
+        for key in ("precision", "recall", "mAP50", "mAP50_95", "mAP75", "AR1", "AR10", "AR100", "best_coco_eval_bbox", "best_epoch", "fitness"):
+            if key in existing_metrics:
+                metrics[key] = existing_metrics[key]
+        if "recall" not in metrics and "AR100" in metrics:
+            metrics["recall"] = metrics["AR100"]
     results = _extract_results_dict(summary)
     mapping = {
         "precision": "metrics/precision(B)",
@@ -2200,9 +2784,8 @@ def _extract_metric_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "mAP50_95": "metrics/mAP50-95(B)",
         "fitness": "fitness",
     }
-    metrics: dict[str, Any] = {}
     for out_key, source_key in mapping.items():
-        if source_key in results:
+        if out_key not in metrics and source_key in results:
             metrics[out_key] = results[source_key]
     return metrics
 
@@ -2310,10 +2893,11 @@ def _selected_skills(runtime_options: RuntimeOptions) -> list[str]:
     return [str(item).strip() for item in selected if str(item).strip()] or [*DEFAULT_SELECTED_SKILLS]
 
 
-def _ensure_full_cycle_skills(selected_skills: list[str]) -> list[str]:
+def _ensure_full_cycle_skills(selected_skills: list[str], training_backend: str = "yolo") -> list[str]:
     merged = [str(item).strip() for item in selected_skills if str(item).strip()]
     seen = set(merged)
-    for skill_name in DEFAULT_SELECTED_SKILLS:
+    defaults = DEIMV2_SELECTED_SKILLS if training_backend == "deimv2" else DEFAULT_SELECTED_SKILLS
+    for skill_name in defaults:
         if skill_name not in seen:
             merged.append(skill_name)
             seen.add(skill_name)
@@ -2339,6 +2923,24 @@ def _capability_enabled(selected_skills: list[str], capability: str) -> bool:
     return False
 
 
+def _selected_training_backend(selected_skills: list[str], runtime_options: RuntimeOptions, workflow: str) -> str:
+    del workflow
+    app_template_name = str(getattr(runtime_options, "app_template_name", "") or "").strip().lower()
+    if app_template_name == "algorithm-engineer-full-cycle-deimv2-test":
+        return "deimv2"
+    params = _workflow_skill_parameters(runtime_options)
+    raw = str(params.get("training_backend") or params.get("trainingBackend") or "").strip().lower()
+    if raw in {"deim", "deimv2", "dino", "dinov3"}:
+        return "deimv2"
+    if DEIMV2_TRAINING_SKILL in {str(item).strip() for item in selected_skills if str(item).strip()}:
+        return "deimv2"
+    return "yolo"
+
+
+def _training_skill_for_backend(training_backend: str) -> str:
+    return DEIMV2_TRAINING_SKILL if training_backend == "deimv2" else YOLO_TRAINING_SKILL
+
+
 @lru_cache(maxsize=256)
 def _workflow_capabilities_for_skill(skill_name: str) -> frozenset[str]:
     capabilities: set[str] = set()
@@ -2360,8 +2962,7 @@ def _workflow_capabilities_for_skill(skill_name: str) -> frozenset[str]:
 
 
 def _skill_metadata_paths(skill_name: str) -> list[Path]:
-    workflow_dir = Path(__file__).resolve().parent
-    project_root = workflow_dir.parents[2]
+    project_root = _project_root()
     return [
         project_root / "plugins" / "skills" / skill_name / "plugin.json",
         project_root / "config" / "skills" / f"{skill_name}.json",
@@ -2374,6 +2975,7 @@ def _fallback_workflow_capabilities(skill_name: str) -> set[str]:
         "image-dataset-generation": {"image_generation"},
         "image-dataset-produce": {"image_generation"},
         "gpu-training-orchestrator": {"training"},
+        "deimv2-auto-training": {"training", "deimv2_training"},
     }
     return set(fallback.get(skill_name, set()))
 
@@ -2685,8 +3287,9 @@ def _run_annotation_fallback(image_dir: Path, paths: ThreadPaths, labels: list[s
     return out
 
 
-def _read_run_summary(paths: ThreadPaths) -> dict[str, Any]:
-    preferred = paths.outputs / WORKFLOW_OUTPUT_DIR / "training_run" / "run_summary.json"
+def _read_run_summary(paths: ThreadPaths, training_backend: str = "yolo") -> dict[str, Any]:
+    run_dir = "deimv2_training_run" if training_backend == "deimv2" else "training_run"
+    preferred = paths.outputs / WORKFLOW_OUTPUT_DIR / run_dir / "run_summary.json"
     if preferred.is_file():
         candidates = [preferred]
     else:
@@ -2966,6 +3569,153 @@ def _fallback_training_from_dataset_facts(dataset_facts: dict[str, Any]) -> dict
     }
 
 
+def _fallback_deimv2_training_from_dataset_facts(
+    dataset_facts: dict[str, Any],
+    model_selection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    model_selection = model_selection or _default_deimv2_model_selection()
+    image_count = _safe_int(dataset_facts.get("image_count"))
+    image_summary = dataset_facts.get("image_size_summary") if isinstance(dataset_facts.get("image_size_summary"), dict) else {}
+    avg_width = float(image_summary.get("avg_width") or 0)
+    avg_height = float(image_summary.get("avg_height") or 0)
+    img_size = 640 if max(avg_width, avg_height) >= 512 else 320
+    epochs = _deimv2_epochs_from_dataset_facts(dataset_facts)
+    batch = _deimv2_batch_from_dataset_facts(dataset_facts, {"device": "auto", "img_size": img_size})
+    if image_count <= 30:
+        split = dict(DEFAULT_TRAINING_SPLIT)
+    elif image_count <= 100:
+        split = {"train": 0.75, "val": 0.2, "test": 0.05}
+    else:
+        split = {"train": 0.7, "val": 0.2, "test": 0.1}
+    return {
+        "training": {
+            "model_variant": model_selection.get("effective_model_variant") or DEIMV2_DEFAULT_MODEL_VARIANT,
+            "template_config": model_selection.get("template_config") or DEIMV2_MODEL_VARIANTS[DEIMV2_DEFAULT_MODEL_VARIANT]["template_config"],
+            "epochs": epochs,
+            "img_size": img_size,
+            "batch": batch,
+            "device": "auto",
+            "workers": 0,
+            "backbone_checkpoint": model_selection.get("backbone_checkpoint") or DEIMV2_BACKBONE_CHECKPOINT,
+            "tuning_checkpoint": model_selection.get("tuning_checkpoint") or "",
+            "requested_model_variant": model_selection.get("requested_model_variant") or model_selection.get("effective_model_variant") or DEIMV2_DEFAULT_MODEL_VARIANT,
+            "model_variant_fallback_reason": model_selection.get("fallback_reason") or "",
+        },
+        "split": split,
+    }
+
+
+def _deimv2_readme_for_prompt() -> str:
+    project_root = _project_root()
+    candidates = [
+        project_root / "plugins" / "skills" / "deimv2-auto-training" / "references" / "DEIMv2_README.md",
+        project_root / "plugins" / "skills" / "deimv2-auto-training" / "vendor" / "deimv2" / "README.md",
+    ]
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        wanted_markers = ("## 1. Model Zoo", "### 2.2 Data Preparation", "### 2.3 Backbone Preparation", "## 3. Usage")
+        chunks: list[str] = []
+        for marker in wanted_markers:
+            start = text.find(marker)
+            if start < 0:
+                continue
+            end = text.find("\n## ", start + 1)
+            chunk = text[start:end if end > start else min(len(text), start + 5000)]
+            chunks.append(chunk[:5000])
+        excerpt = "\n\n".join(chunks).strip() or text[:12000]
+        return excerpt[:16000]
+    return (
+        "DEIMv2 DINOv3 uses configs/deimv2/deimv2_dinov3_{s,m,l,x}_coco.yml, DINOv3STAs vit_tiny, "
+        "ckpts/vitt_distill.pt backbone, COCO layout images/train|val and annotations/instances_train|val.json. "
+        "Use train.py -c config.yml --use-amp on CUDA and -t checkpoint.pth for tuning."
+    )
+
+
+def _deimv2_vendor_config_context_for_prompt(model_selection: dict[str, Any] | None = None) -> str:
+    model_selection = model_selection or _default_deimv2_model_selection()
+    config_root = _deimv2_vendor_root() / "configs"
+    template_config = str(model_selection.get("template_config") or DEIMV2_MODEL_VARIANTS[DEIMV2_DEFAULT_MODEL_VARIANT]["template_config"])
+    template_rel = template_config.removeprefix("configs/").replace("\\", "/")
+    relative_paths = _deimv2_template_config_context_paths(config_root, template_rel)
+    chunks: list[str] = []
+    for rel in relative_paths:
+        path = config_root / rel
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        text = "\n".join(line.rstrip() for line in text.splitlines())
+        chunks.append(f"# configs/{rel}\n{text[:5000]}")
+    if chunks:
+        header = json.dumps(
+            {
+                "requested_model_variant": model_selection.get("requested_model_variant"),
+                "effective_model_variant": model_selection.get("effective_model_variant"),
+                "fallback_used": model_selection.get("fallback_used"),
+                "fallback_reason": model_selection.get("fallback_reason"),
+                "allowed_variants": model_selection.get("available_variants") or sorted(DEIMV2_MODEL_VARIANTS),
+            },
+            ensure_ascii=False,
+        )
+        return (f"# deimv2_model_selection\n{header}\n\n" + "\n\n".join(chunks))[:20000]
+    return (
+        f"{template_config} includes the selected DEIMv2 DINOv3 defaults; "
+        "dataset.yml overrides train_dataloader/val_dataloader total_batch_size and COCO paths; "
+        "train.yml overrides epoches, output_dir, evaluator, checkpoint paths, and worker/device runtime settings."
+    )
+
+
+def _deimv2_template_config_context_paths(config_root: Path, template_rel: str) -> list[str]:
+    template_path = config_root / template_rel
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add_path(path: Path) -> None:
+        try:
+            rel = path.resolve().relative_to(config_root.resolve()).as_posix()
+        except ValueError:
+            return
+        if rel in seen:
+            return
+        seen.add(rel)
+        ordered.append(rel)
+
+    def walk(path: Path) -> None:
+        add_path(path)
+        if not path.is_file():
+            return
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return
+        for raw_include in _deimv2_yaml_include_entries(text):
+            include_path = Path(raw_include)
+            if not include_path.is_absolute():
+                include_path = path.parent / include_path
+            walk(include_path)
+
+    walk(template_path)
+    return ordered or [template_rel]
+
+
+def _deimv2_yaml_include_entries(text: str) -> list[str]:
+    match = re.search(r"(?ms)^__include__\s*:\s*(\[[^\]]*\]|[^\n]+)", text or "")
+    if not match:
+        return []
+    block = match.group(1)
+    quoted = re.findall(r"['\"]([^'\"]+)['\"]", block)
+    if quoted:
+        return [item.strip() for item in quoted if item.strip()]
+    return [item.strip().strip(",") for item in block.splitlines() if item.strip().strip(",")]
+
+
 def _safe_int(value: Any) -> int:
     try:
         return int(float(str(value).strip()))
@@ -3016,8 +3766,11 @@ def _read_pipeline_paths(paths: ThreadPaths) -> dict[str, str]:
         if prep_summary.get("synthetic_plan"):
             result["synthetic_plan"] = str(prep_summary.get("synthetic_plan"))
 
+    preferred_deimv2_input = paths.workspace / "deimv2-training-input.json"
     preferred_training_input = paths.workspace / "gpu-training-orchestrator-training-input.json"
-    if preferred_training_input.is_file():
+    if preferred_deimv2_input.is_file():
+        training_input = preferred_deimv2_input
+    elif preferred_training_input.is_file():
         training_input = preferred_training_input
     else:
         legacy_training_input = paths.outputs / WORKFLOW_OUTPUT_DIR / PIPELINE_WORK_DIR / "training_input.json"
@@ -3053,13 +3806,26 @@ def _find_best_pt(paths: ThreadPaths) -> str:
     return str(candidates[-1]) if candidates else ""
 
 
+def _find_best_checkpoint(paths: ThreadPaths, training_backend: str = "yolo") -> str:
+    if training_backend != "deimv2":
+        return _find_best_pt(paths)
+    run_dir = paths.outputs / WORKFLOW_OUTPUT_DIR / "deimv2_training_run"
+    for name in ("best_stg2.pth", "best_stg1.pth", "last.pth"):
+        candidates = sorted(run_dir.rglob(name))
+        if candidates:
+            return str(candidates[-1])
+    candidates = sorted(run_dir.rglob("*.pth"))
+    return str(candidates[-1]) if candidates else ""
+
+
 def _input_label(value: object) -> str:
     return {"dataset": "数据集", "image": "图片", "model_config": "模型配置"}.get(str(value), "输入")
 
 
-def _filter_training_run_artifacts(outputs: list[Any]) -> list[Any]:
+def _filter_training_run_artifacts(outputs: list[Any], training_backend: str = "yolo") -> list[Any]:
     result: list[Any] = []
-    marker = f"/{WORKFLOW_OUTPUT_DIR}/training_run/"
+    run_dir = "deimv2_training_run" if training_backend == "deimv2" else "training_run"
+    marker = f"/{WORKFLOW_OUTPUT_DIR}/{run_dir}/"
     for artifact in outputs:
         path = str(getattr(artifact, "path", "") or "").replace("\\", "/")
         if marker in path:
@@ -3465,6 +4231,8 @@ def _is_workflow_completed(paths: ThreadPaths) -> bool:
     completion_markers = (
         output_root / "training_run" / "run_summary.json",
         output_root / "training_run" / "train" / "weights" / "best.pt",
+        output_root / "deimv2_training_run" / "run_summary.json",
+        output_root / "deimv2_training_run" / "training_summary.json",
         output_root / "prepared_data" / "data_preparation_summary.json",
     )
     return any(marker.exists() for marker in completion_markers)
@@ -3480,6 +4248,20 @@ def _set_waiting_prompt(paths: ThreadPaths, waiting: bool) -> None:
 
 def _is_waiting_prompt(paths: ThreadPaths) -> bool:
     return _waiting_prompt_path(paths).exists()
+
+
+def _reset_completed_request_state_for_new_training(paths: ThreadPaths) -> None:
+    _set_workflow_completed(paths, False)
+    _set_waiting_prompt(paths, False)
+    for marker in (
+        _training_config_marker_path(paths),
+        _prompt_marker_path(paths),
+        _labels_marker_path(paths),
+        _detection_task_marker_path(paths),
+        _synthetic_generation_marker_path(paths),
+    ):
+        if marker.exists():
+            marker.unlink()
 
 
 def _dataset_package_marker_path(paths: ThreadPaths) -> Path:

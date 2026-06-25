@@ -29,6 +29,15 @@ def _load_data_preparation_pipeline_module():
     return module
 
 
+def _load_deimv2_training_runner_module():
+    path = Path("plugins/skills/deimv2-auto-training/scripts/run_deimv2_training.py").resolve()
+    spec = importlib.util.spec_from_file_location("run_deimv2_training", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_yolo_training_flow_extracts_one_message_training_spec() -> None:
     module = _load_yolo_training_flow_module()
     text = (
@@ -159,13 +168,21 @@ def test_yolo_training_flow_epochs_button_uses_fixed_value_when_disabled() -> No
 
     module._apply_epochs_policy(training_cfg, runtime_options)
 
-    assert training_cfg["training"]["epochs"] == 50
+    assert training_cfg["training"]["epochs"] == 10
 
 
 def test_yolo_training_flow_test_app_disables_model_epochs() -> None:
     app_config = Path("config/apps/algorithm-engineer-full-cycle-test.json").read_text(encoding="utf-8")
 
     assert '"button_epochs": false' in app_config
+
+
+def test_deimv2_training_flow_test_app_has_no_runtime_options() -> None:
+    app_config = Path("config/apps/algorithm-engineer-full-cycle-deimv2-test.json").read_text(encoding="utf-8")
+    upload_app_config = Path("config/upload/apps/algorithm-engineer-full-cycle-deimv2-test.json").read_text(encoding="utf-8")
+
+    assert '"runtime_options"' not in app_config
+    assert '"runtime_options"' not in upload_app_config
 
 
 def test_yolo_training_flow_selects_uploaded_model_by_model_id(tmp_path: Path) -> None:
@@ -240,6 +257,38 @@ def test_yolo_training_flow_new_dataset_attachment_overrides_stale_marker(tmp_pa
     assert module._load_dataset_package_path(paths) == str(current_path.resolve())
 
 
+def test_yolo_training_flow_new_completed_request_clears_stale_configs_but_keeps_inputs(tmp_path: Path) -> None:
+    module = _load_yolo_training_flow_module()
+    store = ArtifactStore(root_dir=tmp_path)
+    paths = store.prepare_thread("second-round-thread")
+    dataset_path = paths.uploads / "datasets.zip"
+    image1_path = paths.uploads / "image1.zip"
+    image2_path = paths.uploads / "image2.zip"
+    dataset_path.write_bytes(b"dataset")
+    image1_path.write_bytes(b"image1")
+    image2_path.write_bytes(b"image2")
+    module._save_dataset_package_path(paths, str(dataset_path))
+    module._save_composite_input_paths(paths, [image1_path, image2_path])
+    module._save_training_config(paths, {"training": {"epochs": 10}})
+    module._save_generation_prompt(paths, "old prompt")
+    module._save_annotation_labels(paths, ["old"])
+    module._save_detection_task_description(paths, "old task")
+    module._save_synthetic_generation_enabled(paths, False)
+    module._set_workflow_completed(paths, True)
+
+    module._reset_completed_request_state_for_new_training(paths)
+
+    assert module._load_dataset_package_path(paths) == str(dataset_path)
+    assert module._load_composite_image1_path(paths) == str(image1_path.resolve())
+    assert module._load_composite_image2_path(paths) == str(image2_path.resolve())
+    assert module._load_training_config(paths) == {}
+    assert module._load_generation_prompt(paths) == ""
+    assert module._load_annotation_labels(paths) == []
+    assert module._load_detection_task_description(paths) == ""
+    assert module._load_synthetic_generation_enabled(paths) is None
+    assert module._is_workflow_completed(paths) is False
+
+
 def test_yolo_training_flow_rejects_model_id_outside_thread_models(tmp_path: Path) -> None:
     module = _load_yolo_training_flow_module()
     store = ArtifactStore(root_dir=tmp_path)
@@ -293,6 +342,198 @@ def test_yolo_training_flow_reads_training_model_id_from_runtime_options() -> No
         )
         == "model-nested"
     )
+
+
+def test_training_backend_is_app_template_driven_without_runtime_flag() -> None:
+    module = _load_yolo_training_flow_module()
+
+    assert (
+        module._selected_training_backend(
+            [],
+            RuntimeOptions(app_template_name="algorithm-engineer-full-cycle-deimv2-test"),
+            "yolo_training_flow",
+        )
+        == "deimv2"
+    )
+    assert (
+        module._selected_training_backend(
+            [],
+            RuntimeOptions(app_template_name="algorithm-engineer-full-cycle-test"),
+            "yolo_training_flow",
+        )
+        == "yolo"
+    )
+
+
+def test_training_failed_reply_uses_backend_specific_wording() -> None:
+    module = _load_yolo_training_flow_module()
+
+    deimv2_reply = module._training_failed_reply(
+        summary={},
+        fallback_reply='{"returncode": 1, "stderr_tail": "checkpoint missing"}',
+        best_pt="",
+        data_preparation_summary={},
+        training_backend="deimv2",
+    )
+    yolo_reply = module._training_failed_reply(
+        summary={},
+        fallback_reply='{"returncode": 1, "stderr_tail": "failed"}',
+        best_pt="",
+        data_preparation_summary={},
+        training_backend="yolo",
+    )
+
+    assert "DEIMv2" in deimv2_reply
+    assert "best checkpoint" in deimv2_reply
+    assert "YOLO" in yolo_reply
+    assert "best.pt" in yolo_reply
+
+
+def test_deimv2_metric_summary_reads_coco_metrics() -> None:
+    module = _load_yolo_training_flow_module()
+    summary = {
+        "training_backend": "deimv2",
+        "metrics": {
+            "mAP50_95": 0.405,
+            "mAP50": 0.493,
+            "mAP75": 0.48,
+            "AR100": 0.465,
+            "best_coco_eval_bbox": 0.44876559084479883,
+            "best_epoch": 6,
+            "fitness": 0.44876559084479883,
+        },
+    }
+
+    metrics = module._extract_metric_summary(summary)
+
+    assert metrics["mAP50_95"] == 0.405
+    assert metrics["mAP50"] == 0.493
+    assert metrics["mAP75"] == 0.48
+    assert metrics["AR100"] == 0.465
+    assert metrics["recall"] == 0.465
+    assert metrics["best_epoch"] == 6
+
+
+def test_deimv2_epoch_reasoning_raises_tiny_dataset_default() -> None:
+    module = _load_yolo_training_flow_module()
+    spec = {
+        "training": {
+            "model_variant": "deimv2-dinov3-s",
+            "template_config": "configs/deimv2/deimv2_dinov3_s_coco.yml",
+            "epochs": 10,
+            "smoke_epochs": 10,
+        }
+    }
+
+    updated = module._apply_deimv2_dataset_epoch_reasoning(
+        spec,
+        {"image_count": 24, "label_count": 2},
+        "帮我训练一个抽烟检测模型",
+    )
+
+    assert updated["training"]["epochs"] == 50
+    assert "smoke_epochs" not in updated["training"]
+
+
+def test_deimv2_epoch_reasoning_respects_explicit_user_epochs() -> None:
+    module = _load_yolo_training_flow_module()
+    spec = {
+        "training": {
+            "model_variant": "deimv2-dinov3-s",
+            "template_config": "configs/deimv2/deimv2_dinov3_s_coco.yml",
+            "epochs": 10,
+            "smoke_epochs": 10,
+        }
+    }
+
+    updated = module._apply_deimv2_dataset_epoch_reasoning(
+        spec,
+        {"image_count": 24, "label_count": 2},
+        "帮我训练一个抽烟检测模型，训练10个epoch",
+    )
+
+    assert updated["training"]["epochs"] == 10
+    assert "smoke_epochs" not in updated["training"]
+
+
+def test_deimv2_runner_parses_train_log_metrics(tmp_path: Path) -> None:
+    module = _load_deimv2_training_runner_module()
+    log_path = tmp_path / "train.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.405",
+                "Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.493",
+                "Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.480",
+                "Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.465",
+                "best_stat: {'epoch': 6, 'coco_eval_bbox': 0.44876559084479883}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = module.parse_deimv2_log_metrics(log_path)
+
+    assert payload["metrics"]["mAP50_95"] == 0.405
+    assert payload["metrics"]["mAP50"] == 0.493
+    assert payload["metrics"]["AR100"] == 0.465
+    assert payload["metrics"]["best_epoch"] == 6
+    assert payload["results_dict"]["metrics/mAP50-95(B)"] == 0.405
+
+
+def test_deimv2_tuning_checkpoint_resolves_project_models_relative_path(tmp_path: Path) -> None:
+    module = _load_deimv2_training_runner_module()
+    module.PROJECT_ROOT = tmp_path
+    module.PROJECT_MODELS_ROOT = tmp_path / "models"
+    checkpoint = tmp_path / "models" / "deimv2" / "deimv2_dinov3_s_coco.pth"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"checkpoint")
+
+    resolved = module.resolve_tuning_checkpoint(
+        tmp_path / "plugins" / "skills" / "deimv2-auto-training" / "vendor" / "deimv2",
+        {"tuning_checkpoint": "models/deimv2/deimv2_dinov3_s_coco.pth"},
+    )
+
+    assert resolved == checkpoint.resolve()
+
+
+def test_deimv2_runner_generates_only_train_config(tmp_path: Path) -> None:
+    module = _load_deimv2_training_runner_module()
+    deim_root = tmp_path / "deimv2"
+    template = deim_root / "configs" / "deimv2" / "deimv2_dinov3_s_coco.yml"
+    backbone = tmp_path / "models" / "deimv2" / "vitt_distill.pt"
+    dataset_root = tmp_path / "dataset"
+    annotations = dataset_root / "annotations"
+    annotations.mkdir(parents=True)
+    for split in ("train", "val"):
+        (dataset_root / "images" / split).mkdir(parents=True)
+    template.parent.mkdir(parents=True)
+    template.write_text("# template\n", encoding="utf-8")
+    backbone.parent.mkdir(parents=True)
+    backbone.write_bytes(b"checkpoint")
+    (annotations / "instances_train.json").write_text(
+        json.dumps({"categories": [{"id": 0, "name": "person"}], "images": [], "annotations": []}),
+        encoding="utf-8",
+    )
+
+    module.resolve_deimv2_root = lambda _spec: deim_root
+    module.detect_target_hardware = lambda _prefix: {"selected": "cpu", "cuda_available": False, "npu_available": False}
+    module.choose_template = lambda _root, _training: template
+    module.resolve_checkpoint = lambda *_args, **_kwargs: backbone
+    module.resolve_tuning_checkpoint = lambda *_args, **_kwargs: None
+
+    summary = module.run_training(
+        {
+            "dataset_root": str(dataset_root),
+            "work_dir": str(tmp_path / "work"),
+            "training": {"epochs": 50, "smoke_epochs": 3, "batch": 1, "workers": 0},
+        },
+        dry_run=True,
+    )
+
+    assert [stage["stage"] for stage in summary["stages"]] == ["train"]
+    assert (tmp_path / "work" / "configs" / "train.yml").is_file()
+    assert not (tmp_path / "work" / "configs" / "smoke.yml").exists()
 
 
 def test_yolo_training_flow_without_model_id_clears_previous_uploaded_model() -> None:
@@ -367,3 +608,37 @@ def test_yolo_training_flow_owns_three_zip_input_contract(tmp_path: Path) -> Non
     assert "数据集" in required_inputs[0]["reason"]
     assert "image1" in required_inputs[1]["reason"]
     assert "image2" in required_inputs[2]["reason"]
+
+
+def test_deimv2_app_keeps_model_managed_intent_before_training(tmp_path: Path) -> None:
+    module = _load_yolo_training_flow_module()
+    request = ChatRequest(
+        messages=[
+            Message(
+                role="user",
+                content="\u5e2e\u6211\u8bad\u7ec3\u4e00\u4e2a\u62bd\u70df\u68c0\u6d4b\u6a21\u578b",
+            )
+        ],
+        runtime_options=RuntimeOptions(
+            thread_id="postman-deimv2-test-inputs",
+            workflow="yolo_training_flow",
+            app_template_name="algorithm-engineer-full-cycle-deimv2-test",
+            skill_parameters={"yolo_training_flow": {"auto_generate_missing_spec": True}},
+        ),
+    )
+
+    workflow = module.YoloTrainingWorkflow(ArtifactStore(root_dir=tmp_path))
+    result, _events = workflow.run_with_events(
+        agent_config=AgentConfig(name="default", display_name="Default"),
+        messages=request.messages,
+        attachments=[],
+        thread_id=request.runtime_options.thread_id or "postman-deimv2-test-inputs",
+        runtime_options=request.runtime_options,
+        workflow_name="yolo_training_flow",
+    )
+
+    required_inputs = result.metadata["required_inputs"]
+    paths = workflow.artifact_store.prepare_thread("postman-deimv2-test-inputs")
+    assert result.metadata["requires_input"] is True
+    assert [item["type"] for item in required_inputs] == ["dataset", "image", "image"]
+    assert module._load_annotation_labels(paths) == ["person", "cigarette"]
