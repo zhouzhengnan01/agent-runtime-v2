@@ -2,26 +2,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-PROJECT_DIR="$(pwd -P)"
 source ./runtime-env.sh
 
 mkdir -p "${RUNTIME_DIR}"
-
-MODE="${JETLINKS_AGENT_RUN_MODE:-auto}"
-if [ "${1:-}" = "--docker" ]; then
-  MODE="docker"
-  shift
-elif [ "${1:-}" = "--local" ]; then
-  MODE="local"
-  shift
-fi
-
-is_truthy() {
-  case "${1:-}" in
-    1|true|TRUE|yes|YES|on|ON) return 0 ;;
-    *) return 1 ;;
-  esac
-}
 
 is_running() {
   local pid="$1"
@@ -79,7 +62,6 @@ docker_run() {
     -e APP_HOST=0.0.0.0
     -e APP_PORT="${JETLINKS_AGENT_CONTAINER_PORT}"
     -e APP_WORKERS="${APP_WORKERS}"
-    -e APP_WORKERS_AUTO_MAX="${APP_WORKERS_AUTO_MAX}"
     -e APP_LOG_LEVEL="${APP_LOG_LEVEL}"
     -e APP_HEALTH_PATH="${APP_HEALTH_PATH}"
     -e JETLINKS_REVIEW_MAX_CONCURRENCY="${JETLINKS_REVIEW_MAX_CONCURRENCY}"
@@ -102,7 +84,9 @@ docker_run() {
   if [ "$#" -gt 0 ]; then
     run_args+=("$@")
   else
-    run_args+=("server")
+    run_args+=(
+      sh -c "mkdir -p '${RUNTIME_DIR}' && exec python -m uvicorn '${APP_MODULE}' --host 0.0.0.0 --port '${JETLINKS_AGENT_CONTAINER_PORT}' --workers '${APP_WORKERS}' --log-level '${APP_LOG_LEVEL}' 2>&1 | tee -a '${LOG_FILE}'"
+    )
   fi
 
   local container_id

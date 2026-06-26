@@ -1319,6 +1319,7 @@ def _auto_permission_option(raw_options: object) -> str | None:
 def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
     meta = _params(params.get("_meta"))
     sources = [
+        *_prompt_session_context_runtime_option_sources(params.get("prompt")),
         params,
         _params(params.get("runtimeOptions") or params.get("runtime_options")),
         _params(meta.get("runtimeOptions") or meta.get("runtime_options")),
@@ -1340,6 +1341,54 @@ def _runtime_options_payload(params: dict[str, Any]) -> dict[str, Any]:
         config_options["session_init_tools"] = session_tools
         payload["config_options"] = config_options
     return payload
+
+
+def _prompt_session_context_runtime_option_sources(prompt: Any) -> list[dict[str, Any]]:
+    prompt_text, _attachments = prompt_parts_from_dict_blocks(prompt)
+    if not prompt_text:
+        return []
+    sources: list[dict[str, Any]] = []
+    for payload in _session_context_json_payloads(prompt_text):
+        meta = _params(payload.get("_meta"))
+        sources.extend(
+            [
+                payload,
+                _params(payload.get("runtimeOptions") or payload.get("runtime_options")),
+                _params(meta.get("runtimeOptions") or meta.get("runtime_options")),
+            ]
+        )
+        for container in _bridge_payload_containers(payload):
+            sources.extend(
+                [
+                    container,
+                    _params(container.get("runtimeOptions") or container.get("runtime_options")),
+                ]
+            )
+    return [source for source in sources if source]
+
+
+def _session_context_json_payloads(text: str) -> list[dict[str, Any]]:
+    marker = "session context (json)"
+    lowered = text.lower()
+    decoder = json.JSONDecoder()
+    payloads: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        index = lowered.find(marker, offset)
+        if index < 0:
+            break
+        start = index + len(marker)
+        while start < len(text) and (text[start].isspace() or text[start] in ":："):
+            start += 1
+        try:
+            payload, end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            offset = start + 1
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+        offset = start + max(end, 1)
+    return payloads
 
 
 _BRIDGE_CONTAINER_KEYS = (

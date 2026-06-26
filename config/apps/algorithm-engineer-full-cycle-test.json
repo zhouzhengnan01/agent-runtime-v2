@@ -13,16 +13,6 @@
     "gpu-training-orchestrator"
   ],
   "selected_mcp_tools": [],
-  "runtime_options": {
-    "skill_parameters": {
-      "yolo_training_flow": {
-        "button_epochs": false
-      },
-      "algorithm-engineer-full-cycle-test": {
-        "button_epochs": false
-      }
-    }
-  },
   "prompt_examples": [
     "帮我训练一个YOLO抽烟检测模型"
   ],

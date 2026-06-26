@@ -2370,6 +2370,54 @@ def test_acp_protocol_reads_runtime_options_from_platform_input_parameters() -> 
     assert payload["selected_skills"] == ["gpu-training-orchestrator"]
 
 
+def test_acp_protocol_reads_runtime_options_from_prompt_session_context_json() -> None:
+    params = {
+        "prompt": [
+            {
+                "type": "text",
+                "text": (
+                    "Session context (JSON):\n"
+                    '{"_meta":{"appTemplateName":"algorithm-engineer-full-cycle-test",'
+                    '"runtimeOptions":{"workflow":"yolo_training_flow",'
+                    '"appTemplateName":"algorithm-engineer-full-cycle-test",'
+                    '"trainingModelId":"model-uploaded",'
+                    '"maxSyntheticImages":5}}}\n\n'
+                    "请帮我训练一个办公室抽烟行为检测的YOLO模型。"
+                ),
+            }
+        ]
+    }
+
+    payload = _runtime_options_payload(params)
+
+    assert payload["workflow"] == "yolo_training_flow"
+    assert payload["app_template_name"] == "algorithm-engineer-full-cycle-test"
+    assert payload["training_model_id"] == "model-uploaded"
+    assert payload["max_synthetic_images"] == 5
+
+
+def test_acp_protocol_explicit_runtime_options_override_prompt_session_context_json() -> None:
+    params = {
+        "runtimeOptions": {"maxSyntheticImages": 9},
+        "prompt": [
+            {
+                "type": "text",
+                "text": (
+                    "Session context (JSON):\n"
+                    '{"_meta":{"runtimeOptions":{"trainingModelId":"model-uploaded",'
+                    '"maxSyntheticImages":5}}}\n\n'
+                    "请帮我训练一个办公室抽烟行为检测的YOLO模型。"
+                ),
+            }
+        ],
+    }
+
+    payload = _runtime_options_payload(params)
+
+    assert payload["training_model_id"] == "model-uploaded"
+    assert payload["max_synthetic_images"] == 9
+
+
 def test_acp_protocol_maps_platform_files_to_attachments() -> None:
     params = {
         "input": [

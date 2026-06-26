@@ -157,6 +157,8 @@ def resolve_checkpoint(
 
 
 def resolve_tuning_checkpoint(deim_root: Path, training: dict[str, Any]) -> Path | None:
+    if training.get("disable_tuning_checkpoint"):
+        return None
     explicit = str(training.get("tuning_checkpoint") or "").strip()
     if explicit or os.environ.get("DEIMV2_TUNING_CHECKPOINT"):
         return resolve_checkpoint(deim_root, explicit, env_name="DEIMV2_TUNING_CHECKPOINT")
@@ -581,6 +583,13 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
         "template": str(template),
         "backbone_checkpoint": str(backbone),
         "tuning_checkpoint": str(tuning) if tuning else "",
+        "disable_tuning_checkpoint": bool(training.get("disable_tuning_checkpoint")),
+        "model_source": str(training.get("model_source") or ""),
+        "model_id": str(training.get("model_id") or ""),
+        "model_sha256": str(training.get("model_sha256") or ""),
+        "model_original_name": str(training.get("model_original_name") or ""),
+        "model_extension": str(training.get("model_extension") or ""),
+        "deimv2_upload_model_usage": str(training.get("deimv2_upload_model_usage") or ""),
         "config": str(configs_dir / "train.yml"),
         "dataset_config": str(configs_dir / "dataset.yml"),
         "run_dir": str(run_dir),

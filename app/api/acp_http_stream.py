@@ -121,11 +121,11 @@ async def acp_http_stream(request: AcpHttpSubscriptionRequest) -> StreamingRespo
 
 
 @router.post("/models/{thread_id}", dependencies=[Depends(require_runtime_token)])
-async def upload_pt_model(thread_id: str, file: UploadFile = File(...)) -> dict[str, object]:
+async def upload_training_model(thread_id: str, file: UploadFile = File(...)) -> dict[str, object]:
     original_name = _safe_model_filename(file.filename or "model.pt")
-    if Path(original_name).suffix.lower() != ".pt":
+    if Path(original_name).suffix.lower() not in {".pt", ".pth"}:
         await file.close()
-        raise HTTPException(status_code=400, detail="Only .pt model files are supported.")
+        raise HTTPException(status_code=400, detail="Only .pt and .pth model files are supported.")
 
     paths = model_store.prepare_thread(thread_id)
     target = _unique_model_path(paths.uploads / "models", original_name)

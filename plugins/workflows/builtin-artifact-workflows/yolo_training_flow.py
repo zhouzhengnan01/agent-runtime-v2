@@ -22,6 +22,7 @@ WORKFLOW_NAME = "yolo_training_flow"
 WORKFLOW_OUTPUT_DIR = "yolo_training_flow"
 PIPELINE_WORK_DIR = "pipeline_work"
 TRAINING_MODEL_REGISTRY = "training_models.json"
+SUPPORTED_TRAINING_MODEL_SUFFIXES = {".pt", ".pth"}
 DEFAULT_SELECTED_SKILLS = ["image-dataset-generation", "image-dataset-produce", "data-auto-annotation", "gpu-training-orchestrator"]
 DEIMV2_SELECTED_SKILLS = ["image-dataset-generation", "image-dataset-produce", "data-auto-annotation", "deimv2-auto-training"]
 YOLO_TRAINING_SKILL = "gpu-training-orchestrator"
@@ -128,6 +129,17 @@ class YoloTrainingWorkflow:
                 role_hints=explicit_attachment_roles,
             )
 
+        attachment_thread_error = _validate_attachment_thread_paths(paths, [item for item in [dataset_attachment, *composite_attachments] if item is not None])
+        if attachment_thread_error:
+            return self._model_spec_failed_result(
+                recorder,
+                agent_config.name,
+                paths.thread_id,
+                workflow,
+                attachment_thread_error,
+                phase="attachment_thread_mismatch",
+            )
+
         if dataset_attachment and dataset_attachment.path:
             _set_workflow_completed(paths, False)
             resolved_dataset = _resolve_uploaded_local_path(paths.root, dataset_attachment.path)
@@ -199,6 +211,7 @@ class YoloTrainingWorkflow:
                 recorder=recorder,
                 training_backend=training_backend,
                 deimv2_model_selection=deimv2_model_selection,
+                workflow_output_root=workflow_output_root,
             )
             request_spec = _ensure_intent_labels(request_spec, spec_user_text)
             if _spec_string(request_spec, "generation_prompt"):
@@ -227,6 +240,19 @@ class YoloTrainingWorkflow:
             training_cfg: dict[str, Any] = {}
             training_cfg_available = False
             task_description = _spec_string(request_spec, "task_description")
+            if not prompt_text:
+                prompt_text = _fallback_generation_prompt(labels, task_description=task_description, user_text=spec_user_text)
+                if prompt_text:
+                    request_spec["generation_prompt"] = prompt_text
+                    request_spec["use_synthetic_generation"] = True
+                    recorder.emit(
+                        "workflow.generation_prompt_fallback",
+                        {
+                            "reason": "model_managed_spec_missing_generation_prompt",
+                            "labels": labels,
+                            "generation_prompt": prompt_text,
+                        },
+                    )
             if prompt_text:
                 _save_generation_prompt(paths, prompt_text)
             if labels:
@@ -429,15 +455,20 @@ class YoloTrainingWorkflow:
             _force_current_runtime(training_cfg)
 
         if user_training_model:
-            _apply_user_training_model(training_cfg, user_training_model)
+            user_model_apply_error = _apply_user_training_model(training_cfg, user_training_model, training_backend)
+            if user_model_apply_error:
+                return self._model_spec_failed_result(
+                    recorder,
+                    agent_config.name,
+                    paths.thread_id,
+                    workflow,
+                    f"用户上传的训练模型不可用：{user_model_apply_error}",
+                    phase="user_training_model_invalid",
+                )
             _save_training_config(paths, training_cfg)
             request_training = request_spec.get("training")
             if isinstance(request_training, dict):
-                request_training["model"] = user_training_model["local_path"]
-                request_training["model_source"] = "user_upload"
-                request_training["strict_model"] = True
-                request_training["model_sha256"] = user_training_model["sha256"]
-                request_training["model_id"] = user_training_model["modelId"]
+                _apply_user_training_model({"training": request_training}, user_training_model, training_backend)
             recorder.emit(
                 "workflow.user_model_selected",
                 {
@@ -446,10 +477,12 @@ class YoloTrainingWorkflow:
                     "path": user_training_model["path"],
                     "sha256": user_training_model["sha256"],
                     "source": "user_upload",
+                    "training_backend": training_backend,
+                    "usage": _user_training_model_usage(training_backend, user_training_model),
                 },
             )
         else:
-            _clear_user_training_model_selection(training_cfg, request_spec)
+            _clear_user_training_model_selection(training_cfg, request_spec, training_backend)
             _save_training_config(paths, training_cfg)
 
         pipeline_work_dir = str((workflow_output_root / PIPELINE_WORK_DIR).resolve())
@@ -1243,6 +1276,38 @@ def _parse_json_object(raw: str) -> dict[str, Any]:
     return payload
 
 
+def _write_model_intent_spec_raw_log(
+    workflow_output_root: Path | None,
+    *,
+    purpose: str,
+    system_prompt: str,
+    messages: list[Message],
+    raw_response: str,
+    parsed_spec: dict[str, Any],
+    parse_error: str = "",
+) -> None:
+    if workflow_output_root is None:
+        return
+    log_dir = workflow_output_root / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "purpose": purpose,
+            "system_prompt": system_prompt,
+            "messages": [{"role": item.role, "content": item.content} for item in messages],
+            "raw_response": raw_response,
+            "parse_error": parse_error,
+            "parsed_spec": parsed_spec,
+            "generated_keys": sorted(str(key) for key in parsed_spec.keys()),
+        }
+        (log_dir / "model-intent-spec-raw.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:
+        return
+
+
 def _extract_yolo_training_request_spec(
     user_text: str,
     *,
@@ -1355,6 +1420,7 @@ def _generate_model_managed_training_intent_spec(
     recorder: EventRecorder,
     training_backend: str,
     deimv2_model_selection: dict[str, Any] | None = None,
+    workflow_output_root: Path | None = None,
 ) -> dict[str, Any]:
     if training_backend != "deimv2":
         return _generate_model_managed_yolo_training_intent_spec(
@@ -1375,26 +1441,56 @@ def _generate_model_managed_training_intent_spec(
         "task_description 字符串；use_synthetic_generation 布尔值，通常为 true；"
         "generation_prompt 字符串；labels 字符串数组；training 空对象；runtime 空对象；split 空对象。"
         "labels 必须是英文 ASCII 类名，只能使用小写英文、数字、下划线，禁止泛化 object/target。"
-        "合成提示词要适合 image2 目标自然合成到 image1 场景中，且适合后续 SAM3/COCO 标注。"
+        "合成设定：用户会上传 datasets.zip、image1.zip、image2.zip；"
+        "image1.zip 固定是参考图/场景背景文件夹，image2.zip 固定是目标图/前景目标文件夹；"
+        "generation_prompt 必须明确写出：使用 image1.zip 作为参考图/场景背景，使用 image2.zip 作为目标图/前景目标，"
+        "把 image2.zip 中的目标自然合成到 image1.zip 参考图的场景中；"
+        "同时必须要求光照、尺度、透视、遮挡、阴影一致，且适合后续 SAM3/COCO 边界框标注。"
     )
     messages = [
         Message(role="user", content=f"用户业务目标：{user_text}\n请输出 DEIMv2 自动训练托管规格。")
     ]
+    raw = ""
+    parse_error = ""
+    spec: dict[str, Any] = {}
     try:
         raw = llm.complete_sync(system_prompt, messages)
-        payload = _parse_json_object(raw)
-        spec = payload if isinstance(payload, dict) else {}
+        try:
+            payload = _parse_json_object(raw)
+            spec = payload if isinstance(payload, dict) else {}
+        except Exception as exc:
+            parse_error = str(exc)
+            spec = {}
         recorder.emit(
             "llm.completed",
             {
                 "purpose": "workflow_deimv2_model_managed_intent_spec",
                 "used_fallback": False,
                 "generated_keys": sorted(str(key) for key in spec.keys()),
+                **({"parse_error": parse_error[:1000]} if parse_error else {}),
             },
+        )
+        _write_model_intent_spec_raw_log(
+            workflow_output_root,
+            purpose="workflow_deimv2_model_managed_intent_spec",
+            system_prompt=system_prompt,
+            messages=messages,
+            raw_response=raw,
+            parsed_spec=spec,
+            parse_error=parse_error,
         )
         return spec
     except Exception as exc:
         recorder.emit("llm.completed", {"purpose": "workflow_deimv2_model_managed_intent_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        _write_model_intent_spec_raw_log(
+            workflow_output_root,
+            purpose="workflow_deimv2_model_managed_intent_spec",
+            system_prompt=system_prompt,
+            messages=messages,
+            raw_response=raw,
+            parsed_spec=spec,
+            parse_error=str(exc),
+        )
         return {}
 
 
@@ -1576,10 +1672,10 @@ def _fallback_model_managed_yolo_training_request_spec(
         "task_description": _spec_string(spec, "task_description") or f"{label_text} detection",
         "use_synthetic_generation": True,
         "generation_prompt": _spec_string(spec, "generation_prompt")
-        or (
-            f"Use image1.zip as background/scene images and image2.zip as foreground target images for {label_text}. "
-            "Naturally composite the targets from image2 into image1 scenes with consistent lighting, scale, perspective, "
-            "occlusion, and realistic camera appearance, producing images suitable for object-detection annotation."
+        or _fallback_generation_prompt(
+            labels,
+            task_description=_spec_string(spec, "task_description") or f"{label_text} detection",
+            user_text=user_text,
         ),
         "labels": labels,
         "training": fallback_training["training"],
@@ -1609,10 +1705,10 @@ def _fallback_model_managed_training_request_spec(
         "task_description": _spec_string(spec, "task_description") or f"{', '.join(labels)} detection",
         "use_synthetic_generation": True,
         "generation_prompt": _spec_string(spec, "generation_prompt")
-        or (
-            f"Use image1.zip as background/scene images and image2.zip as foreground target images for {', '.join(labels)}. "
-            "Naturally composite targets into realistic camera images with consistent lighting, scale, perspective, "
-            "and visible objects suitable for SAM3 COCO annotation."
+        or _fallback_generation_prompt(
+            labels,
+            task_description=_spec_string(spec, "task_description") or f"{', '.join(labels)} detection",
+            user_text=user_text,
         ),
         "labels": labels,
         "training": fallback_training["training"],
@@ -3145,6 +3241,30 @@ def _extract_generation_prompt(user_text: str, *, allow_free_text: bool = False)
     return text if len(text) >= 12 else ""
 
 
+def _fallback_generation_prompt(
+    labels: list[str] | tuple[str, ...],
+    *,
+    task_description: str = "",
+    user_text: str = "",
+) -> str:
+    label_text = _generation_prompt_label_text(labels)
+    if not label_text:
+        return ""
+    objective = _clean_user_visible_text(task_description) or _training_objective_from_user_text(user_text)
+    objective_clause = f"，任务目标为{objective}" if objective else ""
+    return (
+        f"真实监控画面，使用 image1.zip 作为参考图/场景背景，使用 image2.zip 作为目标图/前景目标；"
+        f"将 image2.zip 中的 {label_text} 目标自然合成到 image1.zip 参考图的场景中"
+        f"{objective_clause}，保持光照方向、色彩、尺度比例、透视关系和遮挡关系一致，"
+        "目标轮廓清晰、完整可见、可精确标注，适合 COCO 目标检测边界框标注。"
+    )
+
+
+def _generation_prompt_label_text(labels: list[str] | tuple[str, ...]) -> str:
+    normalized_labels = _normalize_detection_labels(list(labels))
+    return ", ".join(normalized_labels)
+
+
 def _extract_labeled_section(text: str, starts: tuple[str, ...], stops: tuple[str, ...]) -> str:
     start = -1
     for label in sorted(starts, key=len, reverse=True):
@@ -4002,13 +4122,15 @@ def _validate_user_training_model_record(
         resolved = model_path.resolve(strict=True)
     except OSError:
         return None, f"找不到模型文件：{raw_path}"
-    models_root = (paths.uploads / "models").resolve()
+    uploads_root = paths.uploads.resolve()
+    models_root = (uploads_root / "models").resolve()
     try:
         resolved.relative_to(models_root)
     except ValueError:
         return None, "模型文件不在当前线程的 uploads/models 目录中"
-    if not resolved.is_file() or resolved.suffix.lower() != ".pt":
-        return None, "模型文件必须是有效的 .pt 文件"
+    suffix = resolved.suffix.lower()
+    if not resolved.is_file() or suffix not in SUPPORTED_TRAINING_MODEL_SUFFIXES:
+        return None, "模型文件必须是有效的 .pt 或 .pth 文件"
     if resolved.stat().st_size <= 0:
         return None, "模型文件为空"
 
@@ -4016,7 +4138,7 @@ def _validate_user_training_model_record(
     expected_sha256 = str(record.get("sha256") or "").strip().lower()
     if expected_sha256 and expected_sha256 != actual_sha256:
         return None, "模型文件 SHA256 与上传记录不一致"
-    relative = resolved.relative_to(paths.uploads).as_posix()
+    relative = resolved.relative_to(uploads_root).as_posix()
     return {
         **record,
         "source": "user_upload",
@@ -4026,6 +4148,7 @@ def _validate_user_training_model_record(
         "mime_type": "application/octet-stream",
         "size": resolved.stat().st_size,
         "sha256": actual_sha256,
+        "extension": suffix,
     }, ""
 
 
@@ -4037,22 +4160,81 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _apply_user_training_model(training_cfg: dict[str, Any], model_record: dict[str, Any]) -> None:
-    training = training_cfg.get("training")
-    if not isinstance(training, dict):
-        return
-    training["model"] = str(model_record["local_path"])
+def _user_training_model_suffix(model_record: dict[str, Any]) -> str:
+    value = str(model_record.get("extension") or Path(str(model_record.get("local_path") or model_record.get("path") or "")).suffix)
+    return value.lower()
+
+
+def _apply_user_training_model(
+    training_cfg: dict[str, Any],
+    model_record: dict[str, Any],
+    training_backend: str = "yolo",
+) -> str:
+    if training_backend == "deimv2":
+        return _apply_user_training_model_for_deimv2(training_cfg, model_record)
+    return _apply_user_training_model_for_yolo(training_cfg, model_record)
+
+
+def _apply_common_user_training_model_metadata(training: dict[str, Any], model_record: dict[str, Any]) -> None:
     training["model_source"] = "user_upload"
     training["strict_model"] = True
     training["model_sha256"] = str(model_record["sha256"])
     training["model_original_name"] = str(model_record.get("name") or "")
     training["model_id"] = str(model_record.get("modelId") or "")
+    training["model_extension"] = _user_training_model_suffix(model_record)
+
+
+def _apply_user_training_model_for_yolo(training_cfg: dict[str, Any], model_record: dict[str, Any]) -> str:
+    training = training_cfg.get("training")
+    if not isinstance(training, dict):
+        return ""
+    if _user_training_model_suffix(model_record) != ".pt":
+        return "YOLO 训练模型必须是 .pt 文件"
+    training["model"] = str(model_record["local_path"])
+    _apply_common_user_training_model_metadata(training, model_record)
+    return ""
+
+
+def _apply_user_training_model_for_deimv2(training_cfg: dict[str, Any], model_record: dict[str, Any]) -> str:
+    training = training_cfg.get("training")
+    if not isinstance(training, dict):
+        return ""
+    suffix = _user_training_model_suffix(model_record)
+    local_path = str(model_record["local_path"])
+    if suffix == ".pt":
+        training["backbone_checkpoint"] = local_path
+        training["tuning_checkpoint"] = ""
+        training["disable_tuning_checkpoint"] = True
+        training["deimv2_upload_model_usage"] = "backbone_checkpoint"
+    elif suffix == ".pth":
+        training["tuning_checkpoint"] = local_path
+        training["disable_tuning_checkpoint"] = False
+        training["deimv2_upload_model_usage"] = "tuning_checkpoint"
+    else:
+        return "DEIMv2 训练模型必须是 .pt 或 .pth 文件"
+    training.pop("model", None)
+    _apply_common_user_training_model_metadata(training, model_record)
+    return ""
+
+
+def _user_training_model_usage(training_backend: str, model_record: dict[str, Any]) -> str:
+    suffix = _user_training_model_suffix(model_record)
+    if training_backend == "deimv2":
+        if suffix == ".pt":
+            return "backbone_checkpoint"
+        if suffix == ".pth":
+            return "tuning_checkpoint"
+    return "model"
 
 
 def _clear_user_training_model_selection(
     training_cfg: dict[str, Any],
     request_spec: dict[str, Any],
+    training_backend: str = "yolo",
 ) -> None:
+    if training_backend == "deimv2":
+        _clear_deimv2_user_training_model_selection(training_cfg, request_spec)
+        return
     training = training_cfg.get("training")
     if not isinstance(training, dict):
         return
@@ -4080,7 +4262,61 @@ def _clear_user_training_model_selection(
         ):
             llm_model = ""
     training["model"] = llm_model or "yolo11n.pt"
-    for key in ("model_source", "strict_model", "model_sha256", "model_original_name", "model_id"):
+    for key in ("model_source", "strict_model", "model_sha256", "model_original_name", "model_id", "model_extension"):
+        training.pop(key, None)
+
+
+def _clear_deimv2_user_training_model_selection(
+    training_cfg: dict[str, Any],
+    request_spec: dict[str, Any],
+) -> None:
+    training = training_cfg.get("training")
+    if not isinstance(training, dict):
+        return
+
+    def is_upload_path(value: Any) -> bool:
+        return "/uploads/models/" in str(value or "").replace("\\", "/").lower()
+
+    has_user_selection = bool(
+        str(training.get("model_source") or "").strip() == "user_upload"
+        or training.get("strict_model")
+        or str(training.get("model_id") or "").strip()
+        or str(training.get("deimv2_upload_model_usage") or "").strip()
+        or training.get("disable_tuning_checkpoint")
+        or is_upload_path(training.get("backbone_checkpoint"))
+        or is_upload_path(training.get("tuning_checkpoint"))
+    )
+    if not has_user_selection:
+        return
+
+    request_training = request_spec.get("training")
+    if not isinstance(request_training, dict):
+        request_training = {}
+
+    request_has_user_selection = bool(
+        str(request_training.get("model_source") or "").strip() == "user_upload"
+        or request_training.get("strict_model")
+        or str(request_training.get("model_id") or "").strip()
+        or is_upload_path(request_training.get("backbone_checkpoint"))
+        or is_upload_path(request_training.get("tuning_checkpoint"))
+    )
+    if request_has_user_selection:
+        request_training = {}
+
+    if is_upload_path(training.get("backbone_checkpoint")):
+        training["backbone_checkpoint"] = str(request_training.get("backbone_checkpoint") or DEIMV2_BACKBONE_CHECKPOINT)
+    if is_upload_path(training.get("tuning_checkpoint")) or training.get("disable_tuning_checkpoint"):
+        training["tuning_checkpoint"] = str(request_training.get("tuning_checkpoint") or "")
+    for key in (
+        "model_source",
+        "strict_model",
+        "model_sha256",
+        "model_original_name",
+        "model_id",
+        "model_extension",
+        "deimv2_upload_model_usage",
+        "disable_tuning_checkpoint",
+    ):
         training.pop(key, None)
 
 
@@ -4120,6 +4356,25 @@ def _synthetic_generation_marker_path(paths: ThreadPaths) -> Path:
 
 def _save_synthetic_generation_enabled(paths: ThreadPaths, enabled: bool) -> None:
     _synthetic_generation_marker_path(paths).write_text(json.dumps(bool(enabled)), encoding="utf-8")
+
+
+def _validate_attachment_thread_paths(paths: ThreadPaths, attachments: list[Attachment]) -> str:
+    current_thread_id = str(paths.thread_id or "").strip()
+    if not current_thread_id:
+        return ""
+    for item in attachments:
+        raw_path = str(getattr(item, "path", "") or "").strip()
+        if not raw_path:
+            continue
+        normalized = raw_path.replace("\\", "/")
+        match = re.search(r"(?:^|/)\.runtime/threads/([^/]+)/", normalized, flags=re.IGNORECASE)
+        if match and match.group(1) != current_thread_id:
+            return (
+                "上传文件路径与当前会话 threadId 不一致："
+                f"当前 threadId={current_thread_id}，文件路径属于 threadId={match.group(1)}，"
+                "请重新上传文件或把 runtimeOptions.files 中的 path/fileUrl 改为当前线程目录。"
+            )
+    return ""
 
 
 def _load_synthetic_generation_enabled(paths: ThreadPaths) -> bool | None:

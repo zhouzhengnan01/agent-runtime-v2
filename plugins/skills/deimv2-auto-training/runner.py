@@ -167,6 +167,12 @@ def _normalize_spec(spec: dict[str, Any], paths: Any, package_root: Path) -> dic
     )
     model_variant = _normalize_model_variant(training.get("model_variant") or payload.get("model_variant"))
     model_spec = MODEL_VARIANTS[model_variant]
+    disable_tuning_checkpoint = bool(training.get("disable_tuning_checkpoint"))
+    tuning_checkpoint = (
+        ""
+        if disable_tuning_checkpoint
+        else training.get("tuning_checkpoint") or os.environ.get("DEIMV2_TUNING_CHECKPOINT", "") or model_spec["tuning_checkpoint"]
+    )
     normalized_training = {
         "model_variant": model_variant,
         "template_config": training.get("template_config") or model_spec["template_config"],
@@ -176,10 +182,28 @@ def _normalize_spec(spec: dict[str, Any], paths: Any, package_root: Path) -> dic
         "device": training.get("device") or payload.get("device") or "auto",
         "workers": int(training.get("workers") if training.get("workers") is not None else 0),
         "backbone_checkpoint": training.get("backbone_checkpoint") or os.environ.get("DEIMV2_BACKBONE_CHECKPOINT", "") or DEFAULT_BACKBONE_CHECKPOINT,
-        "tuning_checkpoint": training.get("tuning_checkpoint") or os.environ.get("DEIMV2_TUNING_CHECKPOINT", "") or model_spec["tuning_checkpoint"],
+        "tuning_checkpoint": tuning_checkpoint,
+        "disable_tuning_checkpoint": disable_tuning_checkpoint,
         "conda_env": training.get("conda_env") or training.get("conda_env_name") or runtime.get("conda_env_name") or "",
     }
-    for key in ("warmup_iter", "checkpoint_freq", "num_top_queries", "flat_epoch", "no_aug_epoch", "lr", "learning_rate", "weight_decay", "betas", "optimizer"):
+    for key in (
+        "warmup_iter",
+        "checkpoint_freq",
+        "num_top_queries",
+        "flat_epoch",
+        "no_aug_epoch",
+        "lr",
+        "learning_rate",
+        "weight_decay",
+        "betas",
+        "optimizer",
+        "model_source",
+        "model_sha256",
+        "model_original_name",
+        "model_id",
+        "model_extension",
+        "deimv2_upload_model_usage",
+    ):
         if training.get(key) is not None:
             normalized_training[key] = training[key]
     return {
