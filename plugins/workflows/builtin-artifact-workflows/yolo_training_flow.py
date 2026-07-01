@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 import subprocess
+import time
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -53,7 +55,28 @@ MIN_TEST_SPLIT = 0.1
 DEFAULT_MAX_SYNTHETIC_IMAGES = 10
 button_epochs = True
 FIXED_TRAINING_EPOCHS = 10
+MAX_TRAINING_EPOCHS = 200
 AUTO_GENERATE_MISSING_SPEC = True
+
+
+@dataclass(frozen=True)
+class TrainingRunPaths:
+    thread: ThreadPaths
+    run_id: str
+    workspace: Path
+    outputs: Path
+
+    @property
+    def root(self) -> Path:
+        return self.thread.root
+
+    @property
+    def uploads(self) -> Path:
+        return self.thread.uploads
+
+    @property
+    def thread_id(self) -> str:
+        return self.thread.thread_id
 
 
 class YoloTrainingWorkflow:
@@ -90,17 +113,38 @@ class YoloTrainingWorkflow:
         deimv2_model_selection = _select_deimv2_model_variant(runtime_options, recorder) if training_backend == "deimv2" else {}
         generation_enabled = _capability_enabled(selected_skills, "image_generation")
         training_enabled = _capability_enabled(selected_skills, "training")
-        waiting_prompt = _is_waiting_prompt(paths)
-        workflow_completed = _is_workflow_completed(paths)
-        workflow_output_root = paths.outputs / WORKFLOW_OUTPUT_DIR
+        active_run_paths = _load_active_training_run_paths(paths)
         existing_dataset_pkg = _load_dataset_package_path(paths)
         existing_composite_image1 = _load_composite_image1_path(paths)
         existing_composite_image2 = _load_composite_image2_path(paths)
         current_objective = _training_objective_from_user_text(user_text)
-        if current_objective and workflow_completed and not waiting_prompt:
-            _reset_completed_request_state_for_new_training(paths)
-            workflow_completed = False
-            waiting_prompt = False
+        waiting_prompt = _is_waiting_prompt(active_run_paths or paths)
+        start_new_run = bool(current_objective and not waiting_prompt)
+        if start_new_run:
+            run_paths = _create_training_run_paths(paths, training_backend)
+            _save_active_training_run(paths, run_paths, training_backend=training_backend, objective=current_objective)
+            _set_waiting_prompt(run_paths, False)
+            _set_workflow_completed(run_paths, False)
+            _set_workflow_completed(paths, False)
+        elif active_run_paths is not None:
+            run_paths = active_run_paths
+        else:
+            run_paths = None
+        state_paths = run_paths or paths
+        waiting_prompt = _is_waiting_prompt(state_paths)
+        workflow_completed = _is_workflow_completed(state_paths)
+        workflow_output_root = _workflow_output_root(state_paths)
+        if run_paths is not None:
+            recorder.emit(
+                "workflow.training_run.selected",
+                {
+                    "run_id": run_paths.run_id,
+                    "workspace": str(run_paths.workspace),
+                    "outputs": str(run_paths.outputs),
+                    "training_backend": training_backend,
+                    "new_run": start_new_run or active_run_paths is None,
+                },
+            )
         if current_objective:
             _save_training_objective(paths, current_objective)
         stored_objective = _load_training_objective(paths)
@@ -142,11 +186,15 @@ class YoloTrainingWorkflow:
 
         if dataset_attachment and dataset_attachment.path:
             _set_workflow_completed(paths, False)
+            if run_paths is not None:
+                _set_workflow_completed(run_paths, False)
             resolved_dataset = _resolve_uploaded_local_path(paths.root, dataset_attachment.path)
             _save_dataset_package_path(paths, str(resolved_dataset))
             _clear_composite_input_paths(paths)
         if composite_attachments:
             _set_workflow_completed(paths, False)
+            if run_paths is not None:
+                _set_workflow_completed(run_paths, False)
             _save_composite_input_paths(paths, _prepare_composite_input_paths(paths, composite_attachments, explicit_attachment_roles))
 
         dataset_pkg = _load_dataset_package_path(paths)
@@ -183,6 +231,23 @@ class YoloTrainingWorkflow:
             recorder.emit("agent.message", {"text": reply})
             recorder.emit("run.completed", {"result": result.model_dump()})
             return result, recorder.events
+
+        if run_paths is None:
+            run_paths = _create_training_run_paths(paths, training_backend)
+            _save_active_training_run(paths, run_paths, training_backend=training_backend, objective=current_objective or stored_objective)
+            workflow_output_root = run_paths.outputs
+            workflow_completed = _is_workflow_completed(run_paths)
+            waiting_prompt = _is_waiting_prompt(run_paths)
+            recorder.emit(
+                "workflow.training_run.selected",
+                {
+                    "run_id": run_paths.run_id,
+                    "workspace": str(run_paths.workspace),
+                    "outputs": str(run_paths.outputs),
+                    "training_backend": training_backend,
+                    "new_run": True,
+                },
+            )
 
         requested_training_model_id = _requested_training_model_id(runtime_options)
         user_training_model, user_training_model_error = _resolve_user_training_model(
@@ -226,11 +291,11 @@ class YoloTrainingWorkflow:
             request_spec = _ensure_intent_labels(request_spec, spec_user_text)
         synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
         if synthetic_generation is not None:
-            _save_synthetic_generation_enabled(paths, synthetic_generation)
-        persisted_synthetic_generation = _load_synthetic_generation_enabled(paths)
+            _save_synthetic_generation_enabled(run_paths, synthetic_generation)
+        persisted_synthetic_generation = _load_synthetic_generation_enabled(run_paths)
         if model_managed_spec:
             generation_enabled = True
-            _save_synthetic_generation_enabled(paths, True)
+            _save_synthetic_generation_enabled(run_paths, True)
         elif persisted_synthetic_generation is not None:
             generation_enabled = generation_enabled and persisted_synthetic_generation
 
@@ -254,43 +319,43 @@ class YoloTrainingWorkflow:
                         },
                     )
             if prompt_text:
-                _save_generation_prompt(paths, prompt_text)
+                _save_generation_prompt(run_paths, prompt_text)
             if labels:
-                _save_annotation_labels(paths, labels)
+                _save_annotation_labels(run_paths, labels)
             if task_description:
-                _save_detection_task_description(paths, task_description)
+                _save_detection_task_description(run_paths, task_description)
             generation_enabled = True
-            _save_synthetic_generation_enabled(paths, True)
+            _save_synthetic_generation_enabled(run_paths, True)
         else:
             prompt_text = _spec_string(request_spec, "generation_prompt") or _extract_generation_prompt(spec_user_text, allow_free_text=waiting_prompt)
             if prompt_text:
-                _save_generation_prompt(paths, prompt_text)
+                _save_generation_prompt(run_paths, prompt_text)
             else:
-                prompt_text = _load_generation_prompt(paths)
+                prompt_text = _load_generation_prompt(run_paths)
             labels = _normalize_detection_labels(_spec_string_list(request_spec, "labels") or _extract_annotation_labels(spec_user_text))
             if labels:
-                _save_annotation_labels(paths, labels)
+                _save_annotation_labels(run_paths, labels)
             else:
-                labels = _load_annotation_labels(paths)
+                labels = _load_annotation_labels(run_paths)
             training_cfg = _spec_training_config(request_spec)
             if training_backend == "deimv2":
                 _apply_deimv2_model_selection_to_training_config(training_cfg, deimv2_model_selection)
             training_cfg_available = bool(training_cfg)
             if training_cfg:
-                _save_training_config(paths, training_cfg)
+                _save_training_config(run_paths, training_cfg)
             else:
-                training_cfg = _load_training_config(paths)
+                training_cfg = _load_training_config(run_paths)
                 training_cfg_available = bool(training_cfg)
             if not training_cfg:
                 training_cfg = _extract_training_config(spec_user_text)
                 training_cfg_available = _has_explicit_training_config(spec_user_text)
                 if training_cfg_available:
-                    _save_training_config(paths, training_cfg)
+                    _save_training_config(run_paths, training_cfg)
             task_description = _spec_string(request_spec, "task_description")
             if task_description:
-                _save_detection_task_description(paths, task_description)
+                _save_detection_task_description(run_paths, task_description)
             else:
-                task_description = _load_detection_task_description(paths)
+                task_description = _load_detection_task_description(run_paths)
 
         if not dataset_pkg or (generation_enabled and (not composite_image1 or not composite_image2)):
             required_inputs = []
@@ -310,9 +375,13 @@ class YoloTrainingWorkflow:
             )
 
         if generation_enabled and not prompt_text:
-            _set_waiting_prompt(paths, True)
+            _set_waiting_prompt(run_paths, True)
             if _auto_generate_missing_spec(runtime_options):
-                reply = "模型未能生成合成提示词，无法继续自动合成数据。请检查模型配置或重试。"
+                reply = _model_generation_failed_reply(
+                    "模型未能生成合成提示词，无法继续自动合成数据。",
+                    recorder,
+                    missing_field="generation_prompt",
+                )
                 status = "failed"
                 event_type = "run.failed"
                 metadata_phase = "model_spec_completion_failed"
@@ -333,9 +402,13 @@ class YoloTrainingWorkflow:
             return result, recorder.events
 
         if not labels:
-            _set_waiting_prompt(paths, True)
+            _set_waiting_prompt(run_paths, True)
             if _auto_generate_missing_spec(runtime_options):
-                reply = "模型未能生成自动标注类别，无法继续自动标注和训练。请检查模型配置或重试。"
+                reply = _model_generation_failed_reply(
+                    "模型未能生成自动标注类别，无法继续自动标注和训练。",
+                    recorder,
+                    missing_field="labels",
+                )
                 status = "failed"
                 event_type = "run.failed"
                 metadata_phase = "model_spec_completion_failed"
@@ -360,9 +433,13 @@ class YoloTrainingWorkflow:
             return result, recorder.events
 
         if training_enabled and not training_cfg_available and not model_managed_spec:
-            _set_waiting_prompt(paths, True)
+            _set_waiting_prompt(run_paths, True)
             if _auto_generate_missing_spec(runtime_options):
-                reply = "模型未能生成完整训练参数，无法继续自动训练。请检查模型配置或重试。"
+                reply = _model_generation_failed_reply(
+                    "模型未能生成完整训练参数，无法继续自动训练。",
+                    recorder,
+                    missing_field="training",
+                )
                 status = "failed"
                 event_type = "run.failed"
                 metadata_phase = "model_spec_completion_failed"
@@ -389,7 +466,7 @@ class YoloTrainingWorkflow:
         _reset_generated_dir(workflow_output_root / PIPELINE_WORK_DIR)
         _reset_generated_dir(workflow_output_root / "training_run")
         _reset_generated_dir(workflow_output_root / "deimv2_training_run")
-        _set_waiting_prompt(paths, False)
+        _set_waiting_prompt(run_paths, False)
         recorder.emit("spec.started", {"selected_skills": selected_skills, "attachment_count": len(attachments)})
 
         unpack_root = workflow_output_root / "uploaded_dataset"
@@ -419,7 +496,7 @@ class YoloTrainingWorkflow:
             synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
             if synthetic_generation is not None:
                 generation_enabled = synthetic_generation
-                _save_synthetic_generation_enabled(paths, synthetic_generation)
+                _save_synthetic_generation_enabled(run_paths, synthetic_generation)
             prompt_text = _spec_string(request_spec, "generation_prompt") or prompt_text
             labels = _normalize_detection_labels(_spec_string_list(request_spec, "labels") or labels)
             training_cfg = _spec_training_config(request_spec)
@@ -428,16 +505,16 @@ class YoloTrainingWorkflow:
             training_cfg_available = bool(training_cfg)
             task_description = _spec_string(request_spec, "task_description") or task_description
             if prompt_text:
-                _save_generation_prompt(paths, prompt_text)
+                _save_generation_prompt(run_paths, prompt_text)
             if labels:
-                _save_annotation_labels(paths, labels)
+                _save_annotation_labels(run_paths, labels)
             if task_description:
-                _save_detection_task_description(paths, task_description)
+                _save_detection_task_description(run_paths, task_description)
             if training_cfg:
                 _apply_epochs_policy(training_cfg, runtime_options)
                 request_spec["training"]["epochs"] = training_cfg["training"]["epochs"]
                 _force_current_runtime(training_cfg)
-                _save_training_config(paths, training_cfg)
+                _save_training_config(run_paths, training_cfg)
             else:
                 return self._model_spec_failed_result(
                     recorder,
@@ -465,7 +542,7 @@ class YoloTrainingWorkflow:
                     f"用户上传的训练模型不可用：{user_model_apply_error}",
                     phase="user_training_model_invalid",
                 )
-            _save_training_config(paths, training_cfg)
+            _save_training_config(run_paths, training_cfg)
             request_training = request_spec.get("training")
             if isinstance(request_training, dict):
                 _apply_user_training_model({"training": request_training}, user_training_model, training_backend)
@@ -483,7 +560,7 @@ class YoloTrainingWorkflow:
             )
         else:
             _clear_user_training_model_selection(training_cfg, request_spec, training_backend)
-            _save_training_config(paths, training_cfg)
+            _save_training_config(run_paths, training_cfg)
 
         pipeline_work_dir = str((workflow_output_root / PIPELINE_WORK_DIR).resolve())
         project_dir_name = "deimv2_training_run" if training_backend == "deimv2" else "training_run"
@@ -551,10 +628,14 @@ class YoloTrainingWorkflow:
                 recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
             stderr_tail = str(data_prep_data.get("stderr") or "").strip()
             stdout_tail = str(data_prep_data.get("stdout") or "").strip()
+            failure_reason_lines = _data_preparation_failure_reason_lines(stderr_tail, stdout_tail)
+            failure_reason_text = "\n".join(f"- {line}" for line in failure_reason_lines)
+            failure_reason_block = f"{failure_reason_text}\n" if failure_reason_text else ""
             reply = (
                 "数据处理流程失败，尚未进入生图和流式标注阶段。\n\n"
                 f"- 失败阶段：`data-auto-annotation`\n"
                 f"- returncode：`{data_prep_returncode}`\n"
+                f"{failure_reason_block}"
                 f"- 主要错误：\n```text\n{(stderr_tail or stdout_tail)[-2000:]}\n```"
             )
             result = AgentRunResult(
@@ -566,6 +647,8 @@ class YoloTrainingWorkflow:
                 verification=VerificationResult(passed=False, retry_count=0, checks=[], failed_checks=["data-auto-annotation failed"]),
                 metadata={
                     "workflow": workflow,
+                    "run_id": run_paths.run_id,
+                    "run_output_dir": str(run_paths.outputs),
                     "phase": "data_preparation_failed",
                     "data_preparation_spec": data_prep_spec,
                     "data_preparation_result": data_prep_data,
@@ -580,14 +663,14 @@ class YoloTrainingWorkflow:
         training_skill_name = _training_skill_for_backend(training_backend)
 
         if not training_enabled:
-            _set_waiting_prompt(paths, False)
-            _set_workflow_completed(paths, True)
+            _set_waiting_prompt(run_paths, False)
+            _set_workflow_completed(run_paths, True)
             outputs = [*annotation_result.outputs]
             for artifact in outputs:
                 recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
                 recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
-            pipeline_paths = _read_pipeline_paths(paths)
-            summary = _read_data_preparation_summary(paths)
+            pipeline_paths = _read_pipeline_paths(run_paths)
+            summary = _read_data_preparation_summary(run_paths)
             reply = (
                 f"数据处理流程已完成，当前未选择 `{training_skill_name}`，所以不会要求训练参数，也不会启动训练。\n\n"
                 f"- prepared_dataset: `{summary.get('prepared_dataset') or data_prep_output_dir}`\n"
@@ -603,6 +686,8 @@ class YoloTrainingWorkflow:
                 verification=VerificationResult(passed=True, retry_count=0, checks=[], failed_checks=[]),
                 metadata={
                     "workflow": workflow,
+                    "run_id": run_paths.run_id,
+                    "run_output_dir": str(run_paths.outputs),
                     "phase": "data_preparation_completed",
                     "data_preparation_spec": data_prep_spec,
                     "data_preparation_summary": summary,
@@ -615,7 +700,7 @@ class YoloTrainingWorkflow:
             return result, recorder.events
 
         if training_backend == "deimv2":
-            prep_summary = _read_data_preparation_summary(paths)
+            prep_summary = _read_data_preparation_summary(run_paths)
             training_coco = str(prep_summary.get("training_coco") or "")
             training_root = str(prep_summary.get("training_root") or "")
             if not training_coco or not training_root:
@@ -678,9 +763,9 @@ class YoloTrainingWorkflow:
             recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
             recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
 
-        pipeline_paths = _read_pipeline_paths(paths)
-        summary = _read_run_summary(paths, training_backend=training_backend)
-        best_pt = _find_best_checkpoint(paths, training_backend=training_backend)
+        pipeline_paths = _read_pipeline_paths(run_paths)
+        summary = _read_run_summary(run_paths, training_backend=training_backend)
+        best_pt = _find_best_checkpoint(run_paths, training_backend=training_backend)
         template_reply = ""
         if isinstance(training_result.data, dict):
             template_reply = str(training_result.data.get("final_reply") or "").strip()
@@ -691,13 +776,13 @@ class YoloTrainingWorkflow:
             except (TypeError, ValueError):
                 training_returncode = 1
         if training_returncode != 0:
-            _set_waiting_prompt(paths, False)
-            _set_workflow_completed(paths, False)
+            _set_waiting_prompt(run_paths, False)
+            _set_workflow_completed(run_paths, False)
             reply = _training_failed_reply(
                 summary=summary,
                 fallback_reply=template_reply,
                 best_pt=best_pt,
-                data_preparation_summary=_read_data_preparation_summary(paths),
+                data_preparation_summary=_read_data_preparation_summary(run_paths),
                 training_backend=training_backend,
             )
             result = AgentRunResult(
@@ -709,6 +794,8 @@ class YoloTrainingWorkflow:
                 verification=VerificationResult(passed=False, retry_count=0, checks=[], failed_checks=[f"{training_skill_name} failed"]),
                 metadata={
                     "workflow": workflow,
+                    "run_id": run_paths.run_id,
+                    "run_output_dir": str(run_paths.outputs),
                     "phase": "training_failed",
                     "training_spec": training_spec,
                     "data_preparation_spec": data_prep_spec,
@@ -749,8 +836,8 @@ class YoloTrainingWorkflow:
                 f"- 保存目录: {summary.get('train_save_dir') or project_dir}\n"
                 f"- best checkpoint: {best_pt if best_pt else '未生成'}"
             )
-        _set_waiting_prompt(paths, False)
-        _set_workflow_completed(paths, True)
+        _set_waiting_prompt(run_paths, False)
+        _set_workflow_completed(run_paths, True)
 
         result = AgentRunResult(
             agent=agent_config.name,
@@ -761,6 +848,8 @@ class YoloTrainingWorkflow:
             verification=VerificationResult(passed=True, retry_count=0, checks=[], failed_checks=[]),
             metadata={
                 "workflow": workflow,
+                "run_id": run_paths.run_id,
+                "run_output_dir": str(run_paths.outputs),
                 "phase": "training_completed",
                 "training_spec": training_spec,
                 "data_preparation_spec": data_prep_spec,
@@ -1043,10 +1132,26 @@ def _generate_model_controlled_reply(
         },
     )
     if not llm.configured:
-        recorder.emit("llm.completed", {"purpose": "workflow_final_reply", "used_fallback": True, "reason": "not_configured"})
-        return _human_fallback_reply(fallback_reply, summary, best_pt)
+        failure_reason = "当前应用没有可用的大模型配置，或 agent/app/runtimeOptions 中缺少 `base_url`、`model` 等必要配置。"
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_final_reply",
+                "used_fallback": True,
+                "reason": "not_configured",
+                "failure_reason": failure_reason,
+            },
+        )
+        return _human_fallback_reply(
+            fallback_reply,
+            summary,
+            best_pt,
+            summary_failure_reason=failure_reason,
+            llm_failures=_llm_failure_summaries(recorder),
+        )
 
     evaluation = _extract_evaluation_facts(summary)
+    llm_failures_before_final = _llm_failure_summaries(recorder)
     facts = {
         "workflow": workflow,
         "user_request": user_text,
@@ -1077,6 +1182,7 @@ def _generate_model_controlled_reply(
             "data_auto_annotation": _small_dict(annotation_result),
             "gpu_training_orchestrator": _small_dict(training_result),
         },
+        "llm_call_failures": llm_failures_before_final,
         "raw_training_reply_for_reference": fallback_reply,
     }
     system_prompt = (
@@ -1087,6 +1193,7 @@ def _generate_model_controlled_reply(
         "如果 status=merged 且 fallback 存在，说明主合成接口失败但 fallback 已成功补救，不要写成数据合成失败；"
         "如果 evaluation.metrics 中存在 precision、recall、mAP50、mAP50_95、fitness、mAP75、AR100、best_coco_eval_bbox、best_epoch，必须在回复中明确列出；"
         "DEIMv2 使用 COCO AP/AR 指标，precision 可能没有日志输出；不要因为 precision 不存在就说指标为空。"
+        "如果 llm_call_failures 非空，必须在回复中增加“大模型调用告警”，逐条说明失败阶段和原因；"
         "如果某个类别指标很差或为 0，要温和指出可能是样本/标注不足；"
         "输出应像专业算法训练报告，但不要机械复述 JSON。"
     )
@@ -1103,20 +1210,39 @@ def _generate_model_controlled_reply(
     try:
         reply = llm.complete_sync(system_prompt, messages).strip()
     except Exception as exc:
+        failure_reason = _strip_failure_reason_prefix(_classify_llm_error_reason(str(exc)))
         recorder.emit(
             "llm.completed",
-            {"purpose": "workflow_final_reply", "used_fallback": True, "error": str(exc)[:1000]},
+            {
+                "purpose": "workflow_final_reply",
+                "used_fallback": True,
+                "error": str(exc)[:1000],
+                "failure_reason": failure_reason,
+            },
         )
-        return _human_fallback_reply(fallback_reply, summary, best_pt)
+        return _human_fallback_reply(
+            fallback_reply,
+            summary,
+            best_pt,
+            summary_failure_reason=failure_reason,
+            llm_failures=_llm_failure_summaries(recorder),
+        )
     recorder.emit(
         "llm.completed",
         {
             "purpose": "workflow_final_reply",
             "used_fallback": not bool(reply),
             "reply_chars": len(reply),
+            **({"failure_reason": "大模型总结接口返回空内容。"} if not reply else {}),
         },
     )
-    return reply or _human_fallback_reply(fallback_reply, summary, best_pt)
+    return reply or _human_fallback_reply(
+        fallback_reply,
+        summary,
+        best_pt,
+        summary_failure_reason="大模型总结接口返回空内容。",
+        llm_failures=_llm_failure_summaries(recorder),
+    )
 
 
 def _is_yolo_training_intent(
@@ -1142,7 +1268,15 @@ def _is_yolo_training_intent(
     llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
     recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_intent_router"})
     if not llm.configured:
-        recorder.emit("llm.completed", {"purpose": "workflow_intent_router", "used_fallback": True, "reason": "not_configured"})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_intent_router",
+                "used_fallback": True,
+                "reason": "not_configured",
+                "failure_reason": _llm_not_configured_failure_reason(),
+            },
+        )
         return False
 
     system_prompt = (
@@ -1177,7 +1311,15 @@ def _is_yolo_training_intent(
         )
         return decision
     except Exception as exc:
-        recorder.emit("llm.completed", {"purpose": "workflow_intent_router", "used_fallback": True, "error": str(exc)[:1000]})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_intent_router",
+                "used_fallback": True,
+                "error": str(exc)[:1000],
+                "failure_reason": _strip_failure_reason_prefix(_classify_llm_error_reason(str(exc))),
+            },
+        )
         return False
 
 
@@ -1190,6 +1332,7 @@ def _chat_reply_for_non_training_intent(
 ) -> str:
     llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
     recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_chat_reply"})
+    failure_reason = ""
     if llm.configured:
         try:
             system_prompt = (
@@ -1201,9 +1344,29 @@ def _chat_reply_for_non_training_intent(
                 recorder.emit("llm.completed", {"purpose": "workflow_chat_reply", "used_fallback": False})
                 return reply
         except Exception as exc:
-            recorder.emit("llm.completed", {"purpose": "workflow_chat_reply", "used_fallback": True, "error": str(exc)[:1000]})
+            failure_reason = _strip_failure_reason_prefix(_classify_llm_error_reason(str(exc)))
+            recorder.emit(
+                "llm.completed",
+                {
+                    "purpose": "workflow_chat_reply",
+                    "used_fallback": True,
+                    "error": str(exc)[:1000],
+                    "failure_reason": failure_reason,
+                },
+            )
     else:
-        recorder.emit("llm.completed", {"purpose": "workflow_chat_reply", "used_fallback": True, "reason": "not_configured"})
+        failure_reason = _llm_not_configured_failure_reason()
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_chat_reply",
+                "used_fallback": True,
+                "reason": "not_configured",
+                "failure_reason": failure_reason,
+            },
+        )
+    if failure_reason:
+        return f"普通聊天回复的大模型调用失败：{failure_reason}"
     return "你好，我在。你可以直接和我聊天；如果需要训练 YOLO 检测模型，再告诉我任务并上传数据集。"
 
 
@@ -1320,7 +1483,15 @@ def _extract_yolo_training_request_spec(
     llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
     recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_request_spec"})
     if not llm.configured:
-        recorder.emit("llm.completed", {"purpose": "workflow_request_spec", "used_fallback": True, "reason": "not_configured"})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_request_spec",
+                "used_fallback": True,
+                "reason": "not_configured",
+                "failure_reason": _llm_not_configured_failure_reason(),
+            },
+        )
         return {}
     system_prompt = (
         "你是 YOLO 训练工作流的参数抽取器。请从用户中文或英文消息中抽取结构化规格。"
@@ -1348,7 +1519,15 @@ def _extract_yolo_training_request_spec(
         )
         return spec
     except Exception as exc:
-        recorder.emit("llm.completed", {"purpose": "workflow_request_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_request_spec",
+                "used_fallback": True,
+                "error": str(exc)[:1000],
+                "failure_reason": _strip_failure_reason_prefix(_classify_llm_error_reason(str(exc))),
+            },
+        )
         return {}
 
 
@@ -1362,7 +1541,15 @@ def _generate_model_managed_yolo_training_intent_spec(
     llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
     recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_model_managed_intent_spec"})
     if not llm.configured:
-        recorder.emit("llm.completed", {"purpose": "workflow_model_managed_intent_spec", "used_fallback": True, "reason": "not_configured"})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_model_managed_intent_spec",
+                "used_fallback": True,
+                "reason": "not_configured",
+                "failure_reason": _llm_not_configured_failure_reason(),
+            },
+        )
         return {}
     system_prompt = (
         "你是 YOLO 训练工作流的前置意图规划器。"
@@ -1408,7 +1595,15 @@ def _generate_model_managed_yolo_training_intent_spec(
         )
         return spec
     except Exception as exc:
-        recorder.emit("llm.completed", {"purpose": "workflow_model_managed_intent_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_model_managed_intent_spec",
+                "used_fallback": True,
+                "error": str(exc)[:1000],
+                "failure_reason": _strip_failure_reason_prefix(_classify_llm_error_reason(str(exc))),
+            },
+        )
         return {}
 
 
@@ -1432,7 +1627,15 @@ def _generate_model_managed_training_intent_spec(
     llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
     recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_deimv2_model_managed_intent_spec"})
     if not llm.configured:
-        recorder.emit("llm.completed", {"purpose": "workflow_deimv2_model_managed_intent_spec", "used_fallback": True, "reason": "not_configured"})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_deimv2_model_managed_intent_spec",
+                "used_fallback": True,
+                "reason": "not_configured",
+                "failure_reason": _llm_not_configured_failure_reason(),
+            },
+        )
         return {}
     system_prompt = (
         "你是 DEIMv2 DINOv3 目标检测训练工作流的前置意图规划器。"
@@ -1481,7 +1684,15 @@ def _generate_model_managed_training_intent_spec(
         )
         return spec
     except Exception as exc:
-        recorder.emit("llm.completed", {"purpose": "workflow_deimv2_model_managed_intent_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_deimv2_model_managed_intent_spec",
+                "used_fallback": True,
+                "error": str(exc)[:1000],
+                "failure_reason": _strip_failure_reason_prefix(_classify_llm_error_reason(str(exc))),
+            },
+        )
         _write_model_intent_spec_raw_log(
             workflow_output_root,
             purpose="workflow_deimv2_model_managed_intent_spec",
@@ -1517,7 +1728,15 @@ def _generate_dataset_aware_training_request_spec(
     llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
     recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_deimv2_dataset_aware_training_spec"})
     if not llm.configured:
-        recorder.emit("llm.completed", {"purpose": "workflow_deimv2_dataset_aware_training_spec", "used_fallback": True, "reason": "not_configured"})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_deimv2_dataset_aware_training_spec",
+                "used_fallback": True,
+                "reason": "not_configured",
+                "failure_reason": _llm_not_configured_failure_reason(),
+            },
+        )
         return base_spec
     readme_excerpt = _deimv2_readme_for_prompt()
     model_selection = deimv2_model_selection or _default_deimv2_model_selection()
@@ -1538,6 +1757,7 @@ def _generate_dataset_aware_training_request_spec(
         "batch 表示 train_dataloader.total_batch_size，必须结合 vendor 配置、数据量、img_size、类别数、目标大小和硬件选择；"
         "CUDA 且 300 张以上图片不应机械固定为 1 或 2，可优先考虑 4 或 8；CPU/NPU 可更保守。"
         "epochs 必须根据数据量、类别数、目标大小、用户是否明确要求快速测试来决定。"
+        f"epochs 最大不能超过 {MAX_TRAINING_EPOCHS}；即使用户目标较复杂，也必须在该上限内选择合理轮数。"
         "如果用户没有明确指定训练轮数，不要机械使用 10 epoch；小数据集正式训练通常至少 50 epoch。"
         "img_size 通常 640。"
         "README 关键内容如下：\n"
@@ -1584,7 +1804,15 @@ def _generate_dataset_aware_training_request_spec(
         )
         return _apply_deimv2_dataset_epoch_reasoning(merged, dataset_facts, user_text)
     except Exception as exc:
-        recorder.emit("llm.completed", {"purpose": "workflow_deimv2_dataset_aware_training_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_deimv2_dataset_aware_training_spec",
+                "used_fallback": True,
+                "error": str(exc)[:1000],
+                "failure_reason": _strip_failure_reason_prefix(_classify_llm_error_reason(str(exc))),
+            },
+        )
         return _apply_deimv2_dataset_epoch_reasoning(base_spec, dataset_facts, user_text)
 
 
@@ -1600,7 +1828,15 @@ def _generate_dataset_aware_yolo_training_request_spec(
     llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
     recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_dataset_aware_training_spec"})
     if not llm.configured:
-        recorder.emit("llm.completed", {"purpose": "workflow_dataset_aware_training_spec", "used_fallback": True, "reason": "not_configured"})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_dataset_aware_training_spec",
+                "used_fallback": True,
+                "reason": "not_configured",
+                "failure_reason": _llm_not_configured_failure_reason(),
+            },
+        )
         return base_spec
     system_prompt = (
         "你是资深计算机视觉算法工程师。现在必须基于 dataset_facts 分析结果，而不是只基于用户一句话，"
@@ -1612,6 +1848,7 @@ def _generate_dataset_aware_yolo_training_request_spec(
         "决策规则："
         "根据 image_count、format、label_count、category_counts、bbox_size_summary、image_size_summary 判断训练强度；"
         "小目标多时提高 imgsz；图片少或类别不均衡时增加 epochs/patience 并启用合成；"
+        f"epochs 最大不能超过 {MAX_TRAINING_EPOCHS}；禁止输出超过该上限的训练轮数；"
         "val/test 必须优先使用真实图，合成图只能进入 train；"
         "如果数据规模很小，test 比例要保守，避免每类在验证集缺失；"
         "labels 必须是英文 ASCII 类名，使用小写英文、数字、下划线，禁止中文和泛化 object/target。"
@@ -1652,7 +1889,15 @@ def _generate_dataset_aware_yolo_training_request_spec(
         )
         return merged
     except Exception as exc:
-        recorder.emit("llm.completed", {"purpose": "workflow_dataset_aware_training_spec", "used_fallback": True, "error": str(exc)[:1000]})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_dataset_aware_training_spec",
+                "used_fallback": True,
+                "error": str(exc)[:1000],
+                "failure_reason": _strip_failure_reason_prefix(_classify_llm_error_reason(str(exc))),
+            },
+        )
         return base_spec
 
 
@@ -1836,7 +2081,15 @@ def _complete_yolo_training_request_spec(
     llm = OpenAICompatibleClient(agent_config, runtime_options=runtime_options)
     recorder.emit("llm.started", {"model": llm.model, "configured": llm.configured, "purpose": "workflow_request_spec_completion"})
     if not llm.configured:
-        recorder.emit("llm.completed", {"purpose": "workflow_request_spec_completion", "used_fallback": True, "reason": "not_configured"})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_request_spec_completion",
+                "used_fallback": True,
+                "reason": "not_configured",
+                "failure_reason": _llm_not_configured_failure_reason(),
+            },
+        )
         return spec
     system_prompt = (
         "你是资深计算机视觉算法工程师，负责为 YOLO 目标检测训练工作流补全缺失参数。"
@@ -1854,6 +2107,7 @@ def _complete_yolo_training_request_spec(
         "只有任务是抽烟检测时 labels 才优先包含 person 和 cigarette；车辆检测应输出车辆相关类别；"
         "合成提示词要适合 image2 目标自然合成到 image1 场景，并强调真实监控画面、可标注；"
         "训练参数必须由你根据任务目标、YOLO 训练常识和快速验证需求自行选择，不要照抄用户未提供的固定模板；"
+        f"epochs 最大不能超过 {MAX_TRAINING_EPOCHS}；禁止输出超过该上限的训练轮数；"
         "训练必须使用当前运行环境，不要推理或指定 Conda 环境；runtime.enforce_conda_env 必须为 false；"
         "split 比例、模型大小、epochs、batch、patience 也必须由你合理选择。"
         "如果用户提供了 image1/image2 或上下文暗示需要合成数据，use_synthetic_generation 必须为 true。"
@@ -1883,7 +2137,15 @@ def _complete_yolo_training_request_spec(
         )
         return merged
     except Exception as exc:
-        recorder.emit("llm.completed", {"purpose": "workflow_request_spec_completion", "used_fallback": True, "error": str(exc)[:1000]})
+        recorder.emit(
+            "llm.completed",
+            {
+                "purpose": "workflow_request_spec_completion",
+                "used_fallback": True,
+                "error": str(exc)[:1000],
+                "failure_reason": _strip_failure_reason_prefix(_classify_llm_error_reason(str(exc))),
+            },
+        )
         return spec
 
 
@@ -2208,11 +2470,19 @@ def _epochs_button(runtime_options: RuntimeOptions) -> bool:
 
 
 def _apply_epochs_policy(training_cfg: dict[str, Any], runtime_options: RuntimeOptions) -> None:
-    if _epochs_button(runtime_options):
-        return
     training = training_cfg.get("training")
-    if isinstance(training, dict):
+    if not isinstance(training, dict):
+        return
+    if not _epochs_button(runtime_options):
         training["epochs"] = FIXED_TRAINING_EPOCHS
+    _cap_training_epochs(training)
+
+
+def _cap_training_epochs(training: dict[str, Any]) -> None:
+    for key in ("epochs", "epoches"):
+        value = _coerce_int(training.get(key))
+        if value is not None and value > MAX_TRAINING_EPOCHS:
+            training[key] = MAX_TRAINING_EPOCHS
 
 
 def _auto_generate_missing_spec(runtime_options: RuntimeOptions) -> bool:
@@ -2752,6 +3022,228 @@ def _training_failed_reply(
     return "\n".join(lines).strip()
 
 
+def _model_generation_failed_reply(title: str, recorder: EventRecorder, *, missing_field: str) -> str:
+    reason_lines = _model_generation_failure_reason_lines(recorder, missing_field=missing_field)
+    if not reason_lines:
+        reason_lines = [f"失败原因：模型返回内容中缺少 `{missing_field}` 字段，且无法根据当前请求生成兜底值。"]
+    return "\n".join([title, "", *(f"- {line}" for line in reason_lines)]).strip()
+
+
+def _model_generation_failure_reason_lines(recorder: EventRecorder, *, missing_field: str) -> list[str]:
+    event = _latest_llm_completion_event(recorder)
+    if event is None:
+        return [
+            f"失败原因：模型没有产出 `{missing_field}`，且当前运行记录中没有找到可用的 LLM 调用完成事件。",
+            "阶段说明：流程停在模型生成训练意图/合成提示词阶段，尚未进入数据处理、生图或训练阶段。",
+        ]
+
+    data = event.data if isinstance(event.data, dict) else {}
+    purpose = str(data.get("purpose") or "").strip()
+    reason = str(data.get("reason") or "").strip()
+    error = str(data.get("error") or "").strip()
+    failure_reason = str(data.get("failure_reason") or "").strip()
+    generated_keys = _llm_event_generated_keys(data)
+
+    lines: list[str] = []
+    if failure_reason:
+        lines.append(f"失败原因：{_strip_failure_reason_prefix(failure_reason)}")
+    elif reason == "not_configured":
+        lines.append(f"失败原因：{_llm_not_configured_failure_reason()}")
+    elif error:
+        lines.append(_classify_llm_error_reason(error))
+    elif generated_keys is not None:
+        if generated_keys:
+            lines.append(
+                f"失败原因：大模型已返回结构化结果，但结果缺少 `{missing_field}` 字段；"
+                f"本次返回字段为：{', '.join(generated_keys)}。"
+            )
+        else:
+            lines.append(f"失败原因：大模型返回为空、不是有效 JSON，或没有生成任何可用字段，因此缺少 `{missing_field}`。")
+    else:
+        lines.append(f"失败原因：大模型没有生成 `{missing_field}`，且没有返回明确的错误原因。")
+
+    if purpose:
+        lines.append(f"模型调用阶段：`{purpose}`。")
+    lines.append("阶段说明：流程停在模型生成训练意图/合成提示词阶段，尚未进入数据处理、生图或训练阶段。")
+    lines.append("处理建议：检查应用模型配置、base_url 是否可访问、api_key 是否有效、模型名称是否正确，以及模型返回是否为包含 `generation_prompt` 的 JSON。")
+    return lines
+
+
+def _latest_llm_completion_event(recorder: EventRecorder) -> ChatEvent | None:
+    for event in reversed(recorder.events):
+        if event.type != "llm.completed":
+            continue
+        data = event.data if isinstance(event.data, dict) else {}
+        purpose = str(data.get("purpose") or "")
+        if purpose.startswith("workflow_"):
+            return event
+    return None
+
+
+def _llm_failure_summaries(recorder: EventRecorder) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for event in recorder.events:
+        if event.type != "llm.completed":
+            continue
+        data = event.data if isinstance(event.data, dict) else {}
+        if not data.get("used_fallback"):
+            continue
+        purpose = str(data.get("purpose") or "unknown").strip()
+        failure_reason = str(data.get("failure_reason") or "").strip()
+        reason = str(data.get("reason") or "").strip()
+        error = str(data.get("error") or "").strip()
+        if failure_reason:
+            detail = _strip_failure_reason_prefix(failure_reason)
+        elif reason == "not_configured":
+            detail = _llm_not_configured_failure_reason()
+        elif error:
+            detail = _strip_failure_reason_prefix(_classify_llm_error_reason(error))
+        else:
+            detail = "大模型调用失败或使用了 fallback，但事件中没有记录更具体的错误。"
+        key = (purpose, detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        failures.append({"purpose": purpose, "reason": detail})
+        if len(failures) >= 8:
+            break
+    return failures
+
+
+def _llm_event_generated_keys(data: dict[str, Any]) -> list[str] | None:
+    for key in ("generated_keys", "extracted_keys", "completed_keys"):
+        raw = data.get(key)
+        if isinstance(raw, list):
+            return sorted(str(item) for item in raw)
+    return None
+
+
+def _llm_not_configured_failure_reason() -> str:
+    return "当前应用没有可用的大模型配置，或 agent/app/runtimeOptions 中缺少 `base_url`、`model` 等必要配置。"
+
+
+def _classify_llm_error_reason(error: str) -> str:
+    lowered = error.lower()
+    if _contains_any(lowered, ("connecttimeout", "readtimeout", "timeout", "timed out", "deadline exceeded")):
+        return "失败原因：访问大模型服务超时；请检查模型服务响应速度、网络链路、request_timeout_seconds 配置或中转服务是否卡住。"
+    if _contains_any(lowered, ("connection refused", "failed to establish a new connection", "connecterror", "connectionerror", "name or service not known", "nodename nor servname", "network is unreachable", "no route to host")):
+        return "失败原因：大模型服务地址不可达或网络不通；请检查 base_url、端口、防火墙、DNS、代理/VPN 路由和中转服务状态。"
+    if _contains_any(lowered, ("proxyerror", "proxy error", "tunnel connection failed")):
+        return "失败原因：访问大模型服务时受到代理影响；请检查代理配置，内网/中转地址需要时应配置 NO_PROXY 或绕过代理。"
+    if _contains_any(lowered, ("invalid_token", "invalid token", "invalid api key", "invalid_api_key", "incorrect api key")):
+        return "失败原因：大模型服务返回 token/api_key 无效；请检查上传应用 JSON、runtimeOptions 或中转服务中的 api_key 是否正确、是否过期。"
+    if _contains_any(lowered, ("insufficient_user_quota", "insufficient quota", "quota exceeded", "no quota", "余额不足", "额度不足")):
+        return "失败原因：大模型账号额度不足或配额耗尽；请检查云平台/中转服务账号余额、调用额度和模型配额。"
+    if _contains_any(lowered, ("rate limit", "ratelimit", "too many requests", "status code: 429", "client error '429", "httpstatuserror: client error '429")):
+        return "失败原因：大模型服务返回 429 限流；请降低请求频率、缩短上下文或检查中转服务限流策略。"
+    if _contains_any(lowered, ("401 unauthorized", "status code: 401", "client error '401", "httpstatuserror: client error '401")):
+        return "失败原因：大模型服务返回 401，通常是 api_key 缺失、无效或鉴权头不符合中转服务要求。"
+    if _contains_any(lowered, ("403 forbidden", "status code: 403", "client error '403", "httpstatuserror: client error '403")):
+        return "失败原因：大模型服务返回 403，当前 api_key 或账号没有调用该模型/接口的权限。"
+    if _contains_any(lowered, ("404 not found", "status code: 404", "client error '404", "httpstatuserror: client error '404")):
+        return "失败原因：大模型服务返回 404，通常是 base_url 路径、`/chat/completions` 中转路径或模型名称配置错误。"
+    if _contains_any(lowered, ("400 bad request", "status code: 400", "client error '400", "httpstatuserror: client error '400")):
+        return "失败原因：大模型服务返回 400，请检查模型名称、请求格式、max_tokens、messages 或中转服务参数兼容性。"
+    if _contains_any(lowered, ("500 internal server error", "502 bad gateway", "503 service unavailable", "504 gateway timeout", "server error '500", "server error '502", "server error '503", "server error '504")):
+        return "失败原因：大模型服务或中转服务返回 5xx，说明请求已到达服务端但后端处理失败或网关不可用；请检查中转服务和模型服务日志。"
+    return f"失败原因：大模型调用异常：{error[:500]}"
+
+
+def _data_preparation_failure_reason_lines(stderr_text: str, stdout_text: str) -> list[str]:
+    text = f"{stderr_text or ''}\n{stdout_text or ''}"
+    lowered = text.lower()
+    if not text.strip():
+        return []
+
+    lines: list[str] = []
+    if _contains_any(
+        lowered,
+        (
+            "sam3",
+            "sam3-predict.py",
+            "/v1/sam3/predict",
+            "real dataset auto-annotation failed",
+            "auto-annotation failed",
+        ),
+    ):
+        endpoint = _extract_sam3_endpoint(text)
+        if _contains_any(lowered, ("connection refused", "failed to establish a new connection", "no route to host", "network is unreachable", "connectionerror", "sam3_connection_error")):
+            lines.append(
+                "失败原因：SAM3 标注服务端口不可达或网络不通"
+                f"{f'（{endpoint}）' if endpoint else ''}；请检查 SAM3 服务是否启动、端口/防火墙/代理/VPN 路由是否正常。"
+            )
+        elif _contains_any(lowered, ("connecttimeout", "readtimeout", "timed out", "timeout", "sam3_connect_timeout", "sam3_read_timeout")):
+            lines.append(
+                "失败原因：SAM3 标注服务请求超时"
+                f"{f'（{endpoint}）' if endpoint else ''}；请检查端口连通性、服务负载、单张图片是否过大或模型推理是否卡住。"
+            )
+        elif _contains_any(lowered, ("proxyerror", "proxy error", "tunnel connection failed")):
+            lines.append(
+                "失败原因：访问 SAM3 标注服务时受到代理影响；请确认访问内网 SAM3 地址时已绕过代理，或配置 NO_PROXY。"
+            )
+        elif _contains_any(lowered, ("invalid_token", "invalid token", "401 unauthorized", "status_code\": 401", '"status_code": 401', "401 client error")):
+            lines.append(
+                "失败原因：SAM3 标注服务鉴权失败，通常是 Authorization token 缺失、错误或已过期；请检查 SAM3 请求头和服务端 token 配置。"
+            )
+        elif _contains_any(lowered, ("rate limit", "too many requests", "status_code\": 429", '"status_code": 429', "429 client error", "quota", "额度不足")):
+            lines.append(
+                "失败原因：SAM3 标注服务限流或额度/资源不足；请降低并发、稍后重试，或检查 SAM3 服务资源和配额。"
+            )
+        elif _contains_any(lowered, ("500 server error", "internal server error", '"status_code": 500', "http 500")):
+            lines.append(
+                "失败原因：SAM3 标注服务接口返回 HTTP 500，说明端口已响应但服务内部处理失败；请检查 SAM3 服务日志、模型是否加载成功、当前图片或类别是否触发服务端异常。"
+            )
+        elif _contains_any(lowered, ("502 server error", "503 server error", "504 server error", '"status_code": 502', '"status_code": 503', '"status_code": 504', "bad gateway", "service unavailable", "gateway timeout")):
+            lines.append(
+                "失败原因：SAM3 标注服务网关或后端临时不可用；请检查 SAM3 服务进程、反向代理和模型服务健康状态。"
+            )
+        elif _contains_any(lowered, ("400 client error", "401 client error", "403 client error", "404 client error", '"status_code": 400', '"status_code": 401', '"status_code": 403', '"status_code": 404')):
+            lines.append(
+                "失败原因：SAM3 标注接口返回客户端错误；请检查接口地址、Authorization token、请求格式和类别文本是否符合 SAM3 接口约定。"
+            )
+        else:
+            lines.append("失败原因：真实图片自动标注阶段调用 SAM3 失败；请检查 SAM3 服务、上传图片和检测类别配置。")
+
+        if _contains_any(lowered, ("per_image_coco_path:", "[data-prep] per-image real coco written:")):
+            lines.append("阶段说明：流程已经进入真实图片 SAM3 自动标注，并且部分图片已生成 COCO sidecar；失败发生在后续某张图片标注时，所以尚未进入生图、数据划分或训练阶段。")
+        else:
+            lines.append("阶段说明：流程在真实图片 SAM3 自动标注阶段失败，所以尚未进入生图、数据划分或训练阶段。")
+
+        if "format': 'unlabeled'" in lowered or "images_only" in lowered or "unlabeled" in lowered:
+            lines.append("数据提示：当前数据集被识别为未标注图片；如果 zip 内已有 COCO JSON，请确认放在 `annotations/coco.json` 或 `labels/coco.json`，否则会重新触发 SAM3 标注。")
+    elif _contains_any(
+        lowered,
+        (
+            "synthetic",
+            "image-dataset-generation",
+            "image-dataset-produce",
+            "image_dataset_generation",
+            "image_dataset_produce",
+            "composite",
+            "generation_prompt",
+            "生图",
+            "合成图",
+        ),
+    ):
+        reason = _classify_synthetic_generation_error_reason(text)
+        if reason:
+            lines.append(f"失败原因：{reason}")
+        else:
+            lines.append("失败原因：合成图模型调用失败，但日志中没有返回明确的网络、鉴权、额度或服务端错误类型。")
+        lines.append("阶段说明：流程在合成图模型调用或合成数据处理阶段失败，所以没有继续进入后续数据划分或训练阶段。")
+    return lines
+
+
+def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def _extract_sam3_endpoint(text: str) -> str:
+    match = re.search(r"https?://[^\s\"'<>]+/v1/sam3/predict", text)
+    return match.group(0).rstrip(".,);") if match else ""
+
+
 def _parse_json_object(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text) if text.strip().startswith("{") else {}
@@ -2780,6 +3272,38 @@ def _synthetic_generation_facts(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _strip_failure_reason_prefix(text: str) -> str:
+    return re.sub(r"^\s*失败原因[:：]\s*", "", str(text or "").strip())
+
+
+def _classify_synthetic_generation_error_reason(error: str) -> str:
+    raw = str(error or "").strip()
+    lowered = raw.lower()
+    if not raw:
+        return ""
+    if _contains_any(lowered, ("connecttimeout", "readtimeout", "timeout", "timed out", "deadline exceeded")):
+        return "合成图模型请求超时；请检查合成模型服务响应速度、网络链路、图片大小或请求超时配置。"
+    if _contains_any(lowered, ("connection refused", "failed to establish a new connection", "connecterror", "connectionerror", "name or service not known", "network is unreachable", "no route to host")):
+        return "合成图模型服务地址不可达或网络不通；请检查 base_url、端口、防火墙、DNS、代理/VPN 路由和模型服务状态。"
+    if _contains_any(lowered, ("proxyerror", "proxy error", "tunnel connection failed")):
+        return "访问合成图模型时受到代理影响；请检查代理配置，内网模型地址需要时应配置 NO_PROXY 或绕过代理。"
+    if _contains_any(lowered, ("invalid_token", "invalid token", "invalid api key", "invalid_api_key", "incorrect api key", "401 unauthorized", "status code: 401", "client error '401")):
+        return "合成图模型鉴权失败；请检查 api_key、token、Authorization 请求头或中转服务鉴权配置。"
+    if _contains_any(lowered, ("403 forbidden", "status code: 403", "client error '403")):
+        return "合成图模型返回 403；当前账号或 token 没有调用该模型/接口的权限。"
+    if _contains_any(lowered, ("insufficient_user_quota", "insufficient quota", "quota exceeded", "no quota", "余额不足", "额度不足")):
+        return "合成图模型账号额度不足或配额耗尽；请检查云平台/中转服务账号余额、调用额度和模型配额。"
+    if _contains_any(lowered, ("rate limit", "ratelimit", "too many requests", "status code: 429", "client error '429")):
+        return "合成图模型返回 429 限流；请降低请求频率、减少合成数量或检查中转服务限流策略。"
+    if _contains_any(lowered, ("400 bad request", "status code: 400", "client error '400")):
+        return "合成图模型返回 400；请检查请求格式、提示词、输入图片编码/路径、图片大小或模型参数是否符合接口要求。"
+    if _contains_any(lowered, ("404 not found", "status code: 404", "client error '404")):
+        return "合成图模型返回 404；通常是 base_url 路径、接口路由或模型名称配置错误。"
+    if _contains_any(lowered, ("500 internal server error", "502 bad gateway", "503 service unavailable", "504 gateway timeout", "server error '500", "server error '502", "server error '503", "server error '504")):
+        return "合成图模型或中转服务返回 5xx；说明请求已到达服务端但后端处理失败或网关不可用，请检查服务端日志。"
+    return f"合成图模型调用异常：{raw[:500]}"
+
+
 def _synthetic_generation_summary_line(facts: dict[str, Any]) -> str:
     status = str(facts.get("status") or "").strip()
     fallback = str(facts.get("fallback") or "").strip()
@@ -2790,15 +3314,24 @@ def _synthetic_generation_summary_line(facts: dict[str, Any]) -> str:
         if fallback:
             text = f"主合成接口不可用后已切换到 `{fallback}`，并成功合并 {synthetic_count or 0} 张合成图"
             if primary_error:
-                text += f"（主接口错误：{primary_error[:180]}）"
+                reason = _classify_synthetic_generation_error_reason(primary_error)
+                text += f"（主合成模型调用失败原因：{reason or primary_error[:180]}）"
             return text
         return f"已成功合并 {synthetic_count or 0} 张合成图"
     if status:
-        return f"状态 `{status}`" + (f"，错误：{error[:240]}" if error else "")
+        reason = _classify_synthetic_generation_error_reason(error or primary_error)
+        return f"状态 `{status}`" + (f"，合成图模型调用失败原因：{reason}" if reason else "")
     return ""
 
 
-def _human_fallback_reply(fallback_reply: str, summary: dict[str, Any], best_pt: str) -> str:
+def _human_fallback_reply(
+    fallback_reply: str,
+    summary: dict[str, Any],
+    best_pt: str,
+    *,
+    summary_failure_reason: str = "",
+    llm_failures: list[dict[str, str]] | None = None,
+) -> str:
     facts: dict[str, Any] = {}
     try:
         parsed = json.loads(fallback_reply) if fallback_reply.strip().startswith("{") else {}
@@ -2836,6 +3369,16 @@ def _human_fallback_reply(fallback_reply: str, summary: dict[str, Any], best_pt:
         f"- 训练目录：`{facts.get('train_dir') or '-'}`",
         f"- 最佳模型权重：`{facts.get('best_pt') or best_pt or '-'}`",
     ]
+    if summary_failure_reason:
+        lines[2:2] = [f"- 模型总结调用失败原因：{summary_failure_reason}", ""]
+    if llm_failures:
+        lines.extend(["", "大模型调用告警："])
+        for item in llm_failures:
+            if not isinstance(item, dict):
+                continue
+            purpose = str(item.get("purpose") or "unknown")
+            reason = str(item.get("reason") or "").strip()
+            lines.append(f"- `{purpose}`：{reason or '未记录明确原因'}")
     metrics = facts.get("metrics")
     if not isinstance(metrics, dict) or not metrics:
         metrics = _extract_metric_summary(summary)
@@ -3407,13 +3950,20 @@ def _run_annotation_fallback(image_dir: Path, paths: ThreadPaths, labels: list[s
     return out
 
 
-def _read_run_summary(paths: ThreadPaths, training_backend: str = "yolo") -> dict[str, Any]:
+def _workflow_output_root(paths: ThreadPaths | TrainingRunPaths) -> Path:
+    if isinstance(paths, TrainingRunPaths):
+        return paths.outputs
+    return paths.outputs / WORKFLOW_OUTPUT_DIR
+
+
+def _read_run_summary(paths: ThreadPaths | TrainingRunPaths, training_backend: str = "yolo") -> dict[str, Any]:
     run_dir = "deimv2_training_run" if training_backend == "deimv2" else "training_run"
-    preferred = paths.outputs / WORKFLOW_OUTPUT_DIR / run_dir / "run_summary.json"
+    output_root = _workflow_output_root(paths)
+    preferred = output_root / run_dir / "run_summary.json"
     if preferred.is_file():
         candidates = [preferred]
     else:
-        candidates = list(paths.outputs.rglob("run_summary.json"))
+        candidates = list(output_root.rglob("run_summary.json"))
     if not candidates:
         return {}
     latest = sorted(candidates)[-1]
@@ -3438,9 +3988,10 @@ def _read_run_summary(paths: ThreadPaths, training_backend: str = "yolo") -> dic
     return payload
 
 
-def _read_data_preparation_summary(paths: ThreadPaths) -> dict[str, Any]:
-    preferred = paths.outputs / WORKFLOW_OUTPUT_DIR / "prepared_data" / "data_preparation_summary.json"
-    candidates = [preferred] if preferred.is_file() else sorted(paths.outputs.rglob("data_preparation_summary.json"))
+def _read_data_preparation_summary(paths: ThreadPaths | TrainingRunPaths) -> dict[str, Any]:
+    output_root = _workflow_output_root(paths)
+    preferred = output_root / "prepared_data" / "data_preparation_summary.json"
+    candidates = [preferred] if preferred.is_file() else sorted(output_root.rglob("data_preparation_summary.json"))
     if not candidates:
         return {}
     try:
@@ -3873,7 +4424,7 @@ def _resolve_prepared_dataset_yaml(data_prep_data: dict[str, Any], output_dir: P
     return str((output_dir / "dataset.yaml").resolve())
 
 
-def _read_pipeline_paths(paths: ThreadPaths) -> dict[str, str]:
+def _read_pipeline_paths(paths: ThreadPaths | TrainingRunPaths) -> dict[str, str]:
     result: dict[str, str] = {}
     prep_summary = _read_data_preparation_summary(paths)
     if prep_summary:
@@ -3886,6 +4437,8 @@ def _read_pipeline_paths(paths: ThreadPaths) -> dict[str, str]:
         if prep_summary.get("synthetic_plan"):
             result["synthetic_plan"] = str(prep_summary.get("synthetic_plan"))
 
+    output_root = _workflow_output_root(paths)
+    thread_workspace = paths.thread.workspace if isinstance(paths, TrainingRunPaths) else paths.workspace
     preferred_deimv2_input = paths.workspace / "deimv2-training-input.json"
     preferred_training_input = paths.workspace / "gpu-training-orchestrator-training-input.json"
     if preferred_deimv2_input.is_file():
@@ -3893,9 +4446,12 @@ def _read_pipeline_paths(paths: ThreadPaths) -> dict[str, str]:
     elif preferred_training_input.is_file():
         training_input = preferred_training_input
     else:
-        legacy_training_input = paths.outputs / WORKFLOW_OUTPUT_DIR / PIPELINE_WORK_DIR / "training_input.json"
+        legacy_training_input = output_root / PIPELINE_WORK_DIR / "training_input.json"
         candidates = ([legacy_training_input] if legacy_training_input.is_file() else [])
-        candidates += sorted(paths.workspace.rglob("*training-input.json")) + sorted(paths.outputs.rglob("training_input.json"))
+        candidates += sorted(paths.workspace.rglob("*training-input.json"))
+        if thread_workspace != paths.workspace:
+            candidates += sorted(thread_workspace.rglob("*training-input.json"))
+        candidates += sorted(output_root.rglob("training_input.json"))
         training_input = candidates[-1] if candidates else None
     if training_input and training_input.exists():
         result["training_input"] = str(training_input)
@@ -3906,30 +4462,34 @@ def _read_pipeline_paths(paths: ThreadPaths) -> dict[str, str]:
         dataset = payload.get("dataset") if isinstance(payload.get("dataset"), dict) else {}
         if dataset.get("data_yaml"):
             result["dataset_yaml"] = str(dataset.get("data_yaml"))
-    preferred_plan = paths.outputs / WORKFLOW_OUTPUT_DIR / PIPELINE_WORK_DIR / "synthetic_plan.json"
+    preferred_plan = output_root / PIPELINE_WORK_DIR / "synthetic_plan.json"
     if "synthetic_plan" not in result and preferred_plan.is_file():
         result["synthetic_plan"] = str(preferred_plan)
     elif "synthetic_plan" not in result:
-        legacy_plan = paths.outputs / WORKFLOW_OUTPUT_DIR / "smoking_pipeline" / "synthetic_plan.json"
+        legacy_plan = output_root / "smoking_pipeline" / "synthetic_plan.json"
         plan_candidates = ([legacy_plan] if legacy_plan.is_file() else [])
-        plan_candidates += sorted(paths.workspace.rglob("synthetic_plan.json")) + sorted(paths.outputs.rglob("synthetic_plan.json"))
+        plan_candidates += sorted(paths.workspace.rglob("synthetic_plan.json"))
+        if thread_workspace != paths.workspace:
+            plan_candidates += sorted(thread_workspace.rglob("synthetic_plan.json"))
+        plan_candidates += sorted(output_root.rglob("synthetic_plan.json"))
         if plan_candidates:
             result["synthetic_plan"] = str(plan_candidates[-1])
     return result
 
 
-def _find_best_pt(paths: ThreadPaths) -> str:
-    preferred = paths.outputs / WORKFLOW_OUTPUT_DIR / "training_run" / "train" / "weights" / "best.pt"
+def _find_best_pt(paths: ThreadPaths | TrainingRunPaths) -> str:
+    output_root = _workflow_output_root(paths)
+    preferred = output_root / "training_run" / "train" / "weights" / "best.pt"
     if preferred.is_file():
         return str(preferred)
-    candidates = sorted(paths.outputs.rglob("best.pt"))
+    candidates = sorted(output_root.rglob("best.pt"))
     return str(candidates[-1]) if candidates else ""
 
 
-def _find_best_checkpoint(paths: ThreadPaths, training_backend: str = "yolo") -> str:
+def _find_best_checkpoint(paths: ThreadPaths | TrainingRunPaths, training_backend: str = "yolo") -> str:
     if training_backend != "deimv2":
         return _find_best_pt(paths)
-    run_dir = paths.outputs / WORKFLOW_OUTPUT_DIR / "deimv2_training_run"
+    run_dir = _workflow_output_root(paths) / "deimv2_training_run"
     for name in ("best_stg2.pth", "best_stg1.pth", "last.pth"):
         candidates = sorted(run_dir.rglob(name))
         if candidates:
@@ -3945,10 +4505,9 @@ def _input_label(value: object) -> str:
 def _filter_training_run_artifacts(outputs: list[Any], training_backend: str = "yolo") -> list[Any]:
     result: list[Any] = []
     run_dir = "deimv2_training_run" if training_backend == "deimv2" else "training_run"
-    marker = f"/{WORKFLOW_OUTPUT_DIR}/{run_dir}/"
     for artifact in outputs:
         path = str(getattr(artifact, "path", "") or "").replace("\\", "/")
-        if marker in path:
+        if f"/{WORKFLOW_OUTPUT_DIR}/" in path and f"/{run_dir}/" in path:
             result.append(artifact)
     return result
 
@@ -3965,7 +4524,111 @@ def _composite_image2_marker_path(paths: ThreadPaths) -> Path:
     return paths.workspace / "composite_image2_path.txt"
 
 
-def _prompt_marker_path(paths: ThreadPaths) -> Path:
+def _active_training_run_marker_path(paths: ThreadPaths) -> Path:
+    return paths.workspace / "current_training_run.json"
+
+
+def _training_runs_workspace_root(paths: ThreadPaths) -> Path:
+    return paths.workspace / "runs"
+
+
+def _training_runs_output_root(paths: ThreadPaths) -> Path:
+    return paths.outputs / WORKFLOW_OUTPUT_DIR / "runs"
+
+
+def _make_training_run_id(training_backend: str) -> str:
+    prefix = "deimv2" if training_backend == "deimv2" else "yolo"
+    return f"run-{prefix}-{time.strftime('%Y%m%d-%H%M%S')}-{os.urandom(3).hex()}"
+
+
+def _create_training_run_paths(paths: ThreadPaths, training_backend: str) -> TrainingRunPaths:
+    run_id = _make_training_run_id(training_backend)
+    run_paths = TrainingRunPaths(
+        thread=paths,
+        run_id=run_id,
+        workspace=_training_runs_workspace_root(paths) / run_id,
+        outputs=_training_runs_output_root(paths) / run_id,
+    )
+    run_paths.workspace.mkdir(parents=True, exist_ok=True)
+    run_paths.outputs.mkdir(parents=True, exist_ok=True)
+    return run_paths
+
+
+def _load_training_run_paths(paths: ThreadPaths, run_id: str) -> TrainingRunPaths | None:
+    value = str(run_id or "").strip()
+    if not value:
+        return None
+    run_paths = TrainingRunPaths(
+        thread=paths,
+        run_id=value,
+        workspace=_training_runs_workspace_root(paths) / value,
+        outputs=_training_runs_output_root(paths) / value,
+    )
+    if not run_paths.workspace.exists() and not run_paths.outputs.exists():
+        return None
+    run_paths.workspace.mkdir(parents=True, exist_ok=True)
+    run_paths.outputs.mkdir(parents=True, exist_ok=True)
+    return run_paths
+
+
+def _save_active_training_run(paths: ThreadPaths, run_paths: TrainingRunPaths, *, training_backend: str, objective: str = "") -> None:
+    payload = {
+        "run_id": run_paths.run_id,
+        "training_backend": training_backend,
+        "objective": objective,
+        "workspace": str(run_paths.workspace),
+        "outputs": str(run_paths.outputs),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    _active_training_run_marker_path(paths).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_active_training_run_paths(paths: ThreadPaths) -> TrainingRunPaths | None:
+    marker = _active_training_run_marker_path(paths)
+    if not marker.exists():
+        return None
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _load_training_run_paths(paths, str(payload.get("run_id") or ""))
+
+
+def _run_aware_marker_path(paths: ThreadPaths | TrainingRunPaths, filename: str) -> Path:
+    return paths.workspace / filename
+
+
+def _legacy_thread_marker_path(paths: ThreadPaths | TrainingRunPaths, filename: str) -> Path:
+    thread = paths.thread if isinstance(paths, TrainingRunPaths) else paths
+    return thread.workspace / filename
+
+
+def _read_text_marker(paths: ThreadPaths | TrainingRunPaths, filename: str) -> str:
+    marker = _run_aware_marker_path(paths, filename)
+    if marker.exists():
+        return marker.read_text(encoding="utf-8").strip()
+    legacy = _legacy_thread_marker_path(paths, filename)
+    if legacy != marker and legacy.exists():
+        return legacy.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _read_json_marker(paths: ThreadPaths | TrainingRunPaths, filename: str) -> Any:
+    marker = _run_aware_marker_path(paths, filename)
+    if not marker.exists():
+        legacy = _legacy_thread_marker_path(paths, filename)
+        marker = legacy if legacy != marker and legacy.exists() else marker
+    if not marker.exists():
+        return None
+    try:
+        return json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _prompt_marker_path(paths: ThreadPaths | TrainingRunPaths) -> Path:
     return paths.workspace / "generation_prompt.txt"
 
 
@@ -4010,14 +4673,13 @@ def _load_training_objective_from_memory(paths: ThreadPaths) -> str:
     return ""
 
 
-def _save_generation_prompt(paths: ThreadPaths, prompt: str) -> None:
+def _save_generation_prompt(paths: ThreadPaths | TrainingRunPaths, prompt: str) -> None:
     if prompt:
         _prompt_marker_path(paths).write_text(prompt.strip(), encoding="utf-8")
 
 
-def _load_generation_prompt(paths: ThreadPaths) -> str:
-    marker = _prompt_marker_path(paths)
-    return marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+def _load_generation_prompt(paths: ThreadPaths | TrainingRunPaths) -> str:
+    return _read_text_marker(paths, "generation_prompt.txt")
 
 
 def _selected_skills_marker_path(paths: ThreadPaths) -> Path:
@@ -4042,28 +4704,24 @@ def _load_selected_skills(paths: ThreadPaths) -> list[str]:
     return [str(item).strip() for item in payload if str(item).strip()]
 
 
-def _labels_marker_path(paths: ThreadPaths) -> Path:
+def _labels_marker_path(paths: ThreadPaths | TrainingRunPaths) -> Path:
     return paths.workspace / "annotation_labels.json"
 
 
-def _save_annotation_labels(paths: ThreadPaths, labels: list[str]) -> None:
+def _save_annotation_labels(paths: ThreadPaths | TrainingRunPaths, labels: list[str]) -> None:
     normalized = _normalize_detection_labels(labels)
     if normalized:
         _labels_marker_path(paths).write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _load_annotation_labels(paths: ThreadPaths) -> list[str]:
-    marker = _labels_marker_path(paths)
-    if not marker.exists():
-        return []
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except Exception:
+def _load_annotation_labels(paths: ThreadPaths | TrainingRunPaths) -> list[str]:
+    payload = _read_json_marker(paths, "annotation_labels.json")
+    if payload is None:
         return []
     return _normalize_detection_labels([str(item).strip() for item in payload if str(item).strip()]) if isinstance(payload, list) else []
 
 
-def _training_config_marker_path(paths: ThreadPaths) -> Path:
+def _training_config_marker_path(paths: ThreadPaths | TrainingRunPaths) -> Path:
     return paths.workspace / "training_config.json"
 
 
@@ -4320,41 +4978,36 @@ def _clear_deimv2_user_training_model_selection(
         training.pop(key, None)
 
 
-def _save_training_config(paths: ThreadPaths, training_cfg: dict[str, Any]) -> None:
+def _save_training_config(paths: ThreadPaths | TrainingRunPaths, training_cfg: dict[str, Any]) -> None:
     if training_cfg:
         _training_config_marker_path(paths).write_text(json.dumps(training_cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _load_training_config(paths: ThreadPaths) -> dict[str, Any]:
-    marker = _training_config_marker_path(paths)
-    if not marker.exists():
-        return {}
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except Exception:
+def _load_training_config(paths: ThreadPaths | TrainingRunPaths) -> dict[str, Any]:
+    payload = _read_json_marker(paths, "training_config.json")
+    if payload is None:
         return {}
     return payload if isinstance(payload, dict) else {}
 
 
-def _detection_task_marker_path(paths: ThreadPaths) -> Path:
+def _detection_task_marker_path(paths: ThreadPaths | TrainingRunPaths) -> Path:
     return paths.workspace / "detection_task_description.txt"
 
 
-def _save_detection_task_description(paths: ThreadPaths, task_description: str) -> None:
+def _save_detection_task_description(paths: ThreadPaths | TrainingRunPaths, task_description: str) -> None:
     if task_description:
         _detection_task_marker_path(paths).write_text(task_description.strip(), encoding="utf-8")
 
 
-def _load_detection_task_description(paths: ThreadPaths) -> str:
-    marker = _detection_task_marker_path(paths)
-    return marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
+def _load_detection_task_description(paths: ThreadPaths | TrainingRunPaths) -> str:
+    return _read_text_marker(paths, "detection_task_description.txt")
 
 
-def _synthetic_generation_marker_path(paths: ThreadPaths) -> Path:
+def _synthetic_generation_marker_path(paths: ThreadPaths | TrainingRunPaths) -> Path:
     return paths.workspace / "synthetic_generation_enabled.json"
 
 
-def _save_synthetic_generation_enabled(paths: ThreadPaths, enabled: bool) -> None:
+def _save_synthetic_generation_enabled(paths: ThreadPaths | TrainingRunPaths, enabled: bool) -> None:
     _synthetic_generation_marker_path(paths).write_text(json.dumps(bool(enabled)), encoding="utf-8")
 
 
@@ -4377,13 +5030,9 @@ def _validate_attachment_thread_paths(paths: ThreadPaths, attachments: list[Atta
     return ""
 
 
-def _load_synthetic_generation_enabled(paths: ThreadPaths) -> bool | None:
-    marker = _synthetic_generation_marker_path(paths)
-    if not marker.exists():
-        return None
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except Exception:
+def _load_synthetic_generation_enabled(paths: ThreadPaths | TrainingRunPaths) -> bool | None:
+    payload = _read_json_marker(paths, "synthetic_generation_enabled.json")
+    if payload is None:
         return None
     return payload if isinstance(payload, bool) else None
 
@@ -4463,15 +5112,15 @@ def _load_composite_image2_path(paths: ThreadPaths) -> str:
     return marker.read_text(encoding="utf-8").strip() if marker.exists() else ""
 
 
-def _waiting_prompt_path(paths: ThreadPaths) -> Path:
+def _waiting_prompt_path(paths: ThreadPaths | TrainingRunPaths) -> Path:
     return paths.workspace / "awaiting_prompt.flag"
 
 
-def _workflow_completed_path(paths: ThreadPaths) -> Path:
+def _workflow_completed_path(paths: ThreadPaths | TrainingRunPaths) -> Path:
     return paths.workspace / "workflow_completed.flag"
 
 
-def _set_workflow_completed(paths: ThreadPaths, completed: bool) -> None:
+def _set_workflow_completed(paths: ThreadPaths | TrainingRunPaths, completed: bool) -> None:
     flag = _workflow_completed_path(paths)
     if completed:
         flag.write_text("1", encoding="utf-8")
@@ -4479,10 +5128,10 @@ def _set_workflow_completed(paths: ThreadPaths, completed: bool) -> None:
         flag.unlink()
 
 
-def _is_workflow_completed(paths: ThreadPaths) -> bool:
+def _is_workflow_completed(paths: ThreadPaths | TrainingRunPaths) -> bool:
     if _workflow_completed_path(paths).exists():
         return True
-    output_root = paths.outputs / WORKFLOW_OUTPUT_DIR
+    output_root = _workflow_output_root(paths)
     completion_markers = (
         output_root / "training_run" / "run_summary.json",
         output_root / "training_run" / "train" / "weights" / "best.pt",
@@ -4493,7 +5142,7 @@ def _is_workflow_completed(paths: ThreadPaths) -> bool:
     return any(marker.exists() for marker in completion_markers)
 
 
-def _set_waiting_prompt(paths: ThreadPaths, waiting: bool) -> None:
+def _set_waiting_prompt(paths: ThreadPaths | TrainingRunPaths, waiting: bool) -> None:
     flag = _waiting_prompt_path(paths)
     if waiting:
         flag.write_text("1", encoding="utf-8")
@@ -4501,8 +5150,13 @@ def _set_waiting_prompt(paths: ThreadPaths, waiting: bool) -> None:
         flag.unlink()
 
 
-def _is_waiting_prompt(paths: ThreadPaths) -> bool:
-    return _waiting_prompt_path(paths).exists()
+def _is_waiting_prompt(paths: ThreadPaths | TrainingRunPaths) -> bool:
+    if _waiting_prompt_path(paths).exists():
+        return True
+    if isinstance(paths, TrainingRunPaths):
+        legacy = _waiting_prompt_path(paths.thread)
+        return legacy.exists()
+    return False
 
 
 def _reset_completed_request_state_for_new_training(paths: ThreadPaths) -> None:
