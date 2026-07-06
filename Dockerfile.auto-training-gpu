@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1.7
+
+# 服务器当前可用训练环境为 torch 2.9.1+cu130 / torchvision 0.24.1+cu130。
+# 这里优先使用对应的 PyTorch CUDA 13.0 runtime 镜像，保证 YOLO 和 DEIMv2
+# 训练时的 CUDA/PyTorch ABI 与服务器环境一致。
+ARG BASE_IMAGE=pytorch/pytorch:2.9.1-cuda13.0-cudnn9-runtime
+FROM ${BASE_IMAGE}
+
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    JETLINKS_AGENT_CONTAINER_WORKDIR=/workspace/code/jetlinks-agent-runtime-agent-v2 \
+    JETLINKS_AGENT_BUILTIN_ROOT=/opt/jetlinks-agent-runtime-agent-v2-defaults \
+    JETLINKS_AGENT_UPLOAD_ROOT=/workspace/code/jetlinks-agent-runtime-agent-v2 \
+    RUNTIME_MCP_DISCOVERY_TIMEOUT_SECONDS=3
+
+WORKDIR /workspace/code/jetlinks-agent-runtime-agent-v2
+
+COPY README.md pyproject.toml requirements.txt ./
+COPY runtime-env.sh up.sh status.sh stop.sh sync-image-code.sh docker-entrypoint.sh ./
+COPY app ./app
+COPY config ./config
+COPY plugins ./plugins
+COPY static ./static
+
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && python -m pip install --no-cache-dir --ignore-requires-python -e . \
+    && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip install --no-cache-dir ultralytics imageio-ffmpeg \
+    && grep -Ev '^(torch|torchvision)==|^#|^$' plugins/skills/deimv2-auto-training/vendor/deimv2/requirements.txt \
+        > /tmp/deimv2-requirements.no-torch.txt \
+    && python -m pip install --no-cache-dir -r /tmp/deimv2-requirements.no-torch.txt \
+    && python -m pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless || true \
+    && python -m pip install --no-cache-dir "opencv-python-headless>=4.10.0.84" \
+    && python -c "from pathlib import Path; import imageio_ffmpeg; target = Path('/usr/local/bin/ffmpeg'); target.unlink(missing_ok=True); target.symlink_to(imageio_ffmpeg.get_ffmpeg_exe())" \
+    && mkdir -p /opt/jetlinks-agent-runtime-agent-v2-defaults \
+    && cp -a config plugins static /opt/jetlinks-agent-runtime-agent-v2-defaults/ \
+    && cp docker-entrypoint.sh /usr/local/bin/jetlinks-agent-runtime-v2-entrypoint \
+    && chmod +x runtime-env.sh up.sh status.sh stop.sh sync-image-code.sh docker-entrypoint.sh /usr/local/bin/jetlinks-agent-runtime-v2-entrypoint \
+    && python - <<'PY'
+import torch, torchvision
+print("torch", torch.__version__)
+print("torch.version.cuda", torch.version.cuda)
+print("torchvision", torchvision.__version__)
+PY
+
+EXPOSE 8069
+
+ENTRYPOINT ["jetlinks-agent-runtime-v2-entrypoint"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8069", "--log-level", "info"]

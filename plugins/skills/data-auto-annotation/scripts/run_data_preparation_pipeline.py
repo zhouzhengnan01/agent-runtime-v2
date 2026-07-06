@@ -184,7 +184,14 @@ def _inspect(dataset_root: Path, work_dir: Path, dry_run: bool) -> Dict:
     return result
 
 
-def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str], dry_run: bool) -> Path:
+def _prepare_real_coco(
+    inspection: Dict,
+    work_dir: Path,
+    task_labels: List[str],
+    annotation_prompts: List[str],
+    prompt_label_map: Dict[str, str],
+    dry_run: bool,
+) -> Path:
     fmt = inspection.get("format")
     images_dir = Path(str(inspection.get("images_dir") or "")).resolve()
     if fmt == "coco":
@@ -217,14 +224,19 @@ def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str],
     if fmt == "unlabeled":
         if not task_labels:
             raise ValueError("Unlabeled datasets require labels, for example: labels=person,bottle")
+        prompts = _annotation_prompts_for_sam3(task_labels, annotation_prompts, prompt_label_map)
         try:
-            _run([
+            cmd = [
                 sys.executable,
                 str(AUTO_ANNOTATION_SCRIPT),
                 "--input-dir",
                 str(images_dir),
                 "--text-prompts",
+                *prompts,
+                "--class-names",
                 *task_labels,
+                "--prompt-label-map-json",
+                json.dumps(_prompt_label_map_for_sam3(task_labels, prompts, prompt_label_map), ensure_ascii=False),
                 "--source",
                 "real",
                 "--per-image-output-dir",
@@ -233,7 +245,8 @@ def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str],
                 str(images_dir),
                 "--output",
                 str(real_coco),
-            ], dry_run)
+            ]
+            _run(cmd, dry_run)
         except subprocess.CalledProcessError as exc:
             stdout_tail = _decode_bytes(exc.output)[-2000:]
             stderr_tail = _decode_bytes(exc.stderr)[-2000:]
@@ -241,6 +254,7 @@ def _prepare_real_coco(inspection: Dict, work_dir: Path, task_labels: List[str],
                 "Real dataset auto-annotation failed while preparing COCO. "
                 "Check the SAM3 service, uploaded dataset images, and labels.\n"
                 f"labels={task_labels}\n"
+                f"annotation_prompts={prompts}\n"
                 f"images_dir={images_dir}\n"
                 f"stdout_tail:\n{stdout_tail}\n"
                 f"stderr_tail:\n{stderr_tail}"
@@ -416,16 +430,100 @@ def _move_to_unique_synthetic_name(image_path: Path, scene_dir: Path, scene_inde
     return target.resolve()
 
 
-def _annotate_one_synthetic(image_path: Path, labels: List[str], output_json: Path, dry_run: bool) -> Path:
+def _annotation_prompts_for_sam3(
+    labels: List[str],
+    annotation_prompts: List[str] | None,
+    prompt_label_map: Dict[str, str] | None = None,
+) -> List[str]:
+    prompts = _dedupe_text([str(item).strip() for item in (annotation_prompts or []) if str(item).strip()])
+    prompt_map = {str(prompt).strip(): str(label).strip() for prompt, label in (prompt_label_map or {}).items() if str(prompt).strip() and str(label).strip()}
+    selected: List[str] = []
+    for label in _dedupe_text(labels):
+        class_key = label.lower()
+        mapped = [
+            prompt
+            for prompt, mapped_label in prompt_map.items()
+            if mapped_label == label and prompt.lower() != class_key
+        ]
+        mapped = mapped or [
+            prompt
+            for prompt in prompts
+            if prompt.lower() != class_key and (len(labels) == 1 or _looks_related_prompt(prompt, label))
+        ]
+        selected.extend(mapped or [_label_to_sam3_prompt(label)])
+    return _dedupe_text(selected or prompts or labels)
+
+
+def _prompt_label_map_for_sam3(labels: List[str], prompts: List[str], prompt_label_map: Dict[str, str] | None) -> Dict[str, str]:
+    class_names = _dedupe_text(labels)
+    result: Dict[str, str] = {}
+    for prompt, label in (prompt_label_map or {}).items():
+        prompt_text = str(prompt or "").strip()
+        label_text = str(label or "").strip()
+        if prompt_text and label_text in class_names:
+            result[prompt_text] = label_text
+    if len(class_names) == 1:
+        for prompt in prompts:
+            result.setdefault(prompt, class_names[0])
+    for label in class_names:
+        result.setdefault(_label_to_sam3_prompt(label), label)
+        result.setdefault(label, label)
+    return result
+
+
+def _label_to_sam3_prompt(label: str) -> str:
+    text = str(label or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_]+", "_", text).strip("_")
+    if not text:
+        return ""
+    if text.startswith("person_"):
+        return "person " + text.removeprefix("person_").replace("_", " ")
+    return text.replace("_", " ")
+
+
+def _looks_related_prompt(prompt: str, label: str) -> bool:
+    prompt_tokens = {item for item in re.split(r"[^a-z0-9]+", str(prompt).lower()) if item}
+    label_tokens = {item for item in re.split(r"[^a-z0-9]+", _label_to_sam3_prompt(label).lower()) if item}
+    return bool(prompt_tokens and label_tokens and prompt_tokens.intersection(label_tokens))
+
+
+def _dedupe_text(values: List[str]) -> List[str]:
+    result: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _annotate_one_synthetic(
+    image_path: Path,
+    labels: List[str],
+    annotation_prompts: List[str],
+    prompt_label_map: Dict[str, str],
+    output_json: Path,
+    dry_run: bool,
+) -> Path:
     if not labels:
         raise ValueError("Synthetic auto-annotation requires labels")
+    prompts = _annotation_prompts_for_sam3(labels, annotation_prompts, prompt_label_map)
     _run([
         sys.executable,
         str(AUTO_ANNOTATION_SCRIPT),
         "--input-json",
         json.dumps({"image_path": str(image_path)}, ensure_ascii=False),
         "--text-prompts",
+        *prompts,
+        "--class-names",
         *labels,
+        "--prompt-label-map-json",
+        json.dumps(_prompt_label_map_for_sam3(labels, prompts, prompt_label_map), ensure_ascii=False),
         "--source",
         "synthetic",
         "--is-synthetic",
@@ -484,7 +582,16 @@ def _combine_coco_files(coco_files: List[Path], output_path: Path) -> Path:
     return output_path
 
 
-def _generate_and_annotate_synthetic(plan_path: Path, image1: Path, image2: Path, labels: List[str], output_dir: Path, dry_run: bool) -> tuple[Path, Path]:
+def _generate_and_annotate_synthetic(
+    plan_path: Path,
+    image1: Path,
+    image2: Path,
+    labels: List[str],
+    annotation_prompts: List[str],
+    prompt_label_map: Dict[str, str],
+    output_dir: Path,
+    dry_run: bool,
+) -> tuple[Path, Path]:
     plan = _load_json(plan_path)
     synthetic_images_root = output_dir / "synthetic_images"
     synthetic_images_root.mkdir(parents=True, exist_ok=True)
@@ -515,7 +622,7 @@ def _generate_and_annotate_synthetic(plan_path: Path, image1: Path, image2: Path
             generated_image = _move_to_unique_synthetic_name(generated_image, scene_dir, idx, n + 1)
             print(f"[data-prep] annotating composite image immediately: {generated_image}")
             partial_coco = annotation_root / f"{generated_image.stem}_coco.json"
-            _annotate_one_synthetic(generated_image, labels, partial_coco, dry_run)
+            _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, partial_coco, dry_run)
             partial_coco_files.append(partial_coco)
     synthetic_coco = output_dir / "synthetic_coco.json"
     if not dry_run:
@@ -772,6 +879,8 @@ def _generate_and_annotate_synthetic_with_produce(
     plan_path: Path,
     image1: Path,
     labels: List[str],
+    annotation_prompts: List[str],
+    prompt_label_map: Dict[str, str],
     output_dir: Path,
     dry_run: bool,
     planner_llm: Dict[str, Any] | None = None,
@@ -833,7 +942,7 @@ def _generate_and_annotate_synthetic_with_produce(
         generated_image = _move_to_unique_synthetic_name(generated_image, synthetic_images_root, generation_index, 1)
         print(f"[data-prep] annotating image-dataset-produce image immediately: {generated_image}")
         partial_coco = annotation_root / f"{generated_image.stem}_coco.json"
-        _annotate_one_synthetic(generated_image, labels, partial_coco, dry_run)
+        _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, partial_coco, dry_run)
         partial_coco_files.append(partial_coco)
 
     synthetic_coco = output_dir / "synthetic_coco.json"
@@ -999,6 +1108,18 @@ def _list_value(value: Any) -> List[str]:
     return [item.strip() for item in re.split(r"[,，、\s]+", text) if item.strip()]
 
 
+def _dict_value(value: Any) -> Dict[str, str]:
+    if isinstance(value, dict):
+        return {str(key).strip(): str(item).strip() for key, item in value.items() if str(key).strip() and str(item).strip()}
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return _dict_value(parsed)
+    return {}
+
+
 def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     payload = _load_input_json(args.input_json)
     if not payload:
@@ -1017,6 +1138,8 @@ def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     args.task = _coalesce(args.task, spec.get("task"), spec.get("task_description"), ctx.get("task"), default="")
     args.generation_prompt = _coalesce(args.generation_prompt, spec.get("generation_prompt"), spec.get("prompt"), ctx.get("generation_prompt"), default="")
     args.labels = args.labels or _list_value(_coalesce(spec.get("labels"), spec.get("class_names"), dataset.get("class_names"), ctx.get("labels"), default=[]))
+    args.annotation_prompts = args.annotation_prompts or _list_value(_coalesce(spec.get("annotation_prompts"), ctx.get("annotation_prompts"), default=[]))
+    args.annotation_prompt_map = _dict_value(_coalesce(spec.get("annotation_prompt_map"), spec.get("prompt_label_map"), ctx.get("annotation_prompt_map"), ctx.get("prompt_label_map"), args.annotation_prompt_map, default={}))
     args.work_dir = _coalesce(args.work_dir, ctx.get("work_dir"), spec.get("work_dir"), output.get("work_dir"), default="")
     args.output_dir = _coalesce(args.output_dir, ctx.get("output_dir"), spec.get("output_dir"), output.get("output_dir"), default="")
     args.skip_generation = args.skip_generation or _bool_value(spec.get("skip_generation"), False)
@@ -1044,6 +1167,8 @@ def main() -> None:
     parser.add_argument("--task", default="")
     parser.add_argument("--generation-prompt", default="")
     parser.add_argument("--labels", nargs="*", default=[])
+    parser.add_argument("--annotation-prompts", nargs="*", default=[])
+    parser.add_argument("--annotation-prompt-map-json", default="")
     parser.add_argument("--work-dir", default="")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--ref-image", default=None)
@@ -1062,7 +1187,10 @@ def main() -> None:
     parser.add_argument("--split-val", type=float, default=0.2)
     parser.add_argument("--split-test", type=float, default=0.1)
     parser.add_argument("--training-task", default="detect", choices=["detect", "segment"])
+    parser.set_defaults(annotation_prompt_map={})
     args = parser.parse_args()
+    if args.annotation_prompt_map_json:
+        args.annotation_prompt_map = _dict_value(args.annotation_prompt_map_json)
     args = _apply_input_json(args)
 
     if not args.dataset_root:
@@ -1089,7 +1217,14 @@ def main() -> None:
         if not real_coco.exists():
             raise FileNotFoundError(f"Provided coco_json does not exist: {real_coco}")
     else:
-        real_coco = _prepare_real_coco(inspection, work_dir, args.labels, args.dry_run)
+        real_coco = _prepare_real_coco(
+            inspection,
+            work_dir,
+            args.labels,
+            args.annotation_prompts,
+            args.annotation_prompt_map,
+            args.dry_run,
+        )
 
     training_coco = real_coco
     training_root = Path(inspection["images_dir"]).resolve()
@@ -1127,7 +1262,16 @@ def main() -> None:
                 })
             else:
                 try:
-                    synthetic_root, synthetic_coco = _generate_and_annotate_synthetic(plan, Path(args.image1).resolve(), Path(args.image2).resolve(), args.labels, work_dir, args.dry_run)
+                    synthetic_root, synthetic_coco = _generate_and_annotate_synthetic(
+                        plan,
+                        Path(args.image1).resolve(),
+                        Path(args.image2).resolve(),
+                        args.labels,
+                        args.annotation_prompts,
+                        args.annotation_prompt_map,
+                        work_dir,
+                        args.dry_run,
+                    )
                     training_coco = _merge(real_coco, synthetic_coco, Path(inspection["images_dir"]).resolve(), synthetic_root, work_dir, args.dry_run)
                     training_root = work_dir / "merged_images"
                     synthetic_policy_enabled = True
@@ -1146,6 +1290,8 @@ def main() -> None:
                                 plan,
                                 Path(args.image1).resolve(),
                                 args.labels,
+                                args.annotation_prompts,
+                                args.annotation_prompt_map,
                                 work_dir,
                                 args.dry_run,
                                 args.planner_llm,

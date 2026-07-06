@@ -22,6 +22,20 @@ _log_file = None
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
+def _find_project_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "app" / "core").is_dir():
+            return parent
+    return Path(__file__).resolve().parents[4]
+
+
+PROJECT_ROOT = _find_project_root()
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.core.hardware.device_selector import reserve_training_device
+
+
 class _TeeWriter:
     def __init__(self, original, log_path: Path):
         self._original = original
@@ -333,6 +347,8 @@ def _load_yolo_model(
         expected = expected_sha256.strip().lower()
         if expected and _file_sha256(candidate) != expected:
             raise RuntimeError(f"User-uploaded YOLO model SHA256 mismatch: {candidate}")
+        # 用户上传模型走严格加载：如果文件无法加载，要明确失败，
+        # 不能静默切换到内置模型。
         try:
             return yolo_cls(str(candidate), task=task), str(candidate), False, ""
         except Exception as exc:
@@ -567,8 +583,6 @@ def run(config_path: Path) -> None:
     if task not in {"detect", "segment"}:
         raise ValueError(f"training.task only supports detect/segment, got: {task}")
 
-    import torch
-
     requested_model_name = str(training_cfg.get("model", "yolo11n.pt"))
     model_source = str(training_cfg.get("model_source") or "")
     strict_model = bool(training_cfg.get("strict_model", False))
@@ -578,10 +592,26 @@ def run(config_path: Path) -> None:
     epochs = int(training_cfg.get("epochs", 100))
     imgsz = int(training_cfg.get("imgsz", 640))
     batch = int(training_cfg.get("batch", 16))
-    _has_cuda = torch.cuda.is_available() and torch.cuda.device_count() > 0
-    _has_npu = False if _has_cuda else _is_npu_runtime_available()
-    device = _normalize_device_for_runtime(training_cfg.get("device"), has_npu=_has_npu, has_cuda=_has_cuda)
-    accelerator = "cuda" if _has_cuda else ("npu" if _has_npu else "cpu")
+    # 在初始化重型训练运行时前先预约设备。CUDA 会通过 CUDA_VISIBLE_DEVICES
+    # 将选中的物理卡映射为 Ultralytics 进程内的本地 device 0。
+    device_reservation = reserve_training_device(
+        requested=training_cfg.get("device"),
+        backend="yolo",
+        model_variant=requested_model_name,
+        batch=batch,
+        img_size=imgsz,
+        project_root=PROJECT_ROOT,
+        min_free_memory_mb=training_cfg.get("min_free_memory_mb") or training_cfg.get("required_free_memory_mb"),
+        max_gpu_utilization=training_cfg.get("max_gpu_utilization"),
+    )
+    os.environ.update(device_reservation.env)
+
+    import torch
+
+    device = device_reservation.runtime_device
+    accelerator = device_reservation.accelerator
+    _has_cuda = accelerator == "cuda"
+    _has_npu = accelerator == "npu"
     if accelerator == "npu":
         _configure_npu_runtime(torch)
     try:
@@ -594,6 +624,8 @@ def run(config_path: Path) -> None:
     train_overrides = {}
     val_overrides = {}
     if device == "cpu":
+        # CPU 训练主要用于冒烟测试。降低线程和 worker 压力，
+        # 避免开发机在小规模测试时卡死。
         try:
             torch.set_num_threads(1)
             torch.set_num_interop_threads(1)
@@ -608,6 +640,8 @@ def run(config_path: Path) -> None:
         train_overrides.update({"amp": False, "cache": False, "deterministic": False, "plots": True})
         val_overrides.update({"plots": True})
     elif accelerator == "npu":
+        # NPU 路径保持保守，因为 plotting 和多进程能力会随 torch_npu、
+        # Ascend toolkit 版本不同而表现不一致。
         if workers != 0:
             log_warn(f"NPU mode workers={workers}; lowering to 0")
             workers = 0
@@ -617,7 +651,10 @@ def run(config_path: Path) -> None:
     log_info(
         "Training runtime="
         f"{conda_env_name}, data={dataset_yaml}, device={device}, "
-        f"CUDA={_has_cuda}, NPU={_has_npu}, npu_count={_torch_npu_device_count(torch) if _has_npu else 0}"
+        f"accelerator={accelerator}, physical_device={device_reservation.physical_index}, "
+        f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '')}, "
+        f"ASCEND_RT_VISIBLE_DEVICES={os.environ.get('ASCEND_RT_VISIBLE_DEVICES', '')}, "
+        f"NPU={_has_npu}, npu_count={_torch_npu_device_count(torch) if _has_npu else 0}"
     )
     model, model_name, model_fallback_used, model_load_error = _load_yolo_model(
         YOLO,
@@ -666,6 +703,8 @@ def run(config_path: Path) -> None:
         "conda_env_name": conda_env_name,
         "accelerator": accelerator,
         "device": device,
+        "device_selection": device_reservation.to_dict(),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
         "npu_visible_devices": os.environ.get("ASCEND_RT_VISIBLE_DEVICES", ""),
         "dataset_yaml": str(dataset_yaml),
         "task": task,
@@ -692,6 +731,7 @@ def run(config_path: Path) -> None:
     }
     summary_path = run_root / "run_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    device_reservation.release()
     log_info(f"Training completed. Summary written to: {summary_path}")
 
 

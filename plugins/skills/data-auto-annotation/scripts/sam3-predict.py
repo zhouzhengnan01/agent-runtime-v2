@@ -53,8 +53,30 @@ def build_args() -> argparse.Namespace:
         default=None,
         help='Text prompts as a JSON array string, e.g. "[\"person\", \"monitor\"]"',
     )
+    parser.add_argument(
+        "--class-names",
+        nargs="*",
+        default=None,
+        help="Training class names written to COCO categories. Defaults to text prompts.",
+    )
+    parser.add_argument(
+        "--class-names-json",
+        default=None,
+        help='Training class names as a JSON array string, e.g. "[\"person_fall\"]"',
+    )
+    parser.add_argument(
+        "--prompt-label-map-json",
+        default=None,
+        help='JSON object mapping SAM3 prompt text to training class name, e.g. {"fallen person":"person_fall"}',
+    )
     parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
     parser.add_argument("--iou", type=float, default=0.5, help="IoU threshold")
+    parser.add_argument(
+        "--dedupe-iou",
+        type=float,
+        default=0.9,
+        help="Drop duplicate boxes with the same final class when IoU is greater than or equal to this value",
+    )
     parser.add_argument("--min-image-size", type=int, default=DEFAULT_MIN_IMAGE_SIZE, help="Minimum accepted image width/height")
     parser.add_argument("--connect-timeout", type=int, default=DEFAULT_CONNECT_TIMEOUT, help="Connection timeout in seconds")
     parser.add_argument("--timeout", type=int, default=DEFAULT_READ_TIMEOUT, help="Read timeout in seconds")
@@ -119,6 +141,63 @@ def resolve_prompts(args: argparse.Namespace) -> list[str]:
         "data-auto-annotation requires labels. Provide labels in input JSON, "
         'for example: {"image_path":"./images","labels":["person","cigarette"]}'
     )
+
+
+def resolve_class_names(args: argparse.Namespace, prompts: list[str]) -> list[str]:
+    if args.class_names_json:
+        class_names = json.loads(args.class_names_json)
+        if not isinstance(class_names, list) or not all(isinstance(item, str) for item in class_names):
+            raise ValueError("--class-names-json must be a JSON array of strings")
+        return _dedupe_text(class_names)
+    if args.class_names:
+        return _dedupe_text(args.class_names)
+    if args.input_json:
+        parsed = _unwrap_payload(_parse_input_json_arg(args.input_json))
+        if isinstance(parsed, dict):
+            for key in ("class_names", "classes"):
+                value = parsed.get(key)
+                if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                    return _dedupe_text(value)
+    return _dedupe_text(prompts)
+
+
+def resolve_prompt_label_map(args: argparse.Namespace, prompts: list[str], class_names: list[str]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    if args.prompt_label_map_json:
+        parsed = json.loads(args.prompt_label_map_json)
+        if not isinstance(parsed, dict):
+            raise ValueError("--prompt-label-map-json must be a JSON object")
+        mapping.update({str(key).strip(): str(value).strip() for key, value in parsed.items() if str(key).strip() and str(value).strip()})
+    elif args.input_json:
+        parsed = _unwrap_payload(_parse_input_json_arg(args.input_json))
+        if isinstance(parsed, dict):
+            value = parsed.get("prompt_label_map") or parsed.get("annotation_prompt_map")
+            if isinstance(value, dict):
+                mapping.update({str(key).strip(): str(item).strip() for key, item in value.items() if str(key).strip() and str(item).strip()})
+
+    valid_classes = set(class_names)
+    mapping = {prompt: label for prompt, label in mapping.items() if label in valid_classes}
+    if len(class_names) == 1:
+        for prompt in prompts:
+            mapping.setdefault(prompt, class_names[0])
+    for class_name in class_names:
+        mapping.setdefault(class_name, class_name)
+    return mapping
+
+
+def _dedupe_text(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
 
 
 def _collect_image_paths(value: Any) -> list[Path]:
@@ -254,7 +333,59 @@ def _normalize_box(item: dict[str, Any]) -> dict[str, Any] | None:
     if y2 < y1:
         y1, y2 = y2, y1
 
-    return {"label": str(label), "score": float(score), "bbox": [x1, y1, x2 - x1, y2 - y1]}
+    try:
+        score_value = 1.0 if score is None else float(score)
+    except (TypeError, ValueError):
+        score_value = 1.0
+
+    return {"label": str(label), "score": score_value, "bbox": [x1, y1, x2 - x1, y2 - y1]}
+
+
+def _bbox_iou_xywh(a: list[float], b: list[float]) -> float:
+    ax1, ay1, aw, ah = a
+    bx1, by1, bw, bh = b
+    ax2, ay2 = ax1 + aw, ay1 + ah
+    bx2, by2 = bx1 + bw, by1 + bh
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+    if inter_area <= 0:
+        return 0.0
+    area_a = max(0.0, aw) * max(0.0, ah)
+    area_b = max(0.0, bw) * max(0.0, bh)
+    union = area_a + area_b - inter_area
+    if union <= 0:
+        return 0.0
+    return inter_area / union
+
+
+def _dedupe_same_class_boxes(annotations: list[dict[str, Any]], iou_threshold: float) -> list[dict[str, Any]]:
+    if not annotations or iou_threshold <= 0:
+        return annotations
+    kept: list[dict[str, Any]] = []
+    # 多 prompt 会让同一个目标以不同提示词返回多次。这里在 prompt 映射成最终训练
+    # 类别之后做同类 NMS，只清理重复框，不削弱多提示词带来的召回能力。
+    for annotation in sorted(annotations, key=lambda item: float(item.get("score", 0.0)), reverse=True):
+        category_id = annotation.get("category_id")
+        bbox = annotation.get("bbox")
+        if not isinstance(bbox, list) or len(bbox) < 4:
+            kept.append(annotation)
+            continue
+        duplicated = False
+        for existing in kept:
+            if existing.get("category_id") != category_id:
+                continue
+            existing_bbox = existing.get("bbox")
+            if isinstance(existing_bbox, list) and len(existing_bbox) >= 4 and _bbox_iou_xywh(bbox, existing_bbox) >= iou_threshold:
+                duplicated = True
+                break
+        if not duplicated:
+            kept.append(annotation)
+    return kept
 
 
 def get_category_id(category_map: dict[str, int], categories: list[dict[str, Any]], label: str) -> int:
@@ -284,9 +415,11 @@ def response_to_coco(
     image_id: int,
     category_map: dict[str, int],
     categories: list[dict[str, Any]],
+    prompt_label_map: dict[str, str] | None = None,
     source: str = "real",
     is_synthetic: bool = False,
     annotation_start_id: int = 1,
+    dedupe_iou: float = 0.9,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with Image.open(image_path) as img:
         width, height = img.size
@@ -299,21 +432,23 @@ def response_to_coco(
         "source": source,
         "is_synthetic": is_synthetic,
     }
-    annotations: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
 
-    for idx, item in enumerate(_extract_boxes(payload), start=annotation_start_id):
+    for item in _extract_boxes(payload):
         normalized = _normalize_box(item)
         if normalized is None:
             continue
-        canonical_label = next((name for name in category_map if name.lower() == str(normalized["label"]).lower()), "")
+        raw_label = str(normalized["label"])
+        mapped_label = _lookup_prompt_label(raw_label, prompt_label_map or {})
+        canonical_label = next((name for name in category_map if name.lower() == mapped_label.lower()), "")
         if not canonical_label:
             continue
         normalized["label"] = canonical_label
         category_id = get_category_id(category_map, categories, normalized["label"])
         x, y, w, h = normalized["bbox"]
-        annotations.append(
+        candidates.append(
             {
-                "id": idx,
+                "id": 0,
                 "image_id": image_id,
                 "category_id": category_id,
                 "bbox": [x, y, w, h],
@@ -324,7 +459,22 @@ def response_to_coco(
             }
         )
 
+    annotations = _dedupe_same_class_boxes(candidates, dedupe_iou)
+    for idx, annotation in enumerate(annotations, start=annotation_start_id):
+        annotation["id"] = idx
+
     return image, annotations
+
+
+def _lookup_prompt_label(raw_label: str, prompt_label_map: dict[str, str]) -> str:
+    text = str(raw_label or "").strip()
+    if not text:
+        return text
+    lowered = text.lower()
+    for prompt, label in prompt_label_map.items():
+        if lowered == str(prompt).strip().lower():
+            return str(label).strip()
+    return text
 
 
 def save_json(path: Path, payload: dict[str, Any]) -> None:
@@ -481,13 +631,15 @@ def main() -> int:
             raise FileNotFoundError(f"Image file not found: {image_path}")
 
     prompts = resolve_prompts(args)
+    class_names = resolve_class_names(args, prompts)
+    prompt_label_map = resolve_prompt_label_map(args, prompts, class_names)
     headers = {"Authorization": f"Bearer {args.token}", "Content-Type": "application/json"}
 
     images: list[dict[str, Any]] = []
     annotations: list[dict[str, Any]] = []
     categories: list[dict[str, Any]] = []
     category_map: dict[str, int] = {}
-    seed_categories(prompts, category_map, categories)
+    seed_categories(class_names, category_map, categories)
     next_annotation_id = 1
 
     try:
@@ -509,9 +661,11 @@ def main() -> int:
                 image_id=image_id,
                 category_map=category_map,
                 categories=categories,
+                prompt_label_map=prompt_label_map,
                 source=args.source,
                 is_synthetic=bool(args.is_synthetic or args.source in {"synthetic", "generated"}),
                 annotation_start_id=next_annotation_id,
+                dedupe_iou=float(args.dedupe_iou),
             )
             images.append(image_info)
             annotations.extend(image_annotations)

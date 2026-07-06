@@ -53,6 +53,9 @@ DEFAULT_TRAINING_SPLIT = {"train": 0.7, "val": 0.2, "test": 0.1}
 MIN_TEST_SPLIT = 0.1
 
 DEFAULT_MAX_SYNTHETIC_IMAGES = 10
+# button_epochs=False 是本地冒烟测试路径：忽略模型思考出的 epochs，
+# 强制使用较短轮数。button_epochs=True 时允许模型结合数据集思考轮数，
+# 但 _cap_training_epochs 仍会兜底限制最大值。
 button_epochs = True
 FIXED_TRAINING_EPOCHS = 10
 MAX_TRAINING_EPOCHS = 200
@@ -80,7 +83,7 @@ class TrainingRunPaths:
 
 
 class YoloTrainingWorkflow:
-    """General YOLO training flow with optional synthetic data generation."""
+    """通用训练工作流，支持 YOLO/DEIMv2 分支和可选合成数据。"""
 
     def __init__(self, artifact_store: ArtifactStore) -> None:
         self.artifact_store = artifact_store
@@ -105,6 +108,9 @@ class YoloTrainingWorkflow:
         user_text = _last_user_text(messages)
         selected_skills = _selected_skills(runtime_options)
         training_backend = _selected_training_backend(selected_skills, runtime_options, workflow)
+        # ACP 客户端的后续请求可能不再携带 selectedSkills。
+        # 持久化上一次技能选择，可以让同一会话继续留在 YOLO/DEIMv2 分支，
+        # 直到新请求明确切换分支。
         if _has_runtime_selected_skills(runtime_options):
             _save_selected_skills(paths, selected_skills)
         else:
@@ -119,6 +125,9 @@ class YoloTrainingWorkflow:
         existing_composite_image2 = _load_composite_image2_path(paths)
         current_objective = _training_objective_from_user_text(user_text)
         waiting_prompt = _is_waiting_prompt(active_run_paths or paths)
+        # 当用户提出明确的新训练目标时，创建独立 run 工作区。
+        # 这样同一线程二次训练时，旧的 generation_prompt/training_config
+        # 不会污染新的训练请求。
         start_new_run = bool(current_objective and not waiting_prompt)
         if start_new_run:
             run_paths = _create_training_run_paths(paths, training_backend)
@@ -190,6 +199,8 @@ class YoloTrainingWorkflow:
                 _set_workflow_completed(run_paths, False)
             resolved_dataset = _resolve_uploaded_local_path(paths.root, dataset_attachment.path)
             _save_dataset_package_path(paths, str(resolved_dataset))
+            # 新数据集会让上一轮 image1/image2 合成输入失效。
+            # 清理旧合成输入，避免后续训练把旧合成素材和新真实数据混在一起。
             _clear_composite_input_paths(paths)
         if composite_attachments:
             _set_workflow_completed(paths, False)
@@ -568,6 +579,8 @@ class YoloTrainingWorkflow:
         run_name = "."
         if not task_description:
             task_description = _extract_detection_task_description(user_text, prompt_text, labels)
+        annotation_prompt_map = _annotation_prompt_map_from_spec(request_spec, labels)
+        annotation_prompts = list(annotation_prompt_map.keys())
         data_prep_output_dir = str((workflow_output_root / "prepared_data").resolve())
         data_prep_spec = {
             "skill_name": "data-auto-annotation",
@@ -583,6 +596,8 @@ class YoloTrainingWorkflow:
             "task": task_description,
             "generation_prompt": prompt_text,
             "labels": labels,
+            "annotation_prompts": annotation_prompts,
+            "annotation_prompt_map": annotation_prompt_map,
             "work_dir": pipeline_work_dir,
             "output_dir": data_prep_output_dir,
             "skip_generation": not generation_enabled,
@@ -602,6 +617,8 @@ class YoloTrainingWorkflow:
                 "generation_prompt": prompt_text,
                 "class_names": labels,
                 "labels": labels,
+                "annotation_prompts": annotation_prompts,
+                "annotation_prompt_map": annotation_prompt_map,
                 "skip_generation": not generation_enabled,
                 "split_requested": training_enabled,
                 "work_dir": pipeline_work_dir,
@@ -1556,7 +1573,11 @@ def _generate_model_managed_yolo_training_intent_spec(
         "此阶段还没有分析数据集，因此禁止输出训练参数、batch、epochs、imgsz、split 等依赖数据集的字段。"
         "你只能根据用户业务目标提取任务意图、候选类别和合成提示词。"
         "必须只返回 JSON 对象，不要解释。JSON 字段包含："
-        "task_description 字符串；"
+        "task_description 字符串；task_type 字符串，可取 object_detection/behavior_detection/state_detection；"
+        "intent_items 数组，每项描述一个用户要训练的检测意图，至少包含 label、type、subject、description、annotation_prompts；"
+        "每个 intent_items 项的 annotation_prompts 必须是 SAM3 可理解的英文自然语言短语数组，"
+        "不能只写训练类名；例如 person_fall 的 annotation_prompts 应包含 fallen person、person lying on the ground，"
+        "person_fishing 的 annotation_prompts 应包含 person fishing、person holding a fishing rod。"
         "use_synthetic_generation 布尔值，必须为 true；"
         "generation_prompt 字符串；"
         "labels 字符串数组；"
@@ -1570,6 +1591,11 @@ def _generate_model_managed_yolo_training_intent_spec(
         "禁止输出中文、空格或自然语言短语；例如人脸检测输出 face，不要输出 人脸；"
         "严禁返回 object、target、thing、foreground、目标、物体、对象 等泛化类别；"
         "必须从用户业务目标里解析具体对象作为 labels，例如：车辆检测输出 car，瓶子检测输出 bottle，钢材检测输出 steel；"
+        "如果用户目标包含多个检测任务，必须提取所有目标类别，例如“抽烟检测和人脸检测”输出 person,cigarette,face，"
+        "不要只输出第一个命中的任务类别；"
+        "如果用户目标是人员行为或状态检测，例如人员摔倒、人员玩手机、人员睡岗、人员攀爬，"
+        "不能只输出 person，必须输出能表达业务状态的训练类名，例如 person_fall、person_use_phone、person_sleep、person_climb；"
+        "此类任务 task_type 必须为 behavior_detection 或 state_detection，intent_items 中必须保留原始业务含义；"
         "只有抽烟检测通常应包含 person 和 cigarette；车辆检测应输出车辆相关类别。"
     )
     messages = [
@@ -1641,9 +1667,19 @@ def _generate_model_managed_training_intent_spec(
         "你是 DEIMv2 DINOv3 目标检测训练工作流的前置意图规划器。"
         "此阶段尚未分析数据集，因此禁止输出 batch、epochs、img_size、split 等依赖数据集的最终训练参数。"
         "只返回 JSON 对象，不要解释。字段包含："
-        "task_description 字符串；use_synthetic_generation 布尔值，通常为 true；"
+        "task_description 字符串；task_type 字符串，可取 object_detection/behavior_detection/state_detection；"
+        "intent_items 数组，每项描述一个用户要训练的检测意图，至少包含 label、type、subject、description、annotation_prompts；"
+        "每个 intent_items 项的 annotation_prompts 必须是 SAM3 可理解的英文自然语言短语数组，"
+        "不能只写训练类名；例如 person_fall 的 annotation_prompts 应包含 fallen person、person lying on the ground，"
+        "person_fishing 的 annotation_prompts 应包含 person fishing、person holding a fishing rod。"
+        "use_synthetic_generation 布尔值，通常为 true；"
         "generation_prompt 字符串；labels 字符串数组；training 空对象；runtime 空对象；split 空对象。"
         "labels 必须是英文 ASCII 类名，只能使用小写英文、数字、下划线，禁止泛化 object/target。"
+        "必须从用户完整业务目标中提取所有检测类别；如果用户说“抽烟检测和人脸检测”，labels 应包含 person,cigarette,face，"
+        "不要因为先看到抽烟就忽略人脸。"
+        "如果用户目标是人员行为或状态检测，例如人员摔倒、人员玩手机、人员睡岗、人员攀爬，"
+        "不能只输出 person，必须输出能表达业务状态的训练类名，例如 person_fall、person_use_phone、person_sleep、person_climb；"
+        "此类任务 task_type 必须为 behavior_detection 或 state_detection，intent_items 中必须保留原始业务含义。"
         "合成设定：用户会上传 datasets.zip、image1.zip、image2.zip；"
         "image1.zip 固定是参考图/场景背景文件夹，image2.zip 固定是目标图/前景目标文件夹；"
         "generation_prompt 必须明确写出：使用 image1.zip 作为参考图/场景背景，使用 image2.zip 作为目标图/前景目标，"
@@ -1740,6 +1776,9 @@ def _generate_dataset_aware_training_request_spec(
         return base_spec
     readme_excerpt = _deimv2_readme_for_prompt()
     model_selection = deimv2_model_selection or _default_deimv2_model_selection()
+    # DEIMv2 的 train.yml 最终由 runner 生成，但模型思考训练参数时
+    # 必须参考真实 vendor 模板及其递归 __include__ 文件，
+    # 避免生成的 epochs/batch/img_size 脱离实际模型配置。
     vendor_config_context = _deimv2_vendor_config_context_for_prompt(model_selection)
     model_variant = str(model_selection.get("effective_model_variant") or DEIMV2_DEFAULT_MODEL_VARIANT)
     template_config = str(model_selection.get("template_config") or DEIMV2_MODEL_VARIANTS[DEIMV2_DEFAULT_MODEL_VARIANT]["template_config"])
@@ -1747,7 +1786,7 @@ def _generate_dataset_aware_training_request_spec(
     system_prompt = (
         "你是资深计算机视觉算法工程师。现在要为 DEIMv2 DINOv3 目标检测训练生成可执行训练规格，"
         "必须基于 dataset_facts、用户业务目标、DEIMv2 README 和 vendor/deimv2/configs 下的真实配置。只返回 JSON 对象，不要解释。"
-        "必须包含字段：task_description, use_synthetic_generation, generation_prompt, labels, training, runtime, split。"
+        "必须包含字段：task_description, task_type, intent_items, use_synthetic_generation, generation_prompt, labels, training, runtime, split。"
         f"training 必须含 model_variant='{model_variant}', template_config, epochs, img_size, batch, device, workers, "
         "backbone_checkpoint, tuning_checkpoint。"
         f"template_config 必须使用 {template_config}；"
@@ -1760,6 +1799,9 @@ def _generate_dataset_aware_training_request_spec(
         f"epochs 最大不能超过 {MAX_TRAINING_EPOCHS}；即使用户目标较复杂，也必须在该上限内选择合理轮数。"
         "如果用户没有明确指定训练轮数，不要机械使用 10 epoch；小数据集正式训练通常至少 50 epoch。"
         "img_size 通常 640。"
+        "如果 base_spec 或用户目标表达的是行为/状态检测，例如人员摔倒、人员玩手机、人员睡岗、人员攀爬，"
+        "labels 不能退化为 person，必须保留 person_fall、person_use_phone、person_sleep、person_climb 这类业务状态类名；"
+        "intent_items 必须保留这些业务意图，训练参数再基于数据集规模和模板配置推理。"
         "README 关键内容如下：\n"
         f"{readme_excerpt}\n\n"
         "vendor/deimv2/configs 关键配置如下，包含选中模板及其 __include__ 递归依赖；生成 training 时必须以这些真实字段和结构为约束：\n"
@@ -1841,7 +1883,7 @@ def _generate_dataset_aware_yolo_training_request_spec(
     system_prompt = (
         "你是资深计算机视觉算法工程师。现在必须基于 dataset_facts 分析结果，而不是只基于用户一句话，"
         "补全 YOLO 检测训练参数。只返回 JSON 对象，不要解释。"
-        "必须包含字段：task_description, use_synthetic_generation, generation_prompt, labels, training, runtime, split。"
+        "必须包含字段：task_description, task_type, intent_items, use_synthetic_generation, generation_prompt, labels, training, runtime, split。"
         "training 必须含 task, model, epochs, imgsz, batch, device, workers, patience。"
         "runtime 必须含 enforce_conda_env=false；不要指定 conda_env_name，或置为空字符串。"
         "split 必须含 train, val, test，三项相加约等于 1。"
@@ -1851,7 +1893,10 @@ def _generate_dataset_aware_yolo_training_request_spec(
         f"epochs 最大不能超过 {MAX_TRAINING_EPOCHS}；禁止输出超过该上限的训练轮数；"
         "val/test 必须优先使用真实图，合成图只能进入 train；"
         "如果数据规模很小，test 比例要保守，避免每类在验证集缺失；"
-        "labels 必须是英文 ASCII 类名，使用小写英文、数字、下划线，禁止中文和泛化 object/target。"
+        "labels 必须是英文 ASCII 类名，使用小写英文、数字、下划线，禁止中文和泛化 object/target；"
+        "复合任务必须保留所有类别，不要覆盖或丢弃 base_spec 中合理的 labels。"
+        "如果 base_spec 或用户目标表达的是行为/状态检测，例如人员摔倒、人员玩手机、人员睡岗、人员攀爬，"
+        "labels 不能退化为 person，必须保留 person_fall、person_use_phone、person_sleep、person_climb 这类业务状态类名。"
     )
     messages = [
         Message(
@@ -1906,7 +1951,7 @@ def _fallback_model_managed_yolo_training_request_spec(
     user_text: str,
     dataset_facts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Keep the upload contract deterministic when model-managed planning fails."""
+    """模型规划失败时，保证上传数据的训练契约仍然确定。"""
     if _request_spec_complete(spec):
         return spec
     labels = _spec_string_list(spec, "labels") or _infer_labels_from_training_intent(user_text) or ["object"]
@@ -1927,7 +1972,7 @@ def _fallback_model_managed_yolo_training_request_spec(
         "runtime": {"conda_env_name": "", "enforce_conda_env": False},
         "split": fallback_training["split"],
     }
-    return _merge_request_specs(fallback, spec)
+    return _apply_behavior_intent_guard(_merge_request_specs(fallback, spec), user_text)
 
 
 def _fallback_model_managed_training_request_spec(
@@ -1960,7 +2005,7 @@ def _fallback_model_managed_training_request_spec(
         "runtime": {"conda_env_name": "", "enforce_conda_env": False},
         "split": fallback_training["split"],
     }
-    return _merge_deimv2_request_specs(fallback, spec)
+    return _apply_behavior_intent_guard(_merge_deimv2_request_specs(fallback, spec), user_text)
 
 
 def _apply_deimv2_dataset_epoch_reasoning(spec: dict[str, Any], dataset_facts: dict[str, Any] | None, user_text: str) -> dict[str, Any]:
@@ -2041,9 +2086,13 @@ def _deimv2_batch_from_dataset_facts(dataset_facts: dict[str, Any], training: di
 
 def _merge_deimv2_request_specs(base: dict[str, Any], generated: dict[str, Any], *, override_nested: bool = False) -> dict[str, Any]:
     merged = dict(base)
-    for key in ("task_description", "generation_prompt"):
+    for key in ("task_description", "generation_prompt", "task_type"):
         if not _spec_string(merged, key) and _spec_string(generated, key):
             merged[key] = _spec_string(generated, key)
+    if not _spec_intent_items(merged) and _spec_intent_items(generated):
+        merged["intent_items"] = _spec_intent_items(generated)
+    if not _spec_string_list(merged, "annotation_prompts") and _spec_string_list(generated, "annotation_prompts"):
+        merged["annotation_prompts"] = _spec_string_list(generated, "annotation_prompts")
     if _spec_optional_bool(merged, "use_synthetic_generation") is None:
         generated_bool = _spec_optional_bool(generated, "use_synthetic_generation")
         if generated_bool is not None:
@@ -2095,7 +2144,7 @@ def _complete_yolo_training_request_spec(
         "你是资深计算机视觉算法工程师，负责为 YOLO 目标检测训练工作流补全缺失参数。"
         "用户可能只给一句业务目标，你需要给出合理、可执行、保守的默认规格。"
         "只返回 JSON 对象，不要解释。字段："
-        "task_description 字符串；use_synthetic_generation 布尔值；generation_prompt 字符串；"
+        "task_description 字符串；task_type 字符串；intent_items 数组；use_synthetic_generation 布尔值；generation_prompt 字符串；"
         "labels 字符串数组；training 对象，含 task, model, epochs, imgsz, batch, device, workers, patience；"
         "runtime 对象，含 enforce_conda_env；不要输出 conda_env_name，或将 conda_env_name 置为空字符串；"
         "split 对象，含 train, val, test。"
@@ -2104,6 +2153,8 @@ def _complete_yolo_training_request_spec(
         "禁止输出中文、空格或自然语言短语；例如人脸检测输出 face，不要输出 人脸；"
         "严禁返回 object、target、thing、foreground、目标、物体、对象 等泛化类别；"
         "必须从用户业务目标里解析具体对象作为 labels，例如：车辆检测输出 car，瓶子检测输出 bottle，钢材检测输出 steel；"
+        "复合任务必须提取全部目标类别，例如“抽烟检测和人脸检测”输出 person,cigarette,face；"
+        "行为/状态检测不能降级为 person，例如人员摔倒输出 person_fall，人员玩手机输出 person_use_phone；"
         "只有任务是抽烟检测时 labels 才优先包含 person 和 cigarette；车辆检测应输出车辆相关类别；"
         "合成提示词要适合 image2 目标自然合成到 image1 场景，并强调真实监控画面、可标注；"
         "训练参数必须由你根据任务目标、YOLO 训练常识和快速验证需求自行选择，不要照抄用户未提供的固定模板；"
@@ -2160,9 +2211,13 @@ def _request_spec_complete(spec: dict[str, Any]) -> bool:
 
 def _merge_request_specs(base: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
-    for key in ("task_description", "generation_prompt"):
+    for key in ("task_description", "generation_prompt", "task_type"):
         if not _spec_string(merged, key) and _spec_string(generated, key):
             merged[key] = _spec_string(generated, key)
+    if not _spec_intent_items(merged) and _spec_intent_items(generated):
+        merged["intent_items"] = _spec_intent_items(generated)
+    if not _spec_string_list(merged, "annotation_prompts") and _spec_string_list(generated, "annotation_prompts"):
+        merged["annotation_prompts"] = _spec_string_list(generated, "annotation_prompts")
     if _spec_optional_bool(merged, "use_synthetic_generation") is None:
         generated_bool = _spec_optional_bool(generated, "use_synthetic_generation")
         if generated_bool is not None:
@@ -2194,6 +2249,7 @@ def _emit_model_generated_spec(
         {
             "message": (
                 "模型思考生成参数："
+                f"task_type={payload.get('task_type')}; "
                 f"合成提示词={payload['generation_prompt']}; "
                 f"labels={payload['labels']}; "
                 f"training={payload['training']}; "
@@ -2226,6 +2282,10 @@ def _write_model_generated_spec_logs(
         json.dumps(dataset_facts or {}, ensure_ascii=False, indent=2, default=str),
         "",
         f"task_description: {payload.get('task_description') or ''}",
+        f"task_type: {payload.get('task_type') or ''}",
+        "intent_items:",
+        json.dumps(payload.get("intent_items") or [], ensure_ascii=False, indent=2),
+        "",
         f"use_synthetic_generation: {payload.get('use_synthetic_generation')}",
         "",
         "generation_prompt:",
@@ -2251,9 +2311,20 @@ def _model_generated_spec_payload(spec: dict[str, Any]) -> dict[str, Any]:
     training_cfg = _spec_training_config(spec)
     _force_current_runtime(training_cfg)
     title = "模型思考生成的 DEIMv2 训练参数" if _looks_like_deimv2_training(training_cfg.get("training", {})) else "模型思考生成的 YOLO 训练参数"
+    intent_items = _spec_intent_items(spec)
+    annotation_prompt_map = _annotation_prompt_map_from_spec(spec, _spec_string_list(spec, "labels"))
+    annotation_prompts = _dedupe_text_values([
+        *_annotation_prompts_from_intent_items(intent_items),
+        *_spec_string_list(spec, "annotation_prompts"),
+        *annotation_prompt_map.keys(),
+    ])
     return {
         "title": title,
         "task_description": _spec_string(spec, "task_description"),
+        "task_type": _spec_string(spec, "task_type"),
+        "intent_items": intent_items,
+        "annotation_prompts": annotation_prompts,
+        "annotation_prompt_map": annotation_prompt_map,
         "use_synthetic_generation": _spec_optional_bool(spec, "use_synthetic_generation"),
         "generation_prompt": _spec_string(spec, "generation_prompt"),
         "labels": _spec_string_list(spec, "labels"),
@@ -2406,6 +2477,8 @@ def _select_deimv2_model_variant(runtime_options: RuntimeOptions, recorder: Even
     requested = _normalize_deimv2_model_variant(requested_raw)
     reason = _deimv2_variant_unavailable_reason(requested)
     if reason:
+        # 模型规格是面向用户的选择项。规格不存在或缺少 checkpoint 时记录原因，
+        # 但回退到默认 S，保证专用 DEIMv2 应用仍可运行。
         selection = _default_deimv2_model_selection(requested=requested, fallback_reason=reason)
         recorder.emit("deimv2.model_variant.fallback", selection)
         return selection
@@ -2474,6 +2547,8 @@ def _apply_epochs_policy(training_cfg: dict[str, Any], runtime_options: RuntimeO
     if not isinstance(training, dict):
         return
     if not _epochs_button(runtime_options):
+        # 开发/测试模式：无论模型思考出多少轮，都强制短轮数。
+        # 生产环境应保持 button_epochs=True。
         training["epochs"] = FIXED_TRAINING_EPOCHS
     _cap_training_epochs(training)
 
@@ -2601,6 +2676,10 @@ _LABEL_ALIAS_TO_CANONICAL: dict[str, tuple[str, ...]] = {
     "水瓶": ("bottle",),
     "矿泉水瓶": ("bottle",),
     "瓶": ("bottle",),
+    "socket": ("socket",),
+    "power_socket": ("socket",),
+    "插座": ("socket",),
+    "电源插座": ("socket",),
     "steel": ("steel",),
     "钢材": ("steel",),
     "钢筋": ("steel",),
@@ -2664,6 +2743,7 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("公交车", "公交", "巴士", "客车", "bus"), ("bus",)),
     (("车辆", "汽车", "小汽车", "轿车", "机动车", "vehicle", "car"), ("car",)),
     (("瓶子", "水瓶", "矿泉水瓶", "bottle"), ("bottle",)),
+    (("插座", "电源插座", "socket", "power socket", "power_socket"), ("socket",)),
     (("钢材", "钢筋", "钢板", "steel", "rebar"), ("steel",)),
     (("安全帽", "helmet", "hard hat", "hard_hat"), ("hard_hat",)),
     (("口罩", "mask"), ("mask",)),
@@ -2683,23 +2763,89 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 )
 
 
+_PERSON_SUBJECT_LABELS = {"person", "people", "pedestrian", "human"}
+_BEHAVIOR_AUXILIARY_LABELS = {"phone", "cigarette"}
+
+
+_BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
+    {
+        "aliases": ("摔倒", "跌倒", "倒地", "fall down", "fallen person", "person fall", "person_fall"),
+        "label": "person_fall",
+        "type": "state_detection",
+        "subject": "person",
+        "behavior": "fall",
+        "description": "检测画面中摔倒、跌倒或倒地的人员",
+        "annotation_prompts": ("fallen person", "person lying on the ground", "person falling down"),
+    },
+    {
+        "aliases": ("玩手机", "看手机", "使用手机", "打电话", "接打电话", "using phone", "use phone", "phone use", "person_use_phone"),
+        "label": "person_use_phone",
+        "type": "behavior_detection",
+        "subject": "person",
+        "behavior": "use_phone",
+        "description": "检测画面中正在使用手机的人员",
+        "annotation_prompts": ("person using phone", "person holding phone", "person talking on phone"),
+    },
+    {
+        "aliases": ("抽烟", "吸烟", "smoking", "person smoking", "person_smoking"),
+        "label": "person_smoking",
+        "type": "behavior_detection",
+        "subject": "person",
+        "behavior": "smoking",
+        "description": "检测画面中正在抽烟的人员",
+        "annotation_prompts": ("person smoking", "person holding cigarette"),
+    },
+    {
+        "aliases": ("睡岗", "睡觉", "打瞌睡", "sleeping", "person sleeping", "person_sleep"),
+        "label": "person_sleep",
+        "type": "state_detection",
+        "subject": "person",
+        "behavior": "sleep",
+        "description": "检测画面中睡岗或睡觉的人员",
+        "annotation_prompts": ("sleeping person", "person sleeping at work"),
+    },
+    {
+        "aliases": ("攀爬", "翻越", "爬墙", "climbing", "person climbing", "person_climb"),
+        "label": "person_climb",
+        "type": "behavior_detection",
+        "subject": "person",
+        "behavior": "climb",
+        "description": "检测画面中攀爬或翻越的人员",
+        "annotation_prompts": ("person climbing", "person climbing over fence"),
+    },
+    {
+        "aliases": ("打架", "斗殴", "fight", "fighting", "person_fight"),
+        "label": "person_fight",
+        "type": "behavior_detection",
+        "subject": "person",
+        "behavior": "fight",
+        "description": "检测画面中打架或斗殴的人员",
+        "annotation_prompts": ("person fighting", "people fighting"),
+    },
+)
+
+
 def _ensure_intent_labels(spec: dict[str, Any], user_text: str) -> dict[str, Any]:
     merged = dict(spec or {})
     explicit_labels = _normalize_detection_labels(_extract_annotation_labels(user_text))
     if explicit_labels:
         merged["labels"] = explicit_labels
+        merged = _apply_behavior_intent_guard(merged, user_text, preserve_explicit_labels=True)
         _align_spec_text_with_labels(merged, explicit_labels)
         return merged
 
     current_labels = _spec_string_list(merged, "labels")
     normalized_current = _normalize_detection_labels(current_labels)
     inferred_labels = _infer_labels_from_training_intent(user_text)
-    if inferred_labels and (not normalized_current or _labels_are_generic(current_labels) or normalized_current != inferred_labels):
+    if normalized_current and not _labels_are_generic(current_labels):
+        # LLM 解析出的 labels 优先保留；规则只补全用户原文中非常明确、
+        # 但模型漏掉的类别，避免复合任务被规则覆盖成单一任务。
+        merged["labels"] = _dedupe_detection_labels([*normalized_current, *inferred_labels])
+    elif inferred_labels:
         merged["labels"] = inferred_labels
     elif normalized_current:
         merged["labels"] = normalized_current
-    elif inferred_labels:
-        merged["labels"] = inferred_labels
+    merged = _apply_behavior_intent_guard(merged, user_text)
     _align_spec_text_with_labels(merged, _spec_string_list(merged, "labels"))
     return merged
 
@@ -2709,14 +2855,280 @@ def _infer_labels_from_training_intent(user_text: str) -> list[str]:
     if not text:
         return []
     lowered = text.lower()
+    inferred: list[str] = []
+    inferred.extend(_labels_from_intent_items(_infer_behavior_intent_items(text)))
     for aliases, labels in _INTENT_LABEL_RULES:
         if any(alias.lower() in lowered for alias in aliases):
-            return _dedupe_detection_labels(labels)
+            inferred.extend(labels)
     for target in _extract_intent_target_terms(text):
         labels = _normalize_detection_labels([target])
         if labels:
-            return labels
+            inferred.extend(labels)
+    return _dedupe_detection_labels(inferred)
+
+
+def _infer_behavior_intent_items(user_text: str) -> list[dict[str, Any]]:
+    text = str(user_text or "").strip()
+    if not text:
+        return []
+    lowered = text.lower()
+    items: list[dict[str, Any]] = []
+    for rule in _BEHAVIOR_INTENT_RULES:
+        aliases = tuple(str(alias).lower() for alias in rule.get("aliases", ()) if str(alias).strip())
+        if not any(alias in lowered for alias in aliases):
+            continue
+        label = _normalize_detection_labels([str(rule.get("label") or "")])
+        if not label:
+            continue
+        items.append(
+            {
+                "type": str(rule.get("type") or "behavior_detection"),
+                "subject": str(rule.get("subject") or "person"),
+                "behavior": str(rule.get("behavior") or label[0]),
+                "label": label[0],
+                "description": str(rule.get("description") or label[0]),
+                "annotation_prompts": [str(item).strip() for item in rule.get("annotation_prompts", ()) if str(item).strip()],
+                "source": "rule_fallback",
+            }
+        )
+    return _dedupe_intent_items(items)
+
+
+def _apply_behavior_intent_guard(
+    spec: dict[str, Any],
+    user_text: str,
+    *,
+    preserve_explicit_labels: bool = False,
+) -> dict[str, Any]:
+    # LLM 是主路径；这里仅在明显行为/状态任务被降级成 person 时兜底修复。
+    inferred_items = _infer_behavior_intent_items(user_text)
+    existing_items = _spec_intent_items(spec)
+    all_items = _dedupe_intent_items([*existing_items, *inferred_items])
+    behavior_labels = _labels_from_intent_items(all_items)
+    if not behavior_labels:
+        return spec
+
+    merged = dict(spec or {})
+    current_labels = _normalize_detection_labels(_spec_string_list(merged, "labels"))
+    if preserve_explicit_labels and current_labels:
+        labels = current_labels
+    else:
+        # 行为检测以 intent_items 的训练 label 为准。LLM 有时会把行为里的辅助物体
+        # 也放进顶层 labels，例如“人员玩手机检测”返回 person_use_phone + phone。
+        # 这会把训练任务从行为检测扩大成额外的物体检测，因此默认只保留行为/状态
+        # 意图 label；显式 labels=... 的场景由 preserve_explicit_labels 分支保留。
+        labels = behavior_labels
+    if labels:
+        merged["labels"] = labels
+    merged["intent_items"] = all_items
+    if not _spec_string(merged, "task_type") or _spec_string(merged, "task_type") == "object_detection":
+        merged["task_type"] = _behavior_task_type(all_items)
+    if not _spec_string(merged, "annotation_prompts"):
+        prompts = _annotation_prompts_from_intent_items(all_items)
+        if prompts:
+            merged["annotation_prompts"] = prompts
+
+    description = _spec_string(merged, "task_description")
+    if not description or _looks_like_generic_person_description(description):
+        merged["task_description"] = _behavior_task_description_with_extra_labels(all_items, _spec_string_list(merged, "labels"))
+
+    prompt = _spec_string(merged, "generation_prompt")
+    if not prompt or _looks_like_generic_person_description(prompt):
+        merged["generation_prompt"] = _fallback_generation_prompt(
+            _spec_string_list(merged, "labels"),
+            task_description=_spec_string(merged, "task_description"),
+            user_text=user_text,
+        )
+        merged["use_synthetic_generation"] = True
+    return merged
+
+
+def _spec_intent_items(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    value = spec.get("intent_items")
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        label = _normalize_detection_labels([str(raw.get("label") or raw.get("train_label") or "")])
+        if not label:
+            continue
+        item = dict(raw)
+        item["label"] = label[0]
+        task_type = str(item.get("type") or item.get("task_type") or "object_detection").strip().lower()
+        # 大模型常把行为类写成 behavior/action，把状态类写成 state/status。
+        # 工作流内部统一使用 *_detection，避免后续提取训练 label 时漏掉这些意图。
+        if task_type in {"behavior", "action", "activity", "behaviour"}:
+            task_type = "behavior_detection"
+        elif task_type in {"state", "status"}:
+            task_type = "state_detection"
+        item["type"] = task_type
+        item["subject"] = str(item.get("subject") or "")
+        item["description"] = str(item.get("description") or "")
+        prompts = item.get("annotation_prompts")
+        if isinstance(prompts, list):
+            item["annotation_prompts"] = [str(prompt).strip() for prompt in prompts if str(prompt).strip()]
+        elif isinstance(prompts, str) and prompts.strip():
+            item["annotation_prompts"] = [prompts.strip()]
+        items.append(item)
+    return _dedupe_intent_items(items)
+
+
+def _dedupe_intent_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    by_label: dict[str, dict[str, Any]] = {}
+    for item in items:
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        key = label.lower()
+        if key in by_label:
+            existing = by_label[key]
+            # 同一个训练 label 可能同时来自 LLM 和本地行为规则。这里合并字段，
+            # 避免 LLM 只给 person_fall 而规则里的自然语言标注提示词被去重丢掉。
+            for field in ("type", "subject", "behavior", "description", "source"):
+                if not str(existing.get(field) or "").strip() and str(item.get(field) or "").strip():
+                    existing[field] = item.get(field)
+            existing["annotation_prompts"] = _dedupe_text_values([
+                *(existing.get("annotation_prompts") if isinstance(existing.get("annotation_prompts"), list) else []),
+                *(item.get("annotation_prompts") if isinstance(item.get("annotation_prompts"), list) else []),
+            ])
+            continue
+        copied = dict(item)
+        copied["annotation_prompts"] = _dedupe_text_values(
+            copied.get("annotation_prompts") if isinstance(copied.get("annotation_prompts"), list) else []
+        )
+        by_label[key] = copied
+        result.append(copied)
+    return result
+
+
+def _labels_from_intent_items(items: list[dict[str, Any]]) -> list[str]:
+    labels: list[str] = []
+    for item in items:
+        task_type = str(item.get("type") or item.get("task_type") or "").strip().lower()
+        if task_type not in {"behavior_detection", "state_detection", "behavior", "behaviour", "action", "activity", "state", "status"}:
+            continue
+        labels.extend(_normalize_detection_labels([str(item.get("label") or item.get("train_label") or "")]))
+    return _dedupe_detection_labels(labels)
+
+
+def _annotation_prompts_from_intent_items(items: list[dict[str, Any]]) -> list[str]:
+    prompts: list[str] = []
+    for item in items:
+        raw_prompts = item.get("annotation_prompts")
+        if isinstance(raw_prompts, list):
+            prompts.extend(str(prompt).strip() for prompt in raw_prompts if str(prompt).strip())
+    return _dedupe_text_values(prompts)
+
+
+def _annotation_prompt_map_from_spec(spec: dict[str, Any], labels: list[str]) -> dict[str, str]:
+    class_names = _normalize_detection_labels(labels)
+    if not class_names:
+        return {}
+    class_set = {label.lower() for label in class_names}
+    prompt_map: dict[str, str] = {}
+    for item in _spec_intent_items(spec):
+        label = _normalize_detection_labels([str(item.get("label") or "")])
+        if not label or label[0].lower() not in class_set:
+            continue
+        raw_prompts = item.get("annotation_prompts") if isinstance(item.get("annotation_prompts"), list) else []
+        prompts = [*raw_prompts, *_behavior_annotation_prompts_for_label(label[0]), _label_to_annotation_prompt(label[0])]
+        for prompt in prompts:
+            text = str(prompt or "").strip()
+            if text:
+                prompt_map[text] = label[0]
+    top_level_prompts = _spec_string_list(spec, "annotation_prompts")
+    if len(class_names) == 1:
+        for prompt in top_level_prompts:
+            prompt_map.setdefault(prompt, class_names[0])
+    for label in class_names:
+        for prompt in _behavior_annotation_prompts_for_label(label):
+            prompt_map.setdefault(prompt, label)
+        prompt_map.setdefault(_label_to_annotation_prompt(label), label)
+        # 保留训练 label 作为兜底 prompt。非 SAM3 标注模型或普通目标类别仍可直接使用。
+        prompt_map.setdefault(label, label)
+    return prompt_map
+
+
+def _label_to_annotation_prompt(label: str) -> str:
+    text = str(label or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_]+", "_", text).strip("_")
+    if not text:
+        return ""
+    if text.startswith("person_"):
+        return "person " + text.removeprefix("person_").replace("_", " ")
+    return text.replace("_", " ")
+
+
+def _behavior_annotation_prompts_for_label(label: str) -> list[str]:
+    normalized = _normalize_detection_labels([label])
+    if not normalized:
+        return []
+    target = normalized[0]
+    for rule in _BEHAVIOR_INTENT_RULES:
+        rule_label = _normalize_detection_labels([str(rule.get("label") or "")])
+        if rule_label and rule_label[0] == target:
+            return _dedupe_text_values([str(item).strip() for item in rule.get("annotation_prompts", ()) if str(item).strip()])
     return []
+
+
+def _dedupe_text_values(values: list[Any] | tuple[Any, ...]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip().strip("\"'`，,;；。")
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _behavior_task_type(items: list[dict[str, Any]]) -> str:
+    types = {str(item.get("type") or "").strip().lower() for item in items}
+    if types.intersection({"behavior_detection", "behavior", "behaviour", "action", "activity"}):
+        return "behavior_detection"
+    if types.intersection({"state_detection", "state", "status"}):
+        return "state_detection"
+    return "behavior_detection"
+
+
+def _behavior_task_description(items: list[dict[str, Any]]) -> str:
+    descriptions = [str(item.get("description") or item.get("label") or "").strip() for item in items]
+    descriptions = [item for item in descriptions if item]
+    return "；".join(descriptions) if descriptions else "人员行为状态检测"
+
+
+def _behavior_task_description_with_extra_labels(items: list[dict[str, Any]], labels: list[str]) -> str:
+    description = _behavior_task_description(items)
+    behavior_labels = set(_labels_from_intent_items(items))
+    extra_labels = [
+        label
+        for label in _normalize_detection_labels(labels)
+        if label not in behavior_labels and not _is_person_subject_label(label) and label not in _BEHAVIOR_AUXILIARY_LABELS
+    ]
+    if extra_labels:
+        return f"{description}；检测 {', '.join(extra_labels)}"
+    return description
+
+
+def _is_person_subject_label(label: str) -> bool:
+    return _label_lookup_key(label) in _PERSON_SUBJECT_LABELS
+
+
+def _looks_like_generic_person_description(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return bool(
+        re.search(r"\b(?:person|people|pedestrian|human)\s+detection\b", text)
+        or re.search(r"(人员|行人|人体|人)\s*(目标)?(检测|识别)", text)
+    )
 
 
 def _extract_intent_target_terms(text: str) -> list[str]:
@@ -2738,7 +3150,11 @@ def _extract_intent_target_terms(text: str) -> list[str]:
 
 def _clean_intent_target_term(value: str) -> str:
     text = str(value or "").strip()
-    text = re.sub(r"(?i)yolo\d*[a-z]*|cv|目标检测|检测|识别|分割|模型|算法|训练|帮我|请|一个|一套|一种|的|用于", "", text)
+    text = re.sub(
+        r"(?i)yolo\d*[a-z]*|deimv?\d*[a-z0-9_\-]*|dino(?:v?\d+)?|cv|目标检测|检测|识别|分割|模型|算法|训练|帮我|请|一个|一套|一种|的|用于",
+        "",
+        text,
+    )
     return re.sub(r"[\s:：，,。；;]+", "", text).strip()
 
 
@@ -3651,6 +4067,9 @@ def _extract_training_config(user_text: str) -> dict[str, Any]:
 
 def _extract_detection_task_description(user_text: str, prompt_text: str, labels: list[str]) -> str:
     text = user_text or ""
+    behavior_items = _infer_behavior_intent_items(text)
+    if behavior_items:
+        return _behavior_task_description(behavior_items)
     for key in ("task_description", "detection_task", "detect_task", "任务描述", "检测任务", "任务"):
         value = _string_param(text, key, "")
         if value and value.lower() not in {"detect", "segment", "train"}:
@@ -3891,14 +4310,14 @@ def _resolve_coco_output(paths: ThreadPaths, outputs: list[Any]) -> Path:
             continue
         if local.suffix.lower() == ".json" and local.is_file() and _looks_like_coco_json(local):
             return local
-    # Fallback 1: outputs json candidates
+    # 兜底 1：优先从 outputs 中找 JSON 候选文件
     json_candidates = sorted([p for p in paths.outputs.rglob("*.json") if p.is_file()])
     for p in reversed(json_candidates):
         n = p.name.lower()
         if (n == "coco.json" or n.endswith(".coco.json")) and _looks_like_coco_json(p):
             return p
 
-    # Fallback 2: scan workspace for common coco filenames
+    # 兜底 2：扫描 workspace 中常见的 COCO 文件名
     ws_candidates = sorted([p for p in paths.workspace.rglob("*.json") if p.is_file()])
     for p in reversed(ws_candidates):
         n = p.name.lower()
@@ -4610,6 +5029,8 @@ def _read_text_marker(paths: ThreadPaths | TrainingRunPaths, filename: str) -> s
     if marker.exists():
         return marker.read_text(encoding="utf-8").strip()
     legacy = _legacy_thread_marker_path(paths, filename)
+    # 兼容早期还没有 run 级工作区时创建的线程。
+    # 新写入始终进入当前 run 工作区。
     if legacy != marker and legacy.exists():
         return legacy.read_text(encoding="utf-8").strip()
     return ""
@@ -4848,6 +5269,7 @@ def _apply_user_training_model_for_yolo(training_cfg: dict[str, Any], model_reco
         return ""
     if _user_training_model_suffix(model_record) != ".pt":
         return "YOLO 训练模型必须是 .pt 文件"
+    # Ultralytics 可以直接把检测器 .pt 作为训练入口模型。
     training["model"] = str(model_record["local_path"])
     _apply_common_user_training_model_metadata(training, model_record)
     return ""
@@ -4860,11 +5282,15 @@ def _apply_user_training_model_for_deimv2(training_cfg: dict[str, Any], model_re
     suffix = _user_training_model_suffix(model_record)
     local_path = str(model_record["local_path"])
     if suffix == ".pt":
+        # 在 DEIMv2 DINOv3 中，.pt 表示 backbone checkpoint，不是完整检测器。
+        # 因此关闭 tuning，避免 runner 又加载旧的 .pth 检测器。
         training["backbone_checkpoint"] = local_path
         training["tuning_checkpoint"] = ""
         training["disable_tuning_checkpoint"] = True
         training["deimv2_upload_model_usage"] = "backbone_checkpoint"
     elif suffix == ".pth":
+        # .pth 表示完整检测器 checkpoint，用于微调。
+        # DINOv3 backbone 仍由 runner 配置单独解析。
         training["tuning_checkpoint"] = local_path
         training["disable_tuning_checkpoint"] = False
         training["deimv2_upload_model_usage"] = "tuning_checkpoint"

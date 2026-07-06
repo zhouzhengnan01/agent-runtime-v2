@@ -15,6 +15,11 @@ from typing import Any
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = SKILL_ROOT.parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.core.hardware.device_selector import reserve_training_device
+
 PROJECT_MODELS_ROOT = PROJECT_ROOT / "models"
 VENDOR_DEIMV2_ROOT = SKILL_ROOT / "vendor" / "deimv2"
 DEFAULT_MODEL_VARIANT = "deimv2-dinov3-s"
@@ -193,6 +198,8 @@ def load_yaml_payload(path: Path) -> dict[str, Any]:
 
 
 def load_resolved_yaml(path: Path) -> dict[str, Any]:
+    # DEIMv2 模板通过 __include__ 分层组合。这里解析成一个完整字典，
+    # 让生成的 train.yml 更适合审核和部署排障。
     payload = load_yaml_payload(path)
     resolved: dict[str, Any] = {}
     for include_path in resolve_yaml_include_paths(path, payload):
@@ -217,6 +224,8 @@ def resolve_yaml_include_paths(path: Path, payload: dict[str, Any] | None = None
 
 
 def visible_include_paths(train_yml: Path) -> list[str]:
+    # 在生成的 YAML 中保留叶子 include 路径。下面写入的是最终生效配置，
+    # include 记录用于追溯官方 vendor 模板来源。
     payload = load_yaml_payload(train_yml)
     visible: list[Path] = []
     for include_path in resolve_yaml_include_paths(train_yml, payload):
@@ -269,6 +278,8 @@ def write_resolved_train_yaml(train_yml: Path, training: dict[str, Any]) -> None
     include_paths = visible_include_paths(train_yml.resolve())
     resolved = load_resolved_yaml(train_yml.resolve())
     apply_model_training_overrides(resolved, training)
+    # 最终 train.yml 同时包含 __include__ 来源和合并后的生效字段。
+    # 运维/算法同事只看一个文件就能确认完整训练配置。
     output: dict[str, Any] = {"__include__": include_paths}
     output.update(resolved)
     train_yml.write_text(yaml.dump(output, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -314,6 +325,8 @@ def write_runtime_configs(
     dataset_yml = configs_dir / "dataset.yml"
     train_yml = configs_dir / f"{stage}.yml"
     annotations = dataset_root / "annotations"
+    # 数据集路径来自已准备好的 COCO 划分。上游数据处理阶段负责保证
+    # val/test 只包含真实图；这里仅把这些文件绑定到 DEIMv2 dataloader 结构。
     dataset_yml.write_text(
         "\n".join(
             [
@@ -396,6 +409,8 @@ val_dataloader:
 def training_command(prefix: list[str], deim_root: Path, config: Path, hardware: str, tuning_checkpoint: Path | None) -> list[str]:
     train_py = deim_root / "train.py"
     if hardware == "npu":
+        # NPU 启动放在 wrapper 中处理，让 torch_npu 环境适配逻辑
+        # 不侵入官方 DEIMv2 train.py 源码。
         cmd = prefix + [str(SKILL_ROOT / "scripts" / "npu_train_launcher.py"), "--train-py", str(train_py), "-c", str(config), "-d", "npu:0", "--seed", "0"]
     else:
         cmd = prefix + [str(train_py), "-c", str(config), "--seed", "0"]
@@ -404,6 +419,8 @@ def training_command(prefix: list[str], deim_root: Path, config: Path, hardware:
         else:
             cmd.extend(["-d", "cpu"])
     if tuning_checkpoint:
+        # -t 表示检测器 checkpoint 微调。DINOv3 backbone 通过 train.yml 中的
+        # DINOv3STAs.weights_path 配置，不作为 -t 传入。
         cmd.extend(["-t", str(tuning_checkpoint)])
     return cmd
 
@@ -510,6 +527,113 @@ def parse_deimv2_log_metrics(log_path: Path) -> dict[str, Any]:
     }
 
 
+def summarize_coco_split(dataset_root: Path, split: str) -> dict[str, Any]:
+    ann_path = dataset_root / "annotations" / f"instances_{split}.json"
+    if not ann_path.is_file():
+        return {"split": split, "images": 0, "instances": 0, "source_counts": {}}
+    payload = json.loads(ann_path.read_text(encoding="utf-8-sig"))
+    images = payload.get("images") if isinstance(payload, dict) else []
+    annotations = payload.get("annotations") if isinstance(payload, dict) else []
+    source_counts: dict[str, int] = {}
+    if isinstance(images, list):
+        for image in images:
+            if not isinstance(image, dict):
+                continue
+            source = str(image.get("source") or ("synthetic" if image.get("is_synthetic") else "real"))
+            source_counts[source] = source_counts.get(source, 0) + 1
+    return {
+        "split": split,
+        "images": len(images) if isinstance(images, list) else 0,
+        "instances": len(annotations) if isinstance(annotations, list) else 0,
+        "source_counts": source_counts,
+    }
+
+
+def build_yolo_compatible_run_summary(summary: dict[str, Any], dataset_root: Path, work_dir: Path, run_dir: Path) -> dict[str, Any]:
+    categories = read_categories(dataset_root)
+    class_names = [str(cat.get("name") or "") for cat in categories if str(cat.get("name") or "").strip()]
+    metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+    yolo_results_dict = {
+        "metrics/precision(B)": None,
+        "metrics/recall(B)": metrics.get("AR100"),
+        "metrics/mAP50(B)": metrics.get("mAP50"),
+        "metrics/mAP50-95(B)": metrics.get("mAP50_95"),
+        "fitness": metrics.get("fitness") if metrics.get("fitness") is not None else metrics.get("best_coco_eval_bbox"),
+    }
+    yolo_results_dict = {key: value for key, value in yolo_results_dict.items() if value is not None or key == "metrics/precision(B)"}
+    yolo_metrics = dict(metrics)
+    yolo_metrics.setdefault("precision", None)
+    if "recall" not in yolo_metrics and metrics.get("AR100") is not None:
+        yolo_metrics["recall"] = metrics.get("AR100")
+
+    split_counts: dict[str, int] = {}
+    source_counts: dict[str, dict[str, int]] = {}
+    for split in ("train", "val", "test"):
+        split_summary = summarize_coco_split(dataset_root, split)
+        split_counts[split] = int(split_summary.get("images") or 0)
+        source_counts[split] = split_summary.get("source_counts") if isinstance(split_summary.get("source_counts"), dict) else {}
+    eval_split = "test" if split_counts.get("test") else "val"
+    test_set_summary = summarize_coco_split(dataset_root, eval_split)
+
+    # 前端沿用 YOLO run_summary.json 解析，因此这里输出兼容字段；
+    # DEIMv2 原始字段仍放在 training_summary.json 和 deimv2_summary 中。
+    return {
+        "config_path": str(summary.get("config") or ""),
+        "conda_env_name": "",
+        "accelerator": str(summary.get("selected") or ""),
+        "device": str(summary.get("selected") or ""),
+        "device_selection": summary.get("device_selection"),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+        "npu_visible_devices": os.environ.get("ASCEND_RT_VISIBLE_DEVICES", ""),
+        "dataset_yaml": str(summary.get("dataset_config") or ""),
+        "dataset_root": str(dataset_root),
+        "task": "detect",
+        "requested_model": str(summary.get("model_variant") or ""),
+        "model": str(summary.get("model_variant") or ""),
+        "model_source": str(summary.get("model_source") or "deimv2"),
+        "strict_model": False,
+        "model_sha256": str(summary.get("model_sha256") or ""),
+        "model_original_name": str(summary.get("model_original_name") or ""),
+        "model_id": str(summary.get("model_id") or ""),
+        "model_fallback_used": False,
+        "model_load_error": "",
+        "num_images": sum(split_counts.values()),
+        "num_categories": len(class_names),
+        "class_names": class_names,
+        "split_counts": split_counts,
+        "source_counts": source_counts,
+        "test_set_summary": test_set_summary,
+        "run_root": str(work_dir),
+        "runs_dir": str(run_dir),
+        "train_save_dir": str(run_dir / "train"),
+        "best_pt": str(summary.get("best_checkpoint") or ""),
+        "best_checkpoint": str(summary.get("best_checkpoint") or ""),
+        "last_checkpoint": str(summary.get("last_checkpoint") or ""),
+        "eval_results": str(summary.get("eval_results") or ""),
+        "results_dict": yolo_results_dict,
+        "metrics": yolo_metrics,
+        "per_class_metrics": [
+            {
+                "class_name": class_name,
+                "precision": None,
+                "recall": None,
+                "mAP50": None,
+                "mAP50-95": None,
+                "analysis": "DEIMv2 当前日志未输出类别级 Precision/Recall/mAP，前端兼容字段保留为空。",
+            }
+            for class_name in class_names
+        ],
+        "class_performance_analysis": {
+            "summary": "DEIMv2 当前解析的是 COCO 全局 AP/AR 指标，未生成类别级 YOLO 指标。",
+            "classes": [],
+        },
+        "eval_error": "",
+        "status": summary.get("status") or "completed",
+        "training_backend": "deimv2",
+        "deimv2_summary": summary,
+    }
+
+
 def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     deim_root = resolve_deimv2_root(spec)
     dataset_root = Path(str(spec["dataset_root"])).resolve()
@@ -517,7 +641,21 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     training = spec.get("training") if isinstance(spec.get("training"), dict) else {}
     prefix = python_prefix(training)
     detected = detect_target_hardware(prefix)
-    hardware = choose_hardware(training, detected)
+    # 先选设备再生成检测器配置，因为 CUDA/NPU/CPU 的 batch、workers
+    # 等默认值不同。
+    device_reservation = reserve_training_device(
+        requested=training.get("device"),
+        backend="deimv2",
+        model_variant=training.get("model_variant"),
+        batch=training.get("batch"),
+        img_size=training.get("img_size") or training.get("imgsz"),
+        project_root=PROJECT_ROOT,
+        min_free_memory_mb=training.get("min_free_memory_mb") or training.get("required_free_memory_mb"),
+        max_gpu_utilization=training.get("max_gpu_utilization"),
+    )
+    hardware = device_reservation.accelerator
+    detected["device_selection"] = device_reservation.to_dict()
+    detected["selected"] = hardware
     template = choose_template(deim_root, training)
     backbone = resolve_checkpoint(
         deim_root,
@@ -557,14 +695,19 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
             "config": str(config),
             "output_dir": str(output_dir),
             "command": cmd,
+            "device_selection": device_reservation.to_dict(),
         }
         stages.append(stage_result)
         if dry_run:
             stage_result["returncode"] = 0
             continue
         log_path = logs_dir / f"{stage}.log"
+        env = os.environ.copy()
+        # CUDA 下只把选中的物理 GPU 暴露给 DEIMv2。
+        # 官方 train.py 仍可按默认 cuda:0 逻辑运行。
+        env.update(device_reservation.env)
         with log_path.open("w", encoding="utf-8") as log:
-            proc = subprocess.run(cmd, cwd=str(deim_root), stdout=log, stderr=subprocess.STDOUT, text=True)
+            proc = subprocess.run(cmd, cwd=str(deim_root), stdout=log, stderr=subprocess.STDOUT, text=True, env=env)
         stage_result["returncode"] = proc.returncode
         stage_result["log"] = str(log_path)
         if proc.returncode != 0:
@@ -580,6 +723,7 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
         "dataset_root": str(dataset_root),
         "hardware": detected,
         "selected": hardware,
+        "device_selection": device_reservation.to_dict(),
         "template": str(template),
         "backbone_checkpoint": str(backbone),
         "tuning_checkpoint": str(tuning) if tuning else "",
@@ -600,7 +744,9 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     }
     summary.update(metric_payload)
     (work_dir / "training_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    (work_dir / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    compatible_summary = build_yolo_compatible_run_summary(summary, dataset_root, work_dir, run_dir)
+    (work_dir / "run_summary.json").write_text(json.dumps(compatible_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    device_reservation.release()
     return summary
 
 
