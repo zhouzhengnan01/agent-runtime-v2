@@ -720,6 +720,13 @@ class YoloTrainingWorkflow:
             prep_summary = _read_data_preparation_summary(run_paths)
             training_coco = str(prep_summary.get("training_coco") or "")
             training_root = str(prep_summary.get("training_root") or "")
+            prepared_class_names = [
+                str(item)
+                for item in (prep_summary.get("class_names") or prep_summary.get("labels_final") or labels)
+                if str(item).strip()
+            ]
+            if prepared_class_names:
+                labels = prepared_class_names
             if not training_coco or not training_root:
                 return self._model_spec_failed_result(
                     recorder,

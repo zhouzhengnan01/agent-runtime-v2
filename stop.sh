@@ -18,7 +18,7 @@ is_running() {
   [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
 }
 
-if [ "${MODE}" = "docker" ] || { [ "${MODE}" = "auto" ] && [ -n "${JETLINKS_AGENT_IMAGE}" ]; }; then
+if [ "${MODE}" = "docker" ] || { [ "${MODE}" = "auto" ] && [ -n "${JETLINKS_AGENT_IMAGE:-}" ]; }; then
   if docker ps -a --format '{{.Names}}' | grep -Fxq "${JETLINKS_AGENT_CONTAINER_NAME}"; then
     echo "stopping ${APP_NAME} container=${JETLINKS_AGENT_CONTAINER_NAME}"
     docker rm -f "${JETLINKS_AGENT_CONTAINER_NAME}" >/dev/null

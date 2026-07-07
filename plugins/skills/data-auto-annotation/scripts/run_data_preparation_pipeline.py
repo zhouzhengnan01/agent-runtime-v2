@@ -34,6 +34,29 @@ def _write_json(path: Path, payload: Dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _coco_category_names(coco_path: Path) -> list[str]:
+    if not coco_path.is_file():
+        return []
+    try:
+        payload = _load_json(coco_path)
+    except Exception:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    categories = payload.get("categories") if isinstance(payload, dict) else []
+    if not isinstance(categories, list):
+        return []
+    for category in sorted(
+        [item for item in categories if isinstance(item, dict)],
+        key=lambda item: int(item.get("id", 0) or 0),
+    ):
+        name = str(category.get("name") or "").strip()
+        if name and name not in seen:
+            names.append(name)
+            seen.add(name)
+    return names
+
+
 def _decode_bytes(value: bytes | str | None) -> str:
     if value is None:
         return ""
@@ -1223,10 +1246,12 @@ def main() -> None:
         print("[data-prep] dry-run completed after command planning.")
         return
 
+    using_uploaded_coco = False
     if args.coco_json:
         real_coco = Path(args.coco_json).resolve()
         if not real_coco.exists():
             raise FileNotFoundError(f"Provided coco_json does not exist: {real_coco}")
+        using_uploaded_coco = True
     else:
         real_coco = _prepare_real_coco(
             inspection,
@@ -1236,6 +1261,37 @@ def main() -> None:
             args.annotation_prompt_map,
             args.dry_run,
         )
+        using_uploaded_coco = str(inspection.get("format") or "").lower() == "coco"
+
+    requested_labels = list(args.labels)
+    label_policy: dict[str, Any] = {
+        "mode": "auto",
+        "requested_labels": requested_labels,
+        "label_source": "llm_labels",
+        "coco_labels": [],
+        "final_labels": requested_labels,
+        "llm_only": [],
+        "coco_only": [],
+    }
+    if using_uploaded_coco:
+        coco_labels = _coco_category_names(real_coco)
+        if coco_labels:
+            args.labels = coco_labels
+            requested_set = set(requested_labels)
+            coco_set = set(coco_labels)
+            label_policy.update({
+                "label_source": "coco_categories",
+                "coco_labels": coco_labels,
+                "final_labels": coco_labels,
+                "llm_only": [label for label in requested_labels if label not in coco_set],
+                "coco_only": [label for label in coco_labels if label not in requested_set],
+                "reason": "uploaded_coco_categories_take_precedence",
+            })
+            print(
+                "[data-prep] label_policy=auto; using uploaded COCO categories as final labels: "
+                + ",".join(coco_labels),
+                flush=True,
+            )
 
     training_coco = real_coco
     training_root = Path(inspection["images_dir"]).resolve()
@@ -1344,6 +1400,9 @@ def main() -> None:
             "synthetic_plan": plan_path,
             "work_dir": str(work_dir),
             "output_dir": str(output_dir),
+            "label_policy": label_policy,
+            "labels_requested": requested_labels,
+            "labels_final": args.labels,
             **synthetic_status,
         }
         summary_path = output_dir / "data_preparation_summary.json"
@@ -1385,6 +1444,9 @@ def main() -> None:
         "synthetic_plan": plan_path,
         "work_dir": str(work_dir),
         "output_dir": str(output_dir),
+        "label_policy": label_policy,
+        "labels_requested": requested_labels,
+        "labels_final": args.labels,
         **synthetic_status,
     })
     _write_json(summary_path, summary)

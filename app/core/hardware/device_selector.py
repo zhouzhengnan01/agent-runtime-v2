@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import time
 import uuid
@@ -370,16 +371,104 @@ def _query_cuda_with_nvidia_smi() -> list[DeviceCandidate]:
 
 
 def _query_npu_candidates() -> list[DeviceCandidate]:
-    # NPU 空闲显存查询会受 Ascend 驱动和 toolkit 版本影响。
-    # 当前先按索引做保守预约，至少避免并发请求撞到同一张 NPU。
     if not _has_ascend_runtime_hint():
         return []
+    candidates = _query_npu_with_npu_smi()
+    if candidates:
+        return candidates
     count = _torch_npu_device_count()
     if count <= 0:
         count = _count_visible_npu_devices()
     if count <= 0:
         return []
-    return [DeviceCandidate(accelerator="npu", index=index, name=f"Ascend NPU {index}") for index in range(count)]
+    visible_indexes = _visible_npu_indexes()
+    indexes = sorted(visible_indexes) if visible_indexes is not None else list(range(count))
+    return [DeviceCandidate(accelerator="npu", index=index, name=f"Ascend NPU {index}") for index in indexes]
+
+
+def _query_npu_with_npu_smi() -> list[DeviceCandidate]:
+    # Ascend 910B 的全局 npu-smi info 输出包含 HBM-Usage(MB)，
+    # 比 torch_npu 只返回卡数量更适合避开已被 vLLM/训练任务占满的卡。
+    try:
+        proc = subprocess.run(
+            ["npu-smi", "info"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+        )
+    except Exception:
+        return []
+    if proc.returncode != 0:
+        return []
+    return _parse_npu_smi_info(proc.stdout)
+
+
+def _parse_npu_smi_info(output: str) -> list[DeviceCandidate]:
+    visible_indexes = _visible_npu_indexes()
+    candidates: dict[int, DeviceCandidate] = {}
+    current_index: int | None = None
+
+    for raw_line in output.splitlines():
+        line = _strip_ansi(raw_line)
+        if "|" not in line:
+            continue
+        parts = [part.strip() for part in line.strip().strip("|").split("|")]
+        if len(parts) < 3:
+            continue
+
+        device_match = re.match(r"^(\d+)\s+(.+?)\s*$", parts[0])
+        if device_match and parts[1] and not re.match(r"^[0-9a-fA-F:.]+$", parts[1]):
+            index = _coerce_positive_int(device_match.group(1))
+            if index is None:
+                continue
+            if visible_indexes is not None and index not in visible_indexes:
+                current_index = None
+                continue
+            name = device_match.group(2).strip() or f"Ascend NPU {index}"
+            candidates[index] = DeviceCandidate(accelerator="npu", index=index, name=name)
+            current_index = index
+            continue
+
+        if current_index is None or current_index not in candidates:
+            continue
+        usage_match = re.search(r"(\d+)\s+(\d+)\s*/\s*(\d+)\s+(\d+)\s*/\s*(\d+)", parts[-1])
+        if not usage_match:
+            continue
+        aicore = _coerce_positive_int(usage_match.group(1))
+        hbm_used = _coerce_positive_int(usage_match.group(4))
+        hbm_total = _coerce_positive_int(usage_match.group(5))
+        candidate = candidates[current_index]
+        candidate.utilization = aicore
+        candidate.used_mb = hbm_used
+        candidate.total_mb = hbm_total
+        if hbm_total is not None and hbm_used is not None:
+            candidate.free_mb = max(0, hbm_total - hbm_used)
+
+    return [candidates[index] for index in sorted(candidates)]
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+
+
+def _visible_npu_indexes() -> set[int] | None:
+    for name in ("ASCEND_RT_VISIBLE_DEVICES", "ASCEND_VISIBLE_DEVICES", "NPU_VISIBLE_DEVICES"):
+        raw = str(os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        result: set[int] = set()
+        for item in raw.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            index = _coerce_positive_int(item)
+            if index is not None:
+                result.add(index)
+        if result:
+            return result
+    return None
 
 
 def _has_ascend_runtime_hint() -> bool:
@@ -391,6 +480,8 @@ def _has_ascend_runtime_hint() -> bool:
         "ASCEND_TOOLKIT_HOME",
     )
     if any(str(os.environ.get(name) or "").strip() for name in env_names):
+        return True
+    if shutil.which("npu-smi"):
         return True
     return any(Path(path).exists() for path in ("/usr/local/Ascend", "/dev/davinci_manager"))
 

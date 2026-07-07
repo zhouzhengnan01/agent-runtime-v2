@@ -72,6 +72,16 @@ def _build_category_mapping(coco: Dict, forced_class_names: List[str]) -> Tuple[
 
     if forced_class_names:
         class_names = [str(x) for x in forced_class_names]
+        # 已上传的 COCO categories 代表真实标注类别。LLM 解析的 labels 可能漏类、
+        # 多类或同义词不一致；此时以 COCO 为准，避免因类别不匹配阻断训练。
+        if set(class_names) != set(coco_cat_names):
+            print(
+                "[prepare-yolo] dataset.class_names differs from COCO categories; "
+                "using COCO categories as final class_names. "
+                f"requested={class_names}; coco={coco_cat_names}",
+                flush=True,
+            )
+            class_names = coco_cat_names
         name_to_index = {name: idx for idx, name in enumerate(class_names)}
         cat_id_to_index: Dict[int, int] = {}
         for cat in categories:

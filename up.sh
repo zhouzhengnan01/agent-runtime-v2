@@ -4,6 +4,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 source ./runtime-env.sh
 
+MODE="${JETLINKS_AGENT_RUN_MODE:-auto}"
+if [ "${1:-}" = "--docker" ]; then
+  MODE="docker"
+  shift
+elif [ "${1:-}" = "--local" ]; then
+  MODE="local"
+  shift
+fi
+
 mkdir -p "${RUNTIME_DIR}"
 
 is_running() {
@@ -16,7 +25,7 @@ health_url() {
 }
 
 docker_run() {
-  if [ -z "${JETLINKS_AGENT_IMAGE}" ]; then
+  if [ -z "${JETLINKS_AGENT_IMAGE:-}" ]; then
     echo "JETLINKS_AGENT_IMAGE is required for docker mode" >&2
     exit 2
   fi
@@ -112,7 +121,7 @@ docker_run() {
   exit 1
 }
 
-if [ "${MODE}" = "docker" ] || { [ "${MODE}" = "auto" ] && [ -n "${JETLINKS_AGENT_IMAGE}" ]; }; then
+if [ "${MODE}" = "docker" ] || { [ "${MODE}" = "auto" ] && [ -n "${JETLINKS_AGENT_IMAGE:-}" ]; }; then
   docker_run "$@"
 fi
 

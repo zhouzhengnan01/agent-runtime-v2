@@ -407,12 +407,30 @@ val_dataloader:
     return train_yml
 
 
-def training_command(prefix: list[str], deim_root: Path, config: Path, hardware: str, tuning_checkpoint: Path | None) -> list[str]:
+def training_command(
+    prefix: list[str],
+    deim_root: Path,
+    config: Path,
+    hardware: str,
+    tuning_checkpoint: Path | None,
+    runtime_device: str | None = None,
+) -> list[str]:
     train_py = deim_root / "train.py"
     if hardware == "npu":
         # NPU 启动放在 wrapper 中处理，让 torch_npu 环境适配逻辑
         # 不侵入官方 DEIMv2 train.py 源码。
-        cmd = prefix + [str(SKILL_ROOT / "scripts" / "npu_train_launcher.py"), "--train-py", str(train_py), "-c", str(config), "-d", "npu:0", "--seed", "0"]
+        cmd = prefix + [
+            str(SKILL_ROOT / "scripts" / "npu_train_launcher.py"),
+            "--train-py",
+            str(train_py),
+            "--",
+            "-c",
+            str(config),
+            "-d",
+            str(runtime_device or "npu:0"),
+            "--seed",
+            "0",
+        ]
     else:
         cmd = prefix + [str(train_py), "-c", str(config), "--seed", "0"]
         if hardware == "cuda":
@@ -874,7 +892,7 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
             backbone_checkpoint=backbone,
             stage=stage,
         )
-        cmd = training_command(prefix, deim_root, config, hardware, tuning)
+        cmd = training_command(prefix, deim_root, config, hardware, tuning, device_reservation.runtime_device)
         stage_result: dict[str, Any] = {
             "stage": stage,
             "epochs": count,

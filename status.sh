@@ -22,7 +22,7 @@ health_url() {
   printf 'http://%s:%s%s' "${APP_HOST}" "${APP_PORT}" "${APP_HEALTH_PATH}"
 }
 
-if [ "${MODE}" = "docker" ] || { [ "${MODE}" = "auto" ] && [ -n "${JETLINKS_AGENT_IMAGE}" ]; }; then
+if [ "${MODE}" = "docker" ] || { [ "${MODE}" = "auto" ] && [ -n "${JETLINKS_AGENT_IMAGE:-}" ]; }; then
   if ! docker ps --format '{{.Names}}' | grep -Fxq "${JETLINKS_AGENT_CONTAINER_NAME}"; then
     if docker ps -a --format '{{.Names}}' | grep -Fxq "${JETLINKS_AGENT_CONTAINER_NAME}"; then
       echo "status=stopped container=${JETLINKS_AGENT_CONTAINER_NAME} reason=container_exited"
