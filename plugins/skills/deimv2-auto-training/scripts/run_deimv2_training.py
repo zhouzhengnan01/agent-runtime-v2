@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import csv
 import hashlib
 import json
 import os
@@ -527,6 +528,189 @@ def parse_deimv2_log_metrics(log_path: Path) -> dict[str, Any]:
     }
 
 
+YOLO_COMPAT_RESULTS_COLUMNS = [
+    "epoch",
+    "time",
+    "train/box_loss",
+    "train/cls_loss",
+    "train/dfl_loss",
+    "metrics/precision(B)",
+    "metrics/recall(B)",
+    "metrics/mAP50(B)",
+    "metrics/mAP50-95(B)",
+    "val/box_loss",
+    "val/cls_loss",
+    "val/dfl_loss",
+    "lr/pg0",
+    "lr/pg1",
+    "lr/pg2",
+    "metrics/mAP75(B)",
+    "metrics/AR1(B)",
+    "metrics/AR10(B)",
+    "metrics/AR100(B)",
+    "fitness",
+    "train/loss",
+    "train/giou_loss",
+    "train/fgl_loss",
+    "deimv2/best_coco_eval_bbox",
+]
+
+
+def _coco_eval_bbox_metrics(values: Any) -> dict[str, Any]:
+    if not isinstance(values, list):
+        return {}
+    result: dict[str, Any] = {}
+    keys = {
+        0: "mAP50_95",
+        1: "mAP50",
+        2: "mAP75",
+        6: "AR1",
+        7: "AR10",
+        8: "AR100",
+    }
+    for index, key in keys.items():
+        if index >= len(values):
+            continue
+        try:
+            result[key] = float(values[index])
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _result_csv_value(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def _yolo_compat_csv_row_from_deimv2_json(record: dict[str, Any]) -> dict[str, Any]:
+    metrics = _coco_eval_bbox_metrics(record.get("test_coco_eval_bbox"))
+    raw_epoch = record.get("epoch")
+    try:
+        epoch = int(raw_epoch) + 1
+    except (TypeError, ValueError):
+        epoch = raw_epoch
+    lr = record.get("train_lr")
+    row = {
+        "epoch": epoch,
+        "time": "",
+        "train/box_loss": record.get("train_loss_bbox"),
+        "train/cls_loss": record.get("train_loss_mal"),
+        "train/dfl_loss": record.get("train_loss_fgl"),
+        "metrics/precision(B)": None,
+        "metrics/recall(B)": metrics.get("AR100"),
+        "metrics/mAP50(B)": metrics.get("mAP50"),
+        "metrics/mAP50-95(B)": metrics.get("mAP50_95"),
+        "val/box_loss": "",
+        "val/cls_loss": "",
+        "val/dfl_loss": "",
+        "lr/pg0": lr,
+        "lr/pg1": lr,
+        "lr/pg2": lr,
+        "metrics/mAP75(B)": metrics.get("mAP75"),
+        "metrics/AR1(B)": metrics.get("AR1"),
+        "metrics/AR10(B)": metrics.get("AR10"),
+        "metrics/AR100(B)": metrics.get("AR100"),
+        "fitness": metrics.get("mAP50_95"),
+        "train/loss": record.get("train_loss"),
+        "train/giou_loss": record.get("train_loss_giou"),
+        "train/fgl_loss": record.get("train_loss_fgl"),
+        "deimv2/best_coco_eval_bbox": "",
+    }
+    # 保留 DEIMv2 原生日志字段。前端如果自行渲染 CSV，可以看到完整的
+    # train_loss_*、aux/dn/pre 等专属 loss；与 YOLO 兼容列重名时加前缀保留。
+    for key, value in record.items():
+        native_key = key if key not in row else f"deimv2/{key}"
+        row[native_key] = value
+    return row
+
+
+def parse_deimv2_json_log_rows(log_path: Path) -> list[dict[str, Any]]:
+    if not log_path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and record.get("epoch") is not None:
+            rows.append(_yolo_compat_csv_row_from_deimv2_json(record))
+    return rows
+
+
+def fallback_yolo_compat_csv_row(summary: dict[str, Any]) -> dict[str, Any]:
+    metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+    best_epoch = metrics.get("best_epoch")
+    try:
+        epoch = int(best_epoch) + 1
+    except (TypeError, ValueError):
+        epoch = best_epoch if best_epoch is not None else ""
+    return {
+        "epoch": epoch,
+        "time": "",
+        "train/box_loss": "",
+        "train/cls_loss": "",
+        "train/dfl_loss": "",
+        "metrics/precision(B)": None,
+        "metrics/recall(B)": metrics.get("AR100"),
+        "metrics/mAP50(B)": metrics.get("mAP50"),
+        "metrics/mAP50-95(B)": metrics.get("mAP50_95"),
+        "val/box_loss": "",
+        "val/cls_loss": "",
+        "val/dfl_loss": "",
+        "lr/pg0": "",
+        "lr/pg1": "",
+        "lr/pg2": "",
+        "metrics/mAP75(B)": metrics.get("mAP75"),
+        "metrics/AR1(B)": metrics.get("AR1"),
+        "metrics/AR10(B)": metrics.get("AR10"),
+        "metrics/AR100(B)": metrics.get("AR100"),
+        "fitness": metrics.get("fitness") if metrics.get("fitness") is not None else metrics.get("best_coco_eval_bbox"),
+        "train/loss": "",
+        "train/giou_loss": "",
+        "train/fgl_loss": "",
+        "deimv2/best_coco_eval_bbox": metrics.get("best_coco_eval_bbox"),
+    }
+
+
+def _results_csv_fieldnames(rows: list[dict[str, Any]]) -> list[str]:
+    fieldnames = list(YOLO_COMPAT_RESULTS_COLUMNS)
+    seen = set(fieldnames)
+    for row in rows:
+        for key in row.keys():
+            if key in seen:
+                continue
+            seen.add(key)
+            fieldnames.append(key)
+    return fieldnames
+
+
+def write_yolo_compatible_results_csv(summary: dict[str, Any], work_dir: Path, run_dir: Path) -> dict[str, str]:
+    rows = parse_deimv2_json_log_rows(run_dir / "train" / "log.txt")
+    if not rows:
+        rows = [fallback_yolo_compat_csv_row(summary)]
+    fieldnames = _results_csv_fieldnames(rows)
+    output_paths = {
+        "results_csv": work_dir / "results.csv",
+        "train_results_csv": run_dir / "train" / "results.csv",
+    }
+    for path in output_paths.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({key: _result_csv_value(row.get(key)) for key in fieldnames})
+    return {key: str(path) for key, path in output_paths.items()}
+
+
 def summarize_coco_split(dataset_root: Path, split: str) -> dict[str, Any]:
     ann_path = dataset_root / "annotations" / f"instances_{split}.json"
     if not ann_path.is_file():
@@ -606,6 +790,8 @@ def build_yolo_compatible_run_summary(summary: dict[str, Any], dataset_root: Pat
         "run_root": str(work_dir),
         "runs_dir": str(run_dir),
         "train_save_dir": str(run_dir / "train"),
+        "results_csv": str(summary.get("results_csv") or ""),
+        "train_results_csv": str(summary.get("train_results_csv") or ""),
         "best_pt": str(summary.get("best_checkpoint") or ""),
         "best_checkpoint": str(summary.get("best_checkpoint") or ""),
         "last_checkpoint": str(summary.get("last_checkpoint") or ""),
@@ -743,6 +929,7 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
         "dry_run": dry_run,
     }
     summary.update(metric_payload)
+    summary.update(write_yolo_compatible_results_csv(summary, work_dir, run_dir))
     (work_dir / "training_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     compatible_summary = build_yolo_compatible_run_summary(summary, dataset_root, work_dir, run_dir)
     (work_dir / "run_summary.json").write_text(json.dumps(compatible_summary, ensure_ascii=False, indent=2), encoding="utf-8")

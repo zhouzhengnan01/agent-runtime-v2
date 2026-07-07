@@ -439,19 +439,30 @@ def _annotation_prompts_for_sam3(
     prompt_map = {str(prompt).strip(): str(label).strip() for prompt, label in (prompt_label_map or {}).items() if str(prompt).strip() and str(label).strip()}
     selected: List[str] = []
     for label in _dedupe_text(labels):
-        class_key = label.lower()
-        mapped = [
-            prompt
-            for prompt, mapped_label in prompt_map.items()
-            if mapped_label == label and prompt.lower() != class_key
-        ]
-        mapped = mapped or [
-            prompt
-            for prompt in prompts
-            if prompt.lower() != class_key and (len(labels) == 1 or _looks_related_prompt(prompt, label))
-        ]
-        selected.extend(mapped or [_label_to_sam3_prompt(label)])
+        prompt = _best_annotation_prompt_for_label(label, labels, prompts, prompt_map)
+        if prompt:
+            selected.append(prompt)
     return _dedupe_text(selected or prompts or labels)
+
+
+def _best_annotation_prompt_for_label(
+    label: str,
+    labels: List[str],
+    prompts: List[str],
+    prompt_label_map: Dict[str, str],
+) -> str:
+    class_key = str(label or "").strip().lower()
+    if not class_key:
+        return ""
+    # 默认每个训练 label 只取一个最代表性的自然语言 prompt 去请求 SAM3。
+    # 多 prompt 虽能提高召回，但会让同一个目标被重复标注；这里从源头降低重复框。
+    for prompt, mapped_label in prompt_label_map.items():
+        if mapped_label == label:
+            return prompt
+    for prompt in prompts:
+        if prompt.lower() != class_key and (len(labels) == 1 or _looks_related_prompt(prompt, label)):
+            return prompt
+    return _label_to_sam3_prompt(label) or label
 
 
 def _prompt_label_map_for_sam3(labels: List[str], prompts: List[str], prompt_label_map: Dict[str, str] | None) -> Dict[str, str]:
