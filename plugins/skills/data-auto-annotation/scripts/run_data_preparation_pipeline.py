@@ -477,15 +477,133 @@ def _best_annotation_prompt_for_label(
     class_key = str(label or "").strip().lower()
     if not class_key:
         return ""
-    # 默认每个训练 label 只取一个最代表性的自然语言 prompt 去请求 SAM3。
-    # 多 prompt 虽能提高召回，但会让同一个目标被重复标注；这里从源头降低重复框。
-    for prompt, mapped_label in prompt_label_map.items():
-        if mapped_label == label:
-            return prompt
-    for prompt in prompts:
-        if prompt.lower() != class_key and (len(labels) == 1 or _looks_related_prompt(prompt, label)):
-            return prompt
-    return _label_to_sam3_prompt(label) or label
+    candidates = _dedupe_text([
+        *[prompt for prompt, mapped_label in prompt_label_map.items() if mapped_label == label],
+        *prompts,
+        _label_to_sam3_prompt(label),
+        label,
+    ])
+    ranked = sorted(
+        (
+            (_sam3_prompt_score(prompt, label, labels, prompt_label_map), index, prompt)
+            for index, prompt in enumerate(candidates)
+            if str(prompt or "").strip()
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    return ranked[0][2] if ranked else (_label_to_sam3_prompt(label) or label)
+
+
+def _sam3_prompt_score(
+    prompt: str,
+    label: str,
+    labels: List[str],
+    prompt_label_map: Dict[str, str],
+) -> int:
+    prompt_text = str(prompt or "").strip()
+    label_text = str(label or "").strip()
+    prompt_key = prompt_text.lower()
+    label_key = label_text.lower()
+    canonical_label_prompt = _label_to_sam3_prompt(label_text).lower()
+    mapped_key = str(prompt_label_map.get(prompt_text, "") or "").strip().lower()
+    prompt_tokens = _sam3_prompt_tokens(prompt_text)
+    label_tokens = _sam3_prompt_tokens(_label_to_sam3_prompt(label_text))
+
+    # person_fall/person_running 这类业务行为标签必须优先使用带行为约束的自然语言 prompt。
+    # 直接用 person 会把画面里的所有人都标成该行为，只有没有更好候选时才兜底使用。
+    if label_key.startswith("person_"):
+        if mapped_key == label_key and _looks_person_behavior_sam3_prompt(prompt_text, label_text):
+            return 0
+        if _looks_person_behavior_sam3_prompt(prompt_text, label_text):
+            return 5
+        if prompt_key == canonical_label_prompt:
+            return 10
+        if mapped_key == label_key:
+            return 20
+        if prompt_key == "person":
+            return 80
+
+    # 训练类别本身是 person/cigarette/face 这类实体时，优先使用同名实体 prompt，
+    # 避免误选 person smoking 等行为短语。
+    if not label_key.startswith("person_") and (prompt_key == label_key or prompt_key == canonical_label_prompt):
+        return 0
+    if not label_key.startswith("person_") and mapped_key == label_key and (prompt_key == label_key or prompt_key == canonical_label_prompt):
+        return 0
+    if mapped_key == label_key and _looks_entity_like_sam3_prompt(prompt_text, labels):
+        return 2
+    if _looks_entity_like_sam3_prompt(prompt_text, labels) and prompt_tokens.intersection(label_tokens):
+        return 4
+    if mapped_key == label_key:
+        return 20
+    if len(labels) == 1:
+        return 30
+    if _looks_related_prompt(prompt_text, label_text):
+        return 40
+    return 100
+
+
+def _sam3_prompt_tokens(text: str) -> set[str]:
+    return {item for item in re.split(r"[^a-z0-9]+", str(text or "").lower()) if item}
+
+
+def _looks_person_behavior_sam3_prompt(prompt: str, label: str) -> bool:
+    prompt_tokens = _sam3_prompt_tokens(prompt)
+    if not prompt_tokens.intersection({"person", "people", "human", "man", "woman"}):
+        return False
+    behavior_tokens = _expanded_person_behavior_tokens(label)
+    return bool(behavior_tokens and prompt_tokens.intersection(behavior_tokens))
+
+
+def _expanded_person_behavior_tokens(label: str) -> set[str]:
+    text = re.sub(r"^person[_\\s-]*", "", str(label or "").strip().lower())
+    base_tokens = {item for item in re.split(r"[^a-z0-9]+", text) if item}
+    expanded = set(base_tokens)
+    synonyms = {
+        "fall": {"fall", "falls", "falling", "fallen", "down", "lying"},
+        "run": {"run", "runs", "running"},
+        "running": {"run", "runs", "running"},
+        "fight": {"fight", "fights", "fighting"},
+        "sleep": {"sleep", "sleeps", "sleeping", "asleep"},
+        "climb": {"climb", "climbs", "climbing"},
+        "smoke": {"smoke", "smokes", "smoking", "cigarette"},
+        "smoking": {"smoke", "smokes", "smoking", "cigarette"},
+        "phone": {"phone", "mobile", "cellphone", "calling"},
+        "use": {"use", "using"},
+        "play": {"play", "playing"},
+        "kick": {"kick", "kicking"},
+    }
+    for token in list(base_tokens):
+        expanded.update(synonyms.get(token, set()))
+    return expanded
+
+
+def _looks_entity_like_sam3_prompt(prompt: str, labels: List[str]) -> bool:
+    text = str(prompt or "").strip().lower()
+    if not text:
+        return False
+    tokens = _sam3_prompt_tokens(text)
+    if not tokens:
+        return False
+    behavior_tokens = {
+        "smoking",
+        "falling",
+        "fallen",
+        "fight",
+        "fighting",
+        "running",
+        "playing",
+        "using",
+        "holding",
+        "sleeping",
+        "climbing",
+        "riding",
+        "kick",
+        "kicking",
+    }
+    if tokens.intersection(behavior_tokens):
+        return False
+    normalized_labels = {_label_to_sam3_prompt(label).lower() for label in labels}
+    return text in normalized_labels or len(tokens) <= 2
 
 
 def _prompt_label_map_for_sam3(labels: List[str], prompts: List[str], prompt_label_map: Dict[str, str] | None) -> Dict[str, str]:

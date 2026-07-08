@@ -1445,22 +1445,66 @@ def _looks_like_plain_chat(user_text: str) -> bool:
 
 
 def _parse_json_object(raw: str) -> dict[str, Any]:
-    text = (raw or "").strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].strip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("LLM did not return a JSON object")
-    payload = json.loads(text[start : end + 1])
-    if not isinstance(payload, dict):
-        raise ValueError("LLM JSON was not an object")
-    return payload
+    text = (raw or "").strip().lstrip("\ufeff")
+    if not text:
+        raise ValueError("LLM returned empty content")
+
+    candidates = _dedupe_text_values([
+        text,
+        _strip_markdown_json_fence(text),
+        _extract_first_json_object(text),
+    ])
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+            if not isinstance(payload, dict):
+                raise ValueError("LLM JSON was not an object")
+            return payload
+        except Exception as exc:
+            last_error = exc
+    raise ValueError(f"LLM did not return a valid JSON object: {last_error}")
+
+
+def _strip_markdown_json_fence(text: str) -> str:
+    value = (text or "").strip()
+    if not value.startswith("```"):
+        return value
+    lines = value.splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+def _extract_first_json_object(text: str) -> str:
+    value = text or ""
+    start = value.find("{")
+    if start < 0:
+        return ""
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(value)):
+        char = value[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return value[start : index + 1]
+    return ""
 
 
 def _write_model_intent_spec_raw_log(
@@ -2790,7 +2834,7 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "subject": "person",
         "behavior": "fall",
         "description": "检测画面中摔倒、跌倒或倒地的人员",
-        "annotation_prompts": ("person",),
+        "annotation_prompts": ("fallen person", "person falling", "person lying on ground", "person"),
     },
     {
         "aliases": ("玩手机", "看手机", "使用手机", "打电话", "接打电话", "using phone", "use phone", "phone use", "person_use_phone"),
@@ -2819,7 +2863,7 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "subject": "person",
         "behavior": "sleep",
         "description": "检测画面中睡岗或睡觉的人员",
-        "annotation_prompts": ("person",),
+        "annotation_prompts": ("sleeping person", "person sleeping", "person"),
     },
     {
         "aliases": ("攀爬", "翻越", "爬墙", "climbing", "person climbing", "person_climb"),
@@ -2828,7 +2872,7 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "subject": "person",
         "behavior": "climb",
         "description": "检测画面中攀爬或翻越的人员",
-        "annotation_prompts": ("person",),
+        "annotation_prompts": ("person climbing", "climbing person", "person"),
     },
     {
         "aliases": ("打架", "斗殴", "fight", "fighting", "person_fight"),
@@ -2837,7 +2881,7 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "subject": "person",
         "behavior": "fight",
         "description": "检测画面中打架或斗殴的人员",
-        "annotation_prompts": ("person",),
+        "annotation_prompts": ("fighting person", "person fighting", "person"),
     },
 )
 
@@ -3833,14 +3877,6 @@ def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
 def _extract_sam3_endpoint(text: str) -> str:
     match = re.search(r"https?://[^\s\"'<>]+/v1/sam3/predict", text)
     return match.group(0).rstrip(".,);") if match else ""
-
-
-def _parse_json_object(text: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(text) if text.strip().startswith("{") else {}
-    except Exception:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def _synthetic_generation_facts(summary: dict[str, Any]) -> dict[str, Any]:
