@@ -1581,10 +1581,13 @@ def _generate_model_managed_yolo_training_intent_spec(
         "你只能根据用户业务目标提取任务意图、候选类别和合成提示词。"
         "必须只返回 JSON 对象，不要解释。JSON 字段包含："
         "task_description 字符串；task_type 字符串，可取 object_detection/behavior_detection/state_detection；"
-        "intent_items 数组，每项描述一个用户要训练的检测意图，至少包含 label、type、subject、description、annotation_prompts；"
-        "每个 intent_items 项的 annotation_prompts 必须是 SAM3 可理解的英文自然语言短语数组，"
-        "不能只写训练类名；例如 person_fall 的 annotation_prompts 应包含 fallen person、person lying on the ground，"
-        "person_fishing 的 annotation_prompts 应包含 person fishing、person holding a fishing rod。"
+        "intent_items 数组，每项描述一个用户要训练的检测意图，至少包含 label、type、subject、description、training_labels、observable_entities、sam3_prompts、annotation_prompts；"
+        "label 是业务意图类名，例如 person_fall/person_fight/person_play_volleyball；"
+        "training_labels 是真正进入目标检测训练的类别，应优先使用可见实体；"
+        "observable_entities 是画面中可被边界框稳定框出的实体；sam3_prompts 是送给 SAM3 的英文实体短语。"
+        "SAM3 不擅长理解 person_fall、person_fight 这类业务类名，也不应直接用抽象行为短语请求标注；"
+        "如果行为中有明确可见物体，例如抽烟/打排球/玩手机，training_labels 和 sam3_prompts 应包含 person 以及 cigarette/volleyball/phone；"
+        "如果行为没有明确辅助物体，例如人员打架/跌倒，可保留业务 label 作为 training_labels，但 sam3_prompts 应使用 person，并在 prompt 映射中把 person 的框归到该业务 label。"
         "use_synthetic_generation 布尔值，必须为 true；"
         "generation_prompt 字符串；"
         "labels 字符串数组；"
@@ -1600,10 +1603,9 @@ def _generate_model_managed_yolo_training_intent_spec(
         "必须从用户业务目标里解析具体对象作为 labels，例如：车辆检测输出 car，瓶子检测输出 bottle，钢材检测输出 steel；"
         "如果用户目标包含多个检测任务，必须提取所有目标类别，例如“抽烟检测和人脸检测”输出 person,cigarette,face，"
         "不要只输出第一个命中的任务类别；"
-        "如果用户目标是人员行为或状态检测，例如人员摔倒、人员玩手机、人员睡岗、人员攀爬，"
-        "不能只输出 person，必须输出能表达业务状态的训练类名，例如 person_fall、person_use_phone、person_sleep、person_climb；"
-        "此类任务 task_type 必须为 behavior_detection 或 state_detection，intent_items 中必须保留原始业务含义；"
-        "只有抽烟检测通常应包含 person 和 cigarette；车辆检测应输出车辆相关类别。"
+        "如果用户目标是人员行为或状态检测，例如人员摔倒、人员打架、人员玩手机、人员打排球，"
+        "intent_items 中必须保留原始业务含义；但送给 SAM3 的 sam3_prompts 必须是 person、phone、volleyball 等可见实体。"
+        "顶层 labels 应等于最终训练类别 training_labels 的合集，不要固定套用示例。"
     )
     messages = [
         Message(
@@ -1675,18 +1677,21 @@ def _generate_model_managed_training_intent_spec(
         "此阶段尚未分析数据集，因此禁止输出 batch、epochs、img_size、split 等依赖数据集的最终训练参数。"
         "只返回 JSON 对象，不要解释。字段包含："
         "task_description 字符串；task_type 字符串，可取 object_detection/behavior_detection/state_detection；"
-        "intent_items 数组，每项描述一个用户要训练的检测意图，至少包含 label、type、subject、description、annotation_prompts；"
-        "每个 intent_items 项的 annotation_prompts 必须是 SAM3 可理解的英文自然语言短语数组，"
-        "不能只写训练类名；例如 person_fall 的 annotation_prompts 应包含 fallen person、person lying on the ground，"
-        "person_fishing 的 annotation_prompts 应包含 person fishing、person holding a fishing rod。"
+        "intent_items 数组，每项描述一个用户要训练的检测意图，至少包含 label、type、subject、description、training_labels、observable_entities、sam3_prompts、annotation_prompts；"
+        "label 是业务意图类名，例如 person_fall/person_fight/person_play_volleyball；"
+        "training_labels 是真正进入 DEIMv2 目标检测训练的类别，应优先使用可见实体；"
+        "observable_entities 是画面中可被边界框稳定框出的实体；sam3_prompts 是送给 SAM3 的英文实体短语。"
+        "SAM3 不擅长理解 person_fall、person_fight 这类业务类名，也不应直接用抽象行为短语请求标注；"
+        "如果行为中有明确可见物体，例如抽烟/打排球/玩手机，training_labels 和 sam3_prompts 应包含 person 以及 cigarette/volleyball/phone；"
+        "如果行为没有明确辅助物体，例如人员打架/跌倒，可保留业务 label 作为 training_labels，但 sam3_prompts 应使用 person，并在 prompt 映射中把 person 的框归到该业务 label。"
         "use_synthetic_generation 布尔值，通常为 true；"
         "generation_prompt 字符串；labels 字符串数组；training 空对象；runtime 空对象；split 空对象。"
         "labels 必须是英文 ASCII 类名，只能使用小写英文、数字、下划线，禁止泛化 object/target。"
         "必须从用户完整业务目标中提取所有检测类别；如果用户说“抽烟检测和人脸检测”，labels 应包含 person,cigarette,face，"
         "不要因为先看到抽烟就忽略人脸。"
-        "如果用户目标是人员行为或状态检测，例如人员摔倒、人员玩手机、人员睡岗、人员攀爬，"
-        "不能只输出 person，必须输出能表达业务状态的训练类名，例如 person_fall、person_use_phone、person_sleep、person_climb；"
-        "此类任务 task_type 必须为 behavior_detection 或 state_detection，intent_items 中必须保留原始业务含义。"
+        "如果用户目标是人员行为或状态检测，例如人员摔倒、人员打架、人员玩手机、人员打排球，"
+        "intent_items 中必须保留原始业务含义；但送给 SAM3 的 sam3_prompts 必须是 person、phone、volleyball 等可见实体。"
+        "顶层 labels 应等于最终训练类别 training_labels 的合集，不要固定套用示例。"
         "合成设定：用户会上传 datasets.zip、image1.zip、image2.zip；"
         "image1.zip 固定是参考图/场景背景文件夹，image2.zip 固定是目标图/前景目标文件夹；"
         "generation_prompt 必须明确写出：使用 image1.zip 作为参考图/场景背景，使用 image2.zip 作为目标图/前景目标，"
@@ -2718,6 +2723,8 @@ _LABEL_ALIAS_TO_CANONICAL: dict[str, tuple[str, ...]] = {
     "phone": ("phone",),
     "mobile_phone": ("phone",),
     "手机": ("phone",),
+    "volleyball": ("volleyball",),
+    "排球": ("volleyball",),
     "cup": ("cup",),
     "杯子": ("cup",),
     "box": ("box",),
@@ -2752,6 +2759,7 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("瓶子", "水瓶", "矿泉水瓶", "bottle"), ("bottle",)),
     (("插座", "电源插座", "socket", "power socket", "power_socket"), ("socket",)),
     (("钢材", "钢筋", "钢板", "steel", "rebar"), ("steel",)),
+    (("排球", "volleyball"), ("volleyball",)),
     (("安全帽", "helmet", "hard hat", "hard_hat"), ("hard_hat",)),
     (("口罩", "mask"), ("mask",)),
     (("火焰", "fire", "flame"), ("fire",)),
@@ -2771,7 +2779,7 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 
 
 _PERSON_SUBJECT_LABELS = {"person", "people", "pedestrian", "human"}
-_BEHAVIOR_AUXILIARY_LABELS = {"phone", "cigarette"}
+_BEHAVIOR_AUXILIARY_LABELS = {"phone", "cigarette", "volleyball"}
 
 
 _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
@@ -2782,25 +2790,27 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "subject": "person",
         "behavior": "fall",
         "description": "检测画面中摔倒、跌倒或倒地的人员",
-        "annotation_prompts": ("fallen person", "person lying on the ground", "person falling down"),
+        "annotation_prompts": ("person",),
     },
     {
         "aliases": ("玩手机", "看手机", "使用手机", "打电话", "接打电话", "using phone", "use phone", "phone use", "person_use_phone"),
         "label": "person_use_phone",
+        "training_labels": ("person", "phone"),
         "type": "behavior_detection",
         "subject": "person",
         "behavior": "use_phone",
         "description": "检测画面中正在使用手机的人员",
-        "annotation_prompts": ("person using phone", "person holding phone", "person talking on phone"),
+        "annotation_prompts": ("person", "phone"),
     },
     {
         "aliases": ("抽烟", "吸烟", "smoking", "person smoking", "person_smoking"),
         "label": "person_smoking",
+        "training_labels": ("person", "cigarette"),
         "type": "behavior_detection",
         "subject": "person",
         "behavior": "smoking",
         "description": "检测画面中正在抽烟的人员",
-        "annotation_prompts": ("person smoking", "person holding cigarette"),
+        "annotation_prompts": ("person", "cigarette"),
     },
     {
         "aliases": ("睡岗", "睡觉", "打瞌睡", "sleeping", "person sleeping", "person_sleep"),
@@ -2809,7 +2819,7 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "subject": "person",
         "behavior": "sleep",
         "description": "检测画面中睡岗或睡觉的人员",
-        "annotation_prompts": ("sleeping person", "person sleeping at work"),
+        "annotation_prompts": ("person",),
     },
     {
         "aliases": ("攀爬", "翻越", "爬墙", "climbing", "person climbing", "person_climb"),
@@ -2818,7 +2828,7 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "subject": "person",
         "behavior": "climb",
         "description": "检测画面中攀爬或翻越的人员",
-        "annotation_prompts": ("person climbing", "person climbing over fence"),
+        "annotation_prompts": ("person",),
     },
     {
         "aliases": ("打架", "斗殴", "fight", "fighting", "person_fight"),
@@ -2827,7 +2837,7 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "subject": "person",
         "behavior": "fight",
         "description": "检测画面中打架或斗殴的人员",
-        "annotation_prompts": ("person fighting", "people fighting"),
+        "annotation_prompts": ("person",),
     },
 )
 
@@ -2893,12 +2903,68 @@ def _infer_behavior_intent_items(user_text: str) -> list[dict[str, Any]]:
                 "subject": str(rule.get("subject") or "person"),
                 "behavior": str(rule.get("behavior") or label[0]),
                 "label": label[0],
+                "training_labels": _normalize_detection_labels(rule.get("training_labels") or []),
                 "description": str(rule.get("description") or label[0]),
                 "annotation_prompts": [str(item).strip() for item in rule.get("annotation_prompts", ()) if str(item).strip()],
+                "sam3_prompts": [str(item).strip() for item in rule.get("annotation_prompts", ()) if str(item).strip()],
+                "observable_entities": [str(item).strip() for item in rule.get("annotation_prompts", ()) if str(item).strip()],
                 "source": "rule_fallback",
             }
         )
+    items.extend(_infer_generic_person_entity_behavior_items(text))
     return _dedupe_intent_items(items)
+
+
+def _infer_generic_person_entity_behavior_items(user_text: str) -> list[dict[str, Any]]:
+    text = str(user_text or "").strip()
+    if not text:
+        return []
+    lowered = text.lower()
+    if not any(token in lowered for token in ("人员", "行人", "人", "person", "people", "pedestrian")):
+        return []
+    if not any(token in lowered for token in ("打", "玩", "使用", "拿", "持", "骑", "穿", "戴", "钓", "play", "use", "hold", "ride", "wear")):
+        return []
+
+    auxiliary_labels: list[str] = []
+    for aliases, labels in _INTENT_LABEL_RULES:
+        if any(str(alias).lower() in lowered for alias in aliases):
+            auxiliary_labels.extend(label for label in labels if not _is_person_subject_label(label))
+    auxiliary_labels = _dedupe_detection_labels(auxiliary_labels)
+    if not auxiliary_labels:
+        return []
+
+    action = "interact"
+    if any(token in lowered for token in ("打", "玩", "play")):
+        action = "play"
+    elif any(token in lowered for token in ("使用", "拿", "持", "use", "hold")):
+        action = "use"
+    elif any(token in lowered for token in ("骑", "ride")):
+        action = "ride"
+    elif any(token in lowered for token in ("穿", "戴", "wear")):
+        action = "wear"
+    elif any(token in lowered for token in ("钓", "fish")):
+        action = "fish"
+
+    primary = auxiliary_labels[0]
+    label = _normalize_detection_labels([f"person_{action}_{primary}"])
+    if not label:
+        return []
+    prompts = _dedupe_text_values(["person", *auxiliary_labels])
+    return [
+        {
+            "type": "behavior_detection",
+            "subject": "person",
+            "behavior": action,
+            "label": label[0],
+            "training_labels": _dedupe_detection_labels(["person", *auxiliary_labels]),
+            "business_labels": label,
+            "observable_entities": prompts,
+            "sam3_prompts": prompts,
+            "annotation_prompts": prompts,
+            "description": f"检测画面中人员与 {', '.join(auxiliary_labels)} 相关的行为",
+            "source": "generic_person_entity_fallback",
+        }
+    ]
 
 
 def _apply_behavior_intent_guard(
@@ -2950,6 +3016,16 @@ def _apply_behavior_intent_guard(
     return merged
 
 
+def _raw_string_values(*values: Any) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if isinstance(value, list | tuple):
+            result.extend(str(item).strip() for item in value if str(item).strip())
+        elif isinstance(value, str) and value.strip():
+            result.append(value.strip())
+    return result
+
+
 def _spec_intent_items(spec: dict[str, Any]) -> list[dict[str, Any]]:
     value = spec.get("intent_items")
     if not isinstance(value, list):
@@ -2973,11 +3049,37 @@ def _spec_intent_items(spec: dict[str, Any]) -> list[dict[str, Any]]:
         item["type"] = task_type
         item["subject"] = str(item.get("subject") or "")
         item["description"] = str(item.get("description") or "")
-        prompts = item.get("annotation_prompts")
-        if isinstance(prompts, list):
-            item["annotation_prompts"] = [str(prompt).strip() for prompt in prompts if str(prompt).strip()]
-        elif isinstance(prompts, str) and prompts.strip():
-            item["annotation_prompts"] = [prompts.strip()]
+        training_labels = item.get("training_labels")
+        if isinstance(training_labels, list | tuple):
+            item["training_labels"] = _normalize_detection_labels(training_labels)
+        elif isinstance(training_labels, str) and training_labels.strip():
+            item["training_labels"] = _normalize_detection_labels([training_labels])
+        else:
+            item["training_labels"] = []
+        item["business_labels"] = _normalize_detection_labels(
+            _raw_string_values(
+                item.get("business_labels"),
+                item.get("business_label"),
+                item.get("label"),
+            )
+        )
+        item["observable_entities"] = _dedupe_text_values(
+            _raw_string_values(
+                item.get("observable_entities"),
+                item.get("visible_entities"),
+                item.get("entities"),
+            )
+        )
+        item["sam3_prompts"] = _dedupe_text_values(
+            _raw_string_values(
+                item.get("sam3_prompts"),
+                item.get("sam_prompts"),
+                item.get("annotation_prompts"),
+                item.get("observable_entities"),
+                item.get("visible_entities"),
+            )
+        )
+        item["annotation_prompts"] = item["sam3_prompts"]
         items.append(item)
     return _dedupe_intent_items(items)
 
@@ -3001,10 +3103,38 @@ def _dedupe_intent_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 *(existing.get("annotation_prompts") if isinstance(existing.get("annotation_prompts"), list) else []),
                 *(item.get("annotation_prompts") if isinstance(item.get("annotation_prompts"), list) else []),
             ])
+            existing["sam3_prompts"] = _dedupe_text_values([
+                *(existing.get("sam3_prompts") if isinstance(existing.get("sam3_prompts"), list) else []),
+                *(item.get("sam3_prompts") if isinstance(item.get("sam3_prompts"), list) else []),
+            ])
+            existing["observable_entities"] = _dedupe_text_values([
+                *(existing.get("observable_entities") if isinstance(existing.get("observable_entities"), list) else []),
+                *(item.get("observable_entities") if isinstance(item.get("observable_entities"), list) else []),
+            ])
+            existing["business_labels"] = _dedupe_detection_labels([
+                *(existing.get("business_labels") if isinstance(existing.get("business_labels"), list) else []),
+                *(item.get("business_labels") if isinstance(item.get("business_labels"), list) else []),
+            ])
+            existing["training_labels"] = _dedupe_detection_labels([
+                *(existing.get("training_labels") if isinstance(existing.get("training_labels"), list) else []),
+                *(item.get("training_labels") if isinstance(item.get("training_labels"), list) else []),
+            ])
             continue
         copied = dict(item)
         copied["annotation_prompts"] = _dedupe_text_values(
             copied.get("annotation_prompts") if isinstance(copied.get("annotation_prompts"), list) else []
+        )
+        copied["sam3_prompts"] = _dedupe_text_values(
+            copied.get("sam3_prompts") if isinstance(copied.get("sam3_prompts"), list) else []
+        )
+        copied["observable_entities"] = _dedupe_text_values(
+            copied.get("observable_entities") if isinstance(copied.get("observable_entities"), list) else []
+        )
+        copied["business_labels"] = _dedupe_detection_labels(
+            copied.get("business_labels") if isinstance(copied.get("business_labels"), list) else []
+        )
+        copied["training_labels"] = _dedupe_detection_labels(
+            copied.get("training_labels") if isinstance(copied.get("training_labels"), list) else []
         )
         by_label[key] = copied
         result.append(copied)
@@ -3017,14 +3147,18 @@ def _labels_from_intent_items(items: list[dict[str, Any]]) -> list[str]:
         task_type = str(item.get("type") or item.get("task_type") or "").strip().lower()
         if task_type not in {"behavior_detection", "state_detection", "behavior", "behaviour", "action", "activity", "state", "status"}:
             continue
-        labels.extend(_normalize_detection_labels([str(item.get("label") or item.get("train_label") or "")]))
+        training_labels = item.get("training_labels")
+        if isinstance(training_labels, list) and training_labels:
+            labels.extend(_normalize_detection_labels(training_labels))
+        else:
+            labels.extend(_normalize_detection_labels([str(item.get("label") or item.get("train_label") or "")]))
     return _dedupe_detection_labels(labels)
 
 
 def _annotation_prompts_from_intent_items(items: list[dict[str, Any]]) -> list[str]:
     prompts: list[str] = []
     for item in items:
-        raw_prompts = item.get("annotation_prompts")
+        raw_prompts = item.get("sam3_prompts") or item.get("annotation_prompts")
         if isinstance(raw_prompts, list):
             prompts.extend(str(prompt).strip() for prompt in raw_prompts if str(prompt).strip())
     return _dedupe_text_values(prompts)
@@ -3037,15 +3171,24 @@ def _annotation_prompt_map_from_spec(spec: dict[str, Any], labels: list[str]) ->
     class_set = {label.lower() for label in class_names}
     prompt_map: dict[str, str] = {}
     for item in _spec_intent_items(spec):
-        label = _normalize_detection_labels([str(item.get("label") or "")])
-        if not label or label[0].lower() not in class_set:
+        business_label = _normalize_detection_labels([str(item.get("label") or "")])
+        if not business_label:
             continue
-        raw_prompts = item.get("annotation_prompts") if isinstance(item.get("annotation_prompts"), list) else []
-        prompts = [*raw_prompts, *_behavior_annotation_prompts_for_label(label[0]), _label_to_annotation_prompt(label[0])]
+        mapped_labels = _normalize_detection_labels(item.get("training_labels") or []) or business_label
+        mapped_labels = [label for label in mapped_labels if label.lower() in class_set]
+        if not mapped_labels:
+            continue
+        raw_prompts = item.get("sam3_prompts") if isinstance(item.get("sam3_prompts"), list) else []
+        if not raw_prompts:
+            raw_prompts = item.get("annotation_prompts") if isinstance(item.get("annotation_prompts"), list) else []
+        prompts = [*raw_prompts, *_behavior_annotation_prompts_for_label(business_label[0]), _label_to_annotation_prompt(business_label[0])]
         for prompt in prompts:
             text = str(prompt or "").strip()
-            if text:
-                prompt_map[text] = label[0]
+            if not text:
+                continue
+            prompt_label = _best_prompt_mapped_label(text, mapped_labels)
+            if prompt_label:
+                prompt_map[text] = prompt_label
     top_level_prompts = _spec_string_list(spec, "annotation_prompts")
     if len(class_names) == 1:
         for prompt in top_level_prompts:
@@ -3057,6 +3200,31 @@ def _annotation_prompt_map_from_spec(spec: dict[str, Any], labels: list[str]) ->
         # 保留训练 label 作为兜底 prompt。非 SAM3 标注模型或普通目标类别仍可直接使用。
         prompt_map.setdefault(label, label)
     return prompt_map
+
+
+def _best_prompt_mapped_label(prompt: str, labels: list[str]) -> str:
+    normalized_labels = _normalize_detection_labels(labels)
+    if not normalized_labels:
+        return ""
+    if len(normalized_labels) == 1:
+        return normalized_labels[0]
+    prompt_key = _label_lookup_key(prompt)
+    prompt_canonical = _normalize_detection_labels([prompt])
+    if prompt_canonical:
+        prompt_key = prompt_canonical[0]
+    for label in normalized_labels:
+        if prompt_key == _label_lookup_key(label):
+            return label
+    for label in normalized_labels:
+        if _looks_related_prompt(prompt, label):
+            return label
+    return ""
+
+
+def _looks_related_prompt(prompt: str, label: str) -> bool:
+    prompt_tokens = {item for item in re.split(r"[^a-z0-9]+", str(prompt).lower()) if item}
+    label_tokens = {item for item in re.split(r"[^a-z0-9]+", _label_to_annotation_prompt(label).lower()) if item}
+    return bool(prompt_tokens and label_tokens and prompt_tokens.intersection(label_tokens))
 
 
 def _label_to_annotation_prompt(label: str) -> str:
