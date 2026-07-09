@@ -15,6 +15,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from app.core.diagnostics import diagnostic_json, env_flag, env_int
+from app.core.training_status import build_training_stream_status
 from app.protocols.acp.dispatcher import AcpDispatcher
 from app.protocols.acp.event_broker import acp_event_broker
 from app.protocols.acp.schemas import AcpWebSocketSession, JsonRpcId
@@ -49,6 +50,11 @@ ACP_WS_THREAD_ROOT = Path(
         str(Path(__file__).resolve().parents[3] / ".runtime" / "threads"),
     )
 )
+ACP_TRAINING_STATUS_STREAM_ENABLED = env_flag("ACP_TRAINING_STATUS_STREAM_ENABLED", "1")
+ACP_TRAINING_STATUS_INTERVAL_SECONDS = max(
+    0.2,
+    float(os.getenv("ACP_TRAINING_STATUS_INTERVAL_SECONDS", "2") or "2"),
+)
 
 logger = logging.getLogger("uvicorn.error")
 _ACP_WS_CONNECTION_IDS = itertools.count(1)
@@ -78,8 +84,30 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
     keepalive_sessions: set[str] = set()
     platform_sessions: set[str] = set()
     platform_response_ids: dict[str, str] = {}
+    training_status_last_sent: dict[str, float] = {}
     send_lock = asyncio.Lock()
     active_dispatcher = dispatcher or AcpDispatcher()
+
+    async def publish_training_status_snapshot(session_id: str | None, *, force: bool = False) -> None:
+        if not ACP_TRAINING_STATUS_STREAM_ENABLED or session_id is None:
+            return
+        session = sessions.get(session_id)
+        if session is None:
+            return
+        now = time.monotonic()
+        key = session.thread_id or session_id
+        if not force and now - training_status_last_sent.get(key, 0.0) < ACP_TRAINING_STATUS_INTERVAL_SECONDS:
+            return
+        try:
+            status = build_training_stream_status(session.thread_id)
+        except (FileNotFoundError, ValueError) as exc:
+            logger.debug("training status snapshot unavailable session_id=%s thread_id=%s error=%s", session_id, session.thread_id, exc)
+            return
+        except Exception:
+            logger.exception("training status snapshot failed session_id=%s thread_id=%s", session_id, session.thread_id)
+            return
+        training_status_last_sent[key] = now
+        await acp_event_broker.publish(_subscription_keys(sessions, session_id), "training/status", status)
 
     async def send_update(session_id: str, update: dict[str, Any]) -> None:
         async with send_lock:
@@ -97,6 +125,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     },
                 },
             )
+            await publish_training_status_snapshot(session_id)
             if session_id in platform_sessions:
                 await _send_platform_update(
                     websocket,
@@ -114,6 +143,11 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
         async with send_lock:
             await _send_error(websocket, request_id, code, message, connection_id=connection_id)
 
+    async def stream_training_status_snapshots(session_id: str) -> None:
+        while True:
+            await publish_training_status_snapshot(session_id, force=True)
+            await asyncio.sleep(ACP_TRAINING_STATUS_INTERVAL_SECONDS)
+
     async def run_prompt(
         request_id: JsonRpcId,
         params: dict[str, Any],
@@ -125,6 +159,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
     ) -> None:
         keepalive_task: asyncio.Task[None] | None = None
         review_result_watch_task: asyncio.Task[None] | None = None
+        training_status_task: asyncio.Task[None] | None = None
         platform_stream_started = False
         platform_final_sent = False
         prompt_result_sent = False
@@ -195,6 +230,8 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 review_result_watch_task = asyncio.create_task(
                     watch_review_result_file(task_session_id, send_platform_final_result)
                 )
+            if ACP_TRAINING_STATUS_STREAM_ENABLED:
+                training_status_task = asyncio.create_task(stream_training_status_snapshots(task_session_id))
         logger.debug("acp prompt started session_id=%s request_id=%s", task_session_id, request_id)
         try:
             async def dispatch_update(session_id: str, update: dict[str, Any]) -> None:
@@ -224,6 +261,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             ):
                 return
             if request_id is not None and not prompt_result_sent:
+                await publish_training_status_snapshot(task_session_id, force=True)
                 await send_result(request_id, {"stopReason": "cancelled"})
                 await _publish_prompt_result(
                     sessions,
@@ -247,6 +285,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             )
             if request_id is not None:
                 await send_error(request_id, -32004, str(exc))
+                await publish_training_status_snapshot(task_session_id, force=True)
                 await _publish_prompt_error(sessions, task_session_id, request_id, -32004, str(exc))
             if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
                 await send_platform_error_end(task_session_id, platform_event_request_id, str(exc))
@@ -260,6 +299,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             )
             if request_id is not None:
                 await send_error(request_id, -32602, error_message)
+                await publish_training_status_snapshot(task_session_id, force=True)
                 await _publish_prompt_error(sessions, task_session_id, request_id, -32602, error_message)
             if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
                 await send_platform_error_end(task_session_id, platform_event_request_id, error_message)
@@ -272,6 +312,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             )
             if request_id is not None:
                 await send_error(request_id, -32602, str(exc))
+                await publish_training_status_snapshot(task_session_id, force=True)
                 await _publish_prompt_error(sessions, task_session_id, request_id, -32602, str(exc))
             if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
                 await send_platform_error_end(task_session_id, platform_event_request_id, str(exc))
@@ -286,6 +327,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             if request_id is not None and not prompt_result_sent:
                 error_result = _prompt_error_result(sessions, task_session_id, user_text, error_message)
                 await send_result(request_id, error_result)
+                await publish_training_status_snapshot(task_session_id, force=True)
                 await _publish_prompt_result(sessions, task_session_id, request_id, error_result)
                 prompt_result_sent = True
             if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
@@ -313,6 +355,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     await send_platform_result_chunks(task_session_id, result)
             if request_id is not None and not prompt_result_sent:
                 await send_result(request_id, result)
+                await publish_training_status_snapshot(task_session_id, force=True)
                 await _publish_prompt_result(sessions, task_session_id, request_id, result)
                 prompt_result_sent = True
             if platform_events_enabled and task_session_id is not None and task_session_id in platform_sessions:
@@ -320,6 +363,10 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     await send_platform_response_end(task_session_id, platform_event_request_id, result)
                     platform_final_sent = True
         finally:
+            if training_status_task is not None:
+                training_status_task.cancel()
+                await asyncio.gather(training_status_task, return_exceptions=True)
+                await publish_training_status_snapshot(task_session_id, force=True)
             if review_result_watch_task is not None:
                 review_result_watch_task.cancel()
                 await asyncio.gather(review_result_watch_task, return_exceptions=True)

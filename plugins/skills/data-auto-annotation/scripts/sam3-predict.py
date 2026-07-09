@@ -32,6 +32,14 @@ DEFAULT_MIN_IMAGE_SIZE = 16
 RETRYABLE_HTTP_STATUS = {502, 503, 504}
 
 
+def safe_print(message: str, *, file: Any | None = None, flush: bool = True) -> None:
+    """Best-effort progress output; stdout failures must not abort annotation."""
+    try:
+        print(message, file=file or sys.stdout, flush=flush)
+    except OSError:
+        return
+
+
 def build_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Send images in a folder to the SAM3 prediction API.")
     parser.add_argument("--url", default=DEFAULT_URL, help="SAM3 prediction endpoint")
@@ -406,6 +414,7 @@ def seed_categories(labels: list[str], category_map: dict[str, int], categories:
 
 def image_size(image_path: Path) -> tuple[int, int]:
     with Image.open(image_path) as img:
+        img.load()
         return img.size
 
 
@@ -521,7 +530,7 @@ def save_per_image_coco(
         relative_image = Path(image_path.name)
     sidecar = root / relative_image.parent / f"{image_path.stem}_coco.json"
     save_json(sidecar, _single_image_coco(image_info, annotations, categories))
-    print(f"per_image_coco_path: {sidecar}", flush=True)
+    safe_print(f"per_image_coco_path: {sidecar}")
     return sidecar
 
 
@@ -557,7 +566,7 @@ def post_image(args: argparse.Namespace, headers: dict[str, str], prompts: list[
                 timeout=(args.connect_timeout, args.timeout),
             )
             if response.status_code in RETRYABLE_HTTP_STATUS and attempt < attempts:
-                print(
+                safe_print(
                     f"[sam3-predict] transient HTTP {response.status_code} for {image_path.name}; retry {attempt}/{attempts - 1}",
                     file=sys.stderr,
                 )
@@ -569,14 +578,14 @@ def post_image(args: argparse.Namespace, headers: dict[str, str], prompts: list[
             last_error = exc
             if attempt >= attempts:
                 raise
-            print(f"[sam3-predict] transient request error for {image_path.name}: {exc}; retry {attempt}/{attempts - 1}", file=sys.stderr)
+            safe_print(f"[sam3-predict] transient request error for {image_path.name}: {exc}; retry {attempt}/{attempts - 1}", file=sys.stderr)
             time.sleep(float(args.retry_sleep) * attempt)
         except requests.exceptions.HTTPError as exc:
             last_error = exc
             status_code = exc.response.status_code if exc.response is not None else None
             if status_code not in RETRYABLE_HTTP_STATUS or attempt >= attempts:
                 raise
-            print(f"[sam3-predict] transient HTTP {status_code} for {image_path.name}; retry {attempt}/{attempts - 1}", file=sys.stderr)
+            safe_print(f"[sam3-predict] transient HTTP {status_code} for {image_path.name}; retry {attempt}/{attempts - 1}", file=sys.stderr)
             time.sleep(float(args.retry_sleep) * attempt)
     if last_error:
         raise last_error
@@ -618,8 +627,8 @@ def _print_request_error(error_type: str, exc: Exception, args: argparse.Namespa
 
 
 def _print_error(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
-    print(payload["message"], file=sys.stderr)
+    safe_print(json.dumps(payload, ensure_ascii=False, indent=2))
+    safe_print(payload["message"], file=sys.stderr)
 
 
 def main() -> int:
@@ -642,23 +651,65 @@ def main() -> int:
     seed_categories(class_names, category_map, categories)
     next_annotation_id = 1
 
+    skipped_images: list[dict[str, str]] = []
+
     try:
-        for image_id, image_path in enumerate(image_paths, start=1):
-            width, height = image_size(image_path)
-            if width < args.min_image_size or height < args.min_image_size:
-                payload = _error_payload(
-                    "image_too_small",
-                    f"Image is too small for SAM3 inference: {image_path.name} ({width}x{height}), minimum is {args.min_image_size}x{args.min_image_size}.",
-                    args,
+        next_image_id = 1
+        for image_path in image_paths:
+            try:
+                width, height = image_size(image_path)
+            except Exception as exc:
+                skipped_images.append(
+                    {
+                        "path": str(image_path),
+                        "error_type": type(exc).__name__,
+                        "message": str(exc),
+                    }
                 )
-                payload["image"] = {"path": str(image_path), "width": width, "height": height}
-                _print_error(payload)
-                return 2
+                safe_print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "warning_type": "invalid_image_skipped",
+                            "message": "Invalid image skipped before SAM3 request; it will not be annotated or used for training.",
+                            "image_path": str(image_path),
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    file=sys.stderr,
+                )
+                continue
+            if width < args.min_image_size or height < args.min_image_size:
+                skipped_images.append(
+                    {
+                        "path": str(image_path),
+                        "error_type": "image_too_small",
+                        "message": f"{width}x{height}, minimum is {args.min_image_size}x{args.min_image_size}",
+                    }
+                )
+                safe_print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "warning_type": "image_too_small_skipped",
+                            "message": "Image is too small for SAM3 inference; it will not be annotated or used for training.",
+                            "image_path": str(image_path),
+                            "width": width,
+                            "height": height,
+                            "minimum": args.min_image_size,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    file=sys.stderr,
+                )
+                continue
             payload = post_image(args, headers, prompts, image_path)
             image_info, image_annotations = response_to_coco(
                 payload,
                 image_path,
-                image_id=image_id,
+                image_id=next_image_id,
                 category_map=category_map,
                 categories=categories,
                 prompt_label_map=prompt_label_map,
@@ -678,6 +729,7 @@ def main() -> int:
                 image_annotations,
                 categories,
             )
+            next_image_id += 1
     except requests.exceptions.ConnectTimeout as exc:
         _print_request_error("sam3_connect_timeout", exc, args, locals().get("image_path"))
         return 2
@@ -699,13 +751,16 @@ def main() -> int:
         "annotations": annotations,
         "categories": categories,
         "licenses": [],
-        "info": {"description": "SAM3 auto-annotation export"},
+        "info": {
+            "description": "SAM3 auto-annotation export",
+            "skipped_invalid_images": skipped_images,
+        },
     }
 
     if args.output:
         save_json(Path(args.output), coco)
     else:
-        print(json.dumps(coco, ensure_ascii=False, indent=2))
+        safe_print(json.dumps(coco, ensure_ascii=False, indent=2))
     return 0
 
 

@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -11,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 from urllib import request
+
+from PIL import Image
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
@@ -22,6 +25,47 @@ LOG_DIR: Path | None = None
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
+SAM3_MAX_PROMPTS_PER_LABEL = 3
+SAM3_PROMPT_MAX_WORDS = 8
+SAM3_INSTRUCTION_KEYWORDS = {
+    "sam3",
+    "label",
+    "labels",
+    "class",
+    "classes",
+    "category",
+    "categories",
+    "bbox",
+    "bounding",
+    "box",
+    "annotation",
+    "annotations",
+    "annotate",
+    "mapping",
+    "mapped",
+    "filter",
+    "rule",
+    "condition",
+    "criteria",
+    "标注",
+    "边界框",
+    "映射",
+    "筛选",
+    "过滤",
+    "类别",
+    "业务",
+    "规则",
+    "条件",
+    "检测",
+}
+
+
+def _safe_print(message: str, *, file: Any | None = None, end: str = "\n", flush: bool = True) -> None:
+    """Best-effort progress output; broken stdout/stderr must not stop data prep."""
+    try:
+        print(message, end=end, file=file or sys.stdout, flush=flush)
+    except OSError:
+        return
 
 
 def _load_json(path: Path) -> Dict:
@@ -102,7 +146,7 @@ def _write_command_logs(cmd: List[str], stdout_text: str, stderr_text: str) -> N
 
 
 def _run(cmd: List[str], dry_run: bool = False, *, retries: int = 1, retry_sleep: float = 5.0) -> str:
-    print("[data-prep] " + " ".join(cmd))
+    _safe_print("[data-prep] " + " ".join(cmd))
     if dry_run:
         return ""
     attempts = max(1, int(retries))
@@ -123,7 +167,7 @@ def _run(cmd: List[str], dry_run: bool = False, *, retries: int = 1, retry_sleep
         if attempt >= attempts or not _looks_transient_subprocess_error(combined):
             raise subprocess.CalledProcessError(returncode, cmd, output=stdout_bytes, stderr=stderr_bytes)
         message = f"[data-prep] transient command failure; retrying {attempt + 1}/{attempts} after {retry_sleep}s"
-        print(message)
+        _safe_print(message)
         _write_command_logs(cmd, message + "\n", "")
         time.sleep(max(0.0, float(retry_sleep)))
     raise subprocess.CalledProcessError(last_returncode, cmd, output=last_stdout, stderr=last_stderr)
@@ -144,7 +188,7 @@ def _run_streaming_once(cmd: List[str]) -> tuple[int, bytes, bytes]:
                     break
                 chunks.append(chunk)
                 text = _decode_bytes(chunk)
-                print(text, end="" if text.endswith("\n") else "\n", file=target, flush=True)
+                _safe_print(text, end="" if text.endswith("\n") else "\n", file=target)
         finally:
             stream.close()
 
@@ -207,12 +251,148 @@ def _inspect(dataset_root: Path, work_dir: Path, dry_run: bool) -> Dict:
     return result
 
 
+def _decode_image_error(image_path: Path) -> str | None:
+    try:
+        with Image.open(image_path) as image:
+            image.load()
+        return None
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
+def _collect_images_for_validation(images_dir: Path) -> list[Path]:
+    if not images_dir.is_dir():
+        return []
+    return sorted(path for path in images_dir.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS)
+
+
+def _filter_coco_for_valid_images(coco_path: Path, original_images_dir: Path, valid_images: list[Path], output_path: Path) -> Path:
+    coco = _load_json(coco_path)
+    valid_rel = {path.relative_to(original_images_dir).as_posix() for path in valid_images}
+    valid_names = {path.name for path in valid_images}
+
+    kept_images: list[dict[str, Any]] = []
+    kept_ids: set[int] = set()
+    for image in coco.get("images", []):
+        if not isinstance(image, dict):
+            continue
+        file_name = str(image.get("file_name") or "").replace("\\", "/").strip()
+        if not file_name:
+            continue
+        if file_name in valid_rel or Path(file_name).name in valid_names:
+            kept_images.append(image)
+            try:
+                kept_ids.add(int(image.get("id")))
+            except (TypeError, ValueError):
+                continue
+
+    kept_annotations: list[dict[str, Any]] = []
+    for annotation in coco.get("annotations", []):
+        if not isinstance(annotation, dict):
+            continue
+        try:
+            image_id = int(annotation.get("image_id"))
+        except (TypeError, ValueError):
+            continue
+        if image_id in kept_ids:
+            kept_annotations.append(annotation)
+
+    filtered = dict(coco)
+    filtered["images"] = kept_images
+    filtered["annotations"] = kept_annotations
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(output_path, filtered)
+    return output_path
+
+
+def _sanitize_inspection_images(inspection: Dict, work_dir: Path, dry_run: bool) -> Dict:
+    images_dir_raw = inspection.get("images_dir")
+    if dry_run or not images_dir_raw:
+        return inspection
+
+    images_dir = Path(str(images_dir_raw)).resolve()
+    image_paths = _collect_images_for_validation(images_dir)
+    if not image_paths:
+        return inspection
+
+    valid_images: list[Path] = []
+    invalid_images: list[dict[str, str]] = []
+    for image_path in image_paths:
+        error = _decode_image_error(image_path)
+        if error is None:
+            valid_images.append(image_path)
+        else:
+            invalid_images.append(
+                {
+                    "path": str(image_path),
+                    "relative_path": image_path.relative_to(images_dir).as_posix(),
+                    "error": error,
+                }
+            )
+
+    sanitized = dict(inspection)
+    sanitized["original_image_count"] = len(image_paths)
+    sanitized["valid_image_count"] = len(valid_images)
+    sanitized["invalid_image_count"] = len(invalid_images)
+    sanitized["invalid_images_report"] = None
+    if not invalid_images:
+        return sanitized
+
+    report_path = work_dir / "invalid_uploaded_images.json"
+    _write_json(
+        report_path,
+        {
+            "status": "warning",
+            "message": "Invalid images were excluded from annotation and training.",
+            "images_dir": str(images_dir),
+            "total": len(image_paths),
+            "valid": len(valid_images),
+            "invalid": len(invalid_images),
+            "invalid_images": invalid_images,
+        },
+    )
+    sanitized["invalid_images_report"] = str(report_path)
+    sanitized["invalid_images"] = invalid_images
+    if not valid_images:
+        raise ValueError(f"All uploaded images are invalid. See report: {report_path}")
+
+    clean_images_dir = work_dir / "valid_uploaded_images"
+    if clean_images_dir.exists():
+        shutil.rmtree(clean_images_dir)
+    for image_path in valid_images:
+        relative = image_path.relative_to(images_dir)
+        target = clean_images_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(image_path, target)
+
+    sanitized["original_images_dir"] = str(images_dir)
+    sanitized["images_dir"] = str(clean_images_dir)
+    sanitized["image_count"] = len(valid_images)
+    if str(sanitized.get("format") or "").lower() == "coco" and sanitized.get("coco_json"):
+        sanitized["original_coco_json"] = sanitized["coco_json"]
+        sanitized["coco_json"] = str(
+            _filter_coco_for_valid_images(
+                Path(str(sanitized["original_coco_json"])).resolve(),
+                images_dir,
+                valid_images,
+                work_dir / "filtered_valid_images.coco.json",
+            )
+        )
+
+    _safe_print(
+        "[data-prep] excluded invalid images before annotation/training: "
+        f"invalid={len(invalid_images)}, valid={len(valid_images)}, report={report_path}"
+    )
+    return sanitized
+
+
 def _prepare_real_coco(
     inspection: Dict,
     work_dir: Path,
     task_labels: List[str],
     annotation_prompts: List[str],
     prompt_label_map: Dict[str, str],
+    intent_items: List[Dict[str, Any]],
     dry_run: bool,
 ) -> Path:
     fmt = inspection.get("format")
@@ -247,7 +427,7 @@ def _prepare_real_coco(
     if fmt == "unlabeled":
         if not task_labels:
             raise ValueError("Unlabeled datasets require labels, for example: labels=person,bottle")
-        prompts = _annotation_prompts_for_sam3(task_labels, annotation_prompts, prompt_label_map)
+        prompts = _annotation_prompts_for_sam3(task_labels, annotation_prompts, prompt_label_map, intent_items)
         try:
             cmd = [
                 sys.executable,
@@ -370,7 +550,7 @@ def _write_single_image_coco_sidecar(
             },
         },
     )
-    print(f"[data-prep] per-image real coco written: {sidecar}", flush=True)
+    _safe_print(f"[data-prep] per-image real coco written: {sidecar}")
     return sidecar
 
 
@@ -457,15 +637,53 @@ def _annotation_prompts_for_sam3(
     labels: List[str],
     annotation_prompts: List[str] | None,
     prompt_label_map: Dict[str, str] | None = None,
+    intent_items: List[Dict[str, Any]] | None = None,
 ) -> List[str]:
     prompts = _dedupe_text([str(item).strip() for item in (annotation_prompts or []) if str(item).strip()])
     prompt_map = {str(prompt).strip(): str(label).strip() for prompt, label in (prompt_label_map or {}).items() if str(prompt).strip() and str(label).strip()}
     selected: List[str] = []
     for label in _dedupe_text(labels):
-        prompt = _best_annotation_prompt_for_label(label, labels, prompts, prompt_map)
-        if prompt:
-            selected.append(prompt)
+        selected.extend(_best_annotation_prompts_for_label(label, labels, prompts, prompt_map, intent_items or []))
     return _dedupe_text(selected or prompts or labels)
+
+
+def _best_annotation_prompts_for_label(
+    label: str,
+    labels: List[str],
+    prompts: List[str],
+    prompt_label_map: Dict[str, str],
+    intent_items: List[Dict[str, Any]],
+    limit: int = SAM3_MAX_PROMPTS_PER_LABEL,
+) -> List[str]:
+    class_key = str(label or "").strip().lower()
+    if not class_key:
+        return []
+    related_items = _intent_items_for_label(label, intent_items)
+    entity_prompts = _entity_interaction_prompts_for_label(label, related_items)
+    if entity_prompts:
+        return entity_prompts[: max(1, limit)]
+    candidates = _dedupe_text([
+        *_visual_prompts_from_intent_items(related_items),
+        *[prompt for prompt, mapped_label in prompt_label_map.items() if mapped_label == label],
+        *prompts,
+        *_generated_visual_prompts_for_label(label, related_items),
+        _label_to_sam3_prompt(label),
+        label,
+    ])
+    ranked = sorted(
+        (
+            (_sam3_prompt_score(prompt, label, labels, prompt_label_map, related_items), index, prompt)
+            for index, prompt in enumerate(candidates)
+            if str(prompt or "").strip()
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    high_quality = [prompt for score, _, prompt in ranked if score < 80]
+    selected = high_quality[: max(1, limit)] if high_quality else [prompt for score, _, prompt in ranked if score < 9000][: max(1, limit)]
+    if selected:
+        return selected
+    fallback = _label_to_sam3_prompt(label) or label
+    return [fallback] if fallback else []
 
 
 def _best_annotation_prompt_for_label(
@@ -474,24 +692,8 @@ def _best_annotation_prompt_for_label(
     prompts: List[str],
     prompt_label_map: Dict[str, str],
 ) -> str:
-    class_key = str(label or "").strip().lower()
-    if not class_key:
-        return ""
-    candidates = _dedupe_text([
-        *[prompt for prompt, mapped_label in prompt_label_map.items() if mapped_label == label],
-        *prompts,
-        _label_to_sam3_prompt(label),
-        label,
-    ])
-    ranked = sorted(
-        (
-            (_sam3_prompt_score(prompt, label, labels, prompt_label_map), index, prompt)
-            for index, prompt in enumerate(candidates)
-            if str(prompt or "").strip()
-        ),
-        key=lambda item: (item[0], item[1]),
-    )
-    return ranked[0][2] if ranked else (_label_to_sam3_prompt(label) or label)
+    selected = _best_annotation_prompts_for_label(label, labels, prompts, prompt_label_map, [])
+    return selected[0] if selected else ""
 
 
 def _sam3_prompt_score(
@@ -499,25 +701,33 @@ def _sam3_prompt_score(
     label: str,
     labels: List[str],
     prompt_label_map: Dict[str, str],
+    intent_items: List[Dict[str, Any]] | None = None,
 ) -> int:
     prompt_text = str(prompt or "").strip()
     label_text = str(label or "").strip()
+    if not _is_valid_sam3_visual_prompt(prompt_text):
+        return 10000
     prompt_key = prompt_text.lower()
     label_key = label_text.lower()
     canonical_label_prompt = _label_to_sam3_prompt(label_text).lower()
     mapped_key = str(prompt_label_map.get(prompt_text, "") or "").strip().lower()
     prompt_tokens = _sam3_prompt_tokens(prompt_text)
     label_tokens = _sam3_prompt_tokens(_label_to_sam3_prompt(label_text))
+    intent_items = intent_items or []
+    behavior_tokens = _intent_behavior_tokens(intent_items, label_text)
+    target_tokens = _intent_target_tokens(intent_items)
 
     # person_fall/person_running 这类业务行为标签必须优先使用带行为约束的自然语言 prompt。
     # 直接用 person 会把画面里的所有人都标成该行为，只有没有更好候选时才兜底使用。
     if label_key.startswith("person_"):
-        if mapped_key == label_key and _looks_person_behavior_sam3_prompt(prompt_text, label_text):
+        if mapped_key == label_key and _looks_person_behavior_sam3_prompt(prompt_text, label_text, behavior_tokens):
             return 0
-        if _looks_person_behavior_sam3_prompt(prompt_text, label_text):
+        if _looks_person_behavior_sam3_prompt(prompt_text, label_text, behavior_tokens):
             return 5
         if prompt_key == canonical_label_prompt:
             return 10
+        if target_tokens and prompt_tokens.intersection(target_tokens):
+            return 15
         if mapped_key == label_key:
             return 20
         if prompt_key == "person":
@@ -546,11 +756,161 @@ def _sam3_prompt_tokens(text: str) -> set[str]:
     return {item for item in re.split(r"[^a-z0-9]+", str(text or "").lower()) if item}
 
 
-def _looks_person_behavior_sam3_prompt(prompt: str, label: str) -> bool:
+def _label_lookup_key(label: str) -> str:
+    text = str(label or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_]+", "_", text).strip("_")
+    return text
+
+
+def _is_valid_sam3_visual_prompt(prompt: str) -> bool:
+    text = str(prompt or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return False
+    if "_" in text:
+        return False
+    if any(keyword in lower for keyword in SAM3_INSTRUCTION_KEYWORDS):
+        return False
+    tokens = _sam3_prompt_tokens(text)
+    if not tokens:
+        return False
+    if len(tokens) > SAM3_PROMPT_MAX_WORDS:
+        return False
+    if len(text) > 80:
+        return False
+    return True
+
+
+def _intent_items_for_label(label: str, intent_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    label_key = str(label or "").strip().lower()
+    result: List[Dict[str, Any]] = []
+    for item in intent_items or []:
+        if not isinstance(item, dict):
+            continue
+        candidates = [str(item.get("label") or ""), str(item.get("train_label") or "")]
+        if isinstance(item.get("training_labels"), list):
+            candidates.extend(str(value) for value in item.get("training_labels", []) if str(value).strip())
+        if isinstance(item.get("business_labels"), list):
+            candidates.extend(str(value) for value in item.get("business_labels", []) if str(value).strip())
+        if label_key in {value.strip().lower() for value in candidates if value.strip()}:
+            result.append(item)
+    return result
+
+
+def _visual_prompts_from_intent_items(items: List[Dict[str, Any]]) -> List[str]:
+    values: List[str] = []
+    for item in items:
+        keys = ("observable_entities", "training_labels", "sam3_prompts") if _is_entity_interaction_item(item) else ("sam3_prompts", "visual_states", "observable_entities", "annotation_prompts")
+        for key in keys:
+            raw = item.get(key)
+            if isinstance(raw, list):
+                values.extend(str(value).strip() for value in raw if str(value).strip())
+    return _dedupe_text([value for value in values if _is_valid_sam3_visual_prompt(value)])
+
+
+def _entity_interaction_prompts_for_label(label: str, items: List[Dict[str, Any]]) -> List[str]:
+    label_key = _label_lookup_key(label)
+    prompts: List[str] = []
+    for item in items:
+        if not _is_entity_interaction_item(item):
+            continue
+        for key in ("observable_entities", "training_labels", "sam3_prompts", "annotation_prompts"):
+            raw = item.get(key)
+            if not isinstance(raw, list):
+                continue
+            for value in raw:
+                prompt = str(value or "").strip()
+                if not _is_valid_sam3_visual_prompt(prompt):
+                    continue
+                if _label_lookup_key(prompt) == label_key or _label_lookup_key(_label_to_sam3_prompt(prompt)) == label_key:
+                    prompts.append(_label_to_sam3_prompt(prompt))
+    return _dedupe_text(prompts)
+
+
+def _is_entity_interaction_item(item: Dict[str, Any]) -> bool:
+    task_type = str(item.get("type") or item.get("task_type") or "").strip().lower()
+    if task_type in {"entity_interaction", "object_interaction", "person_object_interaction"}:
+        return True
+    labels: List[str] = []
+    if isinstance(item.get("training_labels"), list):
+        labels.extend(str(value).strip() for value in item.get("training_labels", []) if str(value).strip())
+    if isinstance(item.get("observable_entities"), list):
+        labels.extend(str(value).strip() for value in item.get("observable_entities", []) if str(value).strip())
+    labels = _dedupe_text(labels)
+    normalized = {_label_lookup_key(value) for value in labels}
+    auxiliary = {value for value in normalized if value and value != "person" and "person" not in value}
+    return bool("person" in normalized and auxiliary)
+
+
+def _generated_visual_prompts_for_label(label: str, items: List[Dict[str, Any]]) -> List[str]:
+    prompts: List[str] = []
+    label_prompt = _label_to_sam3_prompt(label)
+    if label_prompt:
+        prompts.append(label_prompt)
+    for item in items:
+        subject = _first_valid_phrase([item.get("subject"), "person" if str(label).lower().startswith("person_") else ""])
+        behaviors = _phrase_values([item.get("behavior"), item.get("action"), item.get("state"), item.get("activity")])
+        targets = _phrase_values([item.get("target_objects"), item.get("objects"), item.get("tools")])
+        for behavior in behaviors:
+            if subject:
+                prompts.append(f"{subject} {behavior}")
+                if len(_sam3_prompt_tokens(behavior)) == 1:
+                    prompts.append(f"{behavior} {subject}")
+        for target in targets:
+            if subject:
+                prompts.append(f"{subject} with {target}")
+                prompts.append(f"{subject} holding {target}")
+                prompts.append(f"{subject} using {target}")
+            prompts.append(f"{target} player")
+            prompts.append(target)
+    return _dedupe_text([prompt for prompt in prompts if _is_valid_sam3_visual_prompt(prompt)])
+
+
+def _phrase_values(values: List[Any]) -> List[str]:
+    result: List[str] = []
+    for value in values:
+        if isinstance(value, list):
+            result.extend(str(item).strip() for item in value if str(item).strip())
+        else:
+            text = str(value or "").strip()
+            if text:
+                result.append(text)
+    return _dedupe_text([value for value in result if _is_valid_sam3_visual_prompt(value)])
+
+
+def _first_valid_phrase(values: List[Any]) -> str:
+    phrases = _phrase_values(values)
+    return phrases[0] if phrases else ""
+
+
+def _intent_behavior_tokens(items: List[Dict[str, Any]], label: str) -> set[str]:
+    tokens = _expanded_person_behavior_tokens(label)
+    for item in items:
+        for value in _phrase_values([item.get("behavior"), item.get("action"), item.get("state"), item.get("activity")]):
+            tokens.update(_expanded_person_behavior_tokens(value))
+            tokens.update(_sam3_prompt_tokens(value))
+        for value in _phrase_values([item.get("visual_states"), item.get("sam3_prompts")]):
+            prompt_tokens = _sam3_prompt_tokens(value)
+            if prompt_tokens.intersection({"person", "people", "human", "man", "woman"}):
+                tokens.update(prompt_tokens - {"person", "people", "human", "man", "woman"})
+    return tokens
+
+
+def _intent_target_tokens(items: List[Dict[str, Any]]) -> set[str]:
+    tokens: set[str] = set()
+    for item in items:
+        for value in _phrase_values([item.get("target_objects"), item.get("objects"), item.get("tools"), item.get("observable_entities")]):
+            tokens.update(_sam3_prompt_tokens(value))
+    return tokens
+
+
+def _looks_person_behavior_sam3_prompt(prompt: str, label: str, behavior_tokens: set[str] | None = None) -> bool:
     prompt_tokens = _sam3_prompt_tokens(prompt)
     if not prompt_tokens.intersection({"person", "people", "human", "man", "woman"}):
         return False
-    behavior_tokens = _expanded_person_behavior_tokens(label)
+    behavior_tokens = behavior_tokens or _expanded_person_behavior_tokens(label)
     return bool(behavior_tokens and prompt_tokens.intersection(behavior_tokens))
 
 
@@ -574,7 +934,33 @@ def _expanded_person_behavior_tokens(label: str) -> set[str]:
     }
     for token in list(base_tokens):
         expanded.update(synonyms.get(token, set()))
+        expanded.update(_generic_behavior_token_forms(token))
     return expanded
+
+
+def _generic_behavior_token_forms(token: str) -> set[str]:
+    text = str(token or "").strip().lower()
+    if not text:
+        return set()
+    forms = {text}
+    if text.endswith("ing") and len(text) > 4:
+        forms.add(text[:-3])
+        if len(text) > 5 and text[-4] == text[-5]:
+            forms.add(text[:-4])
+    elif text.endswith("ed") and len(text) > 3:
+        forms.add(text[:-2])
+    elif text.endswith("s") and len(text) > 3:
+        forms.add(text[:-1])
+    else:
+        forms.add(text + "s")
+        forms.add(text + "ed")
+        if text.endswith("e"):
+            forms.add(text[:-1] + "ing")
+        elif len(text) >= 3 and text[-1] not in "aeiou" and text[-2] in "aeiou":
+            forms.add(text + text[-1] + "ing")
+        else:
+            forms.add(text + "ing")
+    return forms
 
 
 def _looks_entity_like_sam3_prompt(prompt: str, labels: List[str]) -> bool:
@@ -617,10 +1003,31 @@ def _prompt_label_map_for_sam3(labels: List[str], prompts: List[str], prompt_lab
     if len(class_names) == 1:
         for prompt in prompts:
             result.setdefault(prompt, class_names[0])
+    for prompt in prompts:
+        mapped = _best_sam3_prompt_mapped_label(prompt, class_names)
+        if mapped:
+            result.setdefault(prompt, mapped)
     for label in class_names:
         result.setdefault(_label_to_sam3_prompt(label), label)
         result.setdefault(label, label)
     return result
+
+
+def _best_sam3_prompt_mapped_label(prompt: str, labels: List[str]) -> str:
+    prompt_tokens = _sam3_prompt_tokens(prompt)
+    if not prompt_tokens:
+        return ""
+    best_label = ""
+    best_score = 0
+    for label in labels:
+        label_prompt = _label_to_sam3_prompt(label)
+        label_tokens = _sam3_prompt_tokens(label_prompt)
+        behavior_tokens = _expanded_person_behavior_tokens(label)
+        score = len(prompt_tokens.intersection(label_tokens)) + len(prompt_tokens.intersection(behavior_tokens))
+        if score > best_score:
+            best_label = label
+            best_score = score
+    return best_label
 
 
 def _label_to_sam3_prompt(label: str) -> str:
@@ -659,12 +1066,13 @@ def _annotate_one_synthetic(
     labels: List[str],
     annotation_prompts: List[str],
     prompt_label_map: Dict[str, str],
+    intent_items: List[Dict[str, Any]],
     output_json: Path,
     dry_run: bool,
 ) -> Path:
     if not labels:
         raise ValueError("Synthetic auto-annotation requires labels")
-    prompts = _annotation_prompts_for_sam3(labels, annotation_prompts, prompt_label_map)
+    prompts = _annotation_prompts_for_sam3(labels, annotation_prompts, prompt_label_map, intent_items)
     _run([
         sys.executable,
         str(AUTO_ANNOTATION_SCRIPT),
@@ -683,7 +1091,7 @@ def _annotate_one_synthetic(
         str(output_json),
     ], dry_run)
     if not dry_run:
-        print(f"[data-prep] synthetic coco written: {output_json}", flush=True)
+        _safe_print(f"[data-prep] synthetic coco written: {output_json}")
     return output_json
 
 
@@ -741,6 +1149,7 @@ def _generate_and_annotate_synthetic(
     labels: List[str],
     annotation_prompts: List[str],
     prompt_label_map: Dict[str, str],
+    intent_items: List[Dict[str, Any]],
     output_dir: Path,
     dry_run: bool,
 ) -> tuple[Path, Path]:
@@ -772,9 +1181,9 @@ def _generate_and_annotate_synthetic(
             if generated_image is None:
                 raise RuntimeError(f"Composition completed but no composite image was found for {input_json}")
             generated_image = _move_to_unique_synthetic_name(generated_image, scene_dir, idx, n + 1)
-            print(f"[data-prep] annotating composite image immediately: {generated_image}")
+            _safe_print(f"[data-prep] annotating composite image immediately: {generated_image}")
             partial_coco = annotation_root / f"{generated_image.stem}_coco.json"
-            _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, partial_coco, dry_run)
+            _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, intent_items, partial_coco, dry_run)
             partial_coco_files.append(partial_coco)
     synthetic_coco = output_dir / "synthetic_coco.json"
     if not dry_run:
@@ -911,7 +1320,7 @@ def _llm_image_dataset_produce_prompts(
         prompts = prompt_payload.get("prompts") if isinstance(prompt_payload, dict) else []
         return _validated_image_dataset_produce_prompts(prompts, plan, labels, total_count)
     except Exception as exc:
-        print(f"[data-prep] image-dataset-produce prompt planner unavailable; using local prompt template: {exc}", file=sys.stderr)
+        _safe_print(f"[data-prep] image-dataset-produce prompt planner unavailable; using local prompt template: {exc}", file=sys.stderr)
         return []
 
 
@@ -1033,6 +1442,7 @@ def _generate_and_annotate_synthetic_with_produce(
     labels: List[str],
     annotation_prompts: List[str],
     prompt_label_map: Dict[str, str],
+    intent_items: List[Dict[str, Any]],
     output_dir: Path,
     dry_run: bool,
     planner_llm: Dict[str, Any] | None = None,
@@ -1092,9 +1502,9 @@ def _generate_and_annotate_synthetic_with_produce(
         if generated_image is None:
             raise RuntimeError(f"image-dataset-produce completed but no generated image was found for {input_json}")
         generated_image = _move_to_unique_synthetic_name(generated_image, synthetic_images_root, generation_index, 1)
-        print(f"[data-prep] annotating image-dataset-produce image immediately: {generated_image}")
+        _safe_print(f"[data-prep] annotating image-dataset-produce image immediately: {generated_image}")
         partial_coco = annotation_root / f"{generated_image.stem}_coco.json"
-        _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, partial_coco, dry_run)
+        _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, intent_items, partial_coco, dry_run)
         partial_coco_files.append(partial_coco)
 
     synthetic_coco = output_dir / "synthetic_coco.json"
@@ -1272,6 +1682,18 @@ def _dict_value(value: Any) -> Dict[str, str]:
     return {}
 
 
+def _intent_items_value(value: Any) -> List[Dict[str, Any]]:
+    if isinstance(value, list):
+        return [dict(item) for item in value if isinstance(item, dict)]
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return _intent_items_value(parsed)
+    return []
+
+
 def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     payload = _load_input_json(args.input_json)
     if not payload:
@@ -1292,6 +1714,7 @@ def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     args.labels = args.labels or _list_value(_coalesce(spec.get("labels"), spec.get("class_names"), dataset.get("class_names"), ctx.get("labels"), default=[]))
     args.annotation_prompts = args.annotation_prompts or _list_value(_coalesce(spec.get("annotation_prompts"), ctx.get("annotation_prompts"), default=[]))
     args.annotation_prompt_map = _dict_value(_coalesce(spec.get("annotation_prompt_map"), spec.get("prompt_label_map"), ctx.get("annotation_prompt_map"), ctx.get("prompt_label_map"), args.annotation_prompt_map, default={}))
+    args.intent_items = args.intent_items or _intent_items_value(_coalesce(spec.get("intent_items"), ctx.get("intent_items"), default=[]))
     args.work_dir = _coalesce(args.work_dir, ctx.get("work_dir"), spec.get("work_dir"), output.get("work_dir"), default="")
     args.output_dir = _coalesce(args.output_dir, ctx.get("output_dir"), spec.get("output_dir"), output.get("output_dir"), default="")
     args.skip_generation = args.skip_generation or _bool_value(spec.get("skip_generation"), False)
@@ -1340,6 +1763,7 @@ def main() -> None:
     parser.add_argument("--split-test", type=float, default=0.1)
     parser.add_argument("--training-task", default="detect", choices=["detect", "segment"])
     parser.set_defaults(annotation_prompt_map={})
+    parser.set_defaults(intent_items=[])
     args = parser.parse_args()
     if args.annotation_prompt_map_json:
         args.annotation_prompt_map = _dict_value(args.annotation_prompt_map_json)
@@ -1361,14 +1785,23 @@ def main() -> None:
     dataset_root = Path(args.dataset_root).resolve()
     inspection = _inspect(dataset_root, work_dir, args.dry_run)
     if args.dry_run:
-        print("[data-prep] dry-run completed after command planning.")
+        _safe_print("[data-prep] dry-run completed after command planning.")
         return
+    inspection = _sanitize_inspection_images(inspection, work_dir, args.dry_run)
 
     using_uploaded_coco = False
     if args.coco_json:
         real_coco = Path(args.coco_json).resolve()
         if not real_coco.exists():
             raise FileNotFoundError(f"Provided coco_json does not exist: {real_coco}")
+        if int(inspection.get("invalid_image_count") or 0) > 0:
+            clean_images_dir = Path(str(inspection["images_dir"])).resolve()
+            real_coco = _filter_coco_for_valid_images(
+                real_coco,
+                clean_images_dir,
+                _collect_images_for_validation(clean_images_dir),
+                work_dir / "provided_filtered_valid_images.coco.json",
+            )
         using_uploaded_coco = True
     else:
         real_coco = _prepare_real_coco(
@@ -1377,11 +1810,20 @@ def main() -> None:
             args.labels,
             args.annotation_prompts,
             args.annotation_prompt_map,
+            args.intent_items,
             args.dry_run,
         )
         using_uploaded_coco = str(inspection.get("format") or "").lower() == "coco"
 
     requested_labels = list(args.labels)
+    image_validation = {
+        "original_image_count": inspection.get("original_image_count", inspection.get("image_count")),
+        "valid_image_count": inspection.get("valid_image_count", inspection.get("image_count")),
+        "invalid_image_count": inspection.get("invalid_image_count", 0),
+        "invalid_images_report": inspection.get("invalid_images_report"),
+        "original_images_dir": inspection.get("original_images_dir"),
+        "validated_images_dir": inspection.get("images_dir"),
+    }
     label_policy: dict[str, Any] = {
         "mode": "auto",
         "requested_labels": requested_labels,
@@ -1405,10 +1847,9 @@ def main() -> None:
                 "coco_only": [label for label in coco_labels if label not in requested_set],
                 "reason": "uploaded_coco_categories_take_precedence",
             })
-            print(
+            _safe_print(
                 "[data-prep] label_policy=auto; using uploaded COCO categories as final labels: "
                 + ",".join(coco_labels),
-                flush=True,
             )
 
     training_coco = real_coco
@@ -1437,10 +1878,10 @@ def main() -> None:
         )
         plan_path = str(plan)
         recommended_count = _read_recommended_synthetic_count(plan)
-        print(f"[data-prep] recommended_synthetic_count={recommended_count}")
+        _safe_print(f"[data-prep] recommended_synthetic_count={recommended_count}")
         if recommended_count > 0:
             if not args.image1 or not args.image2:
-                print("[data-prep] Synthetic generation is pending because image1/image2 inputs were not provided.")
+                _safe_print("[data-prep] Synthetic generation is pending because image1/image2 inputs were not provided.")
                 synthetic_status.update({
                     "synthetic_generation_status": "pending_inputs",
                     "synthetic_pending_inputs": True,
@@ -1454,6 +1895,7 @@ def main() -> None:
                         args.labels,
                         args.annotation_prompts,
                         args.annotation_prompt_map,
+                        args.intent_items,
                         work_dir,
                         args.dry_run,
                     )
@@ -1469,7 +1911,7 @@ def main() -> None:
                     if _looks_like_generation_api_unavailable(exc):
                         primary_payload = _synthetic_generation_failure_payload(exc)
                         message = primary_payload.get("synthetic_generation_error") or str(exc)
-                        print(f"[data-prep] Composite generation unavailable; falling back to image-dataset-produce: {message}", file=sys.stderr)
+                        _safe_print(f"[data-prep] Composite generation unavailable; falling back to image-dataset-produce: {message}", file=sys.stderr)
                         try:
                             synthetic_root, synthetic_coco = _generate_and_annotate_synthetic_with_produce(
                                 plan,
@@ -1477,6 +1919,7 @@ def main() -> None:
                                 args.labels,
                                 args.annotation_prompts,
                                 args.annotation_prompt_map,
+                                args.intent_items,
                                 work_dir,
                                 args.dry_run,
                                 args.planner_llm,
@@ -1498,13 +1941,13 @@ def main() -> None:
                             synthetic_status.update(_synthetic_generation_failure_payload(fallback_exc))
                             synthetic_status["synthetic_generation_primary_error"] = primary_payload.get("synthetic_generation_error", "")
                             message = synthetic_status.get("synthetic_generation_error") or str(fallback_exc)
-                            print(f"[data-prep] image-dataset-produce fallback failed; continuing with real dataset only: {message}", file=sys.stderr)
+                            _safe_print(f"[data-prep] image-dataset-produce fallback failed; continuing with real dataset only: {message}", file=sys.stderr)
                     else:
                         synthetic_status.update(_synthetic_generation_failure_payload(exc))
                         message = synthetic_status.get("synthetic_generation_error") or str(exc)
-                        print(f"[data-prep] Synthetic generation failed; continuing with real dataset only: {message}", file=sys.stderr)
+                        _safe_print(f"[data-prep] Synthetic generation failed; continuing with real dataset only: {message}", file=sys.stderr)
         else:
-            print("[data-prep] Synthetic generation skipped because planner recommended 0 images.")
+            _safe_print("[data-prep] Synthetic generation skipped because planner recommended 0 images.")
             synthetic_status.update({"synthetic_generation_status": "skipped_zero_recommendation"})
 
     if not args.split_requested:
@@ -1519,13 +1962,14 @@ def main() -> None:
             "work_dir": str(work_dir),
             "output_dir": str(output_dir),
             "label_policy": label_policy,
+            "image_validation": image_validation,
             "labels_requested": requested_labels,
             "labels_final": args.labels,
             **synthetic_status,
         }
         summary_path = output_dir / "data_preparation_summary.json"
         _write_json(summary_path, summary)
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        _safe_print(json.dumps(summary, ensure_ascii=False, indent=2))
         return
 
     class_names = ",".join(args.labels)
@@ -1563,12 +2007,13 @@ def main() -> None:
         "work_dir": str(work_dir),
         "output_dir": str(output_dir),
         "label_policy": label_policy,
+        "image_validation": image_validation,
         "labels_requested": requested_labels,
         "labels_final": args.labels,
         **synthetic_status,
     })
     _write_json(summary_path, summary)
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    _safe_print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

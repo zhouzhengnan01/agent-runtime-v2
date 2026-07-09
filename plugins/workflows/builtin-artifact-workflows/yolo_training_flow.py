@@ -16,6 +16,7 @@ from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.events import EventRecorder
 from app.core.llm.openai_compatible import OpenAICompatibleClient
 from app.core.skills import SkillRunner
+from app.core.training_status import TrainingProgressWriter, chain_event_hooks
 from app.schemas import AgentRunResult, Attachment, ChatEvent, Message, RuntimeOptions, VerificationResult
 
 _DATASET_PACKAGE_EXTS = (".zip", ".tar", ".tar.gz")
@@ -104,6 +105,24 @@ class YoloTrainingWorkflow:
         paths = self.artifact_store.prepare_thread(thread_id)
         recorder = EventRecorder(agent=agent_config.name, thread_id=paths.thread_id, on_emit=on_event)
         recorder.emit("run.started", {"workflow": workflow})
+        progress_writer: TrainingProgressWriter | None = None
+
+        def _install_progress_writer(active_run_paths: TrainingRunPaths) -> None:
+            nonlocal progress_writer
+            if progress_writer is not None:
+                return
+            progress_writer = TrainingProgressWriter(
+                thread_id=paths.thread_id,
+                run_id=active_run_paths.run_id,
+                run_dir=active_run_paths.outputs,
+                workflow=workflow,
+                backend=training_backend,
+                app_template_name=runtime_options.app_template_name,
+                selected_skills=selected_skills,
+                user_text=user_text,
+            )
+            progress_writer.initialize()
+            recorder.on_emit = chain_event_hooks(on_event, progress_writer.handle_event)
 
         user_text = _last_user_text(messages)
         selected_skills = _selected_skills(runtime_options)
@@ -144,6 +163,7 @@ class YoloTrainingWorkflow:
         workflow_completed = _is_workflow_completed(state_paths)
         workflow_output_root = _workflow_output_root(state_paths)
         if run_paths is not None:
+            _install_progress_writer(run_paths)
             recorder.emit(
                 "workflow.training_run.selected",
                 {
@@ -249,6 +269,7 @@ class YoloTrainingWorkflow:
             workflow_output_root = run_paths.outputs
             workflow_completed = _is_workflow_completed(run_paths)
             waiting_prompt = _is_waiting_prompt(run_paths)
+            _install_progress_writer(run_paths)
             recorder.emit(
                 "workflow.training_run.selected",
                 {
@@ -581,6 +602,7 @@ class YoloTrainingWorkflow:
             task_description = _extract_detection_task_description(user_text, prompt_text, labels)
         annotation_prompt_map = _annotation_prompt_map_from_spec(request_spec, labels)
         annotation_prompts = list(annotation_prompt_map.keys())
+        intent_items = _spec_intent_items(request_spec)
         data_prep_output_dir = str((workflow_output_root / "prepared_data").resolve())
         data_prep_spec = {
             "skill_name": "data-auto-annotation",
@@ -596,6 +618,7 @@ class YoloTrainingWorkflow:
             "task": task_description,
             "generation_prompt": prompt_text,
             "labels": labels,
+            "intent_items": intent_items,
             "annotation_prompts": annotation_prompts,
             "annotation_prompt_map": annotation_prompt_map,
             "work_dir": pipeline_work_dir,
@@ -606,6 +629,7 @@ class YoloTrainingWorkflow:
             "produce_count_button": True,
             "register_artifacts": not training_enabled,
             "split_requested": training_enabled,
+            "progress_state_path": str((workflow_output_root / "progress_state.json").resolve()),
             "split": training_cfg["split"],
             "training": training_cfg["training"],
             "planner_llm": _planner_llm_config(agent_config, runtime_options),
@@ -617,6 +641,7 @@ class YoloTrainingWorkflow:
                 "generation_prompt": prompt_text,
                 "class_names": labels,
                 "labels": labels,
+                "intent_items": intent_items,
                 "annotation_prompts": annotation_prompts,
                 "annotation_prompt_map": annotation_prompt_map,
                 "skip_generation": not generation_enabled,
@@ -625,12 +650,28 @@ class YoloTrainingWorkflow:
                 "output_dir": data_prep_output_dir,
                 "run_name": run_name,
                 "phase": "data_preparation",
+                "progress_state_path": str((workflow_output_root / "progress_state.json").resolve()),
                 "max_synthetic": _max_synthetic_images(runtime_options),
                 "synthetic_count_button": True,
                 "produce_count_button": True,
                 "register_artifacts": not training_enabled,
             },
         }
+
+        recorder.emit(
+            "workflow.request_spec.resolved",
+            {
+                "labels": labels,
+                "intent_items": intent_items,
+                "annotation_prompts": annotation_prompts,
+                "annotation_prompt_map": annotation_prompt_map,
+                "generation_prompt": prompt_text,
+                "task_description": task_description,
+                "max_synthetic_images": _max_synthetic_images(runtime_options),
+                "training_backend": training_backend,
+                "training_config": training_cfg,
+            },
+        )
 
         recorder.emit("skill.started", {"skill_name": "data-auto-annotation", "attempt": 0})
         annotation_result = self.skill_runner.run("data-auto-annotation", data_prep_spec, paths, on_event=recorder.emit)
@@ -1624,14 +1665,14 @@ def _generate_model_managed_yolo_training_intent_spec(
         "此阶段还没有分析数据集，因此禁止输出训练参数、batch、epochs、imgsz、split 等依赖数据集的字段。"
         "你只能根据用户业务目标提取任务意图、候选类别和合成提示词。"
         "必须只返回 JSON 对象，不要解释。JSON 字段包含："
-        "task_description 字符串；task_type 字符串，可取 object_detection/behavior_detection/state_detection；"
+        "task_description 字符串；task_type 字符串，可取 object_detection/behavior_detection/state_detection/entity_interaction；"
         "intent_items 数组，每项描述一个用户要训练的检测意图，至少包含 label、type、subject、description、training_labels、observable_entities、sam3_prompts、annotation_prompts；"
         "label 是业务意图类名，例如 person_fall/person_fight/person_play_volleyball；"
         "training_labels 是真正进入目标检测训练的类别，应优先使用可见实体；"
         "observable_entities 是画面中可被边界框稳定框出的实体；sam3_prompts 是送给 SAM3 的英文实体短语。"
         "SAM3 不擅长理解 person_fall、person_fight 这类业务类名，也不应直接用抽象行为短语请求标注；"
         "如果行为中有明确可见物体，例如抽烟/打排球/玩手机，training_labels 和 sam3_prompts 应包含 person 以及 cigarette/volleyball/phone；"
-        "如果行为没有明确辅助物体，例如人员打架/跌倒，可保留业务 label 作为 training_labels，但 sam3_prompts 应使用 person，并在 prompt 映射中把 person 的框归到该业务 label。"
+        "如果行为没有明确辅助物体，例如人员打架/跌倒/跑步，可保留业务 label 作为 training_labels，sam3_prompts 应使用 fighting person/fallen person/person running 等可观测行为状态短语。"
         "use_synthetic_generation 布尔值，必须为 true；"
         "generation_prompt 字符串；"
         "labels 字符串数组；"
@@ -1720,14 +1761,14 @@ def _generate_model_managed_training_intent_spec(
         "你是 DEIMv2 DINOv3 目标检测训练工作流的前置意图规划器。"
         "此阶段尚未分析数据集，因此禁止输出 batch、epochs、img_size、split 等依赖数据集的最终训练参数。"
         "只返回 JSON 对象，不要解释。字段包含："
-        "task_description 字符串；task_type 字符串，可取 object_detection/behavior_detection/state_detection；"
+        "task_description 字符串；task_type 字符串，可取 object_detection/behavior_detection/state_detection/entity_interaction；"
         "intent_items 数组，每项描述一个用户要训练的检测意图，至少包含 label、type、subject、description、training_labels、observable_entities、sam3_prompts、annotation_prompts；"
         "label 是业务意图类名，例如 person_fall/person_fight/person_play_volleyball；"
         "training_labels 是真正进入 DEIMv2 目标检测训练的类别，应优先使用可见实体；"
         "observable_entities 是画面中可被边界框稳定框出的实体；sam3_prompts 是送给 SAM3 的英文实体短语。"
         "SAM3 不擅长理解 person_fall、person_fight 这类业务类名，也不应直接用抽象行为短语请求标注；"
         "如果行为中有明确可见物体，例如抽烟/打排球/玩手机，training_labels 和 sam3_prompts 应包含 person 以及 cigarette/volleyball/phone；"
-        "如果行为没有明确辅助物体，例如人员打架/跌倒，可保留业务 label 作为 training_labels，但 sam3_prompts 应使用 person，并在 prompt 映射中把 person 的框归到该业务 label。"
+        "如果行为没有明确辅助物体，例如人员打架/跌倒/跑步，可保留业务 label 作为 training_labels，sam3_prompts 应使用 fighting person/fallen person/person running 等可观测行为状态短语。"
         "use_synthetic_generation 布尔值，通常为 true；"
         "generation_prompt 字符串；labels 字符串数组；training 空对象；runtime 空对象；split 空对象。"
         "labels 必须是英文 ASCII 类名，只能使用小写英文、数字、下划线，禁止泛化 object/target。"
@@ -2811,6 +2852,7 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("头部", "head"), ("head",)),
     (("手套", "glove"), ("glove",)),
     (("手机", "phone", "mobile phone"), ("phone",)),
+    (("鱼竿", "钓鱼竿", "fishing rod", "fishing_rod"), ("fishing_rod",)),
     (("杯子", "cup"), ("cup",)),
     (("纸箱", "箱子", "box"), ("box",)),
     (("包裹", "package", "parcel"), ("package",)),
@@ -2823,7 +2865,8 @@ _INTENT_LABEL_RULES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
 
 
 _PERSON_SUBJECT_LABELS = {"person", "people", "pedestrian", "human"}
-_BEHAVIOR_AUXILIARY_LABELS = {"phone", "cigarette", "volleyball"}
+_BEHAVIOR_AUXILIARY_LABELS = {"phone", "cigarette", "volleyball", "fishing_rod"}
+_ENTITY_INTERACTION_TYPES = {"entity_interaction", "object_interaction", "person_object_interaction"}
 
 
 _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
@@ -2840,7 +2883,7 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "aliases": ("玩手机", "看手机", "使用手机", "打电话", "接打电话", "using phone", "use phone", "phone use", "person_use_phone"),
         "label": "person_use_phone",
         "training_labels": ("person", "phone"),
-        "type": "behavior_detection",
+        "type": "entity_interaction",
         "subject": "person",
         "behavior": "use_phone",
         "description": "检测画面中正在使用手机的人员",
@@ -2850,11 +2893,21 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "aliases": ("抽烟", "吸烟", "smoking", "person smoking", "person_smoking"),
         "label": "person_smoking",
         "training_labels": ("person", "cigarette"),
-        "type": "behavior_detection",
+        "type": "entity_interaction",
         "subject": "person",
         "behavior": "smoking",
         "description": "检测画面中正在抽烟的人员",
         "annotation_prompts": ("person", "cigarette"),
+    },
+    {
+        "aliases": ("钓鱼", "垂钓", "fishing", "person fishing", "person_fishing"),
+        "label": "person_fishing",
+        "training_labels": ("person", "fishing_rod"),
+        "type": "entity_interaction",
+        "subject": "person",
+        "behavior": "fishing",
+        "description": "检测画面中正在钓鱼的人员",
+        "annotation_prompts": ("person", "fishing rod"),
     },
     {
         "aliases": ("睡岗", "睡觉", "打瞌睡", "sleeping", "person sleeping", "person_sleep"),
@@ -2864,6 +2917,15 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
         "behavior": "sleep",
         "description": "检测画面中睡岗或睡觉的人员",
         "annotation_prompts": ("sleeping person", "person sleeping", "person"),
+    },
+    {
+        "aliases": ("跑步", "奔跑", "running", "person running", "person_running"),
+        "label": "person_running",
+        "type": "behavior_detection",
+        "subject": "person",
+        "behavior": "running",
+        "description": "检测画面中正在跑步或奔跑的人员",
+        "annotation_prompts": ("person running", "running person", "person"),
     },
     {
         "aliases": ("攀爬", "翻越", "爬墙", "climbing", "person climbing", "person_climb"),
@@ -2996,7 +3058,7 @@ def _infer_generic_person_entity_behavior_items(user_text: str) -> list[dict[str
     prompts = _dedupe_text_values(["person", *auxiliary_labels])
     return [
         {
-            "type": "behavior_detection",
+            "type": "entity_interaction",
             "subject": "person",
             "behavior": action,
             "label": label[0],
@@ -3123,6 +3185,8 @@ def _spec_intent_items(spec: dict[str, Any]) -> list[dict[str, Any]]:
                 item.get("visible_entities"),
             )
         )
+        if not item["training_labels"] and _is_entity_interaction_intent_item(item):
+            item["training_labels"] = _normalize_detection_labels(item["observable_entities"] or item["sam3_prompts"])
         item["annotation_prompts"] = item["sam3_prompts"]
         items.append(item)
     return _dedupe_intent_items(items)
@@ -3189,7 +3253,7 @@ def _labels_from_intent_items(items: list[dict[str, Any]]) -> list[str]:
     labels: list[str] = []
     for item in items:
         task_type = str(item.get("type") or item.get("task_type") or "").strip().lower()
-        if task_type not in {"behavior_detection", "state_detection", "behavior", "behaviour", "action", "activity", "state", "status"}:
+        if task_type not in {"behavior_detection", "state_detection", "behavior", "behaviour", "action", "activity", "state", "status", *_ENTITY_INTERACTION_TYPES}:
             continue
         training_labels = item.get("training_labels")
         if isinstance(training_labels, list) and training_labels:
@@ -3202,10 +3266,28 @@ def _labels_from_intent_items(items: list[dict[str, Any]]) -> list[str]:
 def _annotation_prompts_from_intent_items(items: list[dict[str, Any]]) -> list[str]:
     prompts: list[str] = []
     for item in items:
-        raw_prompts = item.get("sam3_prompts") or item.get("annotation_prompts")
+        raw_prompts = item.get("observable_entities") if _is_entity_interaction_intent_item(item) else None
+        if not raw_prompts:
+            raw_prompts = item.get("sam3_prompts") or item.get("annotation_prompts")
         if isinstance(raw_prompts, list):
             prompts.extend(str(prompt).strip() for prompt in raw_prompts if str(prompt).strip())
     return _dedupe_text_values(prompts)
+
+
+def _is_entity_interaction_intent_item(item: dict[str, Any]) -> bool:
+    task_type = str(item.get("type") or item.get("task_type") or "").strip().lower()
+    if task_type in _ENTITY_INTERACTION_TYPES:
+        return True
+    entity_labels = _normalize_detection_labels(item.get("observable_entities") if isinstance(item.get("observable_entities"), list) else [])
+    training_labels = _normalize_detection_labels(item.get("training_labels") if isinstance(item.get("training_labels"), list) else [])
+    non_person_entities = [label for label in entity_labels if _is_stable_auxiliary_entity_label(label)]
+    non_person_training = [label for label in training_labels if _is_stable_auxiliary_entity_label(label)]
+    return bool(non_person_entities and ("person" in entity_labels or len(entity_labels) > 1)) or bool(non_person_training and "person" in training_labels)
+
+
+def _is_stable_auxiliary_entity_label(label: str) -> bool:
+    key = _label_lookup_key(label)
+    return bool(key and not _is_person_subject_label(key) and "person" not in key)
 
 
 def _annotation_prompt_map_from_spec(spec: dict[str, Any], labels: list[str]) -> dict[str, str]:
@@ -3222,10 +3304,16 @@ def _annotation_prompt_map_from_spec(spec: dict[str, Any], labels: list[str]) ->
         mapped_labels = [label for label in mapped_labels if label.lower() in class_set]
         if not mapped_labels:
             continue
-        raw_prompts = item.get("sam3_prompts") if isinstance(item.get("sam3_prompts"), list) else []
-        if not raw_prompts:
-            raw_prompts = item.get("annotation_prompts") if isinstance(item.get("annotation_prompts"), list) else []
-        prompts = [*raw_prompts, *_behavior_annotation_prompts_for_label(business_label[0]), _label_to_annotation_prompt(business_label[0])]
+        if _is_entity_interaction_intent_item(item):
+            raw_prompts = item.get("observable_entities") if isinstance(item.get("observable_entities"), list) else []
+            if not raw_prompts:
+                raw_prompts = item.get("training_labels") if isinstance(item.get("training_labels"), list) else []
+            prompts = [*raw_prompts]
+        else:
+            raw_prompts = item.get("sam3_prompts") if isinstance(item.get("sam3_prompts"), list) else []
+            if not raw_prompts:
+                raw_prompts = item.get("annotation_prompts") if isinstance(item.get("annotation_prompts"), list) else []
+            prompts = [*raw_prompts, *_behavior_annotation_prompts_for_label(business_label[0]), _label_to_annotation_prompt(business_label[0])]
         for prompt in prompts:
             text = str(prompt or "").strip()
             if not text:
