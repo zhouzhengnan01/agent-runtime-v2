@@ -27,6 +27,7 @@ ACP_PROMPT_KEEPALIVE_SECONDS = max(
 )
 ACP_PROMPT_KEEPALIVE_ENABLED = env_flag("ACP_PROMPT_KEEPALIVE_ENABLED", "0")
 ACP_PROMPT_KEEPALIVE_TOOL_CALL_ID = "acp-prompt-keepalive"
+ACP_TRAINING_STATUS_HEARTBEAT_TOOL_CALL_ID = "training-status-heartbeat"
 ACP_PROMPT_PROGRESS_TEXT = "正在处理，请等待..."
 ACP_PROMPT_WAITING_TEXT = "已收到请求，正在处理，请等待..."
 ACP_PROMPT_STILL_WAITING_TEXT = "仍在处理，请等待..."
@@ -54,6 +55,10 @@ ACP_TRAINING_STATUS_STREAM_ENABLED = env_flag("ACP_TRAINING_STATUS_STREAM_ENABLE
 ACP_TRAINING_STATUS_INTERVAL_SECONDS = max(
     0.2,
     float(os.getenv("ACP_TRAINING_STATUS_INTERVAL_SECONDS", "2") or "2"),
+)
+ACP_TRAINING_STATUS_HEARTBEAT_SECONDS = max(
+    5.0,
+    float(os.getenv("ACP_TRAINING_STATUS_HEARTBEAT_SECONDS", "30") or "30"),
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -88,26 +93,27 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
     send_lock = asyncio.Lock()
     active_dispatcher = dispatcher or AcpDispatcher()
 
-    async def publish_training_status_snapshot(session_id: str | None, *, force: bool = False) -> None:
+    async def publish_training_status_snapshot(session_id: str | None, *, force: bool = False) -> dict[str, Any] | None:
         if not ACP_TRAINING_STATUS_STREAM_ENABLED or session_id is None:
-            return
+            return None
         session = sessions.get(session_id)
         if session is None:
-            return
+            return None
         now = time.monotonic()
         key = session.thread_id or session_id
         if not force and now - training_status_last_sent.get(key, 0.0) < ACP_TRAINING_STATUS_INTERVAL_SECONDS:
-            return
+            return None
         try:
             status = build_training_stream_status(session.thread_id)
         except (FileNotFoundError, ValueError) as exc:
             logger.debug("training status snapshot unavailable session_id=%s thread_id=%s error=%s", session_id, session.thread_id, exc)
-            return
+            return None
         except Exception:
             logger.exception("training status snapshot failed session_id=%s thread_id=%s", session_id, session.thread_id)
-            return
+            return None
         training_status_last_sent[key] = now
         await acp_event_broker.publish(_subscription_keys(sessions, session_id), "training/status", status)
+        return status
 
     async def send_update(session_id: str, update: dict[str, Any]) -> None:
         async with send_lock:
@@ -143,9 +149,88 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
         async with send_lock:
             await _send_error(websocket, request_id, code, message, connection_id=connection_id)
 
+    async def send_training_status_heartbeat(session_id: str, status: dict[str, Any], *, sequence: int) -> None:
+        if session_id not in sessions:
+            return
+        info = status.get("info") if isinstance(status.get("info"), dict) else {}
+        metrics = info.get("metrics") if isinstance(info.get("metrics"), dict) else {}
+        stage = str(info.get("stage") or status.get("phase") or "processing")
+        title = "training" if stage == "training" else stage
+        update = {
+            "sessionUpdate": "tool_call" if sequence == 1 else "tool_call_update",
+            "toolCallId": ACP_TRAINING_STATUS_HEARTBEAT_TOOL_CALL_ID,
+            "title": title,
+            "kind": "other",
+            "status": "in_progress",
+            "_meta": {
+                "jetlinksRuntimeEvent": {
+                    "type": "training.status.heartbeat",
+                    "data": {
+                        "sequence": sequence,
+                        "thread_id": status.get("thread_id"),
+                        "run_id": status.get("run_id"),
+                        "stage": stage,
+                        "status": info.get("status") or status.get("status"),
+                        "current_epoch": metrics.get("current_epoch"),
+                        "current_epoch_display": metrics.get("current_epoch_display"),
+                        "total_epochs": metrics.get("total_epochs"),
+                        "progress": metrics.get("progress"),
+                    },
+                }
+            },
+        }
+        async with send_lock:
+            if not await _send_session_update(websocket, session_id, update, connection_id=connection_id):
+                return
+            await acp_event_broker.publish(
+                _subscription_keys(sessions, session_id),
+                "session/update",
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {"sessionId": session_id, "update": update},
+                },
+            )
+
+    async def send_training_status_heartbeat_completed(session_id: str) -> None:
+        if session_id not in sessions:
+            return
+        update = {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": ACP_TRAINING_STATUS_HEARTBEAT_TOOL_CALL_ID,
+            "title": "training",
+            "kind": "other",
+            "status": "completed",
+            "_meta": {
+                "jetlinksRuntimeEvent": {
+                    "type": "training.status.heartbeat.completed",
+                    "data": {},
+                }
+            },
+        }
+        async with send_lock:
+            if not await _send_session_update(websocket, session_id, update, connection_id=connection_id):
+                return
+            await acp_event_broker.publish(
+                _subscription_keys(sessions, session_id),
+                "session/update",
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {"sessionId": session_id, "update": update},
+                },
+            )
+
     async def stream_training_status_snapshots(session_id: str) -> None:
+        sequence = 0
+        next_heartbeat_at = 0.0
         while True:
-            await publish_training_status_snapshot(session_id, force=True)
+            status = await publish_training_status_snapshot(session_id, force=True)
+            now = time.monotonic()
+            if status is not None and now >= next_heartbeat_at:
+                sequence += 1
+                await send_training_status_heartbeat(session_id, status, sequence=sequence)
+                next_heartbeat_at = now + ACP_TRAINING_STATUS_HEARTBEAT_SECONDS
             await asyncio.sleep(ACP_TRAINING_STATUS_INTERVAL_SECONDS)
 
     async def run_prompt(
@@ -367,6 +452,8 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                 training_status_task.cancel()
                 await asyncio.gather(training_status_task, return_exceptions=True)
                 await publish_training_status_snapshot(task_session_id, force=True)
+                if task_session_id is not None:
+                    await send_training_status_heartbeat_completed(task_session_id)
             if review_result_watch_task is not None:
                 review_result_watch_task.cancel()
                 await asyncio.gather(review_result_watch_task, return_exceptions=True)

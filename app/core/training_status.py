@@ -227,10 +227,13 @@ class TrainingProgressWriter:
             self._mark_stage_completed_if_started(state, "annotation")
             self._mark_stage_completed_if_started(state, "generation")
         elif skill in {"gpu-training-orchestrator", "deimv2-auto-training"}:
+            state["phase"] = "training_completed"
+            state["phase_label"] = "training completed"
             training = state.setdefault("training", {})
             if isinstance(training, dict):
                 training["status"] = "completed"
                 training["completed_at"] = utc_now()
+                training["updated_at"] = utc_now()
 
     def _increment_counter(self, state: dict[str, Any], block: str, field: str) -> None:
         target = state.setdefault(block, {})
@@ -298,7 +301,11 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
     now = utc_now()
     started_at = state.get("started_at") or state.get("created_at") or _mtime_iso(run_dir)
     completed_at = state.get("completed_at")
+    training = _training_status(run_dir, backend, state)
+    evaluation = _evaluation_status(run_dir, backend)
     status = state.get("status") or _infer_status(run_dir)
+    phase = state.get("phase") or _infer_phase(run_dir, status)
+    status, phase, completed_at = _normalize_run_phase_status(status, phase, completed_at, training, evaluation)
     return {
         "schema": "jetlinks-training-status.v1",
         "thread_id": thread_id,
@@ -309,10 +316,10 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
         "app_template_name": state.get("app_template_name"),
         "backend": backend,
         "status": status,
-        "phase": state.get("phase") or _infer_phase(run_dir, status),
-        "phase_label": state.get("phase_label") or _phase_label(state.get("phase"), status),
+        "phase": phase,
+        "phase_label": _phase_label(phase, status),
         "last_event": state.get("last_event"),
-        "next_expected_phase": _next_expected_phase(state.get("phase"), status),
+        "next_expected_phase": _next_expected_phase(phase, status),
         "created_at": state.get("created_at") or _mtime_iso(run_dir),
         "started_at": started_at,
         "updated_at": now,
@@ -324,8 +331,8 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
         "dataset": _dataset_status(run_dir),
         "annotation": _annotation_status(run_dir, state),
         "generation": _generation_status(run_dir, state),
-        "training": _training_status(run_dir, backend, state),
-        "evaluation": _evaluation_status(run_dir, backend),
+        "training": training,
+        "evaluation": evaluation,
         "resources": _resource_status(run_dir, backend),
         "paths": _paths_status(thread_dir, run_dir, backend),
         "errors": state.get("errors") if isinstance(state.get("errors"), list) else [],
@@ -387,6 +394,24 @@ def list_training_runs(thread_id: str) -> dict[str, Any]:
             }
         )
     return {"thread_id": thread_id, "latest_run_id": latest, "runs": runs}
+
+
+def _normalize_run_phase_status(
+    status: str,
+    phase: str,
+    completed_at: Any,
+    training: dict[str, Any],
+    evaluation: dict[str, Any],
+) -> tuple[str, str, Any]:
+    if status == "failed" or phase == "failed":
+        return "failed", "failed", completed_at
+    if status == "completed" or phase == "completed":
+        return "completed", "completed", completed_at
+    if _is_training_completed(training):
+        if evaluation.get("status") == "completed":
+            return status or "running", "evaluation", completed_at
+        return status or "running", "training_completed", completed_at
+    return status or "running", phase or "run_selected", completed_at
 
 
 def _resolve_run_dir(thread_dir: Path, run_id: str | None) -> Path:
@@ -481,13 +506,15 @@ def _phase_label(phase: Any, status: Any) -> str:
         "synthetic_generation": "synthetic generation running",
         "annotation": "annotation running",
         "training": "training running",
+        "training_completed": "training completed",
+        "evaluation": "evaluation running",
     }.get(str(phase), "running")
 
 
 def _next_expected_phase(phase: Any, status: Any) -> str | None:
     if status in {"completed", "failed"}:
         return None
-    order = ["llm_request", "data_preparation", "synthetic_generation", "annotation", "training", "completed"]
+    order = ["llm_request", "data_preparation", "synthetic_generation", "annotation", "training", "training_completed", "evaluation", "completed"]
     try:
         return order[order.index(str(phase)) + 1]
     except (ValueError, IndexError):
@@ -623,11 +650,21 @@ def _deimv2_training_status(run_dir: Path, state: dict[str, Any]) -> dict[str, A
     if isinstance(total_epochs, int) and total_epochs > 0 and isinstance(current_epoch, int):
         step_ratio = (float(step or 0) / float(total_steps or 1)) if total_steps else 0.0
         progress = min(1.0, max(0.0, (current_epoch + step_ratio) / total_epochs))
+    state_training = state.get("training", {}) if isinstance(state.get("training"), dict) else {}
+    checkpoint = _best_checkpoint(run_dir)
+    completed = (
+        state_training.get("status") == "completed"
+        or _has_completed_summary(run_dir)
+        or bool(checkpoint and _has_training_summary(run_dir))
+    )
+    if completed:
+        progress = 1.0 if progress is None or progress >= 0.95 else progress
     return {
-        "status": "running" if latest else (state.get("training", {}) or {}).get("status", "pending"),
+        "status": "completed" if completed else ("running" if latest else state_training.get("status", "pending")),
         "backend": "deimv2",
         "device": _selected_device(run_dir),
         "current_epoch": current_epoch,
+        "current_epoch_display": (current_epoch + 1) if isinstance(current_epoch, int) else None,
         "total_epochs": total_epochs,
         "current_step": step,
         "total_steps": total_steps,
@@ -637,7 +674,8 @@ def _deimv2_training_status(run_dir: Path, state: dict[str, Any]) -> dict[str, A
         "latest_metrics": latest.get("metrics") or {},
         "best": latest.get("best") or {},
         "log_path": str(log_path) if log_path else None,
-        "checkpoint": _best_checkpoint(run_dir),
+        "checkpoint": checkpoint,
+        "completed": completed,
     }
 
 
@@ -645,21 +683,36 @@ def _yolo_training_status(run_dir: Path, state: dict[str, Any]) -> dict[str, Any
     csv_path = _first_existing([*run_dir.glob("training_run/**/results.csv"), run_dir / "results.csv"])
     row = _last_csv_row(csv_path) if csv_path else {}
     epoch = _int_or_none(row.get("epoch"))
+    total_epochs = _parse_yolo_total_epochs(run_dir)
+    state_training = state.get("training", {}) if isinstance(state.get("training"), dict) else {}
+    checkpoint = _best_checkpoint(run_dir)
+    completed = (
+        state_training.get("status") == "completed"
+        or _has_completed_summary(run_dir)
+        or bool(checkpoint and csv_path)
+    )
+    progress = None
+    if isinstance(epoch, int) and isinstance(total_epochs, int) and total_epochs > 0:
+        progress = min(1.0, max(0.0, float(epoch + 1) / float(total_epochs)))
+    if completed:
+        progress = 1.0 if progress is None or progress >= 0.95 else progress
     return {
-        "status": "running" if row else (state.get("training", {}) or {}).get("status", "pending"),
+        "status": "completed" if completed else ("running" if row else state_training.get("status", "pending")),
         "backend": "yolo",
         "device": _selected_device(run_dir),
         "current_epoch": epoch,
-        "total_epochs": _parse_yolo_total_epochs(run_dir),
+        "current_epoch_display": (epoch + 1) if isinstance(epoch, int) else None,
+        "total_epochs": total_epochs,
         "current_step": None,
         "total_steps": None,
-        "progress": None,
+        "progress": progress,
         "lr": _float_or_none(row.get("lr/pg0") or row.get("lr0")),
         "loss": _float_or_none(row.get("train/box_loss")),
         "latest_metrics": {key: _float_or_none(value) for key, value in row.items() if key.startswith("metrics/")},
         "best": {},
         "results_csv": str(csv_path) if csv_path else None,
-        "checkpoint": _best_checkpoint(run_dir),
+        "checkpoint": checkpoint,
+        "completed": completed,
     }
 
 
@@ -670,6 +723,27 @@ def _evaluation_status(run_dir: Path, backend: str) -> dict[str, Any]:
         if metrics:
             return {"status": "completed", "backend": backend, "metrics": metrics, "summary_path": str(summary_path)}
     return {"status": "pending", "backend": backend, "metrics": {}}
+
+
+def _has_training_summary(run_dir: Path) -> bool:
+    return any(path.is_file() for path in _summary_candidates(run_dir))
+
+
+def _has_completed_summary(run_dir: Path) -> bool:
+    for summary_path in _summary_candidates(run_dir):
+        summary = _read_json(summary_path)
+        if not summary:
+            continue
+        status = str(summary.get("status") or summary.get("training_status") or "").strip().lower()
+        if status in {"completed", "complete", "success", "finished"}:
+            return True
+        if summary.get("metrics") or summary.get("eval_results") or summary.get("evaluation"):
+            return True
+    return False
+
+
+def _is_training_completed(training: dict[str, Any]) -> bool:
+    return bool(training.get("completed") or training.get("status") == "completed")
 
 
 def _resource_status(run_dir: Path, backend: str) -> dict[str, Any]:
@@ -704,15 +778,39 @@ def _stream_info(status: dict[str, Any]) -> dict[str, Any]:
     training = status.get("training") if isinstance(status.get("training"), dict) else {}
     evaluation = status.get("evaluation") if isinstance(status.get("evaluation"), dict) else {}
     model_request = status.get("model_request") if isinstance(status.get("model_request"), dict) else {}
-    if isinstance(model_request.get("current"), dict):
-        current = model_request["current"]
+    current_llm = model_request.get("current") if isinstance(model_request.get("current"), dict) else None
+    if status.get("status") == "failed":
+        return {"stage": "failed", "status": "failed", "metrics": {}}
+    if status.get("status") == "completed" or phase == "completed":
+        return {
+            "stage": "completed",
+            "status": "complete",
+            "metrics": {
+                **_training_stream_metrics(training),
+                "evaluation": evaluation.get("metrics") if isinstance(evaluation.get("metrics"), dict) else {},
+            },
+        }
+    if _is_training_completed(training):
+        summarizing = bool(current_llm and str(current_llm.get("purpose") or "").startswith("workflow_final"))
+        return {
+            "stage": "evaluation",
+            "status": "summarizing" if summarizing else ("complete" if evaluation.get("status") == "completed" else "completed"),
+            "metrics": {
+                **_training_stream_metrics(training),
+                "training_completed": True,
+                "evaluation": evaluation.get("metrics") if isinstance(evaluation.get("metrics"), dict) else {},
+                "llm_purpose": current_llm.get("purpose") if summarizing and current_llm else None,
+                "llm_model": current_llm.get("model") if summarizing and current_llm else None,
+            },
+        }
+    if isinstance(current_llm, dict):
         return {
             "stage": "llm",
-            "status": current.get("status") or "running",
+            "status": current_llm.get("status") or "running",
             "metrics": {
-                "purpose": current.get("purpose"),
-                "model": current.get("model"),
-                "elapsed_ms": current.get("elapsed_ms"),
+                "purpose": current_llm.get("purpose"),
+                "model": current_llm.get("model"),
+                "elapsed_ms": current_llm.get("elapsed_ms"),
             },
         }
     if phase == "annotation":
@@ -746,17 +844,7 @@ def _stream_info(status: dict[str, Any]) -> dict[str, Any]:
         return {
             "stage": "training",
             "status": training.get("status") or "running",
-            "metrics": {
-                "started": bool(training.get("started_at") or training.get("current_epoch") is not None),
-                "completed": training.get("status") == "completed",
-                "current_epoch": training.get("current_epoch"),
-                "total_epochs": training.get("total_epochs"),
-                "current_step": training.get("current_step"),
-                "total_steps": training.get("total_steps"),
-                "progress": training.get("progress"),
-                "loss": training.get("loss"),
-                "lr": training.get("lr"),
-            },
+            "metrics": _training_stream_metrics(training),
         }
     if status.get("status") == "completed":
         return {
@@ -765,6 +853,21 @@ def _stream_info(status: dict[str, Any]) -> dict[str, Any]:
             "metrics": evaluation.get("metrics") if isinstance(evaluation.get("metrics"), dict) else {},
         }
     return {"stage": phase or "unknown", "status": status.get("status") or "running", "metrics": {}}
+
+
+def _training_stream_metrics(training: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "started": bool(training.get("started_at") or training.get("current_epoch") is not None),
+        "completed": _is_training_completed(training),
+        "current_epoch": training.get("current_epoch"),
+        "current_epoch_display": training.get("current_epoch_display"),
+        "total_epochs": training.get("total_epochs"),
+        "current_step": training.get("current_step"),
+        "total_steps": training.get("total_steps"),
+        "progress": training.get("progress"),
+        "loss": training.get("loss"),
+        "lr": training.get("lr"),
+    }
 
 
 def _stream_resources(resources: Any) -> dict[str, Any]:
