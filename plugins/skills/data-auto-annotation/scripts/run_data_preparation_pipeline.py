@@ -22,10 +22,11 @@ AUTO_ANNOTATION_SCRIPT = SCRIPT_DIR / "sam3-predict.py"
 GENERATION_SCRIPT = DATASET_PROCESS_ROOT / "image-dataset-generation" / "scripts" / "run_composite.py"
 PRODUCE_GENERATION_SCRIPT = DATASET_PROCESS_ROOT / "image-dataset-produce" / "scripts" / "run_generation.py"
 LOG_DIR: Path | None = None
+DEFAULT_ANNOTATION_PROVIDER = os.getenv("ANNOTATION_PROVIDER", "sam3")
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
-SAM3_MAX_PROMPTS_PER_LABEL = 3
+SAM3_MAX_PROMPTS_PER_LABEL = 1
 SAM3_PROMPT_MAX_WORDS = 8
 SAM3_INSTRUCTION_KEYWORDS = {
     "sam3",
@@ -393,6 +394,7 @@ def _prepare_real_coco(
     annotation_prompts: List[str],
     prompt_label_map: Dict[str, str],
     intent_items: List[Dict[str, Any]],
+    annotation_provider: str,
     dry_run: bool,
 ) -> Path:
     fmt = inspection.get("format")
@@ -432,6 +434,8 @@ def _prepare_real_coco(
             cmd = [
                 sys.executable,
                 str(AUTO_ANNOTATION_SCRIPT),
+                "--annotation-provider",
+                annotation_provider,
                 "--input-dir",
                 str(images_dir),
                 "--text-prompts",
@@ -456,6 +460,7 @@ def _prepare_real_coco(
             raise RuntimeError(
                 "Real dataset auto-annotation failed while preparing COCO. "
                 "Check the SAM3 service, uploaded dataset images, and labels.\n"
+                f"annotation_provider={annotation_provider}\n"
                 f"labels={task_labels}\n"
                 f"annotation_prompts={prompts}\n"
                 f"images_dir={images_dir}\n"
@@ -675,6 +680,7 @@ def _best_annotation_prompts_for_label(
             (_sam3_prompt_score(prompt, label, labels, prompt_label_map, related_items), index, prompt)
             for index, prompt in enumerate(candidates)
             if str(prompt or "").strip()
+            and not any(_prompt_is_forbidden_for_intent(prompt, item) for item in related_items)
         ),
         key=lambda item: (item[0], item[1]),
     )
@@ -716,6 +722,25 @@ def _sam3_prompt_score(
     intent_items = intent_items or []
     behavior_tokens = _intent_behavior_tokens(intent_items, label_text)
     target_tokens = _intent_target_tokens(intent_items)
+
+    constrained_items = [item for item in intent_items if _is_constrained_intent_item(item)]
+    if constrained_items:
+        if any(_prompt_is_forbidden_for_intent(prompt_text, item) for item in constrained_items):
+            return 10000
+        primary_prompts = {
+            str(item.get("primary_sam3_prompt") or "").strip().lower()
+            for item in constrained_items
+            if str(item.get("primary_sam3_prompt") or "").strip()
+        }
+        if prompt_key in primary_prompts and (len(labels) == 1 or mapped_key == label_key):
+            return 0
+        if mapped_key == label_key:
+            return 2
+        if prompt_key == canonical_label_prompt:
+            return 30
+        if _looks_related_prompt(prompt_text, label_text):
+            return 40
+        return 100
 
     # person_fall/person_running 这类业务行为标签必须优先使用带行为约束的自然语言 prompt。
     # 直接用 person 会把画面里的所有人都标成该行为，只有没有更好候选时才兜底使用。
@@ -802,12 +827,25 @@ def _intent_items_for_label(label: str, intent_items: List[Dict[str, Any]]) -> L
 def _visual_prompts_from_intent_items(items: List[Dict[str, Any]]) -> List[str]:
     values: List[str] = []
     for item in items:
-        keys = ("observable_entities", "training_labels", "sam3_prompts") if _is_entity_interaction_item(item) else ("sam3_prompts", "visual_states", "observable_entities", "annotation_prompts")
+        if _is_constrained_intent_item(item):
+            primary = str(item.get("primary_sam3_prompt") or "").strip()
+            if primary:
+                values.append(primary)
+            keys = ("sam3_prompts",)
+        elif _is_entity_interaction_item(item):
+            keys = ("sam3_prompts", "observable_entities", "training_labels")
+        else:
+            keys = ("sam3_prompts", "visual_states", "observable_entities", "annotation_prompts")
         for key in keys:
             raw = item.get(key)
             if isinstance(raw, list):
                 values.extend(str(value).strip() for value in raw if str(value).strip())
-    return _dedupe_text([value for value in values if _is_valid_sam3_visual_prompt(value)])
+    return _dedupe_text([
+        value
+        for value in values
+        if _is_valid_sam3_visual_prompt(value)
+        and not any(_prompt_is_forbidden_for_intent(value, item) for item in items)
+    ])
 
 
 def _entity_interaction_prompts_for_label(label: str, items: List[Dict[str, Any]]) -> List[str]:
@@ -831,8 +869,25 @@ def _entity_interaction_prompts_for_label(label: str, items: List[Dict[str, Any]
 
 def _is_entity_interaction_item(item: Dict[str, Any]) -> bool:
     task_type = str(item.get("type") or item.get("task_type") or "").strip().lower()
+    if _is_person_attribute_item(item):
+        return False
     if task_type in {"entity_interaction", "object_interaction", "person_object_interaction"}:
         return True
+    strategy = str(item.get("annotation_strategy") or "").strip().lower()
+    if strategy in {"constrained_target", "requires_review", "candidate_and_verify"}:
+        return False
+    if task_type in {
+        "behavior_detection",
+        "behavior",
+        "behaviour",
+        "action",
+        "activity",
+        "state_detection",
+        "state",
+        "status",
+        "anomaly_detection",
+    }:
+        return False
     labels: List[str] = []
     if isinstance(item.get("training_labels"), list):
         labels.extend(str(value).strip() for value in item.get("training_labels", []) if str(value).strip())
@@ -842,6 +897,64 @@ def _is_entity_interaction_item(item: Dict[str, Any]) -> bool:
     normalized = {_label_lookup_key(value) for value in labels}
     auxiliary = {value for value in normalized if value and value != "person" and "person" not in value}
     return bool("person" in normalized and auxiliary)
+
+
+def _is_person_attribute_item(item: Dict[str, Any]) -> bool:
+    task_type = str(item.get("type") or item.get("task_type") or "").strip().lower()
+    return task_type in {"person_attribute_detection", "person_attribute", "appearance_detection", "wearing_detection"}
+
+
+def _is_constrained_intent_item(item: Dict[str, Any]) -> bool:
+    if _is_entity_interaction_item(item):
+        return False
+    strategy = str(item.get("annotation_strategy") or "").strip().lower()
+    if strategy in {"constrained_target", "requires_review", "candidate_and_verify"}:
+        return True
+    task_type = str(item.get("type") or item.get("task_type") or "").strip().lower()
+    if task_type in {
+        "person_attribute_detection",
+        "person_attribute",
+        "appearance_detection",
+        "wearing_detection",
+        "behavior_detection",
+        "behavior",
+        "behaviour",
+        "action",
+        "activity",
+        "state_detection",
+        "state",
+        "status",
+        "anomaly_detection",
+    }:
+        return True
+    return any(bool(_phrase_values([item.get(field)])) for field in (
+        "required_attributes",
+        "required_actions",
+        "required_states",
+        "required_relations",
+    ))
+
+
+def _prompt_is_forbidden_for_intent(prompt: str, item: Dict[str, Any]) -> bool:
+    if not _is_constrained_intent_item(item):
+        return False
+    prompt_key = str(prompt or "").strip().lower()
+    if not prompt_key:
+        return True
+    primary = str(item.get("primary_sam3_prompt") or "").strip().lower()
+    if primary and prompt_key == primary:
+        return False
+    forbidden = {
+        str(value).strip().lower()
+        for value in _phrase_values([item.get("forbidden_direct_prompts")])
+        if str(value).strip()
+    }
+    forbidden.update(
+        str(value).strip().lower()
+        for value in _phrase_values([item.get("base_entity"), item.get("bbox_target"), item.get("subject")])
+        if str(value).strip()
+    )
+    return prompt_key in forbidden
 
 
 def _generated_visual_prompts_for_label(label: str, items: List[Dict[str, Any]]) -> List[str]:
@@ -1067,6 +1180,7 @@ def _annotate_one_synthetic(
     annotation_prompts: List[str],
     prompt_label_map: Dict[str, str],
     intent_items: List[Dict[str, Any]],
+    annotation_provider: str,
     output_json: Path,
     dry_run: bool,
 ) -> Path:
@@ -1076,6 +1190,8 @@ def _annotate_one_synthetic(
     _run([
         sys.executable,
         str(AUTO_ANNOTATION_SCRIPT),
+        "--annotation-provider",
+        annotation_provider,
         "--input-json",
         json.dumps({"image_path": str(image_path)}, ensure_ascii=False),
         "--text-prompts",
@@ -1150,6 +1266,7 @@ def _generate_and_annotate_synthetic(
     annotation_prompts: List[str],
     prompt_label_map: Dict[str, str],
     intent_items: List[Dict[str, Any]],
+    annotation_provider: str,
     output_dir: Path,
     dry_run: bool,
 ) -> tuple[Path, Path]:
@@ -1183,7 +1300,7 @@ def _generate_and_annotate_synthetic(
             generated_image = _move_to_unique_synthetic_name(generated_image, scene_dir, idx, n + 1)
             _safe_print(f"[data-prep] annotating composite image immediately: {generated_image}")
             partial_coco = annotation_root / f"{generated_image.stem}_coco.json"
-            _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, intent_items, partial_coco, dry_run)
+            _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, intent_items, annotation_provider, partial_coco, dry_run)
             partial_coco_files.append(partial_coco)
     synthetic_coco = output_dir / "synthetic_coco.json"
     if not dry_run:
@@ -1443,6 +1560,7 @@ def _generate_and_annotate_synthetic_with_produce(
     annotation_prompts: List[str],
     prompt_label_map: Dict[str, str],
     intent_items: List[Dict[str, Any]],
+    annotation_provider: str,
     output_dir: Path,
     dry_run: bool,
     planner_llm: Dict[str, Any] | None = None,
@@ -1504,7 +1622,7 @@ def _generate_and_annotate_synthetic_with_produce(
         generated_image = _move_to_unique_synthetic_name(generated_image, synthetic_images_root, generation_index, 1)
         _safe_print(f"[data-prep] annotating image-dataset-produce image immediately: {generated_image}")
         partial_coco = annotation_root / f"{generated_image.stem}_coco.json"
-        _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, intent_items, partial_coco, dry_run)
+        _annotate_one_synthetic(generated_image, labels, annotation_prompts, prompt_label_map, intent_items, annotation_provider, partial_coco, dry_run)
         partial_coco_files.append(partial_coco)
 
     synthetic_coco = output_dir / "synthetic_coco.json"
@@ -1659,6 +1777,13 @@ def _normalize_yolo_task(value: Any) -> str:
     return "detect"
 
 
+def _normalize_annotation_provider(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"locate", "locateanything", "locate_anything", "locate_sam3"}:
+        return "locate_sam3"
+    return "sam3"
+
+
 def _list_value(value: Any) -> List[str]:
     if value is None:
         return []
@@ -1714,6 +1839,7 @@ def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     args.labels = args.labels or _list_value(_coalesce(spec.get("labels"), spec.get("class_names"), dataset.get("class_names"), ctx.get("labels"), default=[]))
     args.annotation_prompts = args.annotation_prompts or _list_value(_coalesce(spec.get("annotation_prompts"), ctx.get("annotation_prompts"), default=[]))
     args.annotation_prompt_map = _dict_value(_coalesce(spec.get("annotation_prompt_map"), spec.get("prompt_label_map"), ctx.get("annotation_prompt_map"), ctx.get("prompt_label_map"), args.annotation_prompt_map, default={}))
+    args.annotation_provider = _normalize_annotation_provider(args.annotation_provider or DEFAULT_ANNOTATION_PROVIDER)
     args.intent_items = args.intent_items or _intent_items_value(_coalesce(spec.get("intent_items"), ctx.get("intent_items"), default=[]))
     args.work_dir = _coalesce(args.work_dir, ctx.get("work_dir"), spec.get("work_dir"), output.get("work_dir"), default="")
     args.output_dir = _coalesce(args.output_dir, ctx.get("output_dir"), spec.get("output_dir"), output.get("output_dir"), default="")
@@ -1744,6 +1870,7 @@ def main() -> None:
     parser.add_argument("--labels", nargs="*", default=[])
     parser.add_argument("--annotation-prompts", nargs="*", default=[])
     parser.add_argument("--annotation-prompt-map-json", default="")
+    parser.add_argument("--annotation-provider", default=DEFAULT_ANNOTATION_PROVIDER, choices=["sam3", "locate_sam3"])
     parser.add_argument("--work-dir", default="")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--ref-image", default=None)
@@ -1811,6 +1938,7 @@ def main() -> None:
             args.annotation_prompts,
             args.annotation_prompt_map,
             args.intent_items,
+            args.annotation_provider,
             args.dry_run,
         )
         using_uploaded_coco = str(inspection.get("format") or "").lower() == "coco"
@@ -1896,6 +2024,7 @@ def main() -> None:
                         args.annotation_prompts,
                         args.annotation_prompt_map,
                         args.intent_items,
+                        args.annotation_provider,
                         work_dir,
                         args.dry_run,
                     )
@@ -1920,6 +2049,7 @@ def main() -> None:
                                 args.annotation_prompts,
                                 args.annotation_prompt_map,
                                 args.intent_items,
+                                args.annotation_provider,
                                 work_dir,
                                 args.dry_run,
                                 args.planner_llm,

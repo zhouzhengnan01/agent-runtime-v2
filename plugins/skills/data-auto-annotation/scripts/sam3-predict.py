@@ -22,8 +22,19 @@ from typing import Any
 import requests
 from PIL import Image
 
+DEFAULT_PROVIDER = "sam3"
 DEFAULT_URL = "http://218.67.242.10:58800/v1/sam3/predict"
+LOCATE_SAM3_DEFAULT_URL = "http://127.0.0.1:8800/v1/locate_sam3/predict"
+PROVIDER_URLS = {
+    "sam3": DEFAULT_URL,
+    "locate_sam3": LOCATE_SAM3_DEFAULT_URL,
+}
+PROVIDER_MODELS = {
+    "sam3": "sam3",
+    "locate_sam3": "locateanything",
+}
 URL_ENV_NAMES = ("SAM3_PREDICT_URL", "SAM3_URL")
+LOCATE_SAM3_URL_ENV_NAMES = ("LOCATE_SAM3_PREDICT_URL", "LOCATE_SAM3_URL", "ANNOTATION_PREDICT_URL")
 DEFAULT_TOKEN = "abc@123"
 DEFAULT_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 DEFAULT_CONNECT_TIMEOUT = 5
@@ -42,7 +53,15 @@ def safe_print(message: str, *, file: Any | None = None, flush: bool = True) -> 
 
 def build_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Send images in a folder to the SAM3 prediction API.")
+    parser.add_argument(
+        "--annotation-provider",
+        "--provider",
+        default=os.getenv("ANNOTATION_PROVIDER", DEFAULT_PROVIDER),
+        choices=["sam3", "locate_sam3"],
+        help="Annotation backend provider",
+    )
     parser.add_argument("--url", default=DEFAULT_URL, help="SAM3 prediction endpoint")
+    parser.add_argument("--model", default="", help="Override model name sent to the annotation endpoint")
     parser.add_argument("--token", default=DEFAULT_TOKEN, help="Bearer token for Authorization header")
     parser.add_argument("--input-dir", default=None, help="Directory containing images to annotate")
     parser.add_argument(
@@ -79,6 +98,9 @@ def build_args() -> argparse.Namespace:
     )
     parser.add_argument("--conf", type=float, default=0.35, help="Confidence threshold")
     parser.add_argument("--iou", type=float, default=0.5, help="IoU threshold")
+    parser.add_argument("--mode", default="hybrid", help="locate_sam3 mode")
+    parser.add_argument("--max-new-tokens", type=int, default=1024, help="locate_sam3 max_new_tokens")
+    parser.add_argument("--save-visualization", action="store_true", help="Ask locate_sam3 to save visualization when supported")
     parser.add_argument(
         "--dedupe-iou",
         type=float,
@@ -120,14 +142,34 @@ def build_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def effective_url(value: str) -> str:
+def normalize_provider(value: str) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"locate", "locateanything", "locate_anything", "locate_sam3"}:
+        return "locate_sam3"
+    return "sam3"
+
+
+def effective_url(value: str, provider: str = DEFAULT_PROVIDER) -> str:
+    provider = normalize_provider(provider)
     normalized = str(value or "").strip()
-    if normalized in {"$SAM3_PREDICT_URL", "${SAM3_PREDICT_URL}", "$SAM3_URL", "${SAM3_URL}", ""}:
-        for env_name in URL_ENV_NAMES:
+    provider_default = PROVIDER_URLS.get(provider, DEFAULT_URL)
+    env_names = LOCATE_SAM3_URL_ENV_NAMES if provider == "locate_sam3" else URL_ENV_NAMES
+    fallback_env_names = URL_ENV_NAMES if provider == "locate_sam3" else ()
+    if normalized in {
+        "$SAM3_PREDICT_URL",
+        "${SAM3_PREDICT_URL}",
+        "$SAM3_URL",
+        "${SAM3_URL}",
+        "$ANNOTATION_PREDICT_URL",
+        "${ANNOTATION_PREDICT_URL}",
+        "",
+        DEFAULT_URL,
+    }:
+        for env_name in (*env_names, *fallback_env_names):
             env_value = os.getenv(env_name, "").strip()
             if env_value:
                 return env_value
-        return DEFAULT_URL
+        return provider_default
     return normalized
 
 
@@ -311,10 +353,21 @@ def _find_image_field_recursive(node: Any) -> Any:
 
 def _extract_boxes(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, dict):
+        if any(key in payload for key in ("bbox", "box", "bbox_2d", "xyxy", "coordinates")):
+            return [payload]
         for key in ("boxes", "results", "data", "predictions", "annotations"):
             value = payload.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, dict):
+                nested = _extract_boxes(value)
+                if nested:
+                    return nested
+        for value in payload.values():
+            if isinstance(value, (dict, list)):
+                nested = _extract_boxes(value)
+                if nested:
+                    return nested
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     return []
@@ -322,11 +375,14 @@ def _extract_boxes(payload: Any) -> list[dict[str, Any]]:
 
 def _normalize_box(item: dict[str, Any]) -> dict[str, Any] | None:
     score = item.get("score", item.get("conf", item.get("confidence", 1.0)))
-    label = item.get("label", item.get("category", item.get("class", item.get("name", "object"))))
+    label = item.get("label", item.get("category", item.get("class", item.get("name", item.get("text", item.get("prompt", "object"))))))
 
-    bbox = item.get("bbox", item.get("box"))
+    bbox = item.get("bbox", item.get("box", item.get("bbox_2d", item.get("xyxy", item.get("coordinates")))))
     if isinstance(bbox, dict):
-        bbox = [bbox.get("x1"), bbox.get("y1"), bbox.get("x2"), bbox.get("y2")]
+        if all(key in bbox for key in ("x", "y", "width", "height")):
+            bbox = [bbox.get("x"), bbox.get("y"), float(bbox.get("x") or 0) + float(bbox.get("width") or 0), float(bbox.get("y") or 0) + float(bbox.get("height") or 0)]
+        else:
+            bbox = [bbox.get("x1"), bbox.get("y1"), bbox.get("x2"), bbox.get("y2")]
 
     if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
         return None
@@ -541,17 +597,41 @@ def image_to_data_url(image_path: Path) -> str:
 
 
 def build_sam3_payload(image_path: Path, prompts: list[str], conf: float, iou: float) -> dict[str, Any]:
-    return {
-        "model": "sam3",
+    return build_annotation_payload("sam3", "", image_path, prompts, conf, iou)
+
+
+def build_annotation_payload(
+    provider: str,
+    model: str,
+    image_path: Path,
+    prompts: list[str],
+    conf: float,
+    iou: float,
+    mode: str = "hybrid",
+    max_new_tokens: int = 1024,
+    save_visualization: bool = False,
+) -> dict[str, Any]:
+    provider = normalize_provider(provider)
+    payload = {
+        "model": model or PROVIDER_MODELS.get(provider, "sam3"),
         "input": {
             "image": image_to_data_url(image_path),
             "text_prompts": prompts,
         },
-        "parameters": {
+    }
+    if provider == "locate_sam3":
+        payload["parameters"] = {
+            "iou": float(iou),
+            "mode": mode or "hybrid",
+            "max_new_tokens": int(max_new_tokens),
+            "save_visualization": bool(save_visualization),
+        }
+    else:
+        payload["parameters"] = {
             "conf": float(conf),
             "iou": float(iou),
-        },
-    }
+        }
+    return payload
 
 
 def post_image(args: argparse.Namespace, headers: dict[str, str], prompts: list[str], image_path: Path) -> Any:
@@ -560,9 +640,19 @@ def post_image(args: argparse.Namespace, headers: dict[str, str], prompts: list[
     for attempt in range(1, attempts + 1):
         try:
             response = requests.post(
-                effective_url(args.url),
+                effective_url(args.url, args.annotation_provider),
                 headers=headers,
-                json=build_sam3_payload(image_path, prompts, args.conf, args.iou),
+                json=build_annotation_payload(
+                    args.annotation_provider,
+                    args.model,
+                    image_path,
+                    prompts,
+                    args.conf,
+                    args.iou,
+                    args.mode,
+                    args.max_new_tokens,
+                    args.save_visualization,
+                ),
                 timeout=(args.connect_timeout, args.timeout),
             )
             if response.status_code in RETRYABLE_HTTP_STATUS and attempt < attempts:
@@ -597,8 +687,9 @@ def _error_payload(error_type: str, message: str, args: argparse.Namespace) -> d
         "ok": False,
         "error_type": error_type,
         "message": message,
-        "url": effective_url(args.url),
-        "hint": "SAM3 annotation endpoint is unreachable. Check the endpoint host/port, VPN/network route, or configure SAM3_PREDICT_URL.",
+        "provider": normalize_provider(getattr(args, "annotation_provider", DEFAULT_PROVIDER)),
+        "url": effective_url(args.url, getattr(args, "annotation_provider", DEFAULT_PROVIDER)),
+        "hint": "Annotation endpoint is unreachable. Check the endpoint host/port, VPN/network route, or configure SAM3_PREDICT_URL/LOCATE_SAM3_PREDICT_URL.",
     }
 
 
@@ -611,7 +702,7 @@ def _http_error_payload(exc: requests.exceptions.HTTPError, args: argparse.Names
         {
             "status_code": status_code,
             "response_body": response_text,
-            "hint": "SAM3 endpoint returned an HTTP error. Check the endpoint contract, request fields, labels, and model server logs.",
+            "hint": "Annotation endpoint returned an HTTP error. Check the endpoint contract, request fields, labels, and model server logs.",
         }
     )
     if response_text:
@@ -633,6 +724,7 @@ def _print_error(payload: dict[str, Any]) -> None:
 
 def main() -> int:
     args = build_args()
+    args.annotation_provider = normalize_provider(args.annotation_provider)
     image_paths = resolve_image_paths(args)
 
     for image_path in image_paths:
@@ -752,7 +844,8 @@ def main() -> int:
         "categories": categories,
         "licenses": [],
         "info": {
-            "description": "SAM3 auto-annotation export",
+            "description": f"{args.annotation_provider} auto-annotation export",
+            "annotation_provider": args.annotation_provider,
             "skipped_invalid_images": skipped_images,
         },
     }

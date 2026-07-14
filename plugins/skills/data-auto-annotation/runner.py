@@ -123,6 +123,8 @@ def _run_sam3_annotation(
     command = [
         sys.executable,
         str(script_path),
+        "--annotation-provider",
+        _default_annotation_provider(),
         "--url",
         os.environ.get("SAM3_PREDICT_URL", "$SAM3_PREDICT_URL"),
         "--input-json",
@@ -506,7 +508,19 @@ def _decode_bytes(value: bytes | str | None) -> str:
 def _normalize_sam3_spec(spec: dict[str, Any]) -> dict[str, Any]:
     image_path = str(spec.get("image_path") or spec.get("input_dir") or "").strip()
     labels = spec.get("labels") if isinstance(spec.get("labels"), list) else []
-    return {"image_path": image_path, "labels": labels}
+    provider = _default_annotation_provider()
+    return {"image_path": image_path, "labels": labels, "annotation_provider": provider}
+
+
+def _default_annotation_provider() -> str:
+    return _normalize_annotation_provider(os.getenv("ANNOTATION_PROVIDER", "sam3"))
+
+
+def _normalize_annotation_provider(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    if text in {"locate", "locateanything", "locate_anything", "locate_sam3"}:
+        return "locate_sam3"
+    return "sam3"
 
 
 def _extract_last_json_object(text: str) -> dict[str, Any]:

@@ -74,3 +74,51 @@ def test_sam3_predict_builds_v1_json_payload(monkeypatch, tmp_path: Path) -> Non
     assert payload["input"]["image"] == "data:image/png;base64,cG5nLWJ5dGVz"
     assert payload["input"]["text_prompts"] == ["person", "monitor"]
     assert payload["parameters"] == {"conf": 0.35, "iou": 0.5}
+
+
+def test_locate_sam3_provider_uses_locateanything_payload_and_default_url(monkeypatch, tmp_path: Path) -> None:
+    module = _load_sam3_module(monkeypatch)
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"png-bytes")
+
+    payload = module.build_annotation_payload(
+        "locate_sam3",
+        "",
+        image_path,
+        ["cat", "laptop"],
+        0.35,
+        0.5,
+        "hybrid",
+        1024,
+        True,
+    )
+
+    assert module.effective_url(module.DEFAULT_URL, "locate_sam3") == module.LOCATE_SAM3_DEFAULT_URL
+    assert payload["model"] == "locateanything"
+    assert payload["input"]["text_prompts"] == ["cat", "laptop"]
+    assert payload["parameters"] == {
+        "iou": 0.5,
+        "mode": "hybrid",
+        "max_new_tokens": 1024,
+        "save_visualization": True,
+    }
+
+
+def test_sam3_predict_extracts_nested_locate_sam3_boxes(monkeypatch) -> None:
+    module = _load_sam3_module(monkeypatch)
+    payload = {
+        "data": {
+            "boxes": [
+                {
+                    "text": "cat",
+                    "confidence": 0.8,
+                    "bbox_2d": [10, 20, 30, 50],
+                }
+            ]
+        }
+    }
+
+    boxes = module._extract_boxes(payload)
+    normalized = module._normalize_box(boxes[0])
+
+    assert normalized == {"label": "cat", "score": 0.8, "bbox": [10.0, 20.0, 20.0, 30.0]}

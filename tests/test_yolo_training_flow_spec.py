@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import sys
 
 from app.core.agent.input_required import required_inputs_for_request
 from app.core.artifacts import ArtifactStore
@@ -16,6 +17,7 @@ def _load_yolo_training_flow_module():
     spec = importlib.util.spec_from_file_location("yolo_training_flow", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -25,8 +27,141 @@ def _load_data_preparation_pipeline_module():
     spec = importlib.util.spec_from_file_location("run_data_preparation_pipeline", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_semantic_intent_uses_training_label_when_business_label_is_not_ascii() -> None:
+    module = _load_yolo_training_flow_module()
+    spec = {
+        "labels": ["security_guard"],
+        "intent_items": [
+            {
+                "label": "安保人员",
+                "business_label": "安保人员",
+                "type": "person_attribute_detection",
+                "training_labels": ["security_guard"],
+                "base_entity": "person",
+                "observable_entities": ["person", "uniform"],
+                "annotation_strategy": "constrained_target",
+                "primary_sam3_prompt": "person wearing security uniform",
+                "sam3_prompts": ["person wearing security uniform"],
+                "sam3_prompt_map": {"person wearing security uniform": "security_guard"},
+                "forbidden_direct_prompts": ["person"],
+            }
+        ],
+    }
+
+    items = module._spec_intent_items(spec)
+
+    assert items[0]["label"] == "security_guard"
+    assert items[0]["business_label"] == "安保人员"
+    assert items[0]["sam3_prompts"] == ["person wearing security uniform"]
+
+
+def test_semantic_intent_keeps_llm_plan_without_merging_behavior_rule_prompts() -> None:
+    flow = _load_yolo_training_flow_module()
+    preparation = _load_data_preparation_pipeline_module()
+    spec = {
+        "task_type": "state_detection",
+        "labels": ["fallen_person"],
+        "intent_items": [
+            {
+                "label": "person_fall",
+                "type": "state_detection",
+                "training_labels": ["fallen_person"],
+                "base_entity": "person",
+                "required_states": ["fallen"],
+                "observable_entities": ["person", "ground_surface"],
+                "annotation_strategy": "constrained_target",
+                "primary_sam3_prompt": "person falling or lying on ground",
+                "sam3_prompts": ["person falling or lying on ground"],
+                "sam3_prompt_map": {"person falling or lying on ground": "fallen_person"},
+                "forbidden_direct_prompts": ["person"],
+            }
+        ],
+    }
+
+    ensured = flow._ensure_intent_labels(spec, "帮我训练一个人员跌倒检测模型")
+    items = flow._spec_intent_items(ensured)
+    prompt_map = flow._annotation_prompt_map_from_spec(ensured, ["fallen_person"])
+    prompts = preparation._annotation_prompts_for_sam3(
+        ["fallen_person"], list(prompt_map), prompt_map, items
+    )
+
+    assert prompts == ["person falling or lying on ground"]
+    assert "person" not in prompt_map
+
+
+def test_semantic_intent_keeps_one_sam3_prompt_for_each_training_label() -> None:
+    flow = _load_yolo_training_flow_module()
+    preparation = _load_data_preparation_pipeline_module()
+    labels = ["garbage", "abandoned_item", "debris"]
+    spec = {
+        "labels": labels,
+        "intent_items": [
+            {
+                "label": "garbage_item_anomaly",
+                "type": "anomaly_detection",
+                "training_labels": labels,
+                "base_entity": "object",
+                "required_states": ["discarded", "misplaced"],
+                "annotation_strategy": "constrained_target",
+                "primary_sam3_prompt": "discarded garbage on ground",
+                "sam3_prompts": ["discarded garbage on ground"],
+                "sam3_prompt_map": {
+                    "discarded garbage on ground": "garbage",
+                    "left-behind or misplaced personal items": "abandoned_item",
+                    "scattered debris or broken objects": "debris",
+                },
+                "forbidden_direct_prompts": ["object", "item"],
+            }
+        ],
+    }
+
+    items = flow._spec_intent_items(spec)
+    prompt_map = flow._annotation_prompt_map_from_spec(spec, labels)
+    prompts = preparation._annotation_prompts_for_sam3(labels, list(prompt_map), prompt_map, items)
+    effective_map = preparation._prompt_label_map_for_sam3(labels, prompts, prompt_map)
+
+    assert {prompt: effective_map[prompt] for prompt in prompts} == {
+        "discarded garbage on ground": "garbage",
+        "left-behind or misplaced personal items": "abandoned_item",
+        "scattered debris or broken objects": "debris",
+    }
+
+
+def test_smoking_intent_forces_entity_annotation_policy() -> None:
+    flow = _load_yolo_training_flow_module()
+    preparation = _load_data_preparation_pipeline_module()
+    spec = {
+        "task_type": "behavior_detection",
+        "labels": ["smoking_person"],
+        "intent_items": [
+            {
+                "label": "smoking_person",
+                "type": "behavior_detection",
+                "training_labels": ["smoking_person"],
+                "base_entity": "person",
+                "behavior": "smoking",
+                "annotation_strategy": "constrained_target",
+                "primary_sam3_prompt": "smoking person",
+                "sam3_prompts": ["smoking person"],
+                "sam3_prompt_map": {"smoking person": "smoking_person"},
+            }
+        ],
+    }
+
+    ensured = flow._ensure_intent_labels(spec, "train a smoking detection model")
+    labels = flow._spec_string_list(ensured, "labels")
+    items = flow._spec_intent_items(ensured)
+    prompt_map = flow._annotation_prompt_map_from_spec(ensured, labels)
+    prompts = preparation._annotation_prompts_for_sam3(labels, list(prompt_map), prompt_map, items)
+
+    assert labels == ["person", "cigarette"]
+    assert prompt_map == {"person": "person", "cigarette": "cigarette"}
+    assert prompts == ["person", "cigarette"]
 
 
 def test_yolo_training_flow_extracts_one_message_training_spec() -> None:

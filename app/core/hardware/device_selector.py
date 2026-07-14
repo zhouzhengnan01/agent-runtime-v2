@@ -128,7 +128,9 @@ def reserve_training_device(
         )
 
     cuda_candidates = _query_cuda_candidates()
-    npu_candidates = _query_npu_candidates()
+    # 自动调度 NPU 时必须读取全局物理卡状态，不能被当前服务进程已有的
+    # ASCEND_RT_VISIBLE_DEVICES 限制。选中物理卡后，再只把该卡暴露给训练子进程。
+    npu_candidates = _query_npu_candidates(respect_visible_env=explicit)
     all_candidates = [candidate.to_dict() for candidate in [*cuda_candidates, *npu_candidates]]
 
     if _wants_cuda(requested_norm):
@@ -370,10 +372,10 @@ def _query_cuda_with_nvidia_smi() -> list[DeviceCandidate]:
     return result
 
 
-def _query_npu_candidates() -> list[DeviceCandidate]:
+def _query_npu_candidates(*, respect_visible_env: bool = True) -> list[DeviceCandidate]:
     if not _has_ascend_runtime_hint():
         return []
-    candidates = _query_npu_with_npu_smi()
+    candidates = _query_npu_with_npu_smi(respect_visible_env=respect_visible_env)
     if candidates:
         return candidates
     count = _torch_npu_device_count()
@@ -381,12 +383,12 @@ def _query_npu_candidates() -> list[DeviceCandidate]:
         count = _count_visible_npu_devices()
     if count <= 0:
         return []
-    visible_indexes = _visible_npu_indexes()
+    visible_indexes = _visible_npu_indexes() if respect_visible_env else None
     indexes = sorted(visible_indexes) if visible_indexes is not None else list(range(count))
     return [DeviceCandidate(accelerator="npu", index=index, name=f"Ascend NPU {index}") for index in indexes]
 
 
-def _query_npu_with_npu_smi() -> list[DeviceCandidate]:
+def _query_npu_with_npu_smi(*, respect_visible_env: bool = True) -> list[DeviceCandidate]:
     # Ascend 910B 的全局 npu-smi info 输出包含 HBM-Usage(MB)，
     # 比 torch_npu 只返回卡数量更适合避开已被 vLLM/训练任务占满的卡。
     try:
@@ -402,11 +404,11 @@ def _query_npu_with_npu_smi() -> list[DeviceCandidate]:
         return []
     if proc.returncode != 0:
         return []
-    return _parse_npu_smi_info(proc.stdout)
+    return _parse_npu_smi_info(proc.stdout, respect_visible_env=respect_visible_env)
 
 
-def _parse_npu_smi_info(output: str) -> list[DeviceCandidate]:
-    visible_indexes = _visible_npu_indexes()
+def _parse_npu_smi_info(output: str, *, respect_visible_env: bool = True) -> list[DeviceCandidate]:
+    visible_indexes = _visible_npu_indexes() if respect_visible_env else None
     candidates: dict[int, DeviceCandidate] = {}
     current_index: int | None = None
 
