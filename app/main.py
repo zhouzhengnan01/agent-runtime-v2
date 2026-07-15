@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import acp, acp_http_stream, agents, apps, artifacts, cron, health, mcp, sandbox, skills, training, uploads, workflows
+from app.api import acp, acp_http_stream, agents, apps, artifacts, cron, health, mcp, sandbox, skills, training, uploads, workflows, edge_machine, edge_runtime, monitor
 from app.core.runtime import RuntimeBootstrapConfig, default_container
 
 
@@ -82,6 +82,9 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
         allow_headers=["*"],
     )
     app.include_router(health.router)
+    app.include_router(monitor.router)
+    app.include_router(edge_machine.router)
+    app.include_router(edge_runtime.router)
     app.include_router(acp.router)
     app.include_router(acp_http_stream.router)
     app.include_router(agents.router)
