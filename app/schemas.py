@@ -131,3 +131,125 @@ class AgentRunResult(BaseModel):
 class ChatEvent(BaseModel):
     type: str
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class EdgeRuntimeInstallRequest(BaseModel):
+    bundle_url: str | None = None
+    bundle_path: str | None = None
+    bundle_name: str | None = None
+    bundle_sha256: str | None = None
+    machine_type: str
+    model_id: str
+    runtime_name: str = "default"
+    force: bool = False
+
+
+class EdgeRuntimeWeightInstallRequest(BaseModel):
+    machine_type: str | None = None
+    model_id: str
+    runtime_name: str = "default"
+    version: str | None = None
+    runtime_url: str | None = None
+    runtime_path: str | None = None
+    runtime_sha256: str | None = None
+    runtime_bundle_url: str | None = None
+    runtime_bundle_path: str | None = None
+    runtime_bundle_sha256: str | None = None
+    bundle_url: str | None = None
+    bundle_path: str | None = None
+    bundle_sha256: str | None = None
+    weight_url: str | None = None
+    weight_path: str | None = None
+    weight_sha256: str | None = None
+    target_subdir: str = "weights"
+    port: int | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    args: list[str] = Field(default_factory=list)
+    install_weight: bool = True
+    auto_start: bool = False
+    force_runtime: bool = False
+
+
+class EdgeRuntimeDeployRequest(BaseModel):
+    model_id: str
+    runtime_name: str = "default"
+    machine_type: str | None = None
+    version: str | None = None
+    runtime_url: str | None = None
+    runtime_path: str | None = None
+    runtime_sha256: str | None = None
+    runtime_bundle_url: str | None = None
+    runtime_bundle_path: str | None = None
+    runtime_bundle_sha256: str | None = None
+    bundle_url: str | None = None
+    bundle_path: str | None = None
+    bundle_sha256: str | None = None
+    weight_url: str | None = None
+    weight_path: str | None = None
+    weight_sha256: str | None = None
+    target_subdir: str = "weights"
+    port: int | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    args: list[str] = Field(default_factory=list)
+    install_weight: bool = True
+    auto_start: bool = True
+    force_runtime: bool = False
+
+
+class EdgeRuntimeStartRequest(BaseModel):
+    machine_type: str
+    model_id: str
+    runtime_name: str = "default"
+    port: int | None = None
+    env: dict[str, str] = Field(default_factory=dict)
+    args: list[str] = Field(default_factory=list)
+
+
+class EdgeRuntimeStopRequest(BaseModel):
+    machine_type: str
+    model_id: str
+    runtime_name: str = "default"
+
+
+class EdgeRuntimeStatusItem(BaseModel):
+    machine_type: str
+    model_id: str
+    runtime_name: str
+    bundle_dir: str
+    manifest_path: str | None = None
+    status: str = "unknown"
+    pid: int | None = None
+    port: int | None = None
+    command: list[str] = Field(default_factory=list)
+    log_path: str | None = None
+    installed_at: str | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
+    health_status: str = "unknown"
+    restart_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EdgeMachineRuntimeSummary(BaseModel):
+    runtimeRoot: str
+    installedRuntimes: int = 0
+    runningRuntimes: int = 0
+    runtimes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class EdgeMachineInfoResponse(BaseModel):
+    nodeId: str
+    nodeName: str
+    nodeRole: str = "edge"
+    deviceTypes: list[str] = Field(default_factory=list)
+    deviceModel: str | None = None
+    machineTypeId: str | None = None
+    machineTypeIds: list[str] = Field(default_factory=list)
+    labels: list[str] = Field(default_factory=list)
+    managerVersion: str = "0.1.0"
+    runtimeGitCommit: str | None = None
+    serviceRoot: str
+    system: dict[str, str] = Field(default_factory=dict)
+    capabilities: dict[str, bool] = Field(default_factory=dict)
+    agentRuntime: EdgeMachineRuntimeSummary
+    cloudQuery: dict[str, str] = Field(default_factory=dict)
