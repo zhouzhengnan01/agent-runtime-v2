@@ -54,11 +54,12 @@ DEFAULT_TRAINING_SPLIT = {"train": 0.7, "val": 0.2, "test": 0.1}
 MIN_TEST_SPLIT = 0.1
 
 DEFAULT_MAX_SYNTHETIC_IMAGES = 10
-DEFAULT_ANNOTATION_PROVIDER = "sam3"
+DEFAULT_ANNOTATION_PROVIDER = "locate_sam3"
 # button_epochs=False 是本地冒烟测试路径：忽略模型思考出的 epochs，
 # 强制使用较短轮数。button_epochs=True 时允许模型结合数据集思考轮数，
 # 但 _cap_training_epochs 仍会兜底限制最大值。
 button_epochs = True
+button_export_onnx = False
 FIXED_TRAINING_EPOCHS = 10
 MAX_TRAINING_EPOCHS = 200
 AUTO_GENERATE_MISSING_SPEC = True
@@ -373,6 +374,7 @@ class YoloTrainingWorkflow:
             training_cfg = _spec_training_config(request_spec)
             if training_backend == "deimv2":
                 _apply_deimv2_model_selection_to_training_config(training_cfg, deimv2_model_selection)
+                _apply_deimv2_export_onnx_policy(training_cfg)
             training_cfg_available = bool(training_cfg)
             if training_cfg:
                 _save_training_config(run_paths, training_cfg)
@@ -535,6 +537,7 @@ class YoloTrainingWorkflow:
             training_cfg = _spec_training_config(request_spec)
             if training_backend == "deimv2":
                 _apply_deimv2_model_selection_to_training_config(training_cfg, deimv2_model_selection)
+                _apply_deimv2_export_onnx_policy(training_cfg)
             training_cfg_available = bool(training_cfg)
             task_description = _spec_string(request_spec, "task_description") or task_description
             if prompt_text:
@@ -2631,6 +2634,14 @@ def _apply_deimv2_model_selection_to_training_config(training_cfg: dict[str, Any
     training["tuning_checkpoint"] = selection.get("tuning_checkpoint") or ""
     training["requested_model_variant"] = selection.get("requested_model_variant") or training["model_variant"]
     training["model_variant_fallback_reason"] = selection.get("fallback_reason") or ""
+
+
+def _apply_deimv2_export_onnx_policy(training_cfg: dict[str, Any]) -> None:
+    training = training_cfg.get("training") if isinstance(training_cfg.get("training"), dict) else {}
+    if not training:
+        return
+    # 后端按钮：为 True 时，DEIMv2 训练完成后自动导出 ONNX 并注册为产物。
+    training["export_onnx"] = bool(button_export_onnx)
 
 
 def _max_synthetic_images(runtime_options: RuntimeOptions) -> int:

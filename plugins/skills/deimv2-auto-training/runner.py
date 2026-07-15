@@ -203,6 +203,10 @@ def _normalize_spec(spec: dict[str, Any], paths: Any, package_root: Path) -> dic
         "model_id",
         "model_extension",
         "deimv2_upload_model_usage",
+        "export_onnx",
+        "onnx_check",
+        "onnx_simplify",
+        "onnx_opset",
     ):
         if training.get(key) is not None:
             normalized_training[key] = training[key]
@@ -232,7 +236,7 @@ def _collect_outputs(project_dir: Path, paths: Any, artifact_store: Any) -> list
         for file_path in sorted(project_dir.rglob("*")):
             if not file_path.is_file():
                 continue
-            if file_path.name not in KEY_ARTIFACT_NAMES and file_path.suffix.lower() != ".pth":
+            if file_path.name not in KEY_ARTIFACT_NAMES and file_path.suffix.lower() not in {".pth", ".onnx"}:
                 continue
             _append_artifact(outputs, seen, paths, artifact_store, file_path)
     log_dir = _resolve_workflow_log_dir(project_dir)
@@ -364,6 +368,8 @@ def _build_reply(project_dir: Path, returncode: int, data: dict[str, Any], stdou
         "config": data.get("config") or str(project_dir / "configs" / "train.yml"),
         "dataset_config": data.get("dataset_config") or str(project_dir / "configs" / "dataset.yml"),
         "best_checkpoint": data.get("best_checkpoint") or "",
+        "onnx_model": data.get("onnx_path") or "",
+        "onnx_export": data.get("onnx_export") or {"enabled": False},
         "stdout_tail": stdout[-1200:] if stdout else "",
         "stderr_tail": stderr[-1200:] if stderr else "",
     }

@@ -14,6 +14,13 @@ from app.schemas import ChatEvent
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 PROGRESS_STATE_NAME = "progress_state.json"
+DEIMV2_FAILURE_LOG_PATTERNS = (
+    re.compile(r"OpenBLAS error:\s*Memory allocation still failed after \d+ retries, giving up\.", re.IGNORECASE),
+    re.compile(r"Traceback \(most recent call last\):", re.IGNORECASE),
+    re.compile(r"^\s*(?:[\w.]+)?(?:RuntimeError|ValueError|AssertionError|ImportError|ModuleNotFoundError|FileNotFoundError|MemoryError|OSError|TypeError|KeyError|IndexError|AttributeError|NotImplementedError|Exception):\s*.+$", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"CUDA out of memory", re.IGNORECASE),
+    re.compile(r"^\s*(?:error|failed|failure):\s*.+$", re.IGNORECASE | re.MULTILINE),
+)
 
 
 def utc_now() -> str:
@@ -306,6 +313,14 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
     status = state.get("status") or _infer_status(run_dir)
     phase = state.get("phase") or _infer_phase(run_dir, status)
     status, phase, completed_at = _normalize_run_phase_status(status, phase, completed_at, training, evaluation)
+    errors = state.get("errors") if isinstance(state.get("errors"), list) else []
+    if isinstance(training, dict) and training.get("status") == "failed":
+        status = "failed"
+        phase = "failed"
+        completed_at = completed_at or now
+        training_error = training.get("error")
+        if training_error and not errors:
+            errors = [{"message": str(training_error), "timestamp": now}]
     return {
         "schema": "jetlinks-training-status.v1",
         "thread_id": thread_id,
@@ -335,7 +350,7 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
         "evaluation": evaluation,
         "resources": _resource_status(run_dir, backend),
         "paths": _paths_status(thread_dir, run_dir, backend),
-        "errors": state.get("errors") if isinstance(state.get("errors"), list) else [],
+        "errors": errors,
         "warnings": state.get("warnings") if isinstance(state.get("warnings"), list) else [],
     }
 
@@ -643,6 +658,7 @@ def _deimv2_training_status(run_dir: Path, state: dict[str, Any]) -> dict[str, A
     log_path = _first_existing(_training_log_candidates(run_dir, "deimv2"))
     total_epochs = _parse_deimv2_total_epochs(run_dir)
     latest = _parse_deimv2_train_log(log_path) if log_path else {}
+    failure_error = latest.get("failure_error")
     current_epoch = latest.get("epoch")
     step = latest.get("step")
     total_steps = latest.get("total_steps")
@@ -660,7 +676,7 @@ def _deimv2_training_status(run_dir: Path, state: dict[str, Any]) -> dict[str, A
     if completed:
         progress = 1.0 if progress is None or progress >= 0.95 else progress
     return {
-        "status": "completed" if completed else ("running" if latest else state_training.get("status", "pending")),
+        "status": "failed" if failure_error else ("completed" if completed else ("running" if latest else state_training.get("status", "pending"))),
         "backend": "deimv2",
         "device": _selected_device(run_dir),
         "current_epoch": current_epoch,
@@ -676,6 +692,7 @@ def _deimv2_training_status(run_dir: Path, state: dict[str, Any]) -> dict[str, A
         "log_path": str(log_path) if log_path else None,
         "checkpoint": checkpoint,
         "completed": completed,
+        "error": failure_error,
     }
 
 
@@ -942,6 +959,9 @@ def _training_log_candidates(run_dir: Path, backend: str) -> list[Path]:
 def _parse_deimv2_train_log(path: Path) -> dict[str, Any]:
     text = _tail_text(path, 256_000)
     latest: dict[str, Any] = {}
+    failure_error = _deimv2_failure_log_error(text)
+    if failure_error:
+        latest["failure_error"] = failure_error
     for match in re.finditer(r"Epoch:\s*\[(\d+)\]\s*\[\s*(\d+)/(\d+)\].*?(?:lr:\s*([0-9.eE+-]+))?.*?(?:loss:\s*([0-9.eE+-]+))?", text):
         latest.update(
             {
@@ -963,6 +983,16 @@ def _parse_deimv2_train_log(path: Path) -> dict[str, Any]:
     if metrics:
         latest["metrics"] = metrics
     return latest
+
+
+def _deimv2_failure_log_error(text: str) -> str | None:
+    if not text:
+        return None
+    for pattern in DEIMV2_FAILURE_LOG_PATTERNS:
+        matches = list(pattern.finditer(text))
+        if matches:
+            return matches[-1].group(0).strip()
+    return None
 
 
 def _parse_last_coco_metrics(text: str) -> dict[str, float]:

@@ -118,13 +118,14 @@ def _run_sam3_annotation(
         raise FileNotFoundError(f"sam3-predict.py not found: {script_path}")
     request_path = Path(paths.workspace) / "data-auto-annotation-input.json"
     request_path.parent.mkdir(parents=True, exist_ok=True)
-    request_path.write_text(json.dumps(_normalize_sam3_spec(spec), ensure_ascii=False, indent=2), encoding="utf-8")
+    normalized_spec = _normalize_sam3_spec(spec)
+    request_path.write_text(json.dumps(normalized_spec, ensure_ascii=False, indent=2), encoding="utf-8")
     output_path = Path(paths.outputs) / "annotations.coco.json"
     command = [
         sys.executable,
         str(script_path),
         "--annotation-provider",
-        _default_annotation_provider(),
+        str(normalized_spec["annotation_provider"]),
         "--url",
         os.environ.get("SAM3_PREDICT_URL", "$SAM3_PREDICT_URL"),
         "--input-json",
@@ -508,12 +509,15 @@ def _decode_bytes(value: bytes | str | None) -> str:
 def _normalize_sam3_spec(spec: dict[str, Any]) -> dict[str, Any]:
     image_path = str(spec.get("image_path") or spec.get("input_dir") or "").strip()
     labels = spec.get("labels") if isinstance(spec.get("labels"), list) else []
-    provider = _default_annotation_provider()
+    ctx = spec.get("workflow_context") if isinstance(spec.get("workflow_context"), dict) else {}
+    provider = _normalize_annotation_provider(
+        spec.get("annotation_provider") or ctx.get("annotation_provider") or _default_annotation_provider()
+    )
     return {"image_path": image_path, "labels": labels, "annotation_provider": provider}
 
 
 def _default_annotation_provider() -> str:
-    return _normalize_annotation_provider(os.getenv("ANNOTATION_PROVIDER", "sam3"))
+    return _normalize_annotation_provider(os.getenv("ANNOTATION_PROVIDER", "locate_sam3"))
 
 
 def _normalize_annotation_provider(value: Any) -> str:

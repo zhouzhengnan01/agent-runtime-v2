@@ -24,7 +24,7 @@ from PIL import Image
 
 DEFAULT_PROVIDER = "sam3"
 DEFAULT_URL = "http://218.67.242.10:58800/v1/sam3/predict"
-LOCATE_SAM3_DEFAULT_URL = "http://127.0.0.1:8800/v1/locate_sam3/predict"
+LOCATE_SAM3_DEFAULT_URL = "http://192.168.33.17:8800/v1/locate_sam3/predict"
 PROVIDER_URLS = {
     "sam3": DEFAULT_URL,
     "locate_sam3": LOCATE_SAM3_DEFAULT_URL,
@@ -358,7 +358,13 @@ def _extract_boxes(payload: Any) -> list[dict[str, Any]]:
         for key in ("boxes", "results", "data", "predictions", "annotations"):
             value = payload.get(key)
             if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
+                boxes: list[dict[str, Any]] = []
+                for item in value:
+                    if not isinstance(item, dict):
+                        continue
+                    nested = _extract_boxes(item)
+                    boxes.extend(nested or [item])
+                return boxes
             if isinstance(value, dict):
                 nested = _extract_boxes(value)
                 if nested:

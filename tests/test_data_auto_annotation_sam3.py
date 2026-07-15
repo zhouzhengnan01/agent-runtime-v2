@@ -122,3 +122,28 @@ def test_sam3_predict_extracts_nested_locate_sam3_boxes(monkeypatch) -> None:
     normalized = module._normalize_box(boxes[0])
 
     assert normalized == {"label": "cat", "score": 0.8, "bbox": [10.0, 20.0, 20.0, 30.0]}
+
+
+def test_sam3_predict_extracts_locateanything_data_list_detections(monkeypatch) -> None:
+    module = _load_sam3_module(monkeypatch)
+    payload = {
+        "data": [
+            {
+                "image_index": 0,
+                "detections": [
+                    {
+                        "label": "person",
+                        "score": None,
+                        "bbox": [941, 362, 1317, 1079],
+                        "bbox_format": "xyxy",
+                    }
+                ],
+            }
+        ]
+    }
+
+    boxes = module._extract_boxes(payload)
+    normalized = module._normalize_box(boxes[0])
+
+    assert len(boxes) == 1
+    assert normalized == {"label": "person", "score": 1.0, "bbox": [941.0, 362.0, 376.0, 717.0]}

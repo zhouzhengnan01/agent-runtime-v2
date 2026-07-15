@@ -22,7 +22,7 @@ AUTO_ANNOTATION_SCRIPT = SCRIPT_DIR / "sam3-predict.py"
 GENERATION_SCRIPT = DATASET_PROCESS_ROOT / "image-dataset-generation" / "scripts" / "run_composite.py"
 PRODUCE_GENERATION_SCRIPT = DATASET_PROCESS_ROOT / "image-dataset-produce" / "scripts" / "run_generation.py"
 LOG_DIR: Path | None = None
-DEFAULT_ANNOTATION_PROVIDER = os.getenv("ANNOTATION_PROVIDER", "sam3")
+DEFAULT_ANNOTATION_PROVIDER = os.getenv("ANNOTATION_PROVIDER", "locate_sam3")
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
@@ -1839,7 +1839,15 @@ def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     args.labels = args.labels or _list_value(_coalesce(spec.get("labels"), spec.get("class_names"), dataset.get("class_names"), ctx.get("labels"), default=[]))
     args.annotation_prompts = args.annotation_prompts or _list_value(_coalesce(spec.get("annotation_prompts"), ctx.get("annotation_prompts"), default=[]))
     args.annotation_prompt_map = _dict_value(_coalesce(spec.get("annotation_prompt_map"), spec.get("prompt_label_map"), ctx.get("annotation_prompt_map"), ctx.get("prompt_label_map"), args.annotation_prompt_map, default={}))
-    args.annotation_provider = _normalize_annotation_provider(args.annotation_provider or DEFAULT_ANNOTATION_PROVIDER)
+    args.annotation_provider = _normalize_annotation_provider(
+        _coalesce(
+            args.annotation_provider,
+            spec.get("annotation_provider"),
+            ctx.get("annotation_provider"),
+            DEFAULT_ANNOTATION_PROVIDER,
+            default=DEFAULT_ANNOTATION_PROVIDER,
+        )
+    )
     args.intent_items = args.intent_items or _intent_items_value(_coalesce(spec.get("intent_items"), ctx.get("intent_items"), default=[]))
     args.work_dir = _coalesce(args.work_dir, ctx.get("work_dir"), spec.get("work_dir"), output.get("work_dir"), default="")
     args.output_dir = _coalesce(args.output_dir, ctx.get("output_dir"), spec.get("output_dir"), output.get("output_dir"), default="")
@@ -1870,7 +1878,7 @@ def main() -> None:
     parser.add_argument("--labels", nargs="*", default=[])
     parser.add_argument("--annotation-prompts", nargs="*", default=[])
     parser.add_argument("--annotation-prompt-map-json", default="")
-    parser.add_argument("--annotation-provider", default=DEFAULT_ANNOTATION_PROVIDER, choices=["sam3", "locate_sam3"])
+    parser.add_argument("--annotation-provider", default="", choices=["", "sam3", "locate_sam3"])
     parser.add_argument("--work-dir", default="")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--ref-image", default=None)

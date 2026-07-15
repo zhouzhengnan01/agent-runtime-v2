@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+import os
+import signal
+import subprocess
 import time
 import uuid
 from datetime import UTC, datetime
@@ -13,8 +16,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import require_runtime_token
+from app.core.http_training_jobs import (
+    ACTIVE_HTTP_TRAINING_STATUSES,
+    read_current_http_training_job_marker,
+    update_http_training_job_marker,
+    write_http_training_job_marker,
+)
 from app.core.runtime import default_container
 from app.core.runtime.health_state import ReviewSlot
+from app.core.training_artifact_updates import build_training_artifact_session_updates
 from app.core.training_status import build_training_status, build_training_stream_status, list_training_runs
 from app.protocols.acp.event_broker import acp_event_broker
 from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, RuntimeOptions
@@ -26,6 +36,7 @@ runtime = default_container.runtime
 
 VIRTUAL_UPLOADS_PREFIX = "/mnt/user-data/uploads"
 HTTP_JOB_STATUS_INTERVAL_SECONDS = 2.0
+HTTP_TRAINING_ACTIVE_STATUSES = ACTIVE_HTTP_TRAINING_STATUSES
 
 
 class TrainingJobFile(BaseModel):
@@ -141,6 +152,7 @@ async def create_training_job(request: TrainingJobRequest) -> dict[str, object]:
             )
         _jobs_by_thread[thread_id] = record
         _jobs_by_id[job_id] = record
+        write_http_training_job_marker(thread_id, record)
 
     task = asyncio.create_task(_run_training_job(record, agent, chat_request), name=f"training-job-{job_id}")
     record["task"] = task
@@ -160,22 +172,49 @@ async def get_training_job(thread_id: str) -> dict[str, object]:
 @router.post("/jobs/{thread_id}/cancel")
 async def cancel_training_job(thread_id: str) -> dict[str, object]:
     normalized = _normalize_thread_id(thread_id)
+    fallback_record = False
     async with _jobs_lock:
         record = _jobs_by_thread.get(normalized)
         if record is None:
-            raise HTTPException(status_code=404, detail=f"Training job not found: {normalized}")
+            record = _active_disk_training_record(normalized)
+            if record is None:
+                raise HTTPException(status_code=404, detail=f"Training job not found: {normalized}")
+            _jobs_by_thread[normalized] = record
+            _jobs_by_id[str(record["job_id"])] = record
+            fallback_record = True
         status = str(record.get("status") or "")
         if status in {"completed", "failed", "cancelled"}:
             return {"cancelled": False, "reason": f"job already {status}", "job": _public_job_record(record)}
         record["status"] = "cancelling"
         record["completed_at"] = None
         task = record.get("task")
+        update_http_training_job_marker(normalized, status="cancelling", completed_at=None)
 
     runtime.session_manager.cancel_active_turn(normalized)
     _mark_latest_progress_cancelled(normalized, status="cancelling", message="HTTP cancel requested.")
     if isinstance(task, asyncio.Task) and not task.done():
         task.cancel()
-    return {"cancelled": True, "job": _public_job_record(record)}
+    terminated_processes = _terminate_training_processes(normalized, str(record.get("run_id") or ""))
+    if terminated_processes:
+        record["status"] = "cancelled"
+        record["completed_at"] = _utc_now()
+        update_http_training_job_marker(
+            normalized,
+            status="cancelled",
+            completed_at=record["completed_at"],
+            run_id=record.get("run_id"),
+        )
+        _mark_latest_progress_cancelled(
+            normalized,
+            status="cancelled",
+            message=f"HTTP cancel requested; terminated training processes: {terminated_processes}",
+        )
+    return {
+        "cancelled": True,
+        "job": _public_job_record(record),
+        "fallback": fallback_record,
+        "terminated_processes": terminated_processes,
+    }
 
 
 async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatRequest) -> None:
@@ -184,6 +223,10 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
     agent_name = str(record["agent_name"])
     record["status"] = "running"
     record["started_at"] = _utc_now()
+    update_http_training_job_marker(thread_id, status="running", started_at=record["started_at"])
+    status_stop = asyncio.Event()
+    published_artifacts: set[str] = set()
+    status_task = asyncio.create_task(_publish_training_status_loop(thread_id, status_stop, published_artifacts))
     last_status_sent = 0.0
     final_result: AgentRunResult | None = None
     try:
@@ -211,9 +254,9 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
                 await _publish_runtime_event(thread_id, event)
                 now = time.monotonic()
                 if now - last_status_sent >= HTTP_JOB_STATUS_INTERVAL_SECONDS:
-                    await _publish_training_status(thread_id)
+                    await _publish_training_status(thread_id, published_artifacts)
                     last_status_sent = now
-        await _publish_training_status(thread_id)
+        await _publish_training_status(thread_id, published_artifacts)
         if final_result is None:
             final_result = AgentRunResult(
                 agent=agent_name,
@@ -226,6 +269,13 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
         record["run_id"] = _latest_run_id(thread_id)
         if final_result.status != "completed":
             record["error"] = final_result.reply
+        update_http_training_job_marker(
+            thread_id,
+            status=record["status"],
+            completed_at=_utc_now(),
+            run_id=record.get("run_id"),
+            error=record.get("error"),
+        )
         await _publish_http_job_session_update(
             thread_id,
             {
@@ -252,17 +302,33 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
         runtime.session_manager.cancel_active_turn(thread_id)
         record["status"] = "cancelled"
         record["error"] = "Training job cancelled by HTTP request."
+        update_http_training_job_marker(
+            thread_id,
+            status="cancelled",
+            completed_at=_utc_now(),
+            run_id=_latest_run_id(thread_id),
+            error=record["error"],
+        )
         _mark_latest_progress_cancelled(thread_id, status="cancelled", message=record["error"])
-        await _publish_training_status(thread_id)
+        await _publish_training_status(thread_id, published_artifacts)
         await _publish_http_job_error(thread_id, job_id, -32800, record["error"])
         raise
     except Exception as exc:
         record["status"] = "failed"
         record["error"] = str(exc)
+        update_http_training_job_marker(
+            thread_id,
+            status="failed",
+            completed_at=_utc_now(),
+            run_id=_latest_run_id(thread_id),
+            error=record["error"],
+        )
         _mark_latest_progress_cancelled(thread_id, status="failed", message=str(exc))
-        await _publish_training_status(thread_id)
+        await _publish_training_status(thread_id, published_artifacts)
         await _publish_http_job_error(thread_id, job_id, -32000, str(exc))
     finally:
+        status_stop.set()
+        await asyncio.gather(status_task, return_exceptions=True)
         record["completed_at"] = _utc_now()
 
 
@@ -388,12 +454,185 @@ def _public_job_record(record: dict[str, Any]) -> dict[str, object]:
     ).model_dump()
 
 
+def _active_disk_training_record(thread_id: str) -> dict[str, Any] | None:
+    marker = read_current_http_training_job_marker(thread_id, require_active=True)
+    if marker is None:
+        return None
+    try:
+        status = build_training_status(thread_id)
+    except (FileNotFoundError, ValueError):
+        status = {}
+    training = status.get("training") if isinstance(status.get("training"), dict) else {}
+    status_value = str(status.get("status") or "")
+    training_status = str(training.get("status") or "")
+    marker_status = str(marker.get("status") or "")
+    if (
+        marker_status not in HTTP_TRAINING_ACTIVE_STATUSES
+        and status_value not in HTTP_TRAINING_ACTIVE_STATUSES
+        and training_status not in HTTP_TRAINING_ACTIVE_STATUSES
+    ):
+        return None
+    now = _utc_now()
+    run_id = str(marker.get("run_id") or status.get("run_id") or _latest_run_id(thread_id) or "")
+    record_status = marker_status
+    if record_status not in HTTP_TRAINING_ACTIVE_STATUSES:
+        record_status = status_value if status_value in HTTP_TRAINING_ACTIVE_STATUSES else training_status or "running"
+    return {
+        "job_id": str(marker.get("job_id") or f"thread-{thread_id}"),
+        "thread_id": thread_id,
+        "agent_name": str(marker.get("agent_name") or "default"),
+        "status": record_status,
+        "created_at": marker.get("created_at") or status.get("created_at") or now,
+        "started_at": marker.get("started_at") or status.get("started_at"),
+        "completed_at": marker.get("completed_at") or status.get("completed_at"),
+        "run_id": run_id or None,
+        "error": marker.get("error"),
+        "status_url": f"/api/training/status/{thread_id}",
+        "artifacts_url": f"/api/artifacts/{thread_id}",
+        "result": None,
+        "task": None,
+    }
+
+
 def _latest_run_id(thread_id: str) -> str | None:
     runs_root = Path.cwd() / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs"
     if not runs_root.is_dir():
         return None
     runs = sorted(path.name for path in runs_root.iterdir() if path.is_dir() and path.name.startswith("run-"))
     return runs[-1] if runs else None
+
+
+def _run_dir_for_thread(thread_id: str, run_id: str | None = None) -> Path | None:
+    selected_run_id = run_id or _latest_run_id(thread_id)
+    if not selected_run_id:
+        return None
+    run_dir = Path.cwd() / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs" / selected_run_id
+    return run_dir.resolve() if run_dir.is_dir() else None
+
+
+def _terminate_training_processes(thread_id: str, run_id: str | None = None) -> list[int]:
+    run_dir = _run_dir_for_thread(thread_id, run_id)
+    if run_dir is None:
+        return []
+    processes = _process_table()
+    if not processes:
+        return []
+    run_marker = str(run_dir)
+    if os.name == "nt":
+        run_marker = run_marker.lower()
+    candidates: set[int] = set()
+    for pid, _ppid, command in processes:
+        comparable = command.lower() if os.name == "nt" else command
+        if run_marker in comparable:
+            candidates.add(pid)
+    if not candidates:
+        return []
+    by_pid = {pid: (ppid, command) for pid, ppid, command in processes}
+    children_by_parent: dict[int, list[int]] = {}
+    for pid, ppid, _command in processes:
+        children_by_parent.setdefault(ppid, []).append(pid)
+    targets = set(candidates)
+    changed = True
+    while changed:
+        changed = False
+        for pid, (ppid, command) in by_pid.items():
+            if pid in targets:
+                continue
+            if ppid in targets:
+                targets.add(pid)
+                changed = True
+                continue
+            if any(child in targets for child in children_by_parent.get(pid, [])) and "run_deimv2_training.py" in command:
+                targets.add(pid)
+                changed = True
+    current_pid = os.getpid()
+    targets.discard(current_pid)
+    killed: list[int] = []
+    for pid in sorted(targets, key=lambda item: _process_depth(item, by_pid), reverse=True):
+        if _terminate_process(pid):
+            killed.append(pid)
+    return killed
+
+
+def _process_table() -> list[tuple[int, int, str]]:
+    if os.name == "nt":
+        return _windows_process_table()
+    return _posix_process_table()
+
+
+def _posix_process_table() -> list[tuple[int, int, str]]:
+    try:
+        completed = subprocess.run(["ps", "-eo", "pid=,ppid=,args="], capture_output=True, text=True, check=False, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0:
+        return []
+    rows: list[tuple[int, int, str]] = []
+    for line in completed.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+        except ValueError:
+            continue
+    return rows
+
+
+def _windows_process_table() -> list[tuple[int, int, str]]:
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return []
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return []
+    items = payload if isinstance(payload, list) else [payload]
+    rows: list[tuple[int, int, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            pid = int(item.get("ProcessId"))
+            ppid = int(item.get("ParentProcessId") or 0)
+        except (TypeError, ValueError):
+            continue
+        rows.append((pid, ppid, str(item.get("CommandLine") or "")))
+    return rows
+
+
+def _process_depth(pid: int, by_pid: dict[int, tuple[int, str]]) -> int:
+    depth = 0
+    seen: set[int] = set()
+    current = pid
+    while current in by_pid and current not in seen:
+        seen.add(current)
+        parent = by_pid[current][0]
+        if parent <= 0 or parent == current:
+            break
+        depth += 1
+        current = parent
+    return depth
+
+
+def _terminate_process(pid: int) -> bool:
+    try:
+        if os.name == "nt":
+            completed = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, check=False, timeout=8)
+            return completed.returncode == 0
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def _mark_latest_progress_cancelled(thread_id: str, *, status: str, message: str) -> None:
@@ -443,12 +682,47 @@ async def _publish_http_job_session_update(thread_id: str, update: dict[str, Any
     )
 
 
-async def _publish_training_status(thread_id: str) -> None:
+async def _publish_training_status(thread_id: str, published_artifacts: set[str] | None = None) -> None:
     try:
         status = build_training_stream_status(thread_id)
     except (FileNotFoundError, ValueError):
         return
     await acp_event_broker.publish({thread_id}, "training/status", status)
+    if published_artifacts is not None:
+        try:
+            full_status = build_training_status(thread_id)
+        except (FileNotFoundError, ValueError):
+            return
+        await _publish_training_artifact_updates(thread_id, full_status, published_artifacts)
+
+
+async def _publish_training_status_loop(
+    thread_id: str,
+    stop_event: asyncio.Event,
+    published_artifacts: set[str] | None = None,
+) -> None:
+    """HTTP 触发训练时，独立轮询状态文件并推送给 /api/acp/stream。"""
+    while not stop_event.is_set():
+        await _publish_training_status(thread_id, published_artifacts)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=HTTP_JOB_STATUS_INTERVAL_SECONDS)
+        except TimeoutError:
+            continue
+
+
+async def _publish_training_artifact_updates(
+    thread_id: str,
+    status: dict[str, Any],
+    published_artifacts: set[str],
+) -> None:
+    updates = build_training_artifact_session_updates(
+        thread_id=thread_id,
+        status=status,
+        artifact_store=runtime.artifact_store,
+        published_artifacts=published_artifacts,
+    )
+    for update in updates:
+        await _publish_http_job_session_update(thread_id, update)
 
 
 async def _publish_http_job_result(thread_id: str, job_id: str, result: dict[str, Any]) -> None:
@@ -477,7 +751,7 @@ async def _publish_http_job_error(thread_id: str, job_id: str, code: int, messag
 
 def _event_to_session_update(event: ChatEvent) -> dict[str, Any] | None:
     data = event.data
-    base = {"_meta": {"jetlinksRuntimeEvent": event.model_dump()}}
+    base = {"_meta": {"jetlinksRuntimeEvent": event.model_dump(), "jetlinksDiff": _event_diff(event)}}
     if event.type in {"agent.message", "agent.message.delta"}:
         text = str(data.get("text") or data.get("message") or "")
         if not text:
@@ -516,6 +790,17 @@ def _event_to_session_update(event: ChatEvent) -> dict[str, Any] | None:
             "sessionUpdate": "agent_message_chunk",
             "content": {"type": "text", "text": str(data.get("error") or "训练任务失败。")},
         }
+    if event.type in {"artifact.created", "preview.ready"}:
+        artifact = _event_artifact(data)
+        artifact_name = str(artifact.get("name") or artifact.get("title") or artifact.get("path") or "artifact")
+        text = f"artifact: {artifact_name}" if event.type == "artifact.created" else f"preview ready: {artifact_name}"
+        return {
+            **base,
+            "sessionUpdate": "agent_thought_chunk",
+            "content": {"type": "text", "text": text},
+            "artifact": artifact,
+            "rawOutput": artifact,
+        }
     if event.type == "run.completed":
         result = data.get("result")
         if isinstance(result, dict):
@@ -527,6 +812,27 @@ def _event_to_session_update(event: ChatEvent) -> dict[str, Any] | None:
     if not summary:
         return None
     return {**base, "sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": summary}}
+
+
+def _event_artifact(data: dict[str, Any]) -> dict[str, Any]:
+    artifact = data.get("artifact")
+    return artifact if isinstance(artifact, dict) else {}
+
+
+def _event_diff(event: ChatEvent) -> dict[str, Any] | None:
+    if event.type != "artifact.created":
+        return None
+    artifact = _event_artifact(event.data)
+    path = artifact.get("path")
+    if not path:
+        return None
+    return {
+        "type": "artifact_change",
+        "status": "completed",
+        "path": str(path),
+        "source": "artifact",
+        "operation": "created",
+    }
 
 
 def _event_skill_name(event: ChatEvent) -> str:
@@ -544,7 +850,7 @@ def _event_summary(event: ChatEvent) -> str:
 
 
 def _result_from_event(event: ChatEvent) -> AgentRunResult | None:
-    if event.type != "run.completed":
+    if event.type not in {"run.completed", "run.failed"}:
         return None
     result = event.data.get("result")
     if not isinstance(result, dict):

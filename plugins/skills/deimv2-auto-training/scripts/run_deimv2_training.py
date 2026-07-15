@@ -468,6 +468,74 @@ def find_checkpoint(run_dir: Path) -> str:
     return str(matches[-1]) if matches else ""
 
 
+def bool_from_any(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def export_onnx_after_training(
+    *,
+    prefix: list[str],
+    deim_root: Path,
+    config_path: Path,
+    checkpoint_path: Path,
+    logs_dir: Path,
+    training: dict[str, Any],
+) -> dict[str, Any]:
+    output_path = checkpoint_path.with_suffix(".onnx")
+    opset = int(training.get("onnx_opset") or 17)
+    check = bool_from_any(training.get("onnx_check"), True)
+    simplify = bool_from_any(training.get("onnx_simplify"), True)
+    official_exporter = deim_root / "tools" / "deployment" / "export_onnx.py"
+    if not official_exporter.is_file():
+        raise FileNotFoundError(f"DEIMv2 official ONNX exporter not found: {official_exporter}")
+    cmd = prefix + [
+        str(official_exporter),
+        "-c",
+        str(config_path),
+        "-r",
+        str(checkpoint_path),
+        "--opset",
+        str(opset),
+    ]
+    if check:
+        cmd.append("--check")
+    if simplify:
+        cmd.append("--simplify")
+    exporter = str(official_exporter)
+
+    log_path = logs_dir / "export_onnx.log"
+    with log_path.open("w", encoding="utf-8") as log:
+        proc = subprocess.run(cmd, cwd=str(deim_root), stdout=log, stderr=subprocess.STDOUT, text=True)
+    result = {
+        "enabled": True,
+        "status": "completed" if proc.returncode == 0 and output_path.is_file() else "failed",
+        "returncode": proc.returncode,
+        "exporter": exporter,
+        "command": cmd,
+        "config": str(config_path),
+        "checkpoint": str(checkpoint_path),
+        "onnx_path": str(output_path) if output_path.is_file() else "",
+        "log": str(log_path),
+        "opset": opset,
+        "check": check,
+        "simplify": simplify,
+    }
+    if result["status"] != "completed":
+        raise RuntimeError(f"DEIMv2 ONNX export failed. See {log_path}")
+    return result
+
+
 def _parse_float(value: str) -> float | None:
     try:
         return float(value)
@@ -813,6 +881,9 @@ def build_yolo_compatible_run_summary(summary: dict[str, Any], dataset_root: Pat
         "best_pt": str(summary.get("best_checkpoint") or ""),
         "best_checkpoint": str(summary.get("best_checkpoint") or ""),
         "last_checkpoint": str(summary.get("last_checkpoint") or ""),
+        "onnx_model": str(summary.get("onnx_path") or ""),
+        "onnx_path": str(summary.get("onnx_path") or ""),
+        "onnx_export": summary.get("onnx_export") or {"enabled": False},
         "eval_results": str(summary.get("eval_results") or ""),
         "results_dict": yolo_results_dict,
         "metrics": yolo_metrics,
@@ -918,6 +989,18 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
             raise RuntimeError(f"DEIMv2 {stage} failed. See {log_path}")
 
     best_checkpoint = find_checkpoint(run_dir)
+    onnx_export: dict[str, Any] = {"enabled": bool_from_any(training.get("export_onnx"), False), "status": "skipped"}
+    if onnx_export["enabled"] and not dry_run:
+        if not best_checkpoint:
+            raise RuntimeError("DEIMv2 ONNX export requested but no checkpoint was generated.")
+        onnx_export = export_onnx_after_training(
+            prefix=prefix,
+            deim_root=deim_root,
+            config_path=configs_dir / "train.yml",
+            checkpoint_path=Path(best_checkpoint).resolve(),
+            logs_dir=logs_dir,
+            training=training,
+        )
     metric_payload = parse_deimv2_log_metrics(logs_dir / "train.log")
     summary = {
         "status": "completed",
@@ -943,6 +1026,8 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
         "run_dir": str(run_dir),
         "best_checkpoint": best_checkpoint,
         "last_checkpoint": str((run_dir / "train" / "last.pth")) if (run_dir / "train" / "last.pth").is_file() else "",
+        "onnx_export": onnx_export,
+        "onnx_path": str(onnx_export.get("onnx_path") or ""),
         "stages": stages,
         "dry_run": dry_run,
     }
