@@ -7,6 +7,11 @@ from app.core.artifacts import ArtifactStore
 
 
 TRAINING_ARTIFACT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+TRAINING_FINAL_ARTIFACT_PATTERNS = (
+    "*.onnx",
+    "run_summary.json",
+    "training_summary.json",
+)
 
 
 def build_training_artifact_session_updates(
@@ -58,7 +63,14 @@ def training_status_artifact_paths(status: dict[str, Any]) -> list[Path]:
 
     run_dir = _path_or_none(paths.get("run_dir"))
     if run_dir is not None and run_dir.is_dir():
+        for scan_dir in (run_dir / "pipeline_work", run_dir / "uploaded_dataset"):
+            if not scan_dir.is_dir():
+                continue
+            for pattern in ("*coco*.json", "*_coco.json"):
+                candidates.extend(path for path in sorted(scan_dir.rglob(pattern)) if path.is_file())
         for pattern in ("best.pt", "last.pt", "best_stg2.pth", "best_stg1.pth", "last.pth"):
+            candidates.extend(path for path in sorted(run_dir.rglob(pattern)) if path.is_file())
+        for pattern in TRAINING_FINAL_ARTIFACT_PATTERNS:
             candidates.extend(path for path in sorted(run_dir.rglob(pattern)) if path.is_file())
 
     unique: list[Path] = []

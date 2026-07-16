@@ -21,7 +21,7 @@ is_running() {
 }
 
 health_url() {
-  printf 'http://%s:%s%s' "${APP_HOST}" "${APP_PORT}" "${APP_HEALTH_PATH}"
+  printf 'http://%s:%s%s' "${APP_HEALTH_HOST}" "${APP_PORT}" "${APP_HEALTH_PATH}"
 }
 
 docker_run() {

@@ -14,6 +14,7 @@ from typing import Any
 
 from app.core.artifacts import ArtifactStore, ThreadPaths
 from app.core.events import EventRecorder
+from app.core.http_training_jobs import read_current_http_training_job_marker
 from app.core.llm.openai_compatible import OpenAICompatibleClient
 from app.core.skills import SkillRunner
 from app.core.training_status import TrainingProgressWriter, chain_event_hooks
@@ -59,7 +60,7 @@ DEFAULT_ANNOTATION_PROVIDER = "locate_sam3"
 # 强制使用较短轮数。button_epochs=True 时允许模型结合数据集思考轮数，
 # 但 _cap_training_epochs 仍会兜底限制最大值。
 button_epochs = True
-button_export_onnx = False
+button_export_onnx = True
 FIXED_TRAINING_EPOCHS = 10
 MAX_TRAINING_EPOCHS = 200
 AUTO_GENERATE_MISSING_SPEC = True
@@ -323,6 +324,16 @@ class YoloTrainingWorkflow:
                 recorder=recorder,
             )
             request_spec = _ensure_intent_labels(request_spec, spec_user_text)
+        if _http_training_cancel_requested(paths):
+            return _cancelled_training_result(
+                recorder=recorder,
+                agent_name=agent_config.name,
+                thread_id=paths.thread_id,
+                workflow=workflow,
+                run_paths=run_paths,
+                phase="cancelled",
+                reply="训练任务已收到取消请求，已停止后续训练流程。",
+            )
         synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
         if synthetic_generation is not None:
             _save_synthetic_generation_enabled(run_paths, synthetic_generation)
@@ -498,6 +509,17 @@ class YoloTrainingWorkflow:
             recorder.emit(event_type, {"result": result.model_dump()})
             return result, recorder.events
 
+        if _http_training_cancel_requested(paths):
+            return _cancelled_training_result(
+                recorder=recorder,
+                agent_name=agent_config.name,
+                thread_id=paths.thread_id,
+                workflow=workflow,
+                run_paths=run_paths,
+                phase="cancelled",
+                reply="训练任务已收到取消请求，已在数据准备前停止。",
+            )
+
         _reset_generated_dir(workflow_output_root / PIPELINE_WORK_DIR)
         _reset_generated_dir(workflow_output_root / "training_run")
         _reset_generated_dir(workflow_output_root / "deimv2_training_run")
@@ -507,6 +529,17 @@ class YoloTrainingWorkflow:
         unpack_root = workflow_output_root / "uploaded_dataset"
         dataset_root = _unpack_dataset_archive(dataset_pkg, unpack_root, paths.root)
         dataset_facts = _analyze_uploaded_dataset(dataset_root, workflow_output_root / PIPELINE_WORK_DIR, labels, recorder)
+        if _http_training_cancel_requested(paths):
+            return _cancelled_training_result(
+                recorder=recorder,
+                agent_name=agent_config.name,
+                thread_id=paths.thread_id,
+                workflow=workflow,
+                run_paths=run_paths,
+                phase="cancelled",
+                reply="训练任务已收到取消请求，已在数据集分析后停止。",
+                metadata={"dataset_facts": dataset_facts},
+            )
         if model_managed_spec:
             request_spec = _generate_dataset_aware_training_request_spec(
                 base_spec=request_spec,
@@ -566,6 +599,18 @@ class YoloTrainingWorkflow:
         else:
             _apply_epochs_policy(training_cfg, runtime_options)
             _force_current_runtime(training_cfg)
+
+        if _http_training_cancel_requested(paths):
+            return _cancelled_training_result(
+                recorder=recorder,
+                agent_name=agent_config.name,
+                thread_id=paths.thread_id,
+                workflow=workflow,
+                run_paths=run_paths,
+                phase="cancelled",
+                reply="训练任务已收到取消请求，已在启动数据处理前停止。",
+                metadata={"dataset_facts": dataset_facts, "model_generated_spec": _model_generated_spec_payload(request_spec)},
+            )
 
         if user_training_model:
             user_model_apply_error = _apply_user_training_model(training_cfg, user_training_model, training_backend)
@@ -826,6 +871,23 @@ class YoloTrainingWorkflow:
                     "phase": "training",
                 },
             }
+
+        if _http_training_cancel_requested(paths):
+            return _cancelled_training_result(
+                recorder=recorder,
+                agent_name=agent_config.name,
+                thread_id=paths.thread_id,
+                workflow=workflow,
+                run_paths=run_paths,
+                phase="cancelled",
+                reply="训练任务已收到取消请求，已在启动模型训练前停止。",
+                artifacts=[*annotation_result.outputs],
+                metadata={
+                    "data_preparation_spec": data_prep_spec,
+                    "training_spec": training_spec,
+                    "labels": labels,
+                },
+            )
 
         recorder.emit("skill.started", {"skill_name": training_skill_name, "attempt": 0})
         training_result = self.skill_runner.run(training_skill_name, training_spec, paths)
@@ -5623,8 +5685,6 @@ def _load_training_run_paths(paths: ThreadPaths, run_id: str) -> TrainingRunPath
     )
     if not run_paths.workspace.exists() and not run_paths.outputs.exists():
         return None
-    run_paths.workspace.mkdir(parents=True, exist_ok=True)
-    run_paths.outputs.mkdir(parents=True, exist_ok=True)
     return run_paths
 
 
@@ -5651,6 +5711,51 @@ def _load_active_training_run_paths(paths: ThreadPaths) -> TrainingRunPaths | No
     if not isinstance(payload, dict):
         return None
     return _load_training_run_paths(paths, str(payload.get("run_id") or ""))
+
+
+def _http_training_cancel_requested(paths: ThreadPaths) -> bool:
+    try:
+        marker = read_current_http_training_job_marker(paths.thread_id, require_active=False)
+    except Exception:
+        return False
+    if not isinstance(marker, dict):
+        return False
+    return str(marker.get("status") or "").strip().lower() in {"cancelling", "cancelled"}
+
+
+def _cancelled_training_result(
+    *,
+    recorder: EventRecorder,
+    agent_name: str,
+    thread_id: str,
+    workflow: str,
+    run_paths: TrainingRunPaths,
+    phase: str,
+    reply: str,
+    artifacts: list[Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[AgentRunResult, list[ChatEvent]]:
+    _set_waiting_prompt(run_paths, False)
+    _set_workflow_completed(run_paths, False)
+    result = AgentRunResult(
+        agent=agent_name,
+        thread_id=thread_id,
+        status="failed",
+        reply=reply,
+        artifacts=list(artifacts or []),
+        verification=VerificationResult(passed=False, retry_count=0, checks=[], failed_checks=["training cancelled"]),
+        metadata={
+            "workflow": workflow,
+            "run_id": run_paths.run_id,
+            "run_output_dir": str(run_paths.outputs),
+            "phase": phase,
+            "cancelled": True,
+            **(metadata or {}),
+        },
+    )
+    recorder.emit("agent.message", {"text": reply})
+    recorder.emit("run.failed", {"result": result.model_dump(), "error": reply})
+    return result, recorder.events
 
 
 def _run_aware_marker_path(paths: ThreadPaths | TrainingRunPaths, filename: str) -> Path:

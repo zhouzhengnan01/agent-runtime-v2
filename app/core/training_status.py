@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -282,9 +283,21 @@ class TrainingProgressWriter:
 
     def _write(self, state: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".json.tmp")
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
-        tmp.replace(self.path)
+        last_error: PermissionError | None = None
+        for attempt in range(10):
+            try:
+                tmp.replace(self.path)
+                return
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+        try:
+            tmp.unlink(missing_ok=True)
+        finally:
+            if last_error is not None:
+                raise last_error
 
 
 def chain_event_hooks(*hooks: Callable[[ChatEvent], None] | None) -> Callable[[ChatEvent], None]:
@@ -292,7 +305,10 @@ def chain_event_hooks(*hooks: Callable[[ChatEvent], None] | None) -> Callable[[C
 
     def _handle(event: ChatEvent) -> None:
         for hook in active:
-            hook(event)
+            try:
+                hook(event)
+            except Exception:
+                continue
 
     return _handle
 
@@ -595,6 +611,12 @@ def _annotation_status(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
     real_completed = _count_coco_images(real_coco) or _count_files(uploaded, "*_coco.json")
     synthetic_coco = run_dir / "pipeline_work" / "synthetic_coco.json"
     synthetic_completed = _count_coco_images(synthetic_coco) or _count_files(run_dir / "pipeline_work" / "synthetic_annotations", "*_coco.json")
+    synthetic_generated = _count_images(run_dir / "pipeline_work" / "synthetic_images")
+    summary = _read_json(run_dir / "prepared_data" / "data_preparation_summary.json")
+    generation_state = state.get("generation") if isinstance(state.get("generation"), dict) else {}
+    synthetic_generation_started = bool(synthetic_generated or synthetic_completed or generation_state.get("started_at"))
+    synthetic_planned = _extract_planned_synthetic_count(run_dir, state, summary) if synthetic_generation_started else 0
+    synthetic_total = max(synthetic_completed, synthetic_generated, synthetic_planned)
     request = state.get("request") if isinstance(state.get("request"), dict) else {}
     prompts = request.get("annotation_prompts") or request.get("labels") or []
     prompts = prompts if isinstance(prompts, list) else []
@@ -604,7 +626,7 @@ def _annotation_status(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
             _annotation_block("real_annotation", real_total, real_completed, prompts, real_coco),
             state_block,
         ),
-        "synthetic": _annotation_block("synthetic_annotation", synthetic_completed, synthetic_completed, prompts, synthetic_coco),
+        "synthetic": _annotation_block("synthetic_annotation", synthetic_total, synthetic_completed, prompts, synthetic_coco),
     }
 
 
@@ -784,7 +806,9 @@ def _merge_counter_state(block: dict[str, Any], state_block: dict[str, Any]) -> 
         if state_block.get(key) is not None:
             merged[key] = state_block.get(key)
     if state_block.get("status") in {"pending", "running", "completed", "failed"}:
-        merged["status"] = state_block["status"]
+        state_status = state_block["status"]
+        if state_status == "failed" or merged.get("status") != "completed":
+            merged["status"] = state_status
     return merged
 
 
@@ -831,18 +855,11 @@ def _stream_info(status: dict[str, Any]) -> dict[str, Any]:
             },
         }
     if phase == "annotation":
-        real = annotation.get("real") if isinstance(annotation.get("real"), dict) else {}
+        annotation_metrics = _annotation_stream_metrics(annotation)
         return {
             "stage": "annotation",
-            "status": real.get("status") or "running",
-            "metrics": {
-                "annotated": real.get("completed") or 0,
-                "total": real.get("total") or 0,
-                "success": real.get("success") or 0,
-                "failed": real.get("failed") or 0,
-                "started": bool(real.get("started_at")),
-                "completed": real.get("status") == "completed",
-            },
+            "status": annotation_metrics["status"],
+            "metrics": annotation_metrics,
         }
     if phase == "synthetic_generation":
         return {
@@ -870,6 +887,47 @@ def _stream_info(status: dict[str, Any]) -> dict[str, Any]:
             "metrics": evaluation.get("metrics") if isinstance(evaluation.get("metrics"), dict) else {},
         }
     return {"stage": phase or "unknown", "status": status.get("status") or "running", "metrics": {}}
+
+
+def _annotation_stream_metrics(annotation: dict[str, Any]) -> dict[str, Any]:
+    real = annotation.get("real") if isinstance(annotation.get("real"), dict) else {}
+    synthetic = annotation.get("synthetic") if isinstance(annotation.get("synthetic"), dict) else {}
+    real_completed = _int_or_none(real.get("completed")) or 0
+    real_total = _int_or_none(real.get("total")) or 0
+    synthetic_completed = _int_or_none(synthetic.get("completed")) or 0
+    synthetic_total = _int_or_none(synthetic.get("total")) or 0
+    annotated = real_completed + synthetic_completed
+    total = real_total + synthetic_total
+    success = (_int_or_none(real.get("success")) or real_completed) + (_int_or_none(synthetic.get("success")) or synthetic_completed)
+    failed = (_int_or_none(real.get("failed")) or 0) + (_int_or_none(synthetic.get("failed")) or 0)
+    completed = total > 0 and annotated >= total and failed == 0
+    status = "completed" if completed else ("running" if annotated > 0 else "pending")
+    if real.get("status") == "failed" or synthetic.get("status") == "failed":
+        status = "failed"
+        completed = False
+    return {
+        "annotated": annotated,
+        "total": total,
+        "success": success,
+        "failed": failed,
+        "started": bool(real.get("started_at") or synthetic.get("started_at") or annotated),
+        "completed": completed,
+        "status": status,
+        "real": {
+            "annotated": real_completed,
+            "total": real_total,
+            "success": _int_or_none(real.get("success")) or real_completed,
+            "failed": _int_or_none(real.get("failed")) or 0,
+            "completed": real.get("status") == "completed",
+        },
+        "synthetic": {
+            "annotated": synthetic_completed,
+            "total": synthetic_total,
+            "success": _int_or_none(synthetic.get("success")) or synthetic_completed,
+            "failed": _int_or_none(synthetic.get("failed")) or 0,
+            "completed": synthetic_total > 0 and synthetic.get("status") == "completed",
+        },
+    }
 
 
 def _training_stream_metrics(training: dict[str, Any]) -> dict[str, Any]:

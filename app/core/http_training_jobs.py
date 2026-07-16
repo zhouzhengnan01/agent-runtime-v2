@@ -48,6 +48,7 @@ def write_http_training_job_marker(thread_id: str, record: dict[str, Any]) -> No
         "completed_at": record.get("completed_at"),
         "run_id": record.get("run_id"),
         "error": record.get("error"),
+        "result": record.get("result"),
         "updated_at": utc_now(),
     }
     _write_json(_job_marker_path(thread_id), payload)

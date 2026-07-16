@@ -195,20 +195,47 @@ async def cancel_training_job(thread_id: str) -> dict[str, object]:
     if isinstance(task, asyncio.Task) and not task.done():
         task.cancel()
     terminated_processes = _terminate_training_processes(normalized, str(record.get("run_id") or ""))
+    record["run_id"] = record.get("run_id") or _latest_run_id(normalized)
+    record["status"] = "cancelled"
+    record["completed_at"] = _utc_now()
+    record["error"] = "Training job cancelled by HTTP request."
+    record["result"] = _cancelled_http_job_result(normalized, record)
+    cancel_message = "HTTP cancel requested."
     if terminated_processes:
-        record["status"] = "cancelled"
-        record["completed_at"] = _utc_now()
-        update_http_training_job_marker(
-            normalized,
-            status="cancelled",
-            completed_at=record["completed_at"],
-            run_id=record.get("run_id"),
-        )
-        _mark_latest_progress_cancelled(
-            normalized,
-            status="cancelled",
-            message=f"HTTP cancel requested; terminated training processes: {terminated_processes}",
-        )
+        cancel_message = f"HTTP cancel requested; terminated training processes: {terminated_processes}"
+    update_http_training_job_marker(
+        normalized,
+        status="cancelled",
+        completed_at=record["completed_at"],
+        run_id=record.get("run_id"),
+        error=record["error"],
+        result=record.get("result"),
+    )
+    _mark_latest_progress_cancelled(normalized, status="cancelled", message=cancel_message)
+    await _publish_training_status(normalized, set())
+    await _publish_http_job_session_update(
+        normalized,
+        {
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": f"http-training-job-{record['job_id']}",
+            "title": "training job",
+            "kind": "other",
+            "status": "cancelled",
+            "rawOutput": record["result"],
+            "_meta": {
+                "jetlinksRuntimeEvent": {
+                    "type": "http.training_job.cancelled",
+                    "data": {
+                        "job_id": record.get("job_id"),
+                        "thread_id": normalized,
+                        "status": "cancelled",
+                        "terminated_processes": terminated_processes,
+                    },
+                }
+            },
+        },
+    )
+    await _publish_http_job_result(normalized, str(record["job_id"]), record["result"])
     return {
         "cancelled": True,
         "job": _public_job_record(record),
@@ -229,6 +256,7 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
     status_task = asyncio.create_task(_publish_training_status_loop(thread_id, status_stop, published_artifacts))
     last_status_sent = 0.0
     final_result: AgentRunResult | None = None
+    final_reply_sent = False
     try:
         async with ReviewSlot():
             await _publish_http_job_session_update(
@@ -252,6 +280,8 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
                 if result_from_event is not None:
                     final_result = result_from_event
                 await _publish_runtime_event(thread_id, event)
+                if _event_reply_text(event):
+                    final_reply_sent = True
                 now = time.monotonic()
                 if now - last_status_sent >= HTTP_JOB_STATUS_INTERVAL_SECONDS:
                     await _publish_training_status(thread_id, published_artifacts)
@@ -264,10 +294,14 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
                 status="failed",
                 reply="HTTP training job finished without a final result.",
             )
-        record["status"] = "completed" if final_result.status == "completed" else "failed"
+        job_status = _job_status_from_result(final_result)
+        record["status"] = job_status
         record["result"] = final_result.model_dump()
         record["run_id"] = _latest_run_id(thread_id)
-        if final_result.status != "completed":
+        if job_status == "cancelled":
+            record["error"] = "Training job cancelled by HTTP request."
+            _mark_latest_progress_cancelled(thread_id, status="cancelled", message=record["error"])
+        elif final_result.status != "completed":
             record["error"] = final_result.reply
         update_http_training_job_marker(
             thread_id,
@@ -275,7 +309,11 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
             completed_at=_utc_now(),
             run_id=record.get("run_id"),
             error=record.get("error"),
+            result=record.get("result"),
         )
+        await _publish_training_status(thread_id, published_artifacts)
+        if not final_reply_sent:
+            await _publish_http_job_final_reply(thread_id, job_id, final_result)
         await _publish_http_job_session_update(
             thread_id,
             {
@@ -283,7 +321,7 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
                 "toolCallId": f"http-training-job-{job_id}",
                 "title": "training job",
                 "kind": "other",
-                "status": "completed" if final_result.status == "completed" else "failed",
+                "status": job_status,
                 "rawOutput": final_result.model_dump(),
                 "_meta": {
                     "jetlinksRuntimeEvent": {
@@ -291,7 +329,7 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
                         "data": {
                             "job_id": job_id,
                             "thread_id": thread_id,
-                            "status": final_result.status,
+                            "status": job_status,
                         },
                     }
                 },
@@ -308,6 +346,7 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
             completed_at=_utc_now(),
             run_id=_latest_run_id(thread_id),
             error=record["error"],
+            result=_cancelled_http_job_result(thread_id, record),
         )
         _mark_latest_progress_cancelled(thread_id, status="cancelled", message=record["error"])
         await _publish_training_status(thread_id, published_artifacts)
@@ -322,6 +361,13 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
             completed_at=_utc_now(),
             run_id=_latest_run_id(thread_id),
             error=record["error"],
+            result=AgentRunResult(
+                agent=agent_name,
+                thread_id=thread_id,
+                status="failed",
+                reply=record["error"],
+                metadata={"phase": "failed", "status": "failed", "job_id": job_id},
+            ).model_dump(),
         )
         _mark_latest_progress_cancelled(thread_id, status="failed", message=str(exc))
         await _publish_training_status(thread_id, published_artifacts)
@@ -454,6 +500,23 @@ def _public_job_record(record: dict[str, Any]) -> dict[str, object]:
     ).model_dump()
 
 
+def _cancelled_http_job_result(thread_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    reply = str(record.get("error") or "Training job cancelled by HTTP request.")
+    return AgentRunResult(
+        agent=str(record.get("agent_name") or "default"),
+        thread_id=thread_id,
+        status="failed",
+        reply=reply,
+        metadata={
+            "phase": "cancelled",
+            "status": "cancelled",
+            "cancelled": True,
+            "job_id": record.get("job_id"),
+            "run_id": record.get("run_id"),
+        },
+    ).model_dump()
+
+
 def _active_disk_training_record(thread_id: str) -> dict[str, Any] | None:
     marker = read_current_http_training_job_marker(thread_id, require_active=True)
     if marker is None:
@@ -512,18 +575,17 @@ def _run_dir_for_thread(thread_id: str, run_id: str | None = None) -> Path | Non
 
 def _terminate_training_processes(thread_id: str, run_id: str | None = None) -> list[int]:
     run_dir = _run_dir_for_thread(thread_id, run_id)
-    if run_dir is None:
+    markers = _training_process_markers(thread_id, run_id, run_dir)
+    if not markers:
         return []
     processes = _process_table()
     if not processes:
         return []
-    run_marker = str(run_dir)
-    if os.name == "nt":
-        run_marker = run_marker.lower()
+    comparable_markers = [marker.lower() for marker in markers] if os.name == "nt" else markers
     candidates: set[int] = set()
     for pid, _ppid, command in processes:
         comparable = command.lower() if os.name == "nt" else command
-        if run_marker in comparable:
+        if any(marker in comparable for marker in comparable_markers):
             candidates.add(pid)
     if not candidates:
         return []
@@ -542,7 +604,7 @@ def _terminate_training_processes(thread_id: str, run_id: str | None = None) -> 
                 targets.add(pid)
                 changed = True
                 continue
-            if any(child in targets for child in children_by_parent.get(pid, [])) and "run_deimv2_training.py" in command:
+            if any(child in targets for child in children_by_parent.get(pid, [])) and _is_training_process_command(command):
                 targets.add(pid)
                 changed = True
     current_pid = os.getpid()
@@ -552,6 +614,66 @@ def _terminate_training_processes(thread_id: str, run_id: str | None = None) -> 
         if _terminate_process(pid):
             killed.append(pid)
     return killed
+
+
+def _training_process_markers(thread_id: str, run_id: str | None, run_dir: Path | None) -> list[str]:
+    selected_run_id = run_id or _latest_run_id(thread_id)
+    thread_root = Path.cwd() / ".runtime" / "threads" / thread_id
+    markers: list[str] = []
+    if run_dir is not None:
+        markers.append(str(run_dir))
+    if selected_run_id:
+        markers.append(str(thread_root / "workspace" / "runs" / selected_run_id))
+
+    input_paths = [
+        thread_root / "workspace" / "data-auto-annotation-pipeline-input.json",
+        thread_root / "workspace" / "deimv2-auto-training-input.json",
+        thread_root / "workspace" / "deimv2-prepare-dataset-input.json",
+        thread_root / "workspace" / "deimv2-training-input.json",
+    ]
+    if selected_run_id:
+        input_paths.extend((thread_root / "workspace" / "runs" / selected_run_id).glob("*input.json"))
+
+    evidence = [selected_run_id or ""]
+    if run_dir is not None:
+        evidence.append(str(run_dir))
+    for path in input_paths:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if any(item and item in text for item in evidence):
+            markers.append(str(path))
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for marker in markers:
+        value = marker.strip()
+        if not value:
+            continue
+        key = value.lower() if os.name == "nt" else value
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(value)
+    return normalized
+
+
+def _is_training_process_command(command: str) -> bool:
+    lowered = (command or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "run_deimv2_training.py",
+            "prepare_deimv2_dataset.py",
+            "run_data_preparation_pipeline.py",
+            "sam3-predict.py",
+            "image-composite.py",
+            "image-generate.py",
+        )
+    )
 
 
 def _process_table() -> list[tuple[int, int, str]]:
@@ -737,6 +859,31 @@ async def _publish_http_job_result(thread_id: str, job_id: str, result: dict[str
     )
 
 
+async def _publish_http_job_final_reply(thread_id: str, job_id: str, result: AgentRunResult) -> None:
+    reply = str(result.reply or "").strip()
+    if not reply:
+        return
+    await _publish_http_job_session_update(
+        thread_id,
+        {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": reply},
+            "rawOutput": result.model_dump(),
+            "_meta": {
+                "jetlinksRuntimeEvent": {
+                    "type": "http.training_job.reply",
+                    "data": {
+                        "job_id": job_id,
+                        "thread_id": thread_id,
+                        "status": result.status,
+                        "reply": reply,
+                    },
+                }
+            },
+        },
+    )
+
+
 async def _publish_http_job_error(thread_id: str, job_id: str, code: int, message: str) -> None:
     await acp_event_broker.publish(
         {thread_id},
@@ -819,6 +966,17 @@ def _event_artifact(data: dict[str, Any]) -> dict[str, Any]:
     return artifact if isinstance(artifact, dict) else {}
 
 
+def _event_reply_text(event: ChatEvent) -> str:
+    data = event.data
+    if event.type == "run.failed":
+        return str(data.get("error") or "").strip()
+    if event.type == "run.completed":
+        result = data.get("result")
+        if isinstance(result, dict):
+            return str(result.get("reply") or "").strip()
+    return ""
+
+
 def _event_diff(event: ChatEvent) -> dict[str, Any] | None:
     if event.type != "artifact.created":
         return None
@@ -859,6 +1017,16 @@ def _result_from_event(event: ChatEvent) -> AgentRunResult | None:
         return AgentRunResult.model_validate(result)
     except Exception:
         return None
+
+
+def _job_status_from_result(result: AgentRunResult) -> str:
+    if result.status == "completed":
+        return "completed"
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    phase = str(metadata.get("phase") or metadata.get("status") or "").strip().lower()
+    if metadata.get("cancelled") is True or phase == "cancelled":
+        return "cancelled"
+    return "failed"
 
 
 def _utc_now() -> str:
