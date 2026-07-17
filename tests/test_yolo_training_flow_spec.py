@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 from app.core.agent.input_required import required_inputs_for_request
 from app.core.artifacts import ArtifactStore
@@ -413,6 +414,28 @@ def test_yolo_training_flow_without_model_id_clears_previous_uploaded_model() ->
     module._clear_user_training_model_selection(training_cfg, request_spec)
 
     assert training_cfg["training"] == {"model": "yolo11s.pt"}
+
+
+def test_yolo_training_flow_ignores_stale_http_cancel_marker(tmp_path: Path, monkeypatch) -> None:
+    module = _load_yolo_training_flow_module()
+    monkeypatch.chdir(tmp_path)
+
+    from app.core.http_training_jobs import write_http_training_job_marker
+
+    thread_id = "acp-after-http-cancel"
+    paths = SimpleNamespace(thread_id=thread_id)
+    write_http_training_job_marker(
+        thread_id,
+        {
+            "job_id": "job-old",
+            "status": "cancelled",
+            "run_id": "run-deimv2-old",
+            "error": "old cancel",
+        },
+    )
+
+    assert module._http_training_cancel_requested(paths, SimpleNamespace(run_id="run-deimv2-new")) is False
+    assert module._http_training_cancel_requested(paths, SimpleNamespace(run_id="run-deimv2-old")) is True
 
 
 def test_acp_runtime_options_keep_llm_model_id_separate_from_training_model_id() -> None:

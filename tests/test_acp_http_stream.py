@@ -11,7 +11,7 @@ from app.api import acp_http_stream
 from app.api.acp_http_stream import AcpHttpSubscriptionRequest, _stream_acp_subscription
 from app.core.artifacts import ArtifactStore
 from app.core.http_training_jobs import write_http_training_job_marker
-from app.protocols.acp.event_broker import acp_event_broker
+from app.protocols.acp.event_broker import AcpEventBroker, acp_event_broker
 from app.schemas import AgentRunResult, ChatEvent
 
 
@@ -85,6 +85,38 @@ def test_http_subscription_receives_websocket_published_events() -> None:
     assert payloads[0]["params"]["update"]["_meta"]["jetlinksRuntimeEvent"]["type"] == "tool.started"
     assert payloads[1]["params"]["update"]["_meta"]["jetlinksRuntimeEvent"]["type"] == "artifact.created"
     assert payloads[2]["result"]["stopReason"] == "end_turn"
+
+
+def test_acp_event_broker_shares_websocket_events_across_workers(tmp_path: Path) -> None:
+    async def collect() -> dict:
+        publisher = AcpEventBroker(shared_dir=tmp_path / "broker", poll_seconds=0.01)
+        subscriber = AcpEventBroker(shared_dir=tmp_path / "broker", poll_seconds=0.01)
+        subscriber_id, queue = await subscriber.subscribe({"acp-websocket"})
+        try:
+            await publisher.publish(
+                {"acp-websocket"},
+                "session/update",
+                {
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "acp-websocket",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "hello"},
+                        },
+                    },
+                },
+                shared=True,
+            )
+            return (await asyncio.wait_for(queue.get(), timeout=1)).payload
+        finally:
+            await subscriber.unsubscribe(subscriber_id, {"acp-websocket"})
+
+    payload = asyncio.run(collect())
+
+    assert payload["method"] == "session/update"
+    assert payload["params"]["sessionId"] == "acp-websocket"
 
 
 def test_http_subscription_requires_session_or_thread() -> None:

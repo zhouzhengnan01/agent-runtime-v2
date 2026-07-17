@@ -112,7 +112,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
             logger.exception("training status snapshot failed session_id=%s thread_id=%s", session_id, session.thread_id)
             return None
         training_status_last_sent[key] = now
-        await acp_event_broker.publish(_subscription_keys(sessions, session_id), "training/status", status)
+        await acp_event_broker.publish(_subscription_keys(sessions, session_id), "training/status", status, shared=True)
         return status
 
     async def send_update(session_id: str, update: dict[str, Any]) -> None:
@@ -130,6 +130,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                         "update": update,
                     },
                 },
+                shared=True,
             )
             await publish_training_status_snapshot(session_id)
             if session_id in platform_sessions:
@@ -190,6 +191,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     "method": "session/update",
                     "params": {"sessionId": session_id, "update": update},
                 },
+                shared=True,
             )
 
     async def send_training_status_heartbeat_completed(session_id: str) -> None:
@@ -219,6 +221,7 @@ async def handle_acp_websocket(websocket: WebSocket, dispatcher: AcpDispatcher |
                     "method": "session/update",
                     "params": {"sessionId": session_id, "update": update},
                 },
+                shared=True,
             )
 
     async def stream_training_status_snapshots(session_id: str) -> None:
@@ -1250,6 +1253,7 @@ async def _publish_prompt_result(
         _subscription_keys(sessions, session_id),
         "result",
         {"jsonrpc": "2.0", "id": request_id, "result": result},
+        shared=True,
     )
 
 
@@ -1268,6 +1272,7 @@ async def _publish_prompt_error(
             "id": request_id,
             "error": {"code": code, "message": message},
         },
+        shared=True,
     )
 
 

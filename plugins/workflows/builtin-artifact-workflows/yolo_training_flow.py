@@ -324,7 +324,7 @@ class YoloTrainingWorkflow:
                 recorder=recorder,
             )
             request_spec = _ensure_intent_labels(request_spec, spec_user_text)
-        if _http_training_cancel_requested(paths):
+        if _http_training_cancel_requested(paths, run_paths):
             return _cancelled_training_result(
                 recorder=recorder,
                 agent_name=agent_config.name,
@@ -509,7 +509,7 @@ class YoloTrainingWorkflow:
             recorder.emit(event_type, {"result": result.model_dump()})
             return result, recorder.events
 
-        if _http_training_cancel_requested(paths):
+        if _http_training_cancel_requested(paths, run_paths):
             return _cancelled_training_result(
                 recorder=recorder,
                 agent_name=agent_config.name,
@@ -529,7 +529,7 @@ class YoloTrainingWorkflow:
         unpack_root = workflow_output_root / "uploaded_dataset"
         dataset_root = _unpack_dataset_archive(dataset_pkg, unpack_root, paths.root)
         dataset_facts = _analyze_uploaded_dataset(dataset_root, workflow_output_root / PIPELINE_WORK_DIR, labels, recorder)
-        if _http_training_cancel_requested(paths):
+        if _http_training_cancel_requested(paths, run_paths):
             return _cancelled_training_result(
                 recorder=recorder,
                 agent_name=agent_config.name,
@@ -600,7 +600,7 @@ class YoloTrainingWorkflow:
             _apply_epochs_policy(training_cfg, runtime_options)
             _force_current_runtime(training_cfg)
 
-        if _http_training_cancel_requested(paths):
+        if _http_training_cancel_requested(paths, run_paths):
             return _cancelled_training_result(
                 recorder=recorder,
                 agent_name=agent_config.name,
@@ -872,7 +872,7 @@ class YoloTrainingWorkflow:
                 },
             }
 
-        if _http_training_cancel_requested(paths):
+        if _http_training_cancel_requested(paths, run_paths):
             return _cancelled_training_result(
                 recorder=recorder,
                 agent_name=agent_config.name,
@@ -5713,14 +5713,21 @@ def _load_active_training_run_paths(paths: ThreadPaths) -> TrainingRunPaths | No
     return _load_training_run_paths(paths, str(payload.get("run_id") or ""))
 
 
-def _http_training_cancel_requested(paths: ThreadPaths) -> bool:
+def _http_training_cancel_requested(paths: ThreadPaths, run_paths: TrainingRunPaths | None = None) -> bool:
     try:
         marker = read_current_http_training_job_marker(paths.thread_id, require_active=False)
     except Exception:
         return False
     if not isinstance(marker, dict):
         return False
-    return str(marker.get("status") or "").strip().lower() in {"cancelling", "cancelled"}
+    status = str(marker.get("status") or "").strip().lower()
+    if status not in {"cancelling", "cancelled"}:
+        return False
+    marker_run_id = str(marker.get("run_id") or "").strip()
+    current_run_id = str(getattr(run_paths, "run_id", "") or "").strip()
+    if marker_run_id:
+        return marker_run_id == current_run_id
+    return status == "cancelling"
 
 
 def _cancelled_training_result(

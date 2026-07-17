@@ -2390,6 +2390,7 @@ def test_acp_protocol_reads_runtime_options_from_prompt_session_context_json() -
 
     payload = _runtime_options_payload(params)
 
+    assert _app_template_name(params) == "algorithm-engineer-full-cycle-test"
     assert payload["workflow"] == "yolo_training_flow"
     assert payload["app_template_name"] == "algorithm-engineer-full-cycle-test"
     assert payload["training_model_id"] == "model-uploaded"

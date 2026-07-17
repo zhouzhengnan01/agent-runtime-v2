@@ -1695,6 +1695,9 @@ def _acp_param_log_summary(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _app_template_name(params: dict[str, Any]) -> str | None:
+    runtime_template = _string(_runtime_options_payload(params).get("app_template_name"))
+    if runtime_template is not None:
+        return runtime_template
     meta = _params(params.get("_meta"))
     top_runtime_options = _params(params.get("runtimeOptions") or params.get("runtime_options"))
     runtime_options = _params(meta.get("runtimeOptions") or meta.get("runtime_options"))
