@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -12,7 +13,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.auth import require_runtime_token
 from app.core.artifacts import ArtifactStore
@@ -22,6 +23,7 @@ from app.core.http_training_jobs import (
     read_current_http_training_job_marker,
 )
 from app.core.training_artifact_updates import build_training_artifact_session_updates
+from app.core.training_annotation_previews import add_annotation_preview_to_update
 from app.core.training_status import build_training_status, build_training_stream_status
 from app.protocols.acp.event_broker import acp_event_broker
 
@@ -39,9 +41,15 @@ _SAFE_MODEL_FILENAME_RE = re.compile(r"[^a-zA-Z0-9_. -]+")
 model_store = ArtifactStore()
 
 
+class AcpImagePreviewRequest(BaseModel):
+    width: int = Field(ge=1, le=4096)
+    height: int = Field(ge=1, le=4096)
+
+
 class AcpHttpSubscriptionRequest(BaseModel):
     sessionId: str | None = None
     threadId: str | None = None
+    imagePreview: AcpImagePreviewRequest | None = None
 
 
 def _safe_model_filename(value: str) -> str:
@@ -113,7 +121,12 @@ async def _stream_acp_subscription(request: AcpHttpSubscriptionRequest) -> Async
         if initial_status is not None:
             last_status_fingerprint = _status_fingerprint(initial_status)
             yield _sse_payload(initial_status, event="training/status")
-            for payload in _artifact_session_update_payloads(keys, published_artifacts, observed_job_keys):
+            for payload in _artifact_session_update_payloads(
+                keys,
+                published_artifacts,
+                observed_job_keys,
+                image_preview=request.imagePreview,
+            ):
                 yield _sse_payload(payload, event="session/update")
             for payload in _terminal_reply_session_update_payloads(keys, published_terminal_replies, observed_job_keys):
                 yield _sse_payload(payload, event="session/update")
@@ -135,7 +148,12 @@ async def _stream_acp_subscription(request: AcpHttpSubscriptionRequest) -> Async
                         last_heartbeat = asyncio.get_running_loop().time()
                         yield _sse_payload(polled_status, event="training/status")
                         yielded_update = True
-                    for payload in _artifact_session_update_payloads(keys, published_artifacts, observed_job_keys):
+                    for payload in _artifact_session_update_payloads(
+                        keys,
+                        published_artifacts,
+                        observed_job_keys,
+                        image_preview=request.imagePreview,
+                    ):
                         last_heartbeat = asyncio.get_running_loop().time()
                         yield _sse_payload(payload, event="session/update")
                         yielded_update = True
@@ -155,7 +173,8 @@ async def _stream_acp_subscription(request: AcpHttpSubscriptionRequest) -> Async
                     last_heartbeat = now
                     yield ": keepalive\n\n"
                 continue
-            yield _sse_payload(published.payload, event=published.event)
+            payload = _enrich_published_annotation_preview(published.payload, request)
+            yield _sse_payload(payload, event=published.event)
             if published.event == "training/status":
                 last_status_fingerprint = _status_fingerprint(published.payload)
             last_heartbeat = asyncio.get_running_loop().time()
@@ -184,6 +203,8 @@ def _artifact_session_update_payloads(
     keys: set[str],
     published_artifacts: set[str],
     observed_job_keys: set[str] | None = None,
+    *,
+    image_preview: AcpImagePreviewRequest | None = None,
 ) -> list[dict]:
     for key in sorted(keys):
         try:
@@ -209,9 +230,35 @@ def _artifact_session_update_payloads(
                 status=status,
                 artifact_store=model_store,
                 published_artifacts=published_artifacts,
+                preview_width=image_preview.width if image_preview else None,
+                preview_height=image_preview.height if image_preview else None,
             )
         ]
     return []
+
+
+def _enrich_published_annotation_preview(payload: dict, request: AcpHttpSubscriptionRequest) -> dict:
+    if payload.get("method") != "session/update":
+        return payload
+    params = payload.get("params")
+    if not isinstance(params, dict):
+        return payload
+    update = params.get("update")
+    if not isinstance(update, dict) or not isinstance(update.get("artifact"), dict):
+        return payload
+    session_id = str(params.get("sessionId") or request.threadId or request.sessionId or "").strip()
+    if not session_id:
+        return payload
+    enriched_payload = copy.deepcopy(payload)
+    enriched_params = enriched_payload["params"]
+    enriched_params["update"] = add_annotation_preview_to_update(
+        enriched_params["update"],
+        thread_id=session_id,
+        artifact_store=model_store,
+        preview_width=request.imagePreview.width if request.imagePreview else None,
+        preview_height=request.imagePreview.height if request.imagePreview else None,
+    )
+    return enriched_payload
 
 
 def _terminal_reply_session_update_payloads(
@@ -329,13 +376,17 @@ def _visible_http_training_job_marker(thread_id: str, observed_job_keys: set[str
 
 def _build_stream_status_for_marker(thread_id: str, marker: dict) -> dict | None:
     run_id = _marker_run_id(marker)
-    status = build_training_stream_status(thread_id, run_id=run_id) if run_id else build_training_stream_status(thread_id)
+    if not run_id:
+        return None
+    status = build_training_stream_status(thread_id, run_id=run_id)
     return status if _status_belongs_to_marker(status, marker) else None
 
 
 def _build_full_status_for_marker(thread_id: str, marker: dict) -> dict | None:
     run_id = _marker_run_id(marker)
-    status = build_training_status(thread_id, run_id=run_id) if run_id else build_training_status(thread_id)
+    if not run_id:
+        return None
+    status = build_training_status(thread_id, run_id=run_id)
     return status if _status_belongs_to_marker(status, marker) else None
 
 

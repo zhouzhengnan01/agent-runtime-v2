@@ -64,6 +64,20 @@ button_export_onnx = True
 FIXED_TRAINING_EPOCHS = 10
 MAX_TRAINING_EPOCHS = 200
 AUTO_GENERATE_MISSING_SPEC = True
+DATA_REUSE_MANIFEST_NAME = "data_preparation_reuse_manifest.json"
+REAL_DATA_REUSE_COPY_PATHS = (
+    "uploaded_dataset",
+    "pipeline_work/real_coco.json",
+)
+SYNTHETIC_DATA_REUSE_COPY_PATHS = (
+    "pipeline_work/synthetic_coco.json",
+    "pipeline_work/merged_coco.json",
+    "pipeline_work/merged_images",
+    "pipeline_work/synthetic_images",
+    "pipeline_work/synthetic_annotations",
+    "pipeline_work/synthetic_plan.json",
+)
+DATA_REUSE_COPY_PATHS = REAL_DATA_REUSE_COPY_PATHS + SYNTHETIC_DATA_REUSE_COPY_PATHS
 
 
 @dataclass(frozen=True)
@@ -84,6 +98,19 @@ class TrainingRunPaths:
     @property
     def thread_id(self) -> str:
         return self.thread.thread_id
+
+
+@dataclass(frozen=True)
+class DataPreparationReuse:
+    source_run_id: str
+    dataset_root: Path
+    coco_json: Path
+    real_images: int
+    synthetic_images: int
+    annotations: int
+    copied_files: int
+    reuse_level: str
+    synthetic_reused: bool
 
 
 class YoloTrainingWorkflow:
@@ -151,6 +178,11 @@ class YoloTrainingWorkflow:
         # 这样同一线程二次训练时，旧的 generation_prompt/training_config
         # 不会污染新的训练请求。
         start_new_run = bool(current_objective and not waiting_prompt)
+        reuse_source_run_paths = (
+            _select_data_reuse_source(paths, active_run_paths, runtime_options)
+            if start_new_run
+            else None
+        )
         if start_new_run:
             run_paths = _create_training_run_paths(paths, training_backend)
             _save_active_training_run(paths, run_paths, training_backend=training_backend, objective=current_objective)
@@ -403,15 +435,16 @@ class YoloTrainingWorkflow:
             else:
                 task_description = _load_detection_task_description(run_paths)
 
-        if not dataset_pkg or (generation_enabled and (not composite_image1 or not composite_image2)):
+        generation_requested = bool(generation_enabled)
+        generation_enabled, generation_skip_reason = _effective_synthetic_generation(
+            generation_requested,
+            composite_image1,
+            composite_image2,
+        )
+
+        if not dataset_pkg:
             required_inputs = []
-            if not dataset_pkg:
-                required_inputs.append({"type": "dataset", "accept": ".zip,.tar,.tar.gz", "required": True, "reason": "需要上传 datasets.zip 数据集压缩包"})
-            if generation_enabled:
-                if not composite_image1:
-                    required_inputs.append({"type": "image", "accept": ".zip,.tar,.tar.gz", "required": True, "reason": "需要上传 image1.zip 场景/背景图片压缩包"})
-                if not composite_image2:
-                    required_inputs.append({"type": "image", "accept": ".zip,.tar,.tar.gz", "required": True, "reason": "需要上传 image2.zip 目标/前景图片压缩包"})
+            required_inputs.append({"type": "dataset", "accept": ".zip,.tar,.tar.gz", "required": True, "reason": "需要上传 datasets.zip 数据集压缩包"})
             return self._input_required_result(
                 recorder,
                 agent_config.name,
@@ -563,7 +596,7 @@ class YoloTrainingWorkflow:
                 _apply_deimv2_model_selection_to_spec(request_spec, deimv2_model_selection)
             synthetic_generation = _spec_optional_bool(request_spec, "use_synthetic_generation")
             if synthetic_generation is not None:
-                generation_enabled = synthetic_generation
+                generation_requested = synthetic_generation
                 _save_synthetic_generation_enabled(run_paths, synthetic_generation)
             prompt_text = _spec_string(request_spec, "generation_prompt") or prompt_text
             labels = _normalize_detection_labels(_spec_string_list(request_spec, "labels") or labels)
@@ -599,6 +632,12 @@ class YoloTrainingWorkflow:
         else:
             _apply_epochs_policy(training_cfg, runtime_options)
             _force_current_runtime(training_cfg)
+
+        generation_enabled, generation_skip_reason = _effective_synthetic_generation(
+            generation_requested,
+            composite_image1,
+            composite_image2,
+        )
 
         if _http_training_cancel_requested(paths, run_paths):
             return _cancelled_training_result(
@@ -653,6 +692,59 @@ class YoloTrainingWorkflow:
         annotation_prompts = list(annotation_prompt_map.keys())
         annotation_provider = _default_annotation_provider()
         intent_items = _spec_intent_items(request_spec)
+        reuse_fingerprint = _data_preparation_fingerprint(
+            dataset_package=Path(dataset_pkg),
+            image1=Path(composite_image1) if composite_image1 else None,
+            image2=Path(composite_image2) if composite_image2 else None,
+            labels=labels,
+            annotation_provider=annotation_provider,
+            generation_enabled=generation_enabled,
+            max_synthetic_images=_max_synthetic_images(runtime_options),
+        )
+        reused_data, reuse_reason = _reuse_previous_data_preparation(
+            source=reuse_source_run_paths,
+            target=run_paths,
+            fingerprint=reuse_fingerprint,
+            mode=_data_reuse_mode(runtime_options),
+        )
+        if reused_data is not None:
+            dataset_root = reused_data.dataset_root
+            recorder.emit(
+                "data_preparation.artifacts_reused",
+                {
+                    "source_run_id": reused_data.source_run_id,
+                    "target_run_id": run_paths.run_id,
+                    "real_images": reused_data.real_images,
+                    "synthetic_images": reused_data.synthetic_images,
+                    "annotations": reused_data.annotations,
+                    "copied_files": reused_data.copied_files,
+                    "reuse_level": reused_data.reuse_level,
+                    "synthetic_reused": reused_data.synthetic_reused,
+                },
+            )
+        elif reuse_source_run_paths is not None and _data_reuse_mode(runtime_options) != "never":
+            recorder.emit(
+                "data_preparation.reuse_skipped",
+                {
+                    "source_run_id": reuse_source_run_paths.run_id,
+                    "target_run_id": run_paths.run_id,
+                    "reason": reuse_reason,
+                },
+            )
+        if reused_data is None and _data_reuse_mode(runtime_options) == "required":
+            return self._model_spec_failed_result(
+                recorder,
+                agent_config.name,
+                paths.thread_id,
+                workflow,
+                f"指定必须复用上一轮数据准备产物，但复用条件不满足：{reuse_reason}",
+                phase="data_reuse_required_failed",
+                metadata={
+                    "source_run_id": reuse_source_run_paths.run_id if reuse_source_run_paths is not None else None,
+                    "target_run_id": run_paths.run_id,
+                    "reuse_reason": reuse_reason,
+                },
+            )
         data_prep_output_dir = str((workflow_output_root / "prepared_data").resolve())
         data_prep_spec = {
             "skill_name": "data-auto-annotation",
@@ -663,6 +755,8 @@ class YoloTrainingWorkflow:
                 if not _is_training_model_attachment(item)
             ],
             "dataset_root": str(dataset_root),
+            "coco_json": str(reused_data.coco_json) if reused_data is not None else "",
+            "reuse_synthetic_data": bool(reused_data and reused_data.synthetic_reused),
             "image1": composite_image1,
             "image2": composite_image2,
             "task": task_description,
@@ -674,7 +768,8 @@ class YoloTrainingWorkflow:
             "annotation_provider": annotation_provider,
             "work_dir": pipeline_work_dir,
             "output_dir": data_prep_output_dir,
-            "skip_generation": not generation_enabled,
+            "skip_generation": bool(reused_data and reused_data.synthetic_reused) or not generation_enabled,
+            "generation_skip_reason": "reused" if reused_data and reused_data.synthetic_reused else generation_skip_reason,
             "max_synthetic": _max_synthetic_images(runtime_options),
             "synthetic_count_button": True,
             "produce_count_button": True,
@@ -696,7 +791,8 @@ class YoloTrainingWorkflow:
                 "annotation_prompts": annotation_prompts,
                 "annotation_prompt_map": annotation_prompt_map,
                 "annotation_provider": annotation_provider,
-                "skip_generation": not generation_enabled,
+                "skip_generation": bool(reused_data and reused_data.synthetic_reused) or not generation_enabled,
+                "generation_skip_reason": "reused" if reused_data and reused_data.synthetic_reused else generation_skip_reason,
                 "split_requested": training_enabled,
                 "work_dir": pipeline_work_dir,
                 "output_dir": data_prep_output_dir,
@@ -736,7 +832,6 @@ class YoloTrainingWorkflow:
             outputs = [*annotation_result.outputs]
             for artifact in outputs:
                 recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
-                recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
             stderr_tail = str(data_prep_data.get("stderr") or "").strip()
             stdout_tail = str(data_prep_data.get("stdout") or "").strip()
             failure_reason_lines = _data_preparation_failure_reason_lines(stderr_tail, stdout_tail)
@@ -770,6 +865,14 @@ class YoloTrainingWorkflow:
             recorder.emit("run.failed", {"result": result.model_dump(), "error": stderr_tail or stdout_tail})
             return result, recorder.events
 
+        if reused_data is not None:
+            _mark_reused_data_preparation_summary(run_paths, reused_data)
+        _write_data_preparation_reuse_manifest(
+            run_paths,
+            fingerprint=reuse_fingerprint,
+            source_run_id=reused_data.source_run_id if reused_data is not None else "",
+        )
+
         dataset_yaml = _resolve_prepared_dataset_yaml(data_prep_data, Path(data_prep_output_dir))
         training_skill_name = _training_skill_for_backend(training_backend)
 
@@ -779,7 +882,6 @@ class YoloTrainingWorkflow:
             outputs = [*annotation_result.outputs]
             for artifact in outputs:
                 recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
-                recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
             pipeline_paths = _read_pipeline_paths(run_paths)
             summary = _read_data_preparation_summary(run_paths)
             reply = (
@@ -896,7 +998,6 @@ class YoloTrainingWorkflow:
         outputs = _filter_training_run_artifacts(training_result.outputs, training_backend=training_backend)
         for artifact in outputs:
             recorder.emit("artifact.created", {"artifact": artifact.model_dump()})
-            recorder.emit("preview.ready", {"artifact": artifact.model_dump()})
 
         pipeline_paths = _read_pipeline_paths(run_paths)
         summary = _read_run_summary(run_paths, training_backend=training_backend)
@@ -1765,9 +1866,10 @@ def _generate_model_managed_yolo_training_intent_spec(
     system_prompt = (
         _intent_semantic_planning_contract("YOLO")
         +
-        "use_synthetic_generation 布尔值，必须为 true；"
+        "use_synthetic_generation 布尔值，表示是否请求合成数据；"
         "generation_prompt 字符串；"
-        "合成设定：用户会上传 dataset.zip、image1.zip、image2.zip；"
+        "输入设定：dataset.zip 必须上传，image1.zip 和 image2.zip 是可选但必须成对提供的合成输入；"
+        "缺少任意一个合成输入时工作流会跳过合成并只使用真实数据训练；"
         "image1.zip 固定是场景/背景文件夹，image2.zip 固定是目标物文件夹；"
         "合成目的必须是把 image2 中目标自然合成到 image1 场景中，形成真实、可标注的训练图片。"
         "generation_prompt 必须包含上述 image1/image2 角色、自然融合、光照/尺度/遮挡一致、适合检测标注等要求。"
@@ -1841,9 +1943,10 @@ def _generate_model_managed_training_intent_spec(
     system_prompt = (
         _intent_semantic_planning_contract("DEIMv2 DINOv3")
         +
-        "use_synthetic_generation 布尔值，通常为 true；"
+        "use_synthetic_generation 布尔值，表示是否请求合成数据；"
         "generation_prompt 字符串。用户包含多个检测目标时必须全部解析。"
-        "合成设定：用户会上传 datasets.zip、image1.zip、image2.zip；"
+        "输入设定：datasets.zip 必须上传，image1.zip 和 image2.zip 是可选但必须成对提供的合成输入；"
+        "缺少任意一个合成输入时工作流会跳过合成并只使用真实数据训练；"
         "image1.zip 固定是参考图/场景背景文件夹，image2.zip 固定是目标图/前景目标文件夹；"
         "generation_prompt 必须明确写出：使用 image1.zip 作为参考图/场景背景，使用 image2.zip 作为目标图/前景目标，"
         "把 image2.zip 中的目标自然合成到 image1.zip 参考图的场景中；"
@@ -2324,7 +2427,7 @@ def _complete_yolo_training_request_spec(
         f"epochs 最大不能超过 {MAX_TRAINING_EPOCHS}；禁止输出超过该上限的训练轮数；"
         "训练必须使用当前运行环境，不要推理或指定 Conda 环境；runtime.enforce_conda_env 必须为 false；"
         "split 比例、模型大小、epochs、batch、patience 也必须由你合理选择。"
-        "如果用户提供了 image1/image2 或上下文暗示需要合成数据，use_synthetic_generation 必须为 true。"
+        "如果用户提供了完整的 image1/image2 配对或上下文明确要求合成数据，use_synthetic_generation 必须为 true。"
     )
     messages = [
         Message(
@@ -4106,6 +4209,11 @@ def _training_failed_reply(
     stderr_tail = str(parsed.get("stderr_tail") or "").strip()
     stdout_tail = str(parsed.get("stdout_tail") or "").strip()
     error_tail = stderr_tail or stdout_tail
+    training_error = parsed.get("training_error") if isinstance(parsed.get("training_error"), dict) else {}
+    training_error_message = str(training_error.get("message") or "").strip()
+    training_error_details = str(training_error.get("details") or "").strip()
+    training_error_hint = str(training_error.get("hint") or "").strip()
+    training_log_path = str(training_error.get("log_path") or "").strip()
     returncode = parsed.get("returncode")
     prep = data_preparation_summary or summary
     synthetic = _synthetic_generation_facts(prep)
@@ -4141,7 +4249,15 @@ def _training_failed_reply(
             f"- {checkpoint_label}: `{best_pt or '未生成'}`",
         ]
     )
-    if error_tail:
+    if training_error_message:
+        lines.append(f"- 主要错误：{training_error_message}")
+        if training_error_hint:
+            lines.append(f"- 原因提示：{training_error_hint}")
+        if training_log_path:
+            lines.append(f"- 训练日志：`{training_log_path}`")
+        if training_error_details:
+            lines.extend(["- 错误详情：", "```text", training_error_details[-6000:], "```"])
+    elif error_tail:
         lines.extend(["- 主要错误：", "```text", error_tail[-2000:], "```"])
     return "\n".join(lines).strip()
 
@@ -5645,6 +5761,399 @@ def _composite_image2_marker_path(paths: ThreadPaths) -> Path:
 
 def _active_training_run_marker_path(paths: ThreadPaths) -> Path:
     return paths.workspace / "current_training_run.json"
+
+
+def _data_reuse_mode(runtime_options: RuntimeOptions) -> str:
+    value = getattr(runtime_options, "reuse_previous_data_preparation", "auto")
+    if isinstance(value, bool):
+        return "auto" if value else "never"
+    normalized = str(value or "auto").strip().lower()
+    return normalized if normalized in {"auto", "never", "required"} else "auto"
+
+
+def _select_data_reuse_source(
+    paths: ThreadPaths,
+    active_run_paths: TrainingRunPaths | None,
+    runtime_options: RuntimeOptions,
+) -> TrainingRunPaths | None:
+    if _data_reuse_mode(runtime_options) == "never":
+        return None
+    requested = str(getattr(runtime_options, "reuse_from_run_id", None) or "").strip()
+    if requested:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", requested) or ".." in requested:
+            return None
+        return _load_training_run_paths(paths, requested)
+    return active_run_paths
+
+
+def _data_preparation_fingerprint(
+    *,
+    dataset_package: Path,
+    image1: Path | None,
+    image2: Path | None,
+    labels: list[str],
+    annotation_provider: str,
+    generation_enabled: bool,
+    max_synthetic_images: int,
+) -> dict[str, Any]:
+    payload = {
+        "dataset_sha256": _file_sha256(dataset_package.resolve()) if dataset_package.is_file() else "",
+        "image1_sha256": _file_sha256(image1.resolve()) if image1 is not None and image1.is_file() else "",
+        "image2_sha256": _file_sha256(image2.resolve()) if image2 is not None and image2.is_file() else "",
+        "labels": sorted({str(label).strip().casefold() for label in labels if str(label).strip()}),
+        "annotation_provider": str(annotation_provider or "").strip().casefold(),
+        "generation_enabled": bool(generation_enabled),
+        "max_synthetic_images": int(max_synthetic_images),
+    }
+    real_inputs = _data_reuse_fingerprint_inputs(payload, "real")
+    synthetic_inputs = _data_reuse_fingerprint_inputs(payload, "synthetic")
+    return {
+        "digest": _data_reuse_fingerprint_digest(payload),
+        "inputs": payload,
+        "real": {
+            "digest": _data_reuse_fingerprint_digest(real_inputs),
+            "inputs": real_inputs,
+        },
+        "synthetic": {
+            "digest": _data_reuse_fingerprint_digest(synthetic_inputs),
+            "inputs": synthetic_inputs,
+        },
+    }
+
+
+def _data_reuse_fingerprint_digest(payload: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _data_reuse_fingerprint_inputs(payload: dict[str, Any], component: str) -> dict[str, Any]:
+    real_keys = ("dataset_sha256", "labels", "annotation_provider")
+    synthetic_keys = (
+        "dataset_sha256",
+        "image1_sha256",
+        "image2_sha256",
+        "labels",
+        "annotation_provider",
+        "generation_enabled",
+        "max_synthetic_images",
+    )
+    keys = real_keys if component == "real" else synthetic_keys
+    return {key: payload.get(key) for key in keys}
+
+
+def _data_reuse_fingerprint_component(fingerprint: dict[str, Any], component: str) -> dict[str, Any]:
+    stored = fingerprint.get(component)
+    if isinstance(stored, dict) and stored.get("digest"):
+        return stored
+    inputs = fingerprint.get("inputs") if isinstance(fingerprint.get("inputs"), dict) else {}
+    component_inputs = _data_reuse_fingerprint_inputs(inputs, component)
+    return {
+        "digest": _data_reuse_fingerprint_digest(component_inputs),
+        "inputs": component_inputs,
+    }
+
+
+def _reuse_previous_data_preparation(
+    *,
+    source: TrainingRunPaths | None,
+    target: TrainingRunPaths,
+    fingerprint: dict[str, Any],
+    mode: str,
+) -> tuple[DataPreparationReuse | None, str]:
+    if mode == "never":
+        return None, "reuse_disabled"
+    if source is None or source.run_id == target.run_id:
+        return None, "previous_run_not_found"
+    manifest_path = source.outputs / DATA_REUSE_MANIFEST_NAME
+    manifest = _read_json_file(manifest_path)
+    if not manifest:
+        return None, "previous_data_preparation_not_reusable"
+    previous_fingerprint = manifest.get("fingerprint") if isinstance(manifest.get("fingerprint"), dict) else {}
+    previous_real_fingerprint = _data_reuse_fingerprint_component(previous_fingerprint, "real")
+    current_real_fingerprint = _data_reuse_fingerprint_component(fingerprint, "real")
+    if str(previous_real_fingerprint.get("digest") or "") != str(current_real_fingerprint.get("digest") or ""):
+        return None, "real_annotation_fingerprint_mismatch"
+
+    source_real_coco = source.outputs / "pipeline_work" / "real_coco.json"
+    source_synthetic_coco = source.outputs / "pipeline_work" / "synthetic_coco.json"
+    source_merged_coco = source.outputs / "pipeline_work" / "merged_coco.json"
+    source_real_root = source.outputs / "uploaded_dataset"
+    source_synthetic_root = source.outputs / "pipeline_work" / "synthetic_images"
+    source_merged_root = source.outputs / "pipeline_work" / "merged_images"
+    real_facts = _validated_coco_facts(source_real_coco, source_real_root)
+    if real_facts is None or real_facts[0] <= 0:
+        return None, "previous_real_coco_or_images_incomplete"
+    synthetic_facts = _validated_coco_facts(source_synthetic_coco, source_synthetic_root)
+    merged_facts = _validated_coco_facts(source_merged_coco, source_merged_root)
+    synthetic_complete = bool(
+        synthetic_facts
+        and merged_facts
+        and synthetic_facts[0] > 0
+        and merged_facts[0] == real_facts[0] + synthetic_facts[0]
+    )
+    fingerprint_inputs = fingerprint.get("inputs") if isinstance(fingerprint.get("inputs"), dict) else {}
+    generation_enabled = bool(fingerprint_inputs.get("generation_enabled"))
+    previous_synthetic_fingerprint = _data_reuse_fingerprint_component(previous_fingerprint, "synthetic")
+    current_synthetic_fingerprint = _data_reuse_fingerprint_component(fingerprint, "synthetic")
+    synthetic_fingerprint_matches = (
+        str(previous_synthetic_fingerprint.get("digest") or "")
+        == str(current_synthetic_fingerprint.get("digest") or "")
+    )
+    synthetic_reused = generation_enabled and synthetic_complete and synthetic_fingerprint_matches
+    reuse_level = "real_and_synthetic" if synthetic_reused else "real_only"
+    selected_coco = source_merged_coco if synthetic_reused else source_real_coco
+    selected_facts = merged_facts if synthetic_reused else real_facts
+    expected_labels = {
+        str(label).strip().casefold()
+        for label in fingerprint_inputs.get("labels", [])
+        if str(label).strip()
+    }
+    if expected_labels and _coco_category_names_for_reuse(selected_coco) != expected_labels:
+        return None, "previous_coco_categories_mismatch"
+
+    copy_paths = DATA_REUSE_COPY_PATHS if synthetic_reused else REAL_DATA_REUSE_COPY_PATHS
+
+    staging_root = target.workspace / f".data-reuse-{os.urandom(4).hex()}"
+    backup_root = target.workspace / f".data-reuse-backup-{os.urandom(4).hex()}"
+    copied_files = 0
+    committed: list[tuple[Path, Path | None]] = []
+    try:
+        for relative in copy_paths:
+            source_path = source.outputs / relative
+            if not source_path.exists():
+                if relative.endswith("synthetic_plan.json"):
+                    continue
+                raise FileNotFoundError(str(source_path))
+            staged_path = staging_root / relative
+            copied_files += _copy_reuse_path(source_path, staged_path)
+
+        for relative in copy_paths:
+            staged_path = staging_root / relative
+            if not staged_path.exists():
+                continue
+            target_path = target.outputs / relative
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            backup_path: Path | None = None
+            if target_path.exists():
+                backup_path = backup_root / relative
+                backup_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(target_path), str(backup_path))
+            shutil.move(str(staged_path), str(target_path))
+            committed.append((target_path, backup_path))
+    except (OSError, ValueError) as exc:
+        for target_path, backup_path in reversed(committed):
+            _remove_reuse_path(target_path)
+            if backup_path is not None and backup_path.exists():
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(backup_path), str(target_path))
+        return None, f"reuse_copy_failed:{exc}"
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+    current_dataset_root = (
+        target.outputs / "pipeline_work" / "merged_images"
+        if synthetic_reused
+        else target.outputs / "uploaded_dataset"
+    )
+    current_coco = (
+        target.outputs / "pipeline_work" / "merged_coco.json"
+        if synthetic_reused
+        else target.outputs / "pipeline_work" / "real_coco.json"
+    )
+    provenance = {
+        "schema": "jetlinks-data-preparation-reuse.v1",
+        "source_run_id": source.run_id,
+        "target_run_id": target.run_id,
+        "fingerprint": fingerprint,
+        "real_images": real_facts[0],
+        "synthetic_images": synthetic_facts[0] if synthetic_reused and synthetic_facts else 0,
+        "annotations": selected_facts[1],
+        "copied_files": copied_files,
+        "reuse_level": reuse_level,
+        "synthetic_reused": synthetic_reused,
+        "real_fingerprint_matched": True,
+        "synthetic_fingerprint_matched": synthetic_fingerprint_matches,
+        "synthetic_reuse_reason": (
+            "reused"
+            if synthetic_reused
+            else (
+                "generation_disabled"
+                if not generation_enabled
+                else ("synthetic_artifacts_incomplete" if not synthetic_complete else "synthetic_fingerprint_mismatch")
+            )
+        ),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    (target.outputs / "data_reuse_provenance.json").write_text(
+        json.dumps(provenance, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return (
+        DataPreparationReuse(
+            source_run_id=source.run_id,
+            dataset_root=current_dataset_root.resolve(),
+            coco_json=current_coco.resolve(),
+            real_images=real_facts[0],
+            synthetic_images=synthetic_facts[0] if synthetic_reused and synthetic_facts else 0,
+            annotations=selected_facts[1],
+            copied_files=copied_files,
+            reuse_level=reuse_level,
+            synthetic_reused=synthetic_reused,
+        ),
+        "reused",
+    )
+
+
+def _copy_reuse_path(source: Path, target: Path) -> int:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, target, copy_function=shutil.copy2)
+        return sum(1 for path in target.rglob("*") if path.is_file())
+    shutil.copy2(source, target)
+    return 1
+
+
+def _remove_reuse_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _validated_coco_facts(coco_path: Path, image_root: Path) -> tuple[int, int] | None:
+    payload = _read_json_file(coco_path)
+    images = payload.get("images") if isinstance(payload.get("images"), list) else []
+    annotations = payload.get("annotations") if isinstance(payload.get("annotations"), list) else []
+    categories = payload.get("categories") if isinstance(payload.get("categories"), list) else []
+    if not coco_path.is_file() or not image_root.is_dir() or not images or not categories:
+        return None
+    available_names = {
+        path.name.casefold()
+        for path in image_root.rglob("*")
+        if path.is_file() and path.suffix.lower() in _IMAGE_EXTS
+    }
+    for image in images:
+        if not isinstance(image, dict):
+            return None
+        file_name = str(image.get("file_name") or "").replace("\\", "/").strip()
+        if not file_name:
+            return None
+        direct = image_root / file_name
+        if not direct.is_file() and Path(file_name).name.casefold() not in available_names:
+            return None
+    return len(images), len([item for item in annotations if isinstance(item, dict)])
+
+
+def _read_json_file(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _coco_category_names_for_reuse(path: Path) -> set[str]:
+    payload = _read_json_file(path)
+    categories = payload.get("categories") if isinstance(payload.get("categories"), list) else []
+    return {
+        str(item.get("name") or "").strip().casefold()
+        for item in categories
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+
+
+def _effective_synthetic_generation(
+    requested: bool,
+    image1: str | None,
+    image2: str | None,
+) -> tuple[bool, str]:
+    if not requested:
+        return False, "not_requested"
+    if not image1 or not image2:
+        return False, "sufficient_data_samples"
+    return True, ""
+
+
+def _mark_reused_data_preparation_summary(run_paths: TrainingRunPaths, reused: DataPreparationReuse) -> None:
+    summary_path = run_paths.outputs / "prepared_data" / "data_preparation_summary.json"
+    summary = _read_json_file(summary_path)
+    if not summary:
+        return
+    summary["real_coco"] = str((run_paths.outputs / "pipeline_work" / "real_coco.json").resolve())
+    summary["data_reuse"] = {
+        "source_run_id": reused.source_run_id,
+        "real_images": reused.real_images,
+        "synthetic_images": reused.synthetic_images,
+        "annotations": reused.annotations,
+        "copied_files": reused.copied_files,
+        "reuse_level": reused.reuse_level,
+        "synthetic_reused": reused.synthetic_reused,
+    }
+    if reused.synthetic_reused:
+        summary.update(
+            {
+                "synthetic_coco": str((run_paths.outputs / "pipeline_work" / "synthetic_coco.json").resolve()),
+                "synthetic_images": str((run_paths.outputs / "pipeline_work" / "synthetic_images").resolve()),
+                "synthetic_plan": str((run_paths.outputs / "pipeline_work" / "synthetic_plan.json").resolve())
+                if (run_paths.outputs / "pipeline_work" / "synthetic_plan.json").is_file()
+                else "",
+                "synthetic_generation_status": "reused",
+            }
+        )
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_data_preparation_reuse_manifest(
+    run_paths: TrainingRunPaths,
+    *,
+    fingerprint: dict[str, Any],
+    source_run_id: str,
+) -> None:
+    real_facts = _validated_coco_facts(
+        run_paths.outputs / "pipeline_work" / "real_coco.json",
+        run_paths.outputs / "uploaded_dataset",
+    )
+    synthetic_facts = _validated_coco_facts(
+        run_paths.outputs / "pipeline_work" / "synthetic_coco.json",
+        run_paths.outputs / "pipeline_work" / "synthetic_images",
+    )
+    merged_facts = _validated_coco_facts(
+        run_paths.outputs / "pipeline_work" / "merged_coco.json",
+        run_paths.outputs / "pipeline_work" / "merged_images",
+    )
+    real_complete = bool(real_facts and real_facts[0] > 0)
+    synthetic_complete = bool(
+        real_complete
+        and synthetic_facts
+        and merged_facts
+        and synthetic_facts[0] > 0
+        and merged_facts[0] == real_facts[0] + synthetic_facts[0]
+    )
+    reusable = real_complete
+    reuse_level = "real_and_synthetic" if synthetic_complete else ("real_only" if real_complete else "none")
+    payload = {
+        "schema": "jetlinks-data-preparation-reuse-manifest.v1",
+        "run_id": run_paths.run_id,
+        "source_run_id": source_run_id or None,
+        "reusable": reusable,
+        "reason": "complete" if synthetic_complete else ("real_annotations_complete" if real_complete else "real_artifacts_incomplete"),
+        "reuse_level": reuse_level,
+        "fingerprint": fingerprint,
+        "counts": {
+            "real_images": real_facts[0] if real_facts else 0,
+            "synthetic_images": synthetic_facts[0] if synthetic_facts else 0,
+            "merged_images": merged_facts[0] if merged_facts else 0,
+            "annotations": merged_facts[1] if synthetic_complete and merged_facts else (real_facts[1] if real_facts else 0),
+        },
+        "artifacts": list(DATA_REUSE_COPY_PATHS if synthetic_complete else REAL_DATA_REUSE_COPY_PATHS),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    manifest_path = run_paths.outputs / DATA_REUSE_MANIFEST_NAME
+    tmp = manifest_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(manifest_path)
 
 
 def _training_runs_workspace_root(paths: ThreadPaths) -> Path:

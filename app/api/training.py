@@ -191,11 +191,15 @@ async def cancel_training_job(thread_id: str) -> dict[str, object]:
         update_http_training_job_marker(normalized, status="cancelling", completed_at=None)
 
     runtime.session_manager.cancel_active_turn(normalized)
-    _mark_latest_progress_cancelled(normalized, status="cancelling", message="HTTP cancel requested.")
+    _mark_run_progress_cancelled(
+        normalized,
+        str(record.get("run_id") or ""),
+        status="cancelling",
+        message="HTTP cancel requested.",
+    )
     if isinstance(task, asyncio.Task) and not task.done():
         task.cancel()
     terminated_processes = _terminate_training_processes(normalized, str(record.get("run_id") or ""))
-    record["run_id"] = record.get("run_id") or _latest_run_id(normalized)
     record["status"] = "cancelled"
     record["completed_at"] = _utc_now()
     record["error"] = "Training job cancelled by HTTP request."
@@ -211,7 +215,12 @@ async def cancel_training_job(thread_id: str) -> dict[str, object]:
         error=record["error"],
         result=record.get("result"),
     )
-    _mark_latest_progress_cancelled(normalized, status="cancelled", message=cancel_message)
+    _mark_run_progress_cancelled(
+        normalized,
+        str(record.get("run_id") or ""),
+        status="cancelled",
+        message=cancel_message,
+    )
     await _publish_training_status(normalized, set())
     await _publish_http_job_session_update(
         normalized,
@@ -276,6 +285,10 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
                 },
             )
             async for event in runtime.iter_events(agent, request):
+                event_run_id = _training_run_id_from_event(event)
+                if event_run_id and not record.get("run_id"):
+                    record["run_id"] = event_run_id
+                    update_http_training_job_marker(thread_id, run_id=event_run_id)
                 result_from_event = _result_from_event(event)
                 if result_from_event is not None:
                     final_result = result_from_event
@@ -297,10 +310,14 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
         job_status = _job_status_from_result(final_result)
         record["status"] = job_status
         record["result"] = final_result.model_dump()
-        record["run_id"] = _latest_run_id(thread_id)
         if job_status == "cancelled":
             record["error"] = "Training job cancelled by HTTP request."
-            _mark_latest_progress_cancelled(thread_id, status="cancelled", message=record["error"])
+            _mark_run_progress_cancelled(
+                thread_id,
+                str(record.get("run_id") or ""),
+                status="cancelled",
+                message=record["error"],
+            )
         elif final_result.status != "completed":
             record["error"] = final_result.reply
         update_http_training_job_marker(
@@ -344,11 +361,16 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
             thread_id,
             status="cancelled",
             completed_at=_utc_now(),
-            run_id=_latest_run_id(thread_id),
+            run_id=record.get("run_id"),
             error=record["error"],
             result=_cancelled_http_job_result(thread_id, record),
         )
-        _mark_latest_progress_cancelled(thread_id, status="cancelled", message=record["error"])
+        _mark_run_progress_cancelled(
+            thread_id,
+            str(record.get("run_id") or ""),
+            status="cancelled",
+            message=record["error"],
+        )
         await _publish_training_status(thread_id, published_artifacts)
         await _publish_http_job_error(thread_id, job_id, -32800, record["error"])
         raise
@@ -359,7 +381,7 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
             thread_id,
             status="failed",
             completed_at=_utc_now(),
-            run_id=_latest_run_id(thread_id),
+            run_id=record.get("run_id"),
             error=record["error"],
             result=AgentRunResult(
                 agent=agent_name,
@@ -369,7 +391,12 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
                 metadata={"phase": "failed", "status": "failed", "job_id": job_id},
             ).model_dump(),
         )
-        _mark_latest_progress_cancelled(thread_id, status="failed", message=str(exc))
+        _mark_run_progress_cancelled(
+            thread_id,
+            str(record.get("run_id") or ""),
+            status="failed",
+            message=str(exc),
+        )
         await _publish_training_status(thread_id, published_artifacts)
         await _publish_http_job_error(thread_id, job_id, -32000, str(exc))
     finally:
@@ -399,6 +426,8 @@ def _normalize_runtime_options(raw: dict[str, Any]) -> dict[str, Any]:
         "modelName": "model_name",
         "trainingModelId": "training_model_id",
         "maxSyntheticImages": "max_synthetic_images",
+        "reusePreviousDataPreparation": "reuse_previous_data_preparation",
+        "reuseFromRunId": "reuse_from_run_id",
         "baseUrl": "base_url",
         "apiKey": "api_key",
         "topP": "top_p",
@@ -492,7 +521,7 @@ def _public_job_record(record: dict[str, Any]) -> dict[str, object]:
         created_at=str(record["created_at"]),
         started_at=record.get("started_at"),
         completed_at=record.get("completed_at"),
-        run_id=record.get("run_id") or _latest_run_id(str(record["thread_id"])),
+        run_id=record.get("run_id"),
         error=record.get("error"),
         status_url=str(record["status_url"]),
         artifacts_url=str(record["artifacts_url"]),
@@ -521,9 +550,13 @@ def _active_disk_training_record(thread_id: str) -> dict[str, Any] | None:
     marker = read_current_http_training_job_marker(thread_id, require_active=True)
     if marker is None:
         return None
-    try:
-        status = build_training_status(thread_id)
-    except (FileNotFoundError, ValueError):
+    run_id = str(marker.get("run_id") or "").strip()
+    if run_id:
+        try:
+            status = build_training_status(thread_id, run_id=run_id)
+        except (FileNotFoundError, ValueError):
+            status = {}
+    else:
         status = {}
     training = status.get("training") if isinstance(status.get("training"), dict) else {}
     status_value = str(status.get("status") or "")
@@ -536,7 +569,6 @@ def _active_disk_training_record(thread_id: str) -> dict[str, Any] | None:
     ):
         return None
     now = _utc_now()
-    run_id = str(marker.get("run_id") or status.get("run_id") or _latest_run_id(thread_id) or "")
     record_status = marker_status
     if record_status not in HTTP_TRAINING_ACTIVE_STATUSES:
         record_status = status_value if status_value in HTTP_TRAINING_ACTIVE_STATUSES else training_status or "running"
@@ -557,23 +589,16 @@ def _active_disk_training_record(thread_id: str) -> dict[str, Any] | None:
     }
 
 
-def _latest_run_id(thread_id: str) -> str | None:
-    runs_root = Path.cwd() / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs"
-    if not runs_root.is_dir():
+def _run_dir_for_thread(thread_id: str, run_id: str) -> Path | None:
+    if not run_id:
         return None
-    runs = sorted(path.name for path in runs_root.iterdir() if path.is_dir() and path.name.startswith("run-"))
-    return runs[-1] if runs else None
-
-
-def _run_dir_for_thread(thread_id: str, run_id: str | None = None) -> Path | None:
-    selected_run_id = run_id or _latest_run_id(thread_id)
-    if not selected_run_id:
-        return None
-    run_dir = Path.cwd() / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs" / selected_run_id
+    run_dir = Path.cwd() / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs" / run_id
     return run_dir.resolve() if run_dir.is_dir() else None
 
 
-def _terminate_training_processes(thread_id: str, run_id: str | None = None) -> list[int]:
+def _terminate_training_processes(thread_id: str, run_id: str) -> list[int]:
+    if not run_id:
+        return []
     run_dir = _run_dir_for_thread(thread_id, run_id)
     markers = _training_process_markers(thread_id, run_id, run_dir)
     if not markers:
@@ -616,8 +641,8 @@ def _terminate_training_processes(thread_id: str, run_id: str | None = None) -> 
     return killed
 
 
-def _training_process_markers(thread_id: str, run_id: str | None, run_dir: Path | None) -> list[str]:
-    selected_run_id = run_id or _latest_run_id(thread_id)
+def _training_process_markers(thread_id: str, run_id: str, run_dir: Path | None) -> list[str]:
+    selected_run_id = run_id
     thread_root = Path.cwd() / ".runtime" / "threads" / thread_id
     markers: list[str] = []
     if run_dir is not None:
@@ -757,8 +782,7 @@ def _terminate_process(pid: int) -> bool:
         return False
 
 
-def _mark_latest_progress_cancelled(thread_id: str, *, status: str, message: str) -> None:
-    run_id = _latest_run_id(thread_id)
+def _mark_run_progress_cancelled(thread_id: str, run_id: str, *, status: str, message: str) -> None:
     if not run_id:
         return
     path = Path.cwd() / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs" / run_id / "progress_state.json"
@@ -787,6 +811,11 @@ async def _publish_runtime_event(thread_id: str, event: ChatEvent) -> None:
     update = _event_to_session_update(event)
     if update is not None:
         await _publish_http_job_session_update(thread_id, update)
+    if event.type in {
+        "data_preparation.synthetic_generation.started",
+        "data_preparation.synthetic_generation.finished",
+    }:
+        await _publish_training_status(thread_id)
 
 
 async def _publish_http_job_session_update(thread_id: str, update: dict[str, Any]) -> None:
@@ -805,14 +834,18 @@ async def _publish_http_job_session_update(thread_id: str, update: dict[str, Any
 
 
 async def _publish_training_status(thread_id: str, published_artifacts: set[str] | None = None) -> None:
+    marker = read_current_http_training_job_marker(thread_id, require_active=False)
+    run_id = str((marker or {}).get("run_id") or "").strip()
+    if not run_id:
+        return
     try:
-        status = build_training_stream_status(thread_id)
+        status = build_training_stream_status(thread_id, run_id=run_id)
     except (FileNotFoundError, ValueError):
         return
     await acp_event_broker.publish({thread_id}, "training/status", status)
     if published_artifacts is not None:
         try:
-            full_status = build_training_status(thread_id)
+            full_status = build_training_status(thread_id, run_id=run_id)
         except (FileNotFoundError, ValueError):
             return
         await _publish_training_artifact_updates(thread_id, full_status, published_artifacts)
@@ -975,6 +1008,12 @@ def _event_reply_text(event: ChatEvent) -> str:
         if isinstance(result, dict):
             return str(result.get("reply") or "").strip()
     return ""
+
+
+def _training_run_id_from_event(event: ChatEvent) -> str:
+    if event.type != "workflow.training_run.selected":
+        return ""
+    return str(event.data.get("run_id") or "").strip()
 
 
 def _event_diff(event: ChatEvent) -> dict[str, Any] | None:

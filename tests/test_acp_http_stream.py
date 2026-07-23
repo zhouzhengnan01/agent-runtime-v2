@@ -157,6 +157,17 @@ def test_http_training_status_bridges_new_artifacts_to_session_update(tmp_path: 
     artifact_store = ArtifactStore(root_dir=root)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(training, "runtime", SimpleNamespace(artifact_store=artifact_store))
+    write_http_training_job_marker(
+        thread_id,
+        {
+            "job_id": "job-artifact-bridge",
+            "thread_id": thread_id,
+            "status": "running",
+            "created_at": "2026-07-22T00:00:00Z",
+            "started_at": "2026-07-22T00:00:00Z",
+            "run_id": "run-001",
+        },
+    )
 
     async def collect() -> list[dict]:
         request = AcpHttpSubscriptionRequest(threadId=thread_id)
@@ -533,6 +544,10 @@ def test_http_subscription_polling_bridges_artifacts_to_session_update(tmp_path:
 
     assert status is not None
     assert payloads[0]["method"] == "session/update"
+    assert {
+        payload["params"]["update"]["_meta"]["jetlinksRuntimeEvent"]["type"]
+        for payload in payloads
+    } == {"artifact.created"}
     artifact_names = [
         payload["params"]["update"]["artifact"]["name"]
         for payload in payloads
@@ -739,6 +754,87 @@ def test_http_subscription_ignores_stale_latest_run_before_new_run_starts(tmp_pa
     )
 
     assert acp_http_stream._initial_training_status({thread_id}, set()) is None
+    assert acp_http_stream._artifact_session_update_payloads({thread_id}, set(), set()) == []
+
+
+def test_http_status_publisher_waits_for_bound_run_id(tmp_path: Path, monkeypatch) -> None:
+    thread_id = "bound-run-only-thread"
+    old_run_id = "run-deimv2-old"
+    new_run_id = "run-deimv2-new"
+    runs = tmp_path / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs"
+    old_run_dir = runs / old_run_id
+    old_run_dir.mkdir(parents=True)
+    (old_run_dir / "progress_state.json").write_text(
+        json.dumps(
+            {
+                "thread_id": thread_id,
+                "run_id": old_run_id,
+                "status": "failed",
+                "phase": "failed",
+                "created_at": "2026-07-21T08:00:00Z",
+                "started_at": "2026-07-21T08:00:00Z",
+                "completed_at": "2026-07-21T08:10:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    write_http_training_job_marker(
+        thread_id,
+        {
+            "job_id": "job-bound-run-only",
+            "thread_id": thread_id,
+            "status": "running",
+            "created_at": "2026-07-22T08:00:00Z",
+            "started_at": "2026-07-22T08:00:00Z",
+            "run_id": None,
+        },
+    )
+
+    async def publish_without_run_id() -> bool:
+        subscriber_id, queue = await acp_event_broker.subscribe({thread_id})
+        try:
+            await training._publish_training_status(thread_id)
+            try:
+                await asyncio.wait_for(queue.get(), timeout=0.05)
+            except TimeoutError:
+                return False
+            return True
+        finally:
+            await acp_event_broker.unsubscribe(subscriber_id, {thread_id})
+
+    assert asyncio.run(publish_without_run_id()) is False
+
+    new_run_dir = runs / new_run_id
+    new_run_dir.mkdir(parents=True)
+    (new_run_dir / "progress_state.json").write_text(
+        json.dumps(
+            {
+                "thread_id": thread_id,
+                "run_id": new_run_id,
+                "status": "running",
+                "phase": "annotation",
+                "created_at": "2026-07-22T08:00:05Z",
+                "started_at": "2026-07-22T08:00:05Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    selected = ChatEvent(type="workflow.training_run.selected", data={"run_id": new_run_id})
+    assert training._training_run_id_from_event(selected) == new_run_id
+    training.update_http_training_job_marker(thread_id, run_id=new_run_id)
+
+    async def publish_bound_run() -> dict:
+        subscriber_id, queue = await acp_event_broker.subscribe({thread_id})
+        try:
+            await training._publish_training_status(thread_id)
+            return (await asyncio.wait_for(queue.get(), timeout=1)).payload
+        finally:
+            await acp_event_broker.unsubscribe(subscriber_id, {thread_id})
+
+    payload = asyncio.run(publish_bound_run())
+    assert payload["run_id"] == new_run_id
+    assert payload["run_id"] != old_run_id
 
 
 def test_training_status_fingerprint_ignores_volatile_fields() -> None:

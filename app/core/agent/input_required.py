@@ -50,7 +50,7 @@ def required_inputs_for_request(request: ChatRequest) -> list[dict[str, Any]]:
     # Preflight guards catch common long-running flows before the agent spends
     # tool rounds only to discover that basic files were never provided.
     # Named workflows can have their own multi-turn input contract. YOLO
-    # training, for example, asks for dataset/image1/image2 together.
+    # training requires a dataset; image1/image2 are an optional synthetic pair.
     if _workflow_owns_input_contract(request):
         return []
     selected_skills = {name.strip() for name in request.runtime_options.selected_skills if name.strip()}

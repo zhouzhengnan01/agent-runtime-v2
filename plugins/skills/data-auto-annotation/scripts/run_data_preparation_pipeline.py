@@ -69,6 +69,27 @@ def _safe_print(message: str, *, file: Any | None = None, end: str = "\n", flush
         return
 
 
+def _emit_synthetic_generation_progress(status: str, **data: Any) -> None:
+    payload = {"status": status, **data}
+    _safe_print("[data-prep-event] synthetic_generation " + json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _synthetic_generation_terminal_status(payload: Dict[str, Any]) -> str:
+    error = "\n".join(
+        str(payload.get(key) or "")
+        for key in ("synthetic_generation_error", "synthetic_generation_primary_error")
+    ).lower()
+    if any(marker in error for marker in ("timeout", "timed out", "readtimeout", "connecttimeout", "deadline exceeded", "gateway timeout", "超时")):
+        return "timeout"
+    return "failed"
+
+
+def _count_generated_images(path: Path) -> int:
+    if not path.is_dir():
+        return 0
+    return sum(1 for item in path.rglob("*") if item.is_file() and item.suffix.lower() in IMAGE_EXTENSIONS)
+
+
 def _load_json(path: Path) -> Dict:
     with path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
@@ -1852,6 +1873,16 @@ def _apply_input_json(args: argparse.Namespace) -> argparse.Namespace:
     args.work_dir = _coalesce(args.work_dir, ctx.get("work_dir"), spec.get("work_dir"), output.get("work_dir"), default="")
     args.output_dir = _coalesce(args.output_dir, ctx.get("output_dir"), spec.get("output_dir"), output.get("output_dir"), default="")
     args.skip_generation = args.skip_generation or _bool_value(spec.get("skip_generation"), False)
+    args.generation_skip_reason = str(
+        _coalesce(
+            args.generation_skip_reason,
+            spec.get("generation_skip_reason"),
+            ctx.get("generation_skip_reason"),
+            default="",
+        )
+        or ""
+    ).strip()
+    args.reuse_synthetic_data = args.reuse_synthetic_data or _bool_value(spec.get("reuse_synthetic_data"), False)
     args.dry_run = args.dry_run or _bool_value(spec.get("dry_run"), False)
     args.max_synthetic = int(_coalesce(spec.get("max_synthetic"), args.max_synthetic, default=args.max_synthetic))
     args.synthetic_count_button = _bool_value(_coalesce(spec.get("synthetic_count_button"), args.synthetic_count_button, default=True), True)
@@ -1885,6 +1916,8 @@ def main() -> None:
     parser.add_argument("--image1", default=None)
     parser.add_argument("--image2", default=None)
     parser.add_argument("--skip-generation", action="store_true")
+    parser.add_argument("--generation-skip-reason", default="")
+    parser.add_argument("--reuse-synthetic-data", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--max-synthetic", type=int, default=2000)
     parser.add_argument("--synthetic-count-button", default=True)
@@ -1992,12 +2025,35 @@ def main() -> None:
     training_root = Path(inspection["images_dir"]).resolve()
     synthetic_policy_enabled = False
     plan_path = ""
+    skipped_for_sufficient_data = args.skip_generation and args.generation_skip_reason == "sufficient_data_samples"
     synthetic_status: Dict[str, Any] = {
-        "synthetic_generation_status": "not_requested" if args.skip_generation else "not_planned",
+        "synthetic_generation_status": "skipped_sufficient_data" if skipped_for_sufficient_data else ("not_requested" if args.skip_generation else "not_planned"),
         "synthetic_generation_error": "",
         "synthetic_generation_fallback": "",
         "synthetic_pending_inputs": False,
+        "synthetic_generation_skip_reason": args.generation_skip_reason if args.skip_generation else "",
+        "synthetic_generation_skip_description": "Data samples are sufficient." if skipped_for_sufficient_data else "",
     }
+
+    if skipped_for_sufficient_data and not args.reuse_synthetic_data:
+        _safe_print("[data-prep] Synthetic generation skipped. Data samples are sufficient.")
+        _emit_synthetic_generation_progress(
+            "skipped",
+            planned=0,
+            completed=0,
+            success=0,
+            failed=0,
+            reason_code="sufficient_data_samples",
+            reason="Data samples are sufficient.",
+        )
+
+    if args.reuse_synthetic_data:
+        synthetic_policy_enabled = True
+        synthetic_status.update({
+            "synthetic_generation_status": "reused",
+            "synthetic_generation_fallback": "",
+            "synthetic_pending_inputs": False,
+        })
 
     if not args.skip_generation:
         plan = _plan_synthetic(
@@ -2017,12 +2073,24 @@ def main() -> None:
         _safe_print(f"[data-prep] recommended_synthetic_count={recommended_count}")
         if recommended_count > 0:
             if not args.image1 or not args.image2:
-                _safe_print("[data-prep] Synthetic generation is pending because image1/image2 inputs were not provided.")
+                _safe_print("[data-prep] Synthetic generation skipped. Data samples are sufficient.")
                 synthetic_status.update({
-                    "synthetic_generation_status": "pending_inputs",
-                    "synthetic_pending_inputs": True,
+                    "synthetic_generation_status": "skipped_sufficient_data",
+                    "synthetic_pending_inputs": False,
+                    "synthetic_generation_skip_reason": "sufficient_data_samples",
+                    "synthetic_generation_skip_description": "Data samples are sufficient.",
                 })
+                _emit_synthetic_generation_progress(
+                    "skipped",
+                    planned=0,
+                    completed=0,
+                    success=0,
+                    failed=0,
+                    reason_code="sufficient_data_samples",
+                    reason="Data samples are sufficient.",
+                )
             else:
+                _emit_synthetic_generation_progress("running", planned=recommended_count, completed=0)
                 try:
                     synthetic_root, synthetic_coco = _generate_and_annotate_synthetic(
                         plan,
@@ -2044,6 +2112,14 @@ def main() -> None:
                         "synthetic_images": str(synthetic_root),
                         "synthetic_coco": str(synthetic_coco),
                     })
+                    generated_count = _count_generated_images(synthetic_root)
+                    _emit_synthetic_generation_progress(
+                        "completed",
+                        planned=recommended_count,
+                        completed=generated_count,
+                        success=generated_count,
+                        failed=0,
+                    )
                 except Exception as exc:
                     if _looks_like_generation_api_unavailable(exc):
                         primary_payload = _synthetic_generation_failure_payload(exc)
@@ -2075,15 +2151,41 @@ def main() -> None:
                                 "synthetic_images": str(synthetic_root),
                                 "synthetic_coco": str(synthetic_coco),
                             })
+                            generated_count = _count_generated_images(synthetic_root)
+                            _emit_synthetic_generation_progress(
+                                "completed",
+                                planned=recommended_count,
+                                completed=generated_count,
+                                success=generated_count,
+                                failed=0,
+                                fallback_used=True,
+                            )
                         except Exception as fallback_exc:
                             synthetic_status.update(_synthetic_generation_failure_payload(fallback_exc))
                             synthetic_status["synthetic_generation_primary_error"] = primary_payload.get("synthetic_generation_error", "")
                             message = synthetic_status.get("synthetic_generation_error") or str(fallback_exc)
                             _safe_print(f"[data-prep] image-dataset-produce fallback failed; continuing with real dataset only: {message}", file=sys.stderr)
+                            _emit_synthetic_generation_progress(
+                                _synthetic_generation_terminal_status(synthetic_status),
+                                planned=recommended_count,
+                                completed=0,
+                                success=0,
+                                failed=recommended_count,
+                                error=message,
+                                fallback_used=True,
+                            )
                     else:
                         synthetic_status.update(_synthetic_generation_failure_payload(exc))
                         message = synthetic_status.get("synthetic_generation_error") or str(exc)
                         _safe_print(f"[data-prep] Synthetic generation failed; continuing with real dataset only: {message}", file=sys.stderr)
+                        _emit_synthetic_generation_progress(
+                            _synthetic_generation_terminal_status(synthetic_status),
+                            planned=recommended_count,
+                            completed=0,
+                            success=0,
+                            failed=recommended_count,
+                            error=message,
+                        )
         else:
             _safe_print("[data-prep] Synthetic generation skipped because planner recommended 0 images.")
             synthetic_status.update({"synthetic_generation_status": "skipped_zero_recommendation"})

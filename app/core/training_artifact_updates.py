@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.artifacts import ArtifactStore
+from app.core.training_annotation_previews import add_annotation_preview_to_update
 
 
 TRAINING_ARTIFACT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
@@ -20,6 +21,8 @@ def build_training_artifact_session_updates(
     status: dict[str, Any],
     artifact_store: ArtifactStore,
     published_artifacts: set[str],
+    preview_width: int | None = None,
+    preview_height: int | None = None,
 ) -> list[dict[str, Any]]:
     updates: list[dict[str, Any]] = []
     for path in training_status_artifact_paths(status):
@@ -35,8 +38,16 @@ def build_training_artifact_session_updates(
         except (OSError, ValueError):
             continue
         published_artifacts.add(key)
-        updates.append(_artifact_session_update("artifact.created", artifact))
-        updates.append(_artifact_session_update("preview.ready", artifact))
+        update = _artifact_session_update("artifact.created", artifact)
+        updates.append(
+            add_annotation_preview_to_update(
+                update,
+                thread_id=thread_id,
+                artifact_store=artifact_store,
+                preview_width=preview_width,
+                preview_height=preview_height,
+            )
+        )
     return updates
 
 

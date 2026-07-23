@@ -456,7 +456,7 @@ def test_acp_runtime_options_keep_llm_model_id_separate_from_training_model_id()
     assert payload["skill_parameters"]["yolo_training_flow"]["modelId"] == "model-nested"
 
 
-def test_yolo_training_flow_owns_three_zip_input_contract(tmp_path: Path) -> None:
+def test_yolo_training_flow_only_requires_dataset_input(tmp_path: Path) -> None:
     module = _load_yolo_training_flow_module()
     request = ChatRequest(
         messages=[Message(role="user", content="帮我训练一个YOLO抽烟检测模型")],
@@ -487,7 +487,15 @@ def test_yolo_training_flow_owns_three_zip_input_contract(tmp_path: Path) -> Non
 
     required_inputs = result.metadata["required_inputs"]
     assert result.metadata["requires_input"] is True
-    assert [item["type"] for item in required_inputs] == ["dataset", "image", "image"]
+    assert [item["type"] for item in required_inputs] == ["dataset"]
     assert "数据集" in required_inputs[0]["reason"]
-    assert "image1" in required_inputs[1]["reason"]
-    assert "image2" in required_inputs[2]["reason"]
+
+
+def test_synthetic_generation_requires_complete_image_pair() -> None:
+    module = _load_yolo_training_flow_module()
+
+    assert module._effective_synthetic_generation(True, None, None) == (False, "sufficient_data_samples")
+    assert module._effective_synthetic_generation(True, "image1.zip", None) == (False, "sufficient_data_samples")
+    assert module._effective_synthetic_generation(True, None, "image2.zip") == (False, "sufficient_data_samples")
+    assert module._effective_synthetic_generation(True, "image1.zip", "image2.zip") == (True, "")
+    assert module._effective_synthetic_generation(False, "image1.zip", "image2.zip") == (False, "not_requested")

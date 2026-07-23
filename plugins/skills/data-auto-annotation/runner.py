@@ -218,6 +218,10 @@ def _handle_stream_line(
     clean = (text or "").strip()
     if not clean:
         return
+    progress_event = _synthetic_generation_progress_event(clean)
+    if progress_event is not None and on_event is not None:
+        event_type, payload = progress_event
+        on_event(event_type, payload)
     generated_image = _generated_image_from_line(clean)
     if generated_image is not None:
         _emit_file_artifact(
@@ -240,6 +244,25 @@ def _handle_stream_line(
             event_type="data_preparation.image_annotated",
             register_artifacts=register_artifacts,
         )
+
+
+def _synthetic_generation_progress_event(line: str) -> tuple[str, dict[str, Any]] | None:
+    prefix = "[data-prep-event] synthetic_generation "
+    if not line.startswith(prefix):
+        return None
+    try:
+        payload = json.loads(line[len(prefix) :])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    status = str(payload.get("status") or "").strip().lower()
+    event_type = (
+        "data_preparation.synthetic_generation.started"
+        if status == "running"
+        else "data_preparation.synthetic_generation.finished"
+    )
+    return event_type, payload
 
 
 def _generated_image_from_line(line: str) -> Path | None:
@@ -295,7 +318,6 @@ def _emit_file_artifact(
     on_event(event_type, payload)
     if register_artifacts:
         on_event("artifact.created", payload)
-        on_event("preview.ready", payload)
 
 
 def _emit_artifacts(outputs: list[Any], on_event: Callable[[str, dict[str, Any]], Any] | None) -> None:
@@ -304,7 +326,6 @@ def _emit_artifacts(outputs: list[Any], on_event: Callable[[str, dict[str, Any]]
     for artifact in outputs:
         payload = {"artifact": artifact.model_dump()}
         on_event("artifact.created", payload)
-        on_event("preview.ready", payload)
 
 
 def _normalize_spec(spec: dict[str, Any], paths: Any) -> dict[str, Any]:

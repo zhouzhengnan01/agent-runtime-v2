@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +61,16 @@ LOG_FILENAMES = {
     "deimv2-training-train.log",
     "deimv2-training-epochs.txt",
 }
+TRAINING_ERROR_LINE_RE = re.compile(
+    r"(?:\b[A-Za-z_][\w.]*(?:Error|Exception)\b(?:\s*:|\s*$))|"
+    r"(?:^\s*(?:\[[^\]]+\]\s*)?(?:ERROR|ERR|CRITICAL|FATAL|PANIC|FAIL(?:ED|URE)?)\b)|"
+    r"(?:\b(?:ERROR|CRITICAL|FATAL|PANIC|FAIL(?:ED|URE)?)\s*[:=\]])|"
+    r"(?:\b(?:out of memory|oom-kill|killed process|killed by signal|exited unexpectedly|"
+    r"terminated unexpectedly|stopped unexpectedly|aborted|segmentation fault|core dumped|"
+    r"bus error|illegal instruction|assertion .+ failed|terminate called|uncaught exception|"
+    r"(?:received|caught) signal)\b)|(?:^\s*Killed\s*$)",
+    re.IGNORECASE,
+)
 
 
 def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any, on_event: Any = None) -> dict[str, Any]:
@@ -130,6 +141,9 @@ def run(skill_name: str, spec: dict[str, Any], paths: Any, artifact_store: Any, 
     _copy_training_log_to_workflow_logs(project_dir, workflow_log_dir)
     outputs = _collect_outputs(project_dir, paths, artifact_store)
     data = _parse_last_json_object(train_proc.stdout)
+    training_error = _read_training_error(project_dir) if train_proc.returncode != 0 else None
+    if training_error:
+        data["training_error"] = training_error
     if prepare_proc.stdout:
         data["prepare_stdout"] = prepare_proc.stdout[-4000:]
     if prepare_proc.stderr:
@@ -360,6 +374,9 @@ def _parse_last_json_object(text: str) -> dict[str, Any]:
 
 
 def _build_reply(project_dir: Path, returncode: int, data: dict[str, Any], stdout: str, stderr: str) -> str:
+    training_error = data.get("training_error") if isinstance(data.get("training_error"), dict) else None
+    if returncode != 0 and not training_error:
+        training_error = _read_training_error(project_dir)
     payload = {
         "status": "completed" if returncode == 0 else "failed",
         "returncode": returncode,
@@ -373,4 +390,60 @@ def _build_reply(project_dir: Path, returncode: int, data: dict[str, Any], stdou
         "stdout_tail": stdout[-1200:] if stdout else "",
         "stderr_tail": stderr[-1200:] if stderr else "",
     }
+    if training_error:
+        payload["training_error"] = training_error
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _read_training_error(project_dir: Path) -> dict[str, str] | None:
+    log_path = project_dir / "logs" / "train.log"
+    if not log_path.is_file():
+        return None
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")[-256_000:]
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+
+    lines = text.splitlines()
+    error_lines = [(index, line.strip()) for index, line in enumerate(lines) if TRAINING_ERROR_LINE_RE.search(line)]
+    if not error_lines:
+        return {
+            "message": "训练进程异常退出，但 train.log 中未检测到明确的报错信息。",
+            "hint": "进程可能被系统从外部终止，请检查系统 OOM、SIGKILL 或服务停止日志。",
+            "log_path": str(log_path),
+        }
+
+    killed_workers = [item for item in error_lines if "dataloader worker" in item[1].lower() and "killed" in item[1].lower()]
+    root_line = (killed_workers[-1] if killed_workers else error_lines[-1])[1]
+    message = " ".join(root_line.split())
+
+    detail_end_index = error_lines[-1][0]
+    traceback_indexes = [index for index, line in enumerate(lines[: detail_end_index + 1]) if "Traceback (most recent call last):" in line]
+    if traceback_indexes:
+        # Keep chained tracebacks together, but start after unrelated earlier log output.
+        first_traceback = traceback_indexes[-1]
+        while first_traceback > 0:
+            earlier = [index for index in traceback_indexes if index < first_traceback]
+            if not earlier or first_traceback - earlier[-1] > 120:
+                break
+            first_traceback = earlier[-1]
+        details = "\n".join(lines[first_traceback : detail_end_index + 1]).strip()[-6000:]
+    else:
+        matched_lines = [" ".join(line.split()) for _index, line in error_lines]
+        details = "\n".join(dict.fromkeys(line for line in matched_lines if line))[-6000:]
+
+    error: dict[str, str] = {
+        "message": message,
+        "details": details,
+        "log_path": str(log_path),
+    }
+    lowered = f"{message}\n{details}".lower()
+    if "dataloader worker" in lowered and ("killed" in lowered or "exited unexpectedly" in lowered):
+        error["hint"] = "DataLoader 子进程被系统终止，常见原因是主机内存不足（OOM）或外部 SIGKILL；请结合系统 OOM 日志确认。"
+    elif "cuda out of memory" in lowered:
+        error["hint"] = "CUDA 显存不足，请降低 batch、输入尺寸或 DataLoader 并发后重试。"
+    elif "openblas error" in lowered and "memory allocation" in lowered:
+        error["hint"] = "OpenBLAS 内存分配失败，请降低并发或批次并检查主机可用内存。"
+    return error

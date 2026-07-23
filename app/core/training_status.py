@@ -135,11 +135,66 @@ class TrainingProgressWriter:
             self._increment_counter(state, "generation", "completed")
             state["phase"] = "synthetic_generation"
             state["phase_label"] = "synthetic generation running"
+        elif event.type == "data_preparation.synthetic_generation.started":
+            self._mark_stage_running(state, "generation", "synthetic_generation")
+            generation = state.setdefault("generation", {})
+            if isinstance(generation, dict):
+                self._merge_generation_event(generation, event.data)
+            state["phase"] = "synthetic_generation"
+            state["phase_label"] = "synthetic generation running"
+        elif event.type == "data_preparation.synthetic_generation.finished":
+            generation = state.setdefault("generation", {})
+            if isinstance(generation, dict):
+                self._merge_generation_event(generation, event.data)
+                generation["completed_at"] = event.data.get("timestamp") or now
+                generation["updated_at"] = now
+            state["phase"] = "synthetic_generation"
+            state["phase_label"] = f"synthetic generation {event.data.get('status') or 'finished'}"
         elif event.type == "data_preparation.image_annotated":
             self._mark_stage_running(state, "annotation", "annotation")
             self._increment_counter(state, "annotation", "completed")
             state["phase"] = "annotation"
             state["phase_label"] = "annotation running"
+        elif event.type == "data_preparation.artifacts_reused":
+            real_images = int(event.data.get("real_images") or 0)
+            synthetic_images = int(event.data.get("synthetic_images") or 0)
+            synthetic_reused = bool(event.data.get("synthetic_reused"))
+            now = event.data.get("timestamp") or utc_now()
+            state["phase"] = "data_reuse"
+            state["phase_label"] = "data preparation artifacts reused"
+            state["data_reuse"] = {
+                "status": "completed",
+                "source_run_id": event.data.get("source_run_id"),
+                "target_run_id": event.data.get("target_run_id"),
+                "real_images": real_images,
+                "synthetic_images": synthetic_images,
+                "annotations": int(event.data.get("annotations") or 0),
+                "copied_files": int(event.data.get("copied_files") or 0),
+                "reuse_level": event.data.get("reuse_level") or ("real_and_synthetic" if synthetic_reused else "real_only"),
+                "synthetic_reused": synthetic_reused,
+                "completed_at": now,
+            }
+            state["annotation"] = {
+                "status": "completed",
+                "phase": "annotation",
+                "started_at": now,
+                "completed_at": now,
+                "updated_at": now,
+                "reused": True,
+            }
+            if synthetic_reused:
+                state["generation"] = {
+                    "status": "completed",
+                    "phase": "synthetic_generation",
+                    "planned": synthetic_images,
+                    "completed": synthetic_images,
+                    "success": synthetic_images,
+                    "failed": 0,
+                    "started_at": now,
+                    "completed_at": now,
+                    "updated_at": now,
+                    "reused": True,
+                }
         elif event.type == "run.failed":
             state["status"] = "failed"
             state["phase"] = "failed"
@@ -249,6 +304,13 @@ class TrainingProgressWriter:
             target[field] = int(target.get(field) or 0) + 1
             target["updated_at"] = utc_now()
 
+    def _merge_generation_event(self, generation: dict[str, Any], data: dict[str, Any]) -> None:
+        for key in ("status", "planned", "completed", "success", "failed", "error", "fallback_used", "reason", "reason_code"):
+            if data.get(key) is not None:
+                generation[key] = data.get(key)
+        generation["started_at"] = generation.get("started_at") or data.get("timestamp") or utc_now()
+        generation["updated_at"] = data.get("timestamp") or utc_now()
+
     def _mark_stage_pending(self, state: dict[str, Any], block: str) -> None:
         target = state.setdefault(block, {})
         if isinstance(target, dict):
@@ -267,7 +329,7 @@ class TrainingProgressWriter:
 
     def _mark_stage_completed_if_started(self, state: dict[str, Any], block: str) -> None:
         target = state.setdefault(block, {})
-        if isinstance(target, dict) and target.get("started_at"):
+        if isinstance(target, dict) and target.get("started_at") and target.get("status") in {None, "pending", "running"}:
             target["status"] = "completed"
             target["completed_at"] = target.get("completed_at") or utc_now()
             target["updated_at"] = utc_now()
@@ -348,7 +410,11 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
         "backend": backend,
         "status": status,
         "phase": phase,
-        "phase_label": _phase_label(phase, status),
+        "phase_label": (
+            state.get("phase_label")
+            if state.get("phase") == phase and state.get("phase_label")
+            else _phase_label(phase, status)
+        ),
         "last_event": state.get("last_event"),
         "next_expected_phase": _next_expected_phase(phase, status),
         "created_at": state.get("created_at") or _mtime_iso(run_dir),
@@ -358,6 +424,7 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
         "elapsed_seconds": _elapsed_seconds(started_at, completed_at or now),
         "request": state.get("request") if isinstance(state.get("request"), dict) else {},
         "model_request": _model_request_status(state),
+        "data_reuse": state.get("data_reuse") if isinstance(state.get("data_reuse"), dict) else {},
         "files": _files_status(thread_dir),
         "dataset": _dataset_status(run_dir),
         "annotation": _annotation_status(run_dir, state),
@@ -381,6 +448,7 @@ def build_training_stream_status(thread_id: str, run_id: str | None = None) -> d
         "backend": status.get("backend"),
         "status": status.get("status"),
         "phase": status.get("phase"),
+        "phase_label": status.get("phase_label"),
         "last_event": status.get("last_event"),
         "next_expected_phase": status.get("next_expected_phase"),
         "created_at": status.get("created_at"),
@@ -390,8 +458,10 @@ def build_training_stream_status(thread_id: str, run_id: str | None = None) -> d
         "elapsed_seconds": status.get("elapsed_seconds"),
         "request": status.get("request") if isinstance(status.get("request"), dict) else {},
         "model_request": status.get("model_request") if isinstance(status.get("model_request"), dict) else {},
+        "data_reuse": status.get("data_reuse") if isinstance(status.get("data_reuse"), dict) else {},
         "files": status.get("files") if isinstance(status.get("files"), dict) else {},
         "dataset": status.get("dataset") if isinstance(status.get("dataset"), dict) else {},
+        "generation": status.get("generation") if isinstance(status.get("generation"), dict) else {},
         "info": _stream_info(status),
         "evaluation": status.get("evaluation") if isinstance(status.get("evaluation"), dict) else {},
         "resources": _stream_resources(status.get("resources")),
@@ -533,6 +603,7 @@ def _phase_label(phase: Any, status: Any) -> str:
         "llm_request": "llm request running",
         "run_selected": "run selected",
         "data_preparation": "data preparation running",
+        "data_reuse": "data preparation artifacts reused",
         "data_preparation_completed": "data preparation completed",
         "synthetic_generation": "synthetic generation running",
         "annotation": "annotation running",
@@ -545,7 +616,7 @@ def _phase_label(phase: Any, status: Any) -> str:
 def _next_expected_phase(phase: Any, status: Any) -> str | None:
     if status in {"completed", "failed"}:
         return None
-    order = ["llm_request", "data_preparation", "synthetic_generation", "annotation", "training", "training_completed", "evaluation", "completed"]
+    order = ["llm_request", "data_preparation", "data_reuse", "synthetic_generation", "annotation", "training", "training_completed", "evaluation", "completed"]
     try:
         return order[order.index(str(phase)) + 1]
     except (ValueError, IndexError):
@@ -802,12 +873,12 @@ def _merge_counter_state(block: dict[str, Any], state_block: dict[str, Any]) -> 
     if not isinstance(state_block, dict):
         return block
     merged = dict(block)
-    for key in ("started_at", "completed_at", "updated_at", "current_image"):
+    for key in ("started_at", "completed_at", "updated_at", "current_image", "planned", "completed", "success", "failed", "error", "fallback_used", "reason", "reason_code"):
         if state_block.get(key) is not None:
             merged[key] = state_block.get(key)
-    if state_block.get("status") in {"pending", "running", "completed", "failed"}:
+    if state_block.get("status") in {"pending", "running", "completed", "failed", "timeout", "skipped", "disabled"}:
         state_status = state_block["status"]
-        if state_status == "failed" or merged.get("status") != "completed":
+        if state_status in {"failed", "timeout"} or merged.get("status") != "completed":
             merged["status"] = state_status
     return merged
 
@@ -854,6 +925,20 @@ def _stream_info(status: dict[str, Any]) -> dict[str, Any]:
                 "elapsed_ms": current_llm.get("elapsed_ms"),
             },
         }
+    if phase == "data_reuse":
+        reuse = status.get("data_reuse") if isinstance(status.get("data_reuse"), dict) else {}
+        return {
+            "stage": "data_reuse",
+            "status": reuse.get("status") or "completed",
+            "metrics": {
+                "source_run_id": reuse.get("source_run_id"),
+                "real_images": reuse.get("real_images") or 0,
+                "synthetic_images": reuse.get("synthetic_images") or 0,
+                "annotations": reuse.get("annotations") or 0,
+                "copied_files": reuse.get("copied_files") or 0,
+                "completed": True,
+            },
+        }
     if phase == "annotation":
         annotation_metrics = _annotation_stream_metrics(annotation)
         return {
@@ -871,7 +956,11 @@ def _stream_info(status: dict[str, Any]) -> dict[str, Any]:
                 "success": generation.get("success") or 0,
                 "failed": generation.get("failed") or 0,
                 "started": bool(generation.get("started_at")),
-                "completed": generation.get("status") in {"completed", "disabled"},
+                "completed": generation.get("status") in {"completed", "disabled", "skipped"},
+                "error": generation.get("error"),
+                "reason": generation.get("reason"),
+                "reason_code": generation.get("reason_code"),
+                "fallback_used": bool(generation.get("fallback_used")),
             },
         }
     if phase == "training" or training.get("status") == "running":
