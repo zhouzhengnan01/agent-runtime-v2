@@ -10,6 +10,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.artifacts import ArtifactStore
+from app.core.training_annotation_previews import build_original_annotation_resources
+from app.core.training_artifact_updates import training_status_artifact_paths
 from app.schemas import ChatEvent
 
 
@@ -380,6 +383,11 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
     if not thread_dir.exists():
         raise FileNotFoundError(f"Thread not found: {thread_id}")
     run_dir = _resolve_run_dir(thread_dir, run_id)
+    return _build_run_status(thread_dir, run_dir)
+
+
+def _build_run_status(thread_dir: Path, run_dir: Path) -> dict[str, Any]:
+    thread_id = thread_dir.name
     state = _read_json(run_dir / PROGRESS_STATE_NAME)
     backend = _detect_backend(run_dir, state)
     selected_run_id = run_dir.name
@@ -399,6 +407,7 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
         training_error = training.get("error")
         if training_error and not errors:
             errors = [{"message": str(training_error), "timestamp": now}]
+    generation = _generation_status(run_dir, state)
     return {
         "schema": "jetlinks-training-status.v1",
         "thread_id": thread_id,
@@ -427,14 +436,46 @@ def build_training_status(thread_id: str, run_id: str | None = None) -> dict[str
         "data_reuse": state.get("data_reuse") if isinstance(state.get("data_reuse"), dict) else {},
         "files": _files_status(thread_dir),
         "dataset": _dataset_status(run_dir),
-        "annotation": _annotation_status(run_dir, state),
-        "generation": _generation_status(run_dir, state),
+        "annotation": _annotation_status(run_dir, state, generation),
+        "generation": generation,
         "training": training,
         "evaluation": evaluation,
         "resources": _resource_status(run_dir, backend),
         "paths": _paths_status(thread_dir, run_dir, backend),
         "errors": errors,
         "warnings": state.get("warnings") if isinstance(state.get("warnings"), list) else [],
+    }
+
+
+def build_training_task_status(thread_id: str, run_id: str | None = None) -> dict[str, Any]:
+    thread_dir = safe_thread_dir(thread_id)
+    if not thread_dir.exists():
+        raise FileNotFoundError(f"Thread not found: {thread_id}")
+    selected_run_dir = _resolve_run_dir(thread_dir, run_id)
+    latest_run_id = _latest_run_id(thread_dir)
+    if not latest_run_id:
+        raise FileNotFoundError(f"No training run found for thread: {thread_id}")
+    current_status = _build_run_status(
+        thread_dir,
+        thread_dir / "outputs" / "yolo_training_flow" / "runs" / latest_run_id,
+    )
+    task_snapshot = _build_task_snapshot(
+        thread_dir,
+        current_status,
+        selected_run_id=selected_run_dir.name,
+    )
+    current_run = task_snapshot.get("current_run") if isinstance(task_snapshot.get("current_run"), dict) else {}
+    return {
+        "schema": "jetlinks-training-task-status.v1",
+        "thread_id": thread_id,
+        "status": current_run.get("status"),
+        "phase": current_run.get("phase"),
+        "phase_label": current_run.get("phase_label"),
+        "total_runs": task_snapshot.get("total_runs"),
+        "latest_run_id": task_snapshot.get("latest_run_id"),
+        "current_run_id": task_snapshot.get("current_run_id"),
+        "updated_at": task_snapshot.get("updated_at"),
+        "task_snapshot": task_snapshot,
     }
 
 
@@ -495,6 +536,147 @@ def list_training_runs(thread_id: str) -> dict[str, Any]:
             }
         )
     return {"thread_id": thread_id, "latest_run_id": latest, "runs": runs}
+
+
+def _build_task_snapshot(
+    thread_dir: Path,
+    current_status: dict[str, Any],
+    *,
+    selected_run_id: str,
+) -> dict[str, Any]:
+    run_dirs = _run_dirs(thread_dir)
+    latest_run_dir = run_dirs[-1] if run_dirs else None
+    latest_run_id = latest_run_dir.name if latest_run_dir is not None else None
+    runs: list[dict[str, Any]] = []
+
+    for run_dir in run_dirs:
+        status = current_status if run_dir.name == latest_run_id else _build_run_status(thread_dir, run_dir)
+        runs.append(_build_run_snapshot(thread_dir, status))
+
+    status_counts: dict[str, int] = {}
+    for run in runs:
+        run_status = str(run.get("status") or "unknown")
+        status_counts[run_status] = status_counts.get(run_status, 0) + 1
+
+    current_run = runs[-1] if runs else None
+
+    return {
+        "schema": "jetlinks-training-task-snapshot.v1",
+        "thread_id": thread_dir.name,
+        "total_runs": len(run_dirs),
+        "latest_run_id": latest_run_id,
+        "selected_run_id": selected_run_id,
+        "current_run_id": latest_run_id,
+        "current_run": current_run,
+        "status_counts": status_counts,
+        "history_runs": runs,
+        "updated_at": utc_now(),
+    }
+
+
+def _build_run_snapshot(thread_dir: Path, status: dict[str, Any]) -> dict[str, Any]:
+    artifact_items = _snapshot_artifacts(thread_dir, status)
+    return {
+        **status,
+        "has_artifacts": bool(artifact_items),
+        "artifact_count": len(artifact_items),
+        "artifacts_url": f"/api/artifacts/{thread_dir.name}",
+        "artifacts": artifact_items,
+    }
+
+
+def _snapshot_artifacts(thread_dir: Path, current_status: dict[str, Any]) -> list[dict[str, Any]]:
+    if not current_status:
+        return []
+    store = ArtifactStore(root_dir=thread_dir.parent)
+    run_id = str(current_status.get("run_id") or "")
+    run_sequence = _int_or_none(current_status.get("run_sequence")) or _run_sequence(thread_dir, run_id)
+    artifacts: list[dict[str, Any]] = []
+    for path in training_status_artifact_paths(current_status):
+        try:
+            artifact = store.to_artifact_ref(thread_dir.name, path).model_dump()
+        except (OSError, ValueError):
+            continue
+        phase, phase_label = _artifact_phase(path, current_status)
+        item = {
+            **artifact,
+            "run_id": run_id,
+            "run_sequence": run_sequence,
+            "phase": phase,
+            "phase_label": phase_label,
+        }
+        try:
+            annotation_resources = build_original_annotation_resources(
+                thread_id=thread_dir.name,
+                coco_path=path,
+                coco_artifact=artifact,
+                artifact_store=store,
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            annotation_resources = None
+        if annotation_resources is not None:
+            original = annotation_resources.get("original")
+            image = original.get("image") if isinstance(original, dict) else None
+            image_download_url = image.get("download_url") if isinstance(image, dict) else None
+            if image_download_url:
+                item["image_download_url"] = image_download_url
+        artifacts.append(item)
+    return artifacts
+
+
+def _artifact_phase(path: Path, status: dict[str, Any]) -> tuple[str, str]:
+    annotation = status.get("annotation") if isinstance(status.get("annotation"), dict) else {}
+    generation = status.get("generation") if isinstance(status.get("generation"), dict) else {}
+    training = status.get("training") if isinstance(status.get("training"), dict) else {}
+    real = annotation.get("real") if isinstance(annotation.get("real"), dict) else {}
+    synthetic = annotation.get("synthetic") if isinstance(annotation.get("synthetic"), dict) else {}
+
+    if _same_artifact_path(path, training.get("checkpoint")) or path.suffix.lower() in {
+        ".onnx",
+        ".pt",
+        ".pth",
+    }:
+        return "training", "model training"
+    if path.name in {"run_summary.json", "training_summary.json"}:
+        return "training", "model training"
+    if _same_artifact_path(path, synthetic.get("output_coco")):
+        return "synthetic_annotation", "synthetic image annotation"
+
+    generation_dir = _artifact_path_or_none(generation.get("output_dir"))
+    if generation_dir is not None and _path_is_within(path, generation_dir):
+        if path.suffix.lower() == ".json":
+            return "synthetic_annotation", "synthetic image annotation"
+        return "synthetic_generation", "synthetic image generation"
+
+    if _same_artifact_path(path, real.get("output_coco")):
+        return "real_annotation", "real image annotation"
+    if path.suffix.lower() == ".json" and "coco" in path.name.lower():
+        return "real_annotation", "real image annotation"
+    return "data_preparation", "data preparation"
+
+
+def _same_artifact_path(path: Path, value: Any) -> bool:
+    other = _artifact_path_or_none(value)
+    if other is None:
+        return False
+    try:
+        return path.resolve() == other.resolve()
+    except OSError:
+        return False
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _artifact_path_or_none(value: Any) -> Path | None:
+    if not value:
+        return None
+    return Path(str(value)).expanduser()
 
 
 def _normalize_run_phase_status(
@@ -675,7 +857,11 @@ def _dataset_status(run_dir: Path) -> dict[str, Any]:
     }
 
 
-def _annotation_status(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
+def _annotation_status(
+    run_dir: Path,
+    state: dict[str, Any],
+    generation: dict[str, Any],
+) -> dict[str, Any]:
     uploaded = run_dir / "uploaded_dataset"
     real_total = _count_images(uploaded)
     real_coco = run_dir / "pipeline_work" / "real_coco.json"
@@ -684,20 +870,41 @@ def _annotation_status(run_dir: Path, state: dict[str, Any]) -> dict[str, Any]:
     synthetic_completed = _count_coco_images(synthetic_coco) or _count_files(run_dir / "pipeline_work" / "synthetic_annotations", "*_coco.json")
     synthetic_generated = _count_images(run_dir / "pipeline_work" / "synthetic_images")
     summary = _read_json(run_dir / "prepared_data" / "data_preparation_summary.json")
-    generation_state = state.get("generation") if isinstance(state.get("generation"), dict) else {}
-    synthetic_generation_started = bool(synthetic_generated or synthetic_completed or generation_state.get("started_at"))
+    synthetic_generation_started = bool(synthetic_generated or synthetic_completed or generation.get("started_at"))
     synthetic_planned = _extract_planned_synthetic_count(run_dir, state, summary) if synthetic_generation_started else 0
-    synthetic_total = max(synthetic_completed, synthetic_generated, synthetic_planned)
+    generation_status = str(generation.get("status") or "pending")
+    generation_terminal = generation_status in {
+        "completed",
+        "failed",
+        "timeout",
+        "skipped",
+        "disabled",
+    }
+    synthetic_total = max(
+        synthetic_completed,
+        synthetic_generated,
+        0 if generation_terminal else synthetic_planned,
+    )
     request = state.get("request") if isinstance(state.get("request"), dict) else {}
     prompts = request.get("annotation_prompts") or request.get("labels") or []
     prompts = prompts if isinstance(prompts, list) else []
     state_block = state.get("annotation") if isinstance(state.get("annotation"), dict) else {}
+    synthetic_block = _annotation_block(
+        "synthetic_annotation",
+        synthetic_total,
+        synthetic_completed,
+        prompts,
+        synthetic_coco,
+    )
+    if generation_terminal and synthetic_generated == 0 and synthetic_completed == 0:
+        synthetic_block = _skipped_synthetic_annotation(generation)
+        synthetic_block["prompts"] = prompts
     return {
         "real": _merge_counter_state(
             _annotation_block("real_annotation", real_total, real_completed, prompts, real_coco),
             state_block,
         ),
-        "synthetic": _annotation_block("synthetic_annotation", synthetic_total, synthetic_completed, prompts, synthetic_coco),
+        "synthetic": synthetic_block,
     }
 
 
@@ -708,12 +915,48 @@ def _annotation_block(phase: str, total: int, completed: int, prompts: list[Any]
         "total": total,
         "completed": completed,
         "success": completed,
-        "failed": max(0, total - completed) if total and completed < total else 0,
+        "failed": 0,
         "current_image": None,
         "prompts": prompts,
         "output_coco": str(coco_path) if coco_path.is_file() else None,
         "updated_at": _mtime_iso(coco_path) if coco_path.is_file() else None,
         "error": None,
+    }
+
+
+def _skipped_synthetic_annotation(generation: dict[str, Any]) -> dict[str, Any]:
+    generation_status = str(generation.get("status") or "disabled")
+    reason_code = str(generation.get("reason_code") or "").strip()
+    reason = str(generation.get("reason") or "").strip()
+    if not reason_code:
+        reason_code = {
+            "timeout": "synthetic_generation_timeout",
+            "failed": "synthetic_generation_failed",
+            "completed": "no_synthetic_images_generated",
+        }.get(generation_status, "synthetic_generation_skipped")
+    if not reason:
+        reason = {
+            "timeout": "Synthetic annotation skipped because synthetic generation timed out.",
+            "failed": "Synthetic annotation skipped because synthetic generation failed.",
+            "completed": "Synthetic annotation skipped because no synthetic images were generated.",
+        }.get(generation_status, "Synthetic annotation skipped because synthetic generation was skipped.")
+    return {
+        "status": "skipped",
+        "phase": "synthetic_annotation",
+        "total": 0,
+        "completed": 0,
+        "success": 0,
+        "failed": 0,
+        "current_image": None,
+        "prompts": [],
+        "output_coco": None,
+        "updated_at": generation.get("completed_at") or generation.get("updated_at"),
+        "error": None,
+        "started_at": None,
+        "completed_at": generation.get("completed_at") or generation.get("updated_at"),
+        "reason": reason,
+        "reason_code": reason_code,
+        "generation_status": generation_status,
     }
 
 

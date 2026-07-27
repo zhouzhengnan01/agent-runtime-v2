@@ -44,6 +44,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sys.executable,
         Path.cwd(),
     )
+    recovery = training.reconcile_http_training_jobs_after_restart()
+    if recovery["reconciled_count"]:
+        logger.warning(
+            "http training job restart reconciliation count=%s jobs=%s",
+            recovery["reconciled_count"],
+            recovery["jobs"],
+        )
     await cron.scheduler.start()
     logger.info("cron scheduler started")
     try:

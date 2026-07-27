@@ -54,6 +54,48 @@ def add_annotation_preview_to_update(
     return enriched
 
 
+def build_original_annotation_resources(
+    *,
+    thread_id: str,
+    coco_path: Path,
+    coco_artifact: dict[str, Any],
+    artifact_store: ArtifactStore,
+) -> dict[str, Any] | None:
+    if not _is_per_image_coco(coco_path):
+        return None
+    payload = json.loads(coco_path.read_text(encoding="utf-8"))
+    images = payload.get("images")
+    if not isinstance(images, list) or len(images) != 1 or not isinstance(images[0], dict):
+        return None
+    image_record = images[0]
+    file_name = str(image_record.get("file_name") or "").replace("\\", "/").strip()
+    if not file_name:
+        return None
+    source_image = _find_source_image(coco_path, file_name)
+    if source_image is None:
+        return None
+
+    paths = artifact_store.prepare_thread(thread_id)
+    source_image.resolve().relative_to(paths.outputs.resolve())
+    original_image = artifact_store.to_artifact_ref(thread_id, source_image).model_dump()
+    original_coco = dict(coco_artifact)
+    width = image_record.get("width")
+    height = image_record.get("height")
+    if isinstance(width, (int, float)) and width > 0:
+        original_image["width"] = width
+        original_coco["coordinate_width"] = width
+    if isinstance(height, (int, float)) and height > 0:
+        original_image["height"] = height
+        original_coco["coordinate_height"] = height
+    return {
+        "source": _annotation_source(coco_path, payload),
+        "original": {
+            "image": original_image,
+            "coco": original_coco,
+        },
+    }
+
+
 def build_annotation_preview(
     *,
     thread_id: str,
@@ -180,7 +222,7 @@ def _run_dir(path: Path) -> Path | None:
 def _annotation_source(coco_path: Path, payload: dict[str, Any]) -> str:
     info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
     description = str(info.get("description") or "").lower()
-    if "synthetic" in description or "synthetic" in {part.lower() for part in coco_path.parts}:
+    if "synthetic" in description or any("synthetic" in part.lower() for part in coco_path.parts):
         return "synthetic"
     return "real"
 

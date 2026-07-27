@@ -18,14 +18,23 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.api.auth import require_runtime_token
 from app.core.http_training_jobs import (
     ACTIVE_HTTP_TRAINING_STATUSES,
+    current_service_instance_id,
+    list_http_training_job_markers,
     read_current_http_training_job_marker,
+    record_http_training_job_request,
+    reject_http_training_job_request,
     update_http_training_job_marker,
     write_http_training_job_marker,
 )
 from app.core.runtime import default_container
 from app.core.runtime.health_state import ReviewSlot
 from app.core.training_artifact_updates import build_training_artifact_session_updates
-from app.core.training_status import build_training_status, build_training_stream_status, list_training_runs
+from app.core.training_status import (
+    build_training_status,
+    build_training_stream_status,
+    build_training_task_status,
+    list_training_runs,
+)
 from app.protocols.acp.event_broker import acp_event_broker
 from app.schemas import AgentRunResult, Attachment, ChatEvent, ChatRequest, Message, RuntimeOptions
 
@@ -97,7 +106,7 @@ async def get_training_runs(thread_id: str) -> dict[str, object]:
 @router.get("/status/{thread_id}")
 async def get_training_status(thread_id: str, run_id: str | None = Query(default=None)) -> dict[str, object]:
     try:
-        return build_training_status(thread_id, run_id=run_id)
+        return build_training_task_status(thread_id, run_id=run_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -107,23 +116,53 @@ async def get_training_status(thread_id: str, run_id: str | None = Query(default
 @router.post("/jobs")
 async def create_training_job(request: TrainingJobRequest) -> dict[str, object]:
     thread_id = _normalize_thread_id(request.thread_id)
+    request_id = record_http_training_job_request(thread_id)
     agent_name = (request.agent_name or "default").strip() or "default"
     content = (request.content or request.prompt or "").strip()
     if not content:
+        reject_http_training_job_request(
+            thread_id,
+            request_id,
+            http_status=400,
+            reason="content is required.",
+        )
         raise HTTPException(status_code=400, detail="content is required.")
 
     try:
         agent = loader.load(agent_name)
     except FileNotFoundError as exc:
+        reject_http_training_job_request(
+            thread_id,
+            request_id,
+            http_status=404,
+            reason=str(exc),
+        )
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    runtime_options = _build_runtime_options(request, thread_id)
-    attachments = _build_attachments(thread_id, request.files)
-    chat_request = ChatRequest(
-        messages=[Message(role="user", content=content)],
-        attachments=attachments,
-        runtime_options=runtime_options,
-    )
+    try:
+        runtime_options = _build_runtime_options(request, thread_id)
+        attachments = _build_attachments(thread_id, request.files)
+        chat_request = ChatRequest(
+            messages=[Message(role="user", content=content)],
+            attachments=attachments,
+            runtime_options=runtime_options,
+        )
+    except HTTPException as exc:
+        reject_http_training_job_request(
+            thread_id,
+            request_id,
+            http_status=exc.status_code,
+            reason=str(exc.detail),
+        )
+        raise
+    except Exception as exc:
+        reject_http_training_job_request(
+            thread_id,
+            request_id,
+            http_status=500,
+            reason=str(exc),
+        )
+        raise
 
     job_id = f"job-{uuid.uuid4().hex[:12]}"
     now = _utc_now()
@@ -146,13 +185,20 @@ async def create_training_job(request: TrainingJobRequest) -> dict[str, object]:
     async with _jobs_lock:
         existing = _jobs_by_thread.get(thread_id)
         if existing and existing.get("status") in {"queued", "running", "cancelling"}:
+            reason = f"Training job already active for thread_id={thread_id}. Cancel it or use another thread_id."
+            reject_http_training_job_request(
+                thread_id,
+                request_id,
+                http_status=409,
+                reason=reason,
+            )
             raise HTTPException(
                 status_code=409,
-                detail=f"Training job already active for thread_id={thread_id}. Cancel it or use another thread_id.",
+                detail=reason,
             )
         _jobs_by_thread[thread_id] = record
         _jobs_by_id[job_id] = record
-        write_http_training_job_marker(thread_id, record)
+        write_http_training_job_marker(thread_id, record, request_id=request_id)
 
     task = asyncio.create_task(_run_training_job(record, agent, chat_request), name=f"training-job-{job_id}")
     record["task"] = task
@@ -547,7 +593,11 @@ def _cancelled_http_job_result(thread_id: str, record: dict[str, Any]) -> dict[s
 
 
 def _active_disk_training_record(thread_id: str) -> dict[str, Any] | None:
-    marker = read_current_http_training_job_marker(thread_id, require_active=True)
+    marker = read_current_http_training_job_marker(
+        thread_id,
+        require_active=True,
+        allow_previous_instance=True,
+    )
     if marker is None:
         return None
     run_id = str(marker.get("run_id") or "").strip()
@@ -597,15 +647,29 @@ def _run_dir_for_thread(thread_id: str, run_id: str) -> Path | None:
 
 
 def _terminate_training_processes(thread_id: str, run_id: str) -> list[int]:
-    if not run_id:
+    targets, by_pid = _matching_training_processes(thread_id, run_id)
+    if not targets:
         return []
+    killed: list[int] = []
+    for pid in sorted(targets, key=lambda item: _process_depth(item, by_pid), reverse=True):
+        if _terminate_process(pid):
+            killed.append(pid)
+    return killed
+
+
+def _matching_training_processes(
+    thread_id: str,
+    run_id: str,
+) -> tuple[set[int], dict[int, tuple[int, str]]]:
+    if not run_id:
+        return set(), {}
     run_dir = _run_dir_for_thread(thread_id, run_id)
     markers = _training_process_markers(thread_id, run_id, run_dir)
     if not markers:
-        return []
+        return set(), {}
     processes = _process_table()
     if not processes:
-        return []
+        return set(), {}
     comparable_markers = [marker.lower() for marker in markers] if os.name == "nt" else markers
     candidates: set[int] = set()
     for pid, _ppid, command in processes:
@@ -613,7 +677,7 @@ def _terminate_training_processes(thread_id: str, run_id: str) -> list[int]:
         if any(marker in comparable for marker in comparable_markers):
             candidates.add(pid)
     if not candidates:
-        return []
+        return set(), {}
     by_pid = {pid: (ppid, command) for pid, ppid, command in processes}
     children_by_parent: dict[int, list[int]] = {}
     for pid, ppid, _command in processes:
@@ -634,11 +698,72 @@ def _terminate_training_processes(thread_id: str, run_id: str) -> list[int]:
                 changed = True
     current_pid = os.getpid()
     targets.discard(current_pid)
-    killed: list[int] = []
-    for pid in sorted(targets, key=lambda item: _process_depth(item, by_pid), reverse=True):
-        if _terminate_process(pid):
-            killed.append(pid)
-    return killed
+    return targets, by_pid
+
+
+def reconcile_http_training_jobs_after_restart() -> dict[str, Any]:
+    current_instance = current_service_instance_id()
+    reconciled: list[dict[str, Any]] = []
+    for marker in list_http_training_job_markers(require_active=True):
+        previous_instance = str(marker.get("service_instance_id") or "")
+        if previous_instance == current_instance:
+            continue
+        thread_id = str(marker.get("thread_id") or "").strip()
+        run_id = str(marker.get("run_id") or "").strip()
+        if not thread_id:
+            continue
+        process_ids, _ = _matching_training_processes(thread_id, run_id)
+        if process_ids:
+            update_http_training_job_marker(thread_id, status=str(marker.get("status") or "running"), run_id=run_id)
+            reconciled.append(
+                {
+                    "thread_id": thread_id,
+                    "run_id": run_id or None,
+                    "action": "adopted",
+                    "process_ids": sorted(process_ids),
+                    "previous_service_instance_id": previous_instance or None,
+                }
+            )
+            continue
+
+        now = _utc_now()
+        error = "Training job interrupted because the runtime service restarted and no matching training process is running."
+        result = AgentRunResult(
+            agent=str(marker.get("agent_name") or "default"),
+            thread_id=thread_id,
+            status="failed",
+            reply=error,
+            metadata={
+                "phase": "service_restart_interrupted",
+                "status": "failed",
+                "job_id": marker.get("job_id"),
+                "run_id": run_id or None,
+                "previous_service_instance_id": previous_instance or None,
+            },
+        ).model_dump()
+        update_http_training_job_marker(
+            thread_id,
+            status="failed",
+            completed_at=now,
+            run_id=run_id or None,
+            error=error,
+            result=result,
+        )
+        _mark_run_progress_cancelled(thread_id, run_id, status="failed", message=error)
+        reconciled.append(
+            {
+                "thread_id": thread_id,
+                "run_id": run_id or None,
+                "action": "failed",
+                "process_ids": [],
+                "previous_service_instance_id": previous_instance or None,
+            }
+        )
+    return {
+        "service_instance_id": current_instance,
+        "reconciled_count": len(reconciled),
+        "jobs": reconciled,
+    }
 
 
 def _training_process_markers(thread_id: str, run_id: str, run_dir: Path | None) -> list[str]:

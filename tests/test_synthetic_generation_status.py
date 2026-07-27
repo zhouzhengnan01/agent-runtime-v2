@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.core.training_status import TrainingProgressWriter, build_training_stream_status
+from app.core.training_status import TrainingProgressWriter, build_training_status, build_training_stream_status
 from PIL import Image
 
 
@@ -147,6 +147,58 @@ def test_stream_status_reports_sufficient_data_as_completed_skip(tmp_path: Path)
         assert skipped["info"]["metrics"]["completed"] is True
         assert skipped["info"]["metrics"]["reason_code"] == "sufficient_data_samples"
         assert skipped["info"]["metrics"]["reason"] == "Data samples are sufficient."
+        synthetic_annotation = build_training_status(thread_id, run_id=run_id)["annotation"]["synthetic"]
+        assert synthetic_annotation["status"] == "skipped"
+        assert synthetic_annotation["total"] == 0
+        assert synthetic_annotation["completed"] == 0
+        assert synthetic_annotation["success"] == 0
+        assert synthetic_annotation["failed"] == 0
+        assert synthetic_annotation["reason_code"] == "sufficient_data_samples"
+        assert synthetic_annotation["reason"] == "Data samples are sufficient."
+        assert synthetic_annotation["generation_status"] == "skipped"
+    finally:
+        os.chdir(previous)
+
+
+def test_generation_timeout_without_images_skips_synthetic_annotation(tmp_path: Path) -> None:
+    thread_id = "generation-timeout-annotation-thread"
+    run_id = "run-deimv2-generation-timeout-annotation"
+    run_dir = tmp_path / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs" / run_id
+    writer = TrainingProgressWriter(
+        thread_id=thread_id,
+        run_id=run_id,
+        run_dir=run_dir,
+        workflow="yolo_training_flow",
+        backend="deimv2",
+        app_template_name="app",
+        selected_skills=[],
+        user_text="train",
+    )
+    writer.initialize()
+    writer.handle_event(
+        SimpleNamespace(
+            type="data_preparation.synthetic_generation.finished",
+            data={
+                "status": "timeout",
+                "planned": 5,
+                "completed": 0,
+                "success": 0,
+                "failed": 5,
+                "error": "ReadTimeout",
+            },
+        )
+    )
+
+    previous = Path.cwd()
+    os.chdir(tmp_path)
+    try:
+        status = build_training_status(thread_id, run_id=run_id)
+        synthetic_annotation = status["annotation"]["synthetic"]
+        assert synthetic_annotation["status"] == "skipped"
+        assert synthetic_annotation["total"] == 0
+        assert synthetic_annotation["failed"] == 0
+        assert synthetic_annotation["reason_code"] == "synthetic_generation_timeout"
+        assert synthetic_annotation["generation_status"] == "timeout"
     finally:
         os.chdir(previous)
 

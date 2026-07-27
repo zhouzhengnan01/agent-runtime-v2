@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 ACTIVE_HTTP_TRAINING_STATUSES = {"queued", "running", "cancelling"}
@@ -15,8 +17,11 @@ SERVICE_INSTANCE_ENV = "JETLINKS_SERVICE_INSTANCE_ID"
 SERVICE_INSTANCE_NAME = "service_instance.json"
 SERVICE_INSTANCE_LOCK_NAME = "service_instance.lock"
 HTTP_TRAINING_JOBS_DIR = "http_training_jobs"
+HTTP_TRAINING_JOB_HISTORY_LIMIT = 200
 
 _SERVICE_INSTANCE_ID: str | None = None
+_JOB_MARKER_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_JOB_MARKER_THREAD_LOCKS_GUARD = threading.Lock()
 
 
 def utc_now() -> str:
@@ -35,48 +40,120 @@ def current_service_instance_id() -> str:
     return _SERVICE_INSTANCE_ID
 
 
-def write_http_training_job_marker(thread_id: str, record: dict[str, Any]) -> None:
-    payload = {
-        "schema": "jetlinks-http-training-job.v1",
-        "service_instance_id": current_service_instance_id(),
-        "thread_id": thread_id,
-        "job_id": str(record.get("job_id") or f"thread-{thread_id}"),
-        "agent_name": str(record.get("agent_name") or "default"),
-        "status": str(record.get("status") or "queued"),
-        "created_at": record.get("created_at") or utc_now(),
-        "started_at": record.get("started_at"),
-        "completed_at": record.get("completed_at"),
-        "run_id": record.get("run_id"),
-        "error": record.get("error"),
-        "result": record.get("result"),
-        "updated_at": utc_now(),
-    }
-    _write_json(_job_marker_path(thread_id), payload)
-
-
-def update_http_training_job_marker(thread_id: str, **updates: Any) -> None:
+def record_http_training_job_request(thread_id: str) -> str:
+    request_id = f"request-{uuid.uuid4().hex[:12]}"
+    received_at = utc_now()
     path = _job_marker_path(thread_id)
-    payload = _read_json(path)
-    if not payload:
+    with _job_marker_lock(thread_id):
+        payload = _read_json(path) or _base_job_marker(thread_id)
+        stats = _request_stats(payload)
+        stats["received_count"] += 1
+        stats["pending_count"] += 1
+        stats["last_received_at"] = received_at
+        history = _job_history(payload)
+        history.append(
+            {
+                "request_id": request_id,
+                "received_at": received_at,
+                "accepted": None,
+                "http_status": None,
+                "reason": None,
+                "job_id": None,
+                "run_id": None,
+                "status": "received",
+            }
+        )
+        payload["job_history"] = history[-HTTP_TRAINING_JOB_HISTORY_LIMIT:]
+        payload["updated_at"] = received_at
+        _write_json(path, payload)
+    return request_id
+
+
+def reject_http_training_job_request(
+    thread_id: str,
+    request_id: str,
+    *,
+    http_status: int,
+    reason: str,
+) -> None:
+    path = _job_marker_path(thread_id)
+    with _job_marker_lock(thread_id):
+        payload = _read_json(path) or _base_job_marker(thread_id)
+        _complete_request_audit(
+            payload,
+            request_id,
+            accepted=False,
+            http_status=http_status,
+            reason=reason,
+        )
+        payload["updated_at"] = utc_now()
+        _write_json(path, payload)
+
+
+def write_http_training_job_marker(
+    thread_id: str,
+    record: dict[str, Any],
+    *,
+    request_id: str | None = None,
+) -> None:
+    path = _job_marker_path(thread_id)
+    with _job_marker_lock(thread_id):
+        previous = _read_json(path)
         payload = {
             "schema": "jetlinks-http-training-job.v1",
             "service_instance_id": current_service_instance_id(),
             "thread_id": thread_id,
-            "job_id": f"thread-{thread_id}",
-            "created_at": utc_now(),
+            "job_id": str(record.get("job_id") or f"thread-{thread_id}"),
+            "agent_name": str(record.get("agent_name") or "default"),
+            "status": str(record.get("status") or "queued"),
+            "created_at": record.get("created_at") or utc_now(),
+            "started_at": record.get("started_at"),
+            "completed_at": record.get("completed_at"),
+            "run_id": record.get("run_id"),
+            "error": record.get("error"),
+            "result": record.get("result"),
+            "request_stats": previous.get("request_stats") if isinstance(previous.get("request_stats"), dict) else {},
+            "job_history": previous.get("job_history") if isinstance(previous.get("job_history"), list) else [],
+            "updated_at": utc_now(),
         }
-    payload.update({key: value for key, value in updates.items() if value is not None})
-    payload["service_instance_id"] = payload.get("service_instance_id") or current_service_instance_id()
-    payload["thread_id"] = thread_id
-    payload["updated_at"] = utc_now()
-    _write_json(path, payload)
+        if request_id:
+            _complete_request_audit(
+                payload,
+                request_id,
+                accepted=True,
+                http_status=200,
+                job_id=payload["job_id"],
+                job_status=payload["status"],
+            )
+        _sync_current_job_history(payload)
+        _write_json(path, payload)
 
 
-def read_current_http_training_job_marker(thread_id: str, *, require_active: bool = True) -> dict[str, Any] | None:
+def update_http_training_job_marker(thread_id: str, **updates: Any) -> None:
+    path = _job_marker_path(thread_id)
+    with _job_marker_lock(thread_id):
+        payload = _read_json(path)
+        if not payload:
+            payload = _base_job_marker(thread_id)
+        payload.update({key: value for key, value in updates.items() if value is not None})
+        # A successful write means the current runtime instance has adopted the job.
+        payload["service_instance_id"] = current_service_instance_id()
+        payload["thread_id"] = thread_id
+        payload["updated_at"] = utc_now()
+        _sync_current_job_history(payload)
+        _write_json(path, payload)
+
+
+def read_current_http_training_job_marker(
+    thread_id: str,
+    *,
+    require_active: bool = True,
+    allow_previous_instance: bool = False,
+) -> dict[str, Any] | None:
     payload = _read_json(_job_marker_path(thread_id))
     if not payload:
         return None
-    if payload.get("service_instance_id") != current_service_instance_id():
+    if not allow_previous_instance and payload.get("service_instance_id") != current_service_instance_id():
         return None
     status = str(payload.get("status") or "")
     if require_active and status not in ACTIVE_HTTP_TRAINING_STATUSES:
@@ -84,8 +161,115 @@ def read_current_http_training_job_marker(thread_id: str, *, require_active: boo
     return payload
 
 
+def list_http_training_job_markers(*, require_active: bool = False) -> list[dict[str, Any]]:
+    root = (_runtime_dir() / HTTP_TRAINING_JOBS_DIR).resolve()
+    if not root.is_dir():
+        return []
+    markers: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*.json")):
+        payload = _read_json(path)
+        if not payload:
+            continue
+        status = str(payload.get("status") or "")
+        if require_active and status not in ACTIVE_HTTP_TRAINING_STATUSES:
+            continue
+        markers.append(payload)
+    return markers
+
+
 def is_current_http_training_job_active(thread_id: str) -> bool:
     return read_current_http_training_job_marker(thread_id, require_active=True) is not None
+
+
+def _base_job_marker(thread_id: str) -> dict[str, Any]:
+    return {
+        "schema": "jetlinks-http-training-job.v1",
+        "service_instance_id": current_service_instance_id(),
+        "thread_id": thread_id,
+        "request_stats": {
+            "received_count": 0,
+            "accepted_count": 0,
+            "rejected_count": 0,
+            "pending_count": 0,
+            "last_received_at": None,
+        },
+        "job_history": [],
+        "updated_at": utc_now(),
+    }
+
+
+def _request_stats(payload: dict[str, Any]) -> dict[str, Any]:
+    existing = payload.get("request_stats")
+    stats = existing if isinstance(existing, dict) else {}
+    normalized = {
+        "received_count": _non_negative_int(stats.get("received_count")),
+        "accepted_count": _non_negative_int(stats.get("accepted_count")),
+        "rejected_count": _non_negative_int(stats.get("rejected_count")),
+        "pending_count": _non_negative_int(stats.get("pending_count")),
+        "last_received_at": stats.get("last_received_at"),
+    }
+    payload["request_stats"] = normalized
+    return normalized
+
+
+def _job_history(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    history = payload.get("job_history")
+    if not isinstance(history, list):
+        history = []
+    normalized = [item for item in history if isinstance(item, dict)]
+    payload["job_history"] = normalized
+    return normalized
+
+
+def _complete_request_audit(
+    payload: dict[str, Any],
+    request_id: str,
+    *,
+    accepted: bool,
+    http_status: int,
+    reason: str | None = None,
+    job_id: str | None = None,
+    job_status: str | None = None,
+) -> None:
+    stats = _request_stats(payload)
+    history = _job_history(payload)
+    entry = next((item for item in reversed(history) if item.get("request_id") == request_id), None)
+    if entry is None:
+        return
+    if entry.get("accepted") is None:
+        stats["pending_count"] = max(0, stats["pending_count"] - 1)
+        counter = "accepted_count" if accepted else "rejected_count"
+        stats[counter] += 1
+    entry.update(
+        {
+            "accepted": accepted,
+            "http_status": http_status,
+            "reason": reason,
+            "job_id": job_id,
+            "status": job_status or ("rejected" if not accepted else "queued"),
+            "decided_at": utc_now(),
+        }
+    )
+
+
+def _sync_current_job_history(payload: dict[str, Any]) -> None:
+    job_id = str(payload.get("job_id") or "").strip()
+    if not job_id:
+        return
+    history = _job_history(payload)
+    entry = next((item for item in reversed(history) if str(item.get("job_id") or "") == job_id), None)
+    if entry is None:
+        return
+    for key in ("status", "run_id", "started_at", "completed_at", "error"):
+        if key in payload:
+            entry[key] = payload.get(key)
+
+
+def _non_negative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _load_or_create_service_instance_id() -> str:
@@ -172,6 +356,40 @@ def _is_stale_lock(path: Path) -> bool:
         return True
 
 
+@contextmanager
+def _job_marker_lock(thread_id: str) -> Iterator[None]:
+    with _JOB_MARKER_THREAD_LOCKS_GUARD:
+        thread_lock = _JOB_MARKER_THREAD_LOCKS.setdefault(thread_id, threading.Lock())
+    with thread_lock:
+        marker_path = _job_marker_path(thread_id)
+        lock_path = marker_path.with_suffix(".json.lock")
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if _is_stale_lock(lock_path):
+                    try:
+                        lock_path.unlink()
+                    except OSError:
+                        pass
+                    continue
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for HTTP training job marker lock: {thread_id}")
+                time.sleep(0.01)
+                continue
+            break
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(str(os.getpid()))
+            yield
+        finally:
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+
 def _job_marker_path(thread_id: str) -> Path:
     if not thread_id or any(part in thread_id for part in ("..", "/", "\\")):
         raise ValueError(f"Invalid thread_id: {thread_id}")
@@ -197,6 +415,12 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
