@@ -16,7 +16,8 @@ router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 store = ArtifactStore()
 
 VIRTUAL_UPLOADS_PREFIX = "/mnt/user-data/uploads"
-MAX_UPLOAD_BYTES = 128 * 1024 * 1024
+MAX_UPLOAD_GIB = 3
+MAX_UPLOAD_BYTES = MAX_UPLOAD_GIB * 1024 * 1024 * 1024
 _SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9_. -]+")
 
 
@@ -41,7 +42,7 @@ async def upload_thread_file(
                     target.unlink(missing_ok=True)
                     raise HTTPException(
                         status_code=413,
-                        detail=f"File is too large. Max upload size is {MAX_UPLOAD_BYTES // 1024 // 1024} MB.",
+                        detail=f"File is too large. Max upload size is {MAX_UPLOAD_GIB} GiB.",
                     )
                 await asyncio.to_thread(handle.write, chunk)
     finally:
