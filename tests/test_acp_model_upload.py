@@ -88,6 +88,12 @@ def test_acp_model_upload_registers_each_upload_with_unique_model_id(tmp_path: P
     ).json()
 
     assert first["modelId"] != second["modelId"]
+    assert first["name"] == "custom.pt"
+    assert second["name"].startswith("custom-")
+    assert second["name"].endswith(".pt")
+    models_dir = tmp_path / "model-upload-thread" / "uploads" / "models"
+    assert (models_dir / first["name"]).read_bytes() == b"first-model"
+    assert (models_dir / second["name"]).read_bytes() == b"second-model"
     registry = json.loads(
         (tmp_path / "model-upload-thread" / "workspace" / "training_models.json").read_text(encoding="utf-8")
     )

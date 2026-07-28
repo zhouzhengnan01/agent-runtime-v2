@@ -19,6 +19,12 @@ VIRTUAL_UPLOADS_PREFIX = "/mnt/user-data/uploads"
 MAX_UPLOAD_GIB = 3
 MAX_UPLOAD_BYTES = MAX_UPLOAD_GIB * 1024 * 1024 * 1024
 _SAFE_FILENAME_RE = re.compile(r"[^a-zA-Z0-9_. -]+")
+_TRAINING_INPUT_CANONICAL_NAMES = {
+    "dataset.zip": "datasets.zip",
+    "datasets.zip": "datasets.zip",
+    "image1.zip": "image1.zip",
+    "image2.zip": "image2.zip",
+}
 
 
 @router.post("/{thread_id}", dependencies=[Depends(require_runtime_token)])
@@ -31,20 +37,32 @@ async def upload_thread_file(
     relative_parts = _safe_relative_parts(relative_path)
     filename = _safe_filename(relative_parts[-1] if relative_parts else file.filename or "upload.bin")
     target_dir = paths.uploads.joinpath(*relative_parts[:-1]) if relative_parts else paths.uploads
-    target = _unique_upload_path(target_dir, filename)
+    canonical_name = _canonical_training_input_name(target_dir, paths.uploads, filename)
+    target = (
+        target_dir / canonical_name
+        if canonical_name
+        else _unique_upload_path(target_dir, filename)
+    )
+    replaced = bool(canonical_name and _training_input_exists(target_dir, canonical_name))
+    temporary = _temporary_upload_path(target_dir, target.name)
     size = 0
 
     try:
-        with target.open("wb") as handle:
+        with temporary.open("wb") as handle:
             while chunk := await file.read(1024 * 1024):
                 size += len(chunk)
                 if size > MAX_UPLOAD_BYTES:
-                    target.unlink(missing_ok=True)
                     raise HTTPException(
                         status_code=413,
                         detail=f"File is too large. Max upload size is {MAX_UPLOAD_GIB} GiB.",
                     )
                 await asyncio.to_thread(handle.write, chunk)
+        temporary.replace(target)
+        if canonical_name == "datasets.zip":
+            (target_dir / "dataset.zip").unlink(missing_ok=True)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     finally:
         await file.close()
 
@@ -56,6 +74,7 @@ async def upload_thread_file(
         "path": f"{VIRTUAL_UPLOADS_PREFIX}/{relative}",
         "mime_type": mime_type,
         "size": size,
+        "replaced": replaced,
     }
 
 
@@ -85,3 +104,20 @@ def _unique_upload_path(root: Path, filename: str) -> Path:
     stem = candidate.stem or "upload"
     suffix = candidate.suffix
     return root / f"{stem}-{uuid.uuid4().hex[:8]}{suffix}"
+
+
+def _canonical_training_input_name(target_dir: Path, uploads_dir: Path, filename: str) -> str | None:
+    if target_dir != uploads_dir:
+        return None
+    return _TRAINING_INPUT_CANONICAL_NAMES.get(filename.casefold())
+
+
+def _training_input_exists(target_dir: Path, canonical_name: str) -> bool:
+    if (target_dir / canonical_name).is_file():
+        return True
+    return canonical_name == "datasets.zip" and (target_dir / "dataset.zip").is_file()
+
+
+def _temporary_upload_path(root: Path, filename: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f".{filename}.{uuid.uuid4().hex}.uploading"
