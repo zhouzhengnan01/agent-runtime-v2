@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from app.core.agent.input_required import required_inputs_for_request
 from app.core.artifacts import ArtifactStore
@@ -186,6 +188,68 @@ def test_yolo_training_flow_extracts_one_message_training_spec() -> None:
     assert training_cfg["runtime"]["conda_env_name"] == "yolo_jetson"
     assert training_cfg["training"]["epochs"] == 10
     assert training_cfg["split"] == {"train": 0.7, "val": 0.2, "test": 0.1}
+
+
+def test_uploaded_coco_json_is_normalized_to_instances_all(tmp_path: Path) -> None:
+    module = _load_yolo_training_flow_module()
+    annotations_dir = tmp_path / "annotations"
+    source = annotations_dir / "reviewed-by-user.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        json.dumps(
+            {
+                "images": [
+                    {
+                        "id": 1,
+                        "file_name": "sample.jpg",
+                        "jetlinks_artifact": {
+                            "preview_url": "/api/artifacts_json/thread/sample.jpg",
+                            "download_url": "/api/artifacts_json/thread/sample.jpg?download=true",
+                        },
+                    }
+                ],
+                "annotations": [],
+                "categories": [{"id": 1, "name": "person"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    normalized = module._normalize_uploaded_annotations_json(tmp_path)
+
+    assert normalized == annotations_dir / "instances_all.json"
+    assert normalized.is_file()
+    assert not source.exists()
+    normalized_payload = json.loads(normalized.read_text(encoding="utf-8"))
+    assert normalized_payload["images"][0]["file_name"] == "sample.jpg"
+    assert normalized_payload["images"][0]["jetlinks_artifact"]["download_url"].endswith(
+        "?download=true"
+    )
+    facts = module._inspect_dataset_structure(tmp_path)
+    assert facts["format"] == "coco"
+    assert Path(facts["coco_json"]) == normalized
+
+
+def test_uploaded_annotations_reject_multiple_json_files(tmp_path: Path) -> None:
+    module = _load_yolo_training_flow_module()
+    annotations_dir = tmp_path / "annotations"
+    annotations_dir.mkdir(parents=True)
+    payload = {"images": [], "annotations": [], "categories": []}
+    (annotations_dir / "first.json").write_text(json.dumps(payload), encoding="utf-8")
+    (annotations_dir / "second.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exactly one JSON"):
+        module._normalize_uploaded_annotations_json(tmp_path)
+
+
+def test_uploaded_annotations_reject_non_coco_json(tmp_path: Path) -> None:
+    module = _load_yolo_training_flow_module()
+    annotations_dir = tmp_path / "annotations"
+    annotations_dir.mkdir(parents=True)
+    (annotations_dir / "metadata.json").write_text('{"description":"not coco"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a valid COCO"):
+        module._normalize_uploaded_annotations_json(tmp_path)
 
 
 def test_yolo_training_flow_normalizes_llm_extracted_spec() -> None:

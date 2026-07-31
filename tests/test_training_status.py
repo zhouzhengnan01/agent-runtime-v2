@@ -4,7 +4,56 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.core.training_status import TrainingProgressWriter, build_training_stream_status, chain_event_hooks
+from app.core.training_status import (
+    TrainingProgressWriter,
+    _parse_npu_smi_info,
+    build_training_stream_status,
+    chain_event_hooks,
+)
+
+
+def test_parse_npu_smi_info_reads_910b2_two_line_device_records() -> None:
+    output = """
++---------------------------+---------------+------------------------------------------------------+
+| NPU   Name                | Health        | Power(W) Temp(C) Hugepages-Usage(page)                |
++===========================+===============+======================================================+
+| 3     910B2               | OK            | 100.0    39      0    / 0                            |
+| 0                         | 0000:82:00.0  | 0        0 / 0        3396 / 65536                   |
++===========================+===============+======================================================+
+| 4     910B2               | OK            | 101.4    46      0    / 0                            |
+| 0                         | 0000:01:00.0  | 7        0 / 0        8509 / 65536                   |
++---------------------------+---------------+------------------------------------------------------+
+| NPU     Chip              | Process id    | Process name       | Process memory(MB)             |
++===========================+===============+======================================================+
+| 4       0                 | 380066        | python             | 5170                           |
+"""
+
+    devices = _parse_npu_smi_info(output)
+
+    assert devices == [
+        {
+            "index": 3,
+            "name": "910B2",
+            "health": "OK",
+            "power_w": 100.0,
+            "temperature_c": 39.0,
+            "utilization_percent": 0.0,
+            "memory_used_mb": 3396,
+            "memory_total_mb": 65536,
+            "memory_free_mb": 62140,
+        },
+        {
+            "index": 4,
+            "name": "910B2",
+            "health": "OK",
+            "power_w": 101.4,
+            "temperature_c": 46.0,
+            "utilization_percent": 7.0,
+            "memory_used_mb": 8509,
+            "memory_total_mb": 65536,
+            "memory_free_mb": 57027,
+        },
+    ]
 
 
 def test_deimv2_openblas_fatal_log_marks_stream_failed(tmp_path: Path, monkeypatch) -> None:

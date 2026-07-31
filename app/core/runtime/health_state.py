@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -51,15 +52,30 @@ def readiness_issues(state: dict[str, Any]) -> list[str]:
 class ReviewSlot:
     def __init__(self) -> None:
         self._token = f"{os.getpid()}:{time.monotonic_ns()}"
+        self._cancel_event = threading.Event()
 
     async def __aenter__(self) -> "ReviewSlot":
-        await asyncio.to_thread(_acquire_slot_sync, self._token)
+        try:
+            acquired = await asyncio.to_thread(_acquire_slot_sync, self._token, self._cancel_event)
+        except BaseException:
+            self._cancel_event.set()
+            _release_slot_sync(self._token)
+            raise
+        if not acquired:
+            _release_slot_sync(self._token)
+            raise asyncio.CancelledError
         _PROCESS_HELD_TOKENS.add(self._token)
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
+        self.cancel()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
         _PROCESS_HELD_TOKENS.discard(self._token)
-        await asyncio.to_thread(_release_slot_sync, self._token)
+        # Keep cleanup synchronous: an already-cancelled task must not interrupt
+        # removal of its cross-worker slot token.
+        _release_slot_sync(self._token)
 
 
 def _review_state_sync() -> dict[str, Any]:
@@ -69,26 +85,37 @@ def _review_state_sync() -> dict[str, Any]:
         return _public_state(state)
 
 
-def _acquire_slot_sync(token: str) -> None:
+def _acquire_slot_sync(token: str, cancel_event: threading.Event | None = None) -> bool:
+    cancel_event = cancel_event or threading.Event()
     registered = False
-    while True:
-        with _locked_state() as state:
-            _cleanup_stale_locked(state)
-            if not registered:
-                state.setdefault("pending", {})
-                state["pending"][token] = _entry()
-                registered = True
-            running = state.setdefault("running", {})
-            if token in running:
+    try:
+        while not cancel_event.is_set():
+            with _locked_state() as state:
+                _cleanup_stale_locked(state)
+                if cancel_event.is_set():
+                    state.setdefault("running", {}).pop(token, None)
+                    state.setdefault("pending", {}).pop(token, None)
+                    _write_state_locked(state)
+                    return False
+                if not registered:
+                    state.setdefault("pending", {})
+                    state["pending"][token] = _entry()
+                    registered = True
+                running = state.setdefault("running", {})
+                if token in running:
+                    _write_state_locked(state)
+                    return True
+                if len(running) < MAX_REVIEW_CONCURRENCY:
+                    state.setdefault("pending", {}).pop(token, None)
+                    running[token] = _entry()
+                    _write_state_locked(state)
+                    return True
                 _write_state_locked(state)
-                return
-            if len(running) < MAX_REVIEW_CONCURRENCY:
-                state.setdefault("pending", {}).pop(token, None)
-                running[token] = _entry()
-                _write_state_locked(state)
-                return
-            _write_state_locked(state)
-        time.sleep(REVIEW_SLOT_WAIT_SECONDS)
+            cancel_event.wait(REVIEW_SLOT_WAIT_SECONDS)
+        return False
+    finally:
+        if cancel_event.is_set():
+            _release_slot_sync(token)
 
 
 def _release_slot_sync(token: str) -> None:

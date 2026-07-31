@@ -112,6 +112,14 @@ def test_training_status_includes_thread_task_snapshot(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(training_status, "runtime_root", lambda: threads_root)
     monkeypatch.setattr(training_status, "_resource_status", lambda *_args: {})
+    monkeypatch.setattr(
+        training_status,
+        "read_current_http_training_job_marker",
+        lambda *_args, **_kwargs: {
+            "job_id": "job-current",
+            "status": "running",
+        },
+    )
 
     status = training_status.build_training_task_status("face")
     snapshot = status["task_snapshot"]
@@ -123,6 +131,14 @@ def test_training_status_includes_thread_task_snapshot(tmp_path: Path, monkeypat
     assert "annotation" not in status
     assert "generation" not in status
     assert "training" not in status
+    assert status["thread_task_status"] == {
+        "schema": "jetlinks-training-thread-status.v1",
+        "status": "running",
+        "lifecycle": "active",
+        "has_active_job": True,
+        "active_job_id": "job-current",
+        "active_job_status": "running",
+    }
     assert snapshot["total_runs"] == 2
     assert snapshot["latest_run_id"] == "run-deimv2-second"
     assert snapshot["current_run_id"] == "run-deimv2-second"
@@ -183,9 +199,25 @@ def test_historical_run_query_keeps_snapshot_on_latest_run(tmp_path: Path, monke
     )
     monkeypatch.setattr(training_status, "runtime_root", lambda: threads_root)
     monkeypatch.setattr(training_status, "_resource_status", lambda *_args: {})
+    monkeypatch.setattr(
+        training_status,
+        "read_current_http_training_job_marker",
+        lambda *_args, **_kwargs: {
+            "job_id": "job-finished",
+            "status": "completed",
+        },
+    )
 
     status = training_status.build_training_task_status("face", run_id="run-deimv2-first")
 
+    assert status["thread_task_status"] == {
+        "schema": "jetlinks-training-thread-status.v1",
+        "status": "completed",
+        "lifecycle": "terminal",
+        "has_active_job": False,
+        "active_job_id": None,
+        "active_job_status": None,
+    }
     assert status["task_snapshot"]["selected_run_id"] == "run-deimv2-first"
     assert status["task_snapshot"]["current_run_id"] == "run-deimv2-second"
     assert status["task_snapshot"]["current_run"]["run_id"] == "run-deimv2-second"
@@ -196,3 +228,68 @@ def test_historical_run_query_keeps_snapshot_on_latest_run(tmp_path: Path, monke
         set(run) == set(status["task_snapshot"]["current_run"])
         for run in status["task_snapshot"]["history_runs"]
     )
+
+
+def test_training_status_returns_queued_job_before_first_run(tmp_path: Path, monkeypatch) -> None:
+    threads_root = tmp_path / "threads"
+    (threads_root / "face").mkdir(parents=True)
+    monkeypatch.setattr(training_status, "runtime_root", lambda: threads_root)
+    monkeypatch.setattr(
+        training_status,
+        "read_current_http_training_job_marker",
+        lambda *_args, **_kwargs: {
+            "job_id": "job-queued",
+            "status": "queued",
+            "updated_at": "2026-07-30T08:00:00Z",
+        },
+    )
+
+    status = training_status.build_training_task_status("face")
+
+    assert status["status"] is None
+    assert status["total_runs"] == 0
+    assert status["latest_run_id"] is None
+    assert status["thread_task_status"] == {
+        "schema": "jetlinks-training-thread-status.v1",
+        "status": "queued",
+        "lifecycle": "active",
+        "has_active_job": True,
+        "active_job_id": "job-queued",
+        "active_job_status": "queued",
+    }
+    assert status["task_snapshot"]["current_run"] is None
+    assert status["task_snapshot"]["history_runs"] == []
+
+
+def test_thread_task_status_normalizes_cancelling_to_running() -> None:
+    status = training_status._build_thread_task_status(
+        {
+            "job_id": "job-cancelling",
+            "status": "cancelling",
+        }
+    )
+
+    assert status == {
+        "schema": "jetlinks-training-thread-status.v1",
+        "status": "running",
+        "lifecycle": "active",
+        "has_active_job": True,
+        "active_job_id": "job-cancelling",
+        "active_job_status": "running",
+    }
+
+
+def test_thread_task_status_uses_latest_run_instead_of_idle() -> None:
+    status = training_status._build_thread_task_status(
+        None,
+        fallback_status="completed",
+    )
+
+    assert status == {
+        "schema": "jetlinks-training-thread-status.v1",
+        "status": "completed",
+        "lifecycle": "terminal",
+        "has_active_job": False,
+        "active_job_id": None,
+        "active_job_status": None,
+    }

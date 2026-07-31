@@ -56,8 +56,8 @@ def main(args, ):
     model = Model()
 
     img_size = cfg.yaml_cfg["eval_spatial_size"]
-    data = torch.rand(32, 3, *img_size)
-    size = torch.tensor([img_size])
+    data = torch.rand(args.batch_size, 3, *img_size)
+    size = torch.tensor([img_size] * args.batch_size)
     _ = model(data, size)
 
     dynamic_axes = {
@@ -104,6 +104,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', '-c', default='configs/dfine/dfine_hgnetv2_l_coco.yml', type=str, )
     parser.add_argument('--resume', '-r', type=str, )
     parser.add_argument('--opset', type=int, default=17,)
+    parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--check',  action='store_true')
     parser.add_argument('--simplify',  action='store_true')
     args = parser.parse_args()

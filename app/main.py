@@ -14,9 +14,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import acp, acp_http_stream, agents, apps, artifacts, cron, health, mcp, sandbox, skills, training, uploads, workflows, edge_machine, edge_runtime, monitor
+from app.api import (
+    acp,
+    acp_http_stream,
+    agents,
+    apps,
+    artifacts,
+    artifacts_json,
+    cron,
+    edge_machine,
+    edge_runtime,
+    health,
+    mcp,
+    monitor,
+    sandbox,
+    skills,
+    training,
+    uploads,
+    workflows,
+)
 from app.core.runtime import RuntimeBootstrapConfig, default_container
-
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -97,6 +114,7 @@ def create_app(bootstrap: RuntimeBootstrapConfig | dict[str, Any] | None = None)
     app.include_router(agents.router)
     app.include_router(apps.router)
     app.include_router(artifacts.router)
+    app.include_router(artifacts_json.router)
     app.include_router(sandbox.router)
     app.include_router(cron.router)
     app.include_router(skills.router)

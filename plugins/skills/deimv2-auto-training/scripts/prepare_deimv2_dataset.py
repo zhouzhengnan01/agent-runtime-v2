@@ -157,6 +157,7 @@ def prepare_dataset(spec: dict[str, Any]) -> dict[str, Any]:
         dst_name = f"{prefix}_{new_image_id:06d}_{src.name}"
         shutil.copy2(src, dst_dir / dst_name)
         copied = deepcopy(image)
+        copied.pop("jetlinks_artifact", None)
         copied.update(
             {
                 "id": new_image_id,

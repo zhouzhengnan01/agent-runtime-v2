@@ -6908,7 +6908,47 @@ def _unpack_dataset_archive(archive_path: str, target_dir: Path, thread_root: Pa
     source = _resolve_uploaded_local_path(thread_root, archive_path)
     if not source.exists():
         raise FileNotFoundError(f"找不到上传的文件: {source}")
-    return _unpack_archive_to_dir(source, target_dir)
+    dataset_root = _unpack_archive_to_dir(source, target_dir)
+    _normalize_uploaded_annotations_json(dataset_root)
+    return dataset_root
+
+
+def _normalize_uploaded_annotations_json(dataset_root: Path) -> Path | None:
+    annotations_dir = dataset_root / "annotations"
+    if not annotations_dir.is_dir():
+        return None
+    json_files = sorted(path for path in annotations_dir.rglob("*.json") if path.is_file())
+    if not json_files:
+        return None
+    if len(json_files) > 1:
+        relative = [path.relative_to(annotations_dir).as_posix() for path in json_files]
+        raise ValueError(
+            "annotations must contain exactly one JSON file; "
+            f"found {len(json_files)}: {', '.join(relative)}"
+        )
+
+    source = json_files[0]
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid annotations JSON: {source.name}") from exc
+    if not isinstance(payload, dict) or not all(
+        isinstance(payload.get(key), list) for key in ("images", "annotations", "categories")
+    ):
+        raise ValueError(
+            "The only JSON file under annotations is not a valid COCO dataset: "
+            f"{source.name}"
+        )
+
+    normalized = annotations_dir / "instances_all.json"
+    if source.resolve() != normalized.resolve():
+        normalized.parent.mkdir(parents=True, exist_ok=True)
+        source.replace(normalized)
+        parent = source.parent
+        while parent != annotations_dir and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+    return normalized
 
 
 def _is_archive_path(path: Path) -> bool:

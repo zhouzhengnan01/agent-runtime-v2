@@ -7,8 +7,10 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import time
 import yaml
 from pathlib import Path
 from typing import Any
@@ -483,6 +485,143 @@ def bool_from_any(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _bounded_int(value: Any, default: int, *, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
+
+
+def _onnx_export_environment(training: dict[str, Any]) -> dict[str, str]:
+    export_env = os.environ.copy()
+    for name in (
+        "ASCEND_RT_VISIBLE_DEVICES",
+        "ASCEND_VISIBLE_DEVICES",
+        "NPU_VISIBLE_DEVICES",
+        "CUDA_VISIBLE_DEVICES",
+    ):
+        export_env.pop(name, None)
+
+    threads = str(_bounded_int(training.get("onnx_export_threads"), 8, minimum=1, maximum=32))
+    for name in (
+        "OPENBLAS_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "OMP_THREAD_LIMIT",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "BLIS_NUM_THREADS",
+        "GOTO_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        export_env[name] = threads
+    export_env["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
+    return export_env
+
+
+def _terminate_process_group(proc: subprocess.Popen[Any], *, grace_seconds: float = 5.0) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=max(1.0, grace_seconds),
+            )
+        except (OSError, subprocess.SubprocessError):
+            proc.kill()
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            proc.terminate()
+
+    try:
+        proc.wait(timeout=grace_seconds)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    if os.name != "nt":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            proc.kill()
+    else:
+        proc.kill()
+    try:
+        proc.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _run_onnx_stage(
+    *,
+    name: str,
+    cmd: list[str],
+    cwd: Path,
+    log_path: Path,
+    env: dict[str, str],
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    popen_kwargs: dict[str, Any] = {
+        "cwd": str(cwd),
+        "stdout": None,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "env": env,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write(f"[onnx-{name}] command={json.dumps(cmd, ensure_ascii=False)}\n")
+        log.write(f"[onnx-{name}] timeout_seconds={timeout_seconds}\n")
+        log.flush()
+        popen_kwargs["stdout"] = log
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+        try:
+            returncode = proc.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(proc)
+            elapsed = round(time.monotonic() - started, 3)
+            log.write(f"[onnx-{name}] timeout after {elapsed}s; process group terminated\n")
+            log.flush()
+            return {
+                "name": name,
+                "status": "timeout",
+                "returncode": None,
+                "timeout_seconds": timeout_seconds,
+                "elapsed_seconds": elapsed,
+                "command": cmd,
+                "log": str(log_path),
+                "error": f"ONNX {name} timed out after {timeout_seconds} seconds.",
+            }
+
+    elapsed = round(time.monotonic() - started, 3)
+    return {
+        "name": name,
+        "status": "completed" if returncode == 0 else "failed",
+        "returncode": returncode,
+        "timeout_seconds": timeout_seconds,
+        "elapsed_seconds": elapsed,
+        "command": cmd,
+        "log": str(log_path),
+        "error": "" if returncode == 0 else f"ONNX {name} exited with return code {returncode}.",
+    }
+
+
 def export_onnx_after_training(
     *,
     prefix: list[str],
@@ -496,10 +635,30 @@ def export_onnx_after_training(
     opset = int(training.get("onnx_opset") or 17)
     check = bool_from_any(training.get("onnx_check"), True)
     simplify = bool_from_any(training.get("onnx_simplify"), True)
+    export_batch_size = _bounded_int(training.get("onnx_export_batch_size"), 1, minimum=1, maximum=32)
+    image_size = _bounded_int(training.get("img_size") or training.get("imgsz"), 640, minimum=32, maximum=4096)
+    export_timeout = _bounded_int(
+        training.get("onnx_export_timeout_seconds"),
+        900,
+        minimum=1,
+        maximum=86_400,
+    )
+    simplify_timeout = _bounded_int(
+        training.get("onnx_simplify_timeout_seconds"),
+        600,
+        minimum=1,
+        maximum=86_400,
+    )
+    check_timeout = _bounded_int(
+        training.get("onnx_check_timeout_seconds"),
+        300,
+        minimum=1,
+        maximum=86_400,
+    )
     official_exporter = deim_root / "tools" / "deployment" / "export_onnx.py"
     if not official_exporter.is_file():
         raise FileNotFoundError(f"DEIMv2 official ONNX exporter not found: {official_exporter}")
-    cmd = prefix + [
+    export_cmd = prefix + [
         str(official_exporter),
         "-c",
         str(config_path),
@@ -507,32 +666,127 @@ def export_onnx_after_training(
         str(checkpoint_path),
         "--opset",
         str(opset),
+        "--batch-size",
+        str(export_batch_size),
     ]
-    if check:
-        cmd.append("--check")
-    if simplify:
-        cmd.append("--simplify")
     exporter = str(official_exporter)
 
-    log_path = logs_dir / "export_onnx.log"
-    with log_path.open("w", encoding="utf-8") as log:
-        proc = subprocess.run(cmd, cwd=str(deim_root), stdout=log, stderr=subprocess.STDOUT, text=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    export_log = logs_dir / "export_onnx.log"
+    simplify_log = logs_dir / "simplify_onnx.log"
+    check_log = logs_dir / "check_onnx.log"
+    simplified_path = output_path.with_name(f"{output_path.stem}.simplified.tmp.onnx")
+    output_path.unlink(missing_ok=True)
+    simplified_path.unlink(missing_ok=True)
+    export_env = _onnx_export_environment(training)
+    stages: list[dict[str, Any]] = []
     result = {
         "enabled": True,
-        "status": "completed" if proc.returncode == 0 and output_path.is_file() else "failed",
-        "returncode": proc.returncode,
+        "status": "running",
+        "returncode": None,
         "exporter": exporter,
-        "command": cmd,
+        "command": export_cmd,
         "config": str(config_path),
         "checkpoint": str(checkpoint_path),
-        "onnx_path": str(output_path) if output_path.is_file() else "",
-        "log": str(log_path),
+        "onnx_path": "",
+        "log": str(export_log),
+        "logs": {
+            "export": str(export_log),
+            "simplify": str(simplify_log) if simplify else "",
+            "check": str(check_log) if check else "",
+        },
         "opset": opset,
+        "batch_size": export_batch_size,
         "check": check,
         "simplify": simplify,
+        "threads": int(export_env["OPENBLAS_NUM_THREADS"]),
+        "timeouts": {
+            "export": export_timeout,
+            "simplify": simplify_timeout if simplify else None,
+            "check": check_timeout if check else None,
+        },
+        "stages": stages,
     }
-    if result["status"] != "completed":
-        raise RuntimeError(f"DEIMv2 ONNX export failed. See {log_path}")
+
+    export_stage = _run_onnx_stage(
+        name="export",
+        cmd=export_cmd,
+        cwd=deim_root,
+        log_path=export_log,
+        env=export_env,
+        timeout_seconds=export_timeout,
+    )
+    stages.append(export_stage)
+    if export_stage["status"] != "completed" or not output_path.is_file():
+        output_path.unlink(missing_ok=True)
+        result["status"] = export_stage["status"] if export_stage["status"] != "completed" else "failed"
+        result["returncode"] = export_stage["returncode"]
+        result["failed_stage"] = "export"
+        result["warning"] = export_stage.get("error") or f"DEIMv2 ONNX export failed. See {export_log}"
+        return result
+
+    if simplify:
+        simplify_script = (
+            "import onnx, onnxsim, sys; "
+            "source, target, size = sys.argv[1], sys.argv[2], int(sys.argv[3]); "
+            "model, valid = onnxsim.simplify("
+            "source, test_input_shapes={'images': [1, 3, size, size], 'orig_target_sizes': [1, 2]}); "
+            "assert valid, 'onnxsim validation failed'; "
+            "onnx.save(model, target)"
+        )
+        simplify_cmd = prefix + [
+            "-c",
+            simplify_script,
+            str(output_path),
+            str(simplified_path),
+            str(image_size),
+        ]
+        simplify_stage = _run_onnx_stage(
+            name="simplify",
+            cmd=simplify_cmd,
+            cwd=deim_root,
+            log_path=simplify_log,
+            env=export_env,
+            timeout_seconds=simplify_timeout,
+        )
+        stages.append(simplify_stage)
+        if simplify_stage["status"] != "completed" or not simplified_path.is_file():
+            simplified_path.unlink(missing_ok=True)
+            result["status"] = simplify_stage["status"] if simplify_stage["status"] != "completed" else "failed"
+            result["returncode"] = simplify_stage["returncode"]
+            result["failed_stage"] = "simplify"
+            result["onnx_path"] = str(output_path)
+            result["warning"] = simplify_stage.get("error") or f"DEIMv2 ONNX simplify failed. See {simplify_log}"
+            return result
+        simplified_path.replace(output_path)
+
+    if check:
+        check_script = (
+            "import onnx, sys; "
+            "model = onnx.load(sys.argv[1]); "
+            "onnx.checker.check_model(model)"
+        )
+        check_cmd = prefix + ["-c", check_script, str(output_path)]
+        check_stage = _run_onnx_stage(
+            name="check",
+            cmd=check_cmd,
+            cwd=deim_root,
+            log_path=check_log,
+            env=export_env,
+            timeout_seconds=check_timeout,
+        )
+        stages.append(check_stage)
+        if check_stage["status"] != "completed":
+            result["status"] = check_stage["status"]
+            result["returncode"] = check_stage["returncode"]
+            result["failed_stage"] = "check"
+            result["onnx_path"] = str(output_path)
+            result["warning"] = check_stage.get("error") or f"DEIMv2 ONNX check failed. See {check_log}"
+            return result
+
+    result["status"] = "completed"
+    result["returncode"] = 0
+    result["onnx_path"] = str(output_path)
     return result
 
 

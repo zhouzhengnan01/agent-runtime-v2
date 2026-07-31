@@ -43,6 +43,7 @@ export APP_PORT="${APP_PORT:-8069}"
 export APP_WORKERS="${APP_WORKERS:-1}"
 export APP_LOG_LEVEL="${APP_LOG_LEVEL:-info}"
 export JETLINKS_AGENT_RUN_MODE="local"
+export JETLINKS_REVIEW_STATE_DIR="${JETLINKS_REVIEW_STATE_DIR:-$(pwd -P)/.runtime/review_state}"
 
 # NPU 服务通常不建议开 --reload，多进程 reload 会让环境和子进程排查变复杂。
 # up.sh 会写入 .runtime/server/server.pid 和 .runtime/server/server.log。

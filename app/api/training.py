@@ -45,6 +45,10 @@ runtime = default_container.runtime
 
 VIRTUAL_UPLOADS_PREFIX = "/mnt/user-data/uploads"
 HTTP_JOB_STATUS_INTERVAL_SECONDS = 2.0
+HTTP_JOB_CANCEL_WAIT_SECONDS = max(
+    0.1,
+    float(os.getenv("JETLINKS_HTTP_JOB_CANCEL_WAIT_SECONDS", "5") or "5"),
+)
 HTTP_TRAINING_ACTIVE_STATUSES = ACTIVE_HTTP_TRAINING_STATUSES
 
 
@@ -234,6 +238,7 @@ async def cancel_training_job(thread_id: str) -> dict[str, object]:
         record["status"] = "cancelling"
         record["completed_at"] = None
         task = record.get("task")
+        review_slot = record.get("review_slot")
         update_http_training_job_marker(normalized, status="cancelling", completed_at=None)
 
     runtime.session_manager.cancel_active_turn(normalized)
@@ -246,6 +251,13 @@ async def cancel_training_job(thread_id: str) -> dict[str, object]:
     if isinstance(task, asyncio.Task) and not task.done():
         task.cancel()
     terminated_processes = _terminate_training_processes(normalized, str(record.get("run_id") or ""))
+    if isinstance(review_slot, ReviewSlot):
+        review_slot.cancel()
+    if isinstance(task, asyncio.Task):
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=HTTP_JOB_CANCEL_WAIT_SECONDS)
+        except (asyncio.CancelledError, TimeoutError):
+            pass
     record["status"] = "cancelled"
     record["completed_at"] = _utc_now()
     record["error"] = "Training job cancelled by HTTP request."
@@ -303,17 +315,22 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
     thread_id = str(record["thread_id"])
     job_id = str(record["job_id"])
     agent_name = str(record["agent_name"])
-    record["status"] = "running"
-    record["started_at"] = _utc_now()
-    update_http_training_job_marker(thread_id, status="running", started_at=record["started_at"])
     status_stop = asyncio.Event()
     published_artifacts: set[str] = set()
-    status_task = asyncio.create_task(_publish_training_status_loop(thread_id, status_stop, published_artifacts))
+    status_task: asyncio.Task[Any] | None = None
     last_status_sent = 0.0
     final_result: AgentRunResult | None = None
     final_reply_sent = False
+    review_slot = ReviewSlot()
+    record["review_slot"] = review_slot
     try:
-        async with ReviewSlot():
+        async with review_slot:
+            record["status"] = "running"
+            record["started_at"] = _utc_now()
+            update_http_training_job_marker(thread_id, status="running", started_at=record["started_at"])
+            status_task = asyncio.create_task(
+                _publish_training_status_loop(thread_id, status_stop, published_artifacts)
+            )
             await _publish_http_job_session_update(
                 thread_id,
                 {
@@ -447,7 +464,9 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
         await _publish_http_job_error(thread_id, job_id, -32000, str(exc))
     finally:
         status_stop.set()
-        await asyncio.gather(status_task, return_exceptions=True)
+        if status_task is not None:
+            await asyncio.gather(status_task, return_exceptions=True)
+        record.pop("review_slot", None)
         record["completed_at"] = _utc_now()
 
 

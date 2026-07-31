@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.artifacts import ArtifactStore
+from app.core.http_training_jobs import (
+    ACTIVE_HTTP_TRAINING_STATUSES,
+    TERMINAL_HTTP_TRAINING_STATUSES,
+    read_current_http_training_job_marker,
+)
 from app.core.training_annotation_previews import build_original_annotation_resources
 from app.core.training_artifact_updates import training_status_artifact_paths
 from app.schemas import ChatEvent
@@ -451,10 +456,41 @@ def build_training_task_status(thread_id: str, run_id: str | None = None) -> dic
     thread_dir = safe_thread_dir(thread_id)
     if not thread_dir.exists():
         raise FileNotFoundError(f"Thread not found: {thread_id}")
-    selected_run_dir = _resolve_run_dir(thread_dir, run_id)
+    job_marker = read_current_http_training_job_marker(
+        thread_id,
+        require_active=False,
+        allow_previous_instance=False,
+    )
     latest_run_id = _latest_run_id(thread_dir)
     if not latest_run_id:
-        raise FileNotFoundError(f"No training run found for thread: {thread_id}")
+        if run_id is not None or job_marker is None:
+            raise FileNotFoundError(f"No training run found for thread: {thread_id}")
+        updated_at = job_marker.get("updated_at") or utc_now()
+        return {
+            "schema": "jetlinks-training-task-status.v1",
+            "thread_id": thread_id,
+            "status": None,
+            "phase": None,
+            "phase_label": None,
+            "total_runs": 0,
+            "latest_run_id": None,
+            "current_run_id": None,
+            "updated_at": updated_at,
+            "thread_task_status": _build_thread_task_status(job_marker),
+            "task_snapshot": {
+                "schema": "jetlinks-training-task-snapshot.v1",
+                "thread_id": thread_id,
+                "total_runs": 0,
+                "latest_run_id": None,
+                "selected_run_id": None,
+                "current_run_id": None,
+                "current_run": None,
+                "status_counts": {},
+                "history_runs": [],
+                "updated_at": updated_at,
+            },
+        }
+    selected_run_dir = _resolve_run_dir(thread_dir, run_id)
     current_status = _build_run_status(
         thread_dir,
         thread_dir / "outputs" / "yolo_training_flow" / "runs" / latest_run_id,
@@ -465,6 +501,10 @@ def build_training_task_status(thread_id: str, run_id: str | None = None) -> dic
         selected_run_id=selected_run_dir.name,
     )
     current_run = task_snapshot.get("current_run") if isinstance(task_snapshot.get("current_run"), dict) else {}
+    thread_task_status = _build_thread_task_status(
+        job_marker,
+        fallback_status=str(current_run.get("status") or ""),
+    )
     return {
         "schema": "jetlinks-training-task-status.v1",
         "thread_id": thread_id,
@@ -475,7 +515,35 @@ def build_training_task_status(thread_id: str, run_id: str | None = None) -> dic
         "latest_run_id": task_snapshot.get("latest_run_id"),
         "current_run_id": task_snapshot.get("current_run_id"),
         "updated_at": task_snapshot.get("updated_at"),
+        "thread_task_status": thread_task_status,
         "task_snapshot": task_snapshot,
+    }
+
+
+def _build_thread_task_status(
+    marker: dict[str, Any] | None,
+    *,
+    fallback_status: str = "",
+) -> dict[str, Any]:
+    job_status = str(marker.get("status") or "").strip() if marker else ""
+    has_active_job = job_status in ACTIVE_HTTP_TRAINING_STATUSES
+    if has_active_job:
+        status = "queued" if job_status == "queued" else "running"
+        lifecycle = "active"
+    elif job_status in TERMINAL_HTTP_TRAINING_STATUSES:
+        status = job_status
+        lifecycle = "terminal"
+    else:
+        normalized_fallback = fallback_status.strip()
+        status = "running" if normalized_fallback == "cancelling" else normalized_fallback or None
+        lifecycle = "active" if status in {"queued", "running"} else "terminal"
+    return {
+        "schema": "jetlinks-training-thread-status.v1",
+        "status": status,
+        "lifecycle": lifecycle,
+        "has_active_job": has_active_job,
+        "active_job_id": marker.get("job_id") if has_active_job and marker else None,
+        "active_job_status": status if has_active_job else None,
     }
 
 
@@ -1469,25 +1537,48 @@ def _npu_smi_status() -> dict[str, Any]:
 
 def _parse_npu_smi_info(text: str) -> list[dict[str, Any]]:
     devices: dict[int, dict[str, Any]] = {}
-    for line in text.splitlines():
-        if not line.strip().startswith("|"):
+    current_index: int | None = None
+    for raw_line in text.splitlines():
+        line = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw_line)
+        if "|" not in line:
             continue
-        numbers = re.findall(r"(?<![\w.])(\d+)(?![\w.])", line)
-        if not numbers:
+        parts = [part.strip() for part in line.strip().strip("|").split("|")]
+        if len(parts) < 3:
             continue
-        index = _int_or_none(numbers[0])
-        if index is None or index > 255:
+
+        device_match = re.match(r"^(\d+)\s+(.+?)\s*$", parts[0])
+        if device_match and re.search(r"[A-Za-z]", device_match.group(2)):
+            index = _int_or_none(device_match.group(1))
+            if index is None or index > 255:
+                current_index = None
+                continue
+            item = devices.setdefault(index, {"index": index})
+            item["name"] = device_match.group(2).strip()
+            if parts[1]:
+                item["health"] = parts[1]
+            telemetry = re.match(r"^\s*(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)", parts[-1])
+            if telemetry:
+                item["power_w"] = _float_or_none(telemetry.group(1))
+                item["temperature_c"] = _float_or_none(telemetry.group(2))
+            current_index = index
             continue
-        item = devices.setdefault(index, {"index": index})
-        mem = re.search(r"(\d+)\s*/\s*(\d+)", line)
-        if mem:
-            item["memory_used_mb"] = int(mem.group(1))
-            item["memory_total_mb"] = int(mem.group(2))
-            item["memory_free_mb"] = int(mem.group(2)) - int(mem.group(1))
-        percents = re.findall(r"(\d+(?:\.\d+)?)\s*%", line)
-        if percents:
-            item["utilization_percent"] = _float_or_none(percents[-1])
-    return list(devices.values())
+
+        if current_index is None or current_index not in devices:
+            continue
+        if not re.fullmatch(r"(?:[0-9a-fA-F]{4}:)?[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.\d+", parts[1]):
+            continue
+        usage = parts[-1]
+        utilization = re.match(r"^\s*(\d+(?:\.\d+)?)", usage)
+        if utilization:
+            devices[current_index]["utilization_percent"] = _float_or_none(utilization.group(1))
+        memory_pairs = re.findall(r"(\d+)\s*/\s*(\d+)", usage)
+        if memory_pairs:
+            used, total = (int(value) for value in memory_pairs[-1])
+            devices[current_index]["memory_used_mb"] = used
+            devices[current_index]["memory_total_mb"] = total
+            devices[current_index]["memory_free_mb"] = max(0, total - used)
+
+    return [devices[index] for index in sorted(devices)]
 
 
 def _host_status() -> dict[str, Any]:
