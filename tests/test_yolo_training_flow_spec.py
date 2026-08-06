@@ -167,6 +167,186 @@ def test_smoking_intent_forces_entity_annotation_policy() -> None:
     assert prompts == ["person", "cigarette"]
 
 
+def test_explicit_annotation_labels_extend_training_intent_labels() -> None:
+    flow = _load_yolo_training_flow_module()
+    text = (
+        "\u8bf7\u542f\u52a8AI\u6258\u7ba1\u8bad\u7ec3\u6d41\u7a0b\u3002"
+        "\u8bad\u7ec3\u610f\u56fe\uff1a\u4eba\u5458\u68c0\u6d4b\u3002"
+        "\u6807\u6ce8\u610f\u56fe\uff1alabel: person\uff0cvest\u3002"
+        "\u6570\u636e\u96c6\u6587\u4ef6\u5df2\u7ecf\u4e0a\u4f20\u5b8c\u6210\u3002"
+    )
+    spec = {
+        "labels": ["person"],
+        "intent_items": [
+            {
+                "label": "person",
+                "training_labels": ["person"],
+                "sam3_prompts": ["person"],
+                "sam3_prompt_map": {"person": "person"},
+            }
+        ],
+    }
+
+    ensured = flow._ensure_intent_labels(spec, text)
+    labels = flow._spec_string_list(ensured, "labels")
+    prompt_map = flow._annotation_prompt_map_from_spec(ensured, labels)
+
+    assert flow._extract_annotation_labels(text) == ["person", "vest"]
+    assert labels == ["person", "safety_vest"]
+    assert prompt_map["person"] == "person"
+    assert prompt_map["safety vest"] == "safety_vest"
+    assert "vest_ai" not in labels
+
+
+def test_training_intent_without_annotation_labels_keeps_existing_behavior() -> None:
+    flow = _load_yolo_training_flow_module()
+    text = (
+        "\u8bf7\u542f\u52a8AI\u6258\u7ba1\u8bad\u7ec3\u6d41\u7a0b\u3002"
+        "\u8bad\u7ec3\u610f\u56fe\uff1a\u4eba\u5458/\u53cd\u5149\u8863\u68c0\u6d4b\u3002"
+        "\u6570\u636e\u96c6\u6587\u4ef6\u5df2\u7ecf\u4e0a\u4f20\u5b8c\u6210\u3002"
+    )
+    spec = {"labels": ["person", "safety_vest"]}
+
+    ensured = flow._ensure_intent_labels(spec, text)
+
+    assert flow._extract_annotation_labels(text) == []
+    assert flow._spec_string_list(ensured, "labels") == ["person", "safety_vest"]
+
+
+def test_natural_language_annotation_intent_extends_top_level_labels() -> None:
+    flow = _load_yolo_training_flow_module()
+    text = (
+        "\u8bf7\u542f\u52a8AI\u6258\u7ba1\u8bad\u7ec3\u6d41\u7a0b\u3002"
+        "\u8bad\u7ec3\u610f\u56fe\uff1a\u4eba\u5458\u68c0\u6d4b\u3002"
+        "\u6807\u6ce8\u610f\u56fe\uff1a\u540c\u65f6\u6807\u51fa\u4eba\u5458\u548c\u53cd\u5149\u8863\u3002"
+    )
+    spec = {
+        "labels": ["person"],
+        "intent_items": [
+            {
+                "label": "person_with_safety_vest",
+                "training_labels": ["person", "safety_vest"],
+                "sam3_prompts": ["person", "reflective vest"],
+                "sam3_prompt_map": {
+                    "person": "person",
+                    "reflective vest": "safety_vest",
+                },
+            }
+        ],
+    }
+
+    ensured = flow._ensure_intent_labels(spec, text)
+    labels = flow._spec_string_list(ensured, "labels")
+    prompt_map = flow._annotation_prompt_map_from_spec(ensured, labels)
+
+    assert labels == ["person", "safety_vest"]
+    assert prompt_map["person"] == "person"
+    assert prompt_map["reflective vest"] == "safety_vest"
+
+
+def test_annotation_prompt_map_never_uses_observable_scene_entities() -> None:
+    flow = _load_yolo_training_flow_module()
+    preparation = _load_data_preparation_pipeline_module()
+    labels = ["person", "safety_vest"]
+    spec = {
+        "labels": labels,
+        "intent_items": [
+            {
+                "label": "person",
+                "type": "object_detection",
+                "training_labels": ["person"],
+                "observable_entities": ["background", "scene"],
+                "sam3_prompts": ["person"],
+                "sam3_prompt_map": {"person": "person"},
+            },
+            {
+                "label": "safety_vest",
+                "type": "object_detection",
+                "training_labels": ["safety_vest"],
+                "observable_entities": ["person", "road"],
+                "sam3_prompts": ["reflective safety vest"],
+                "sam3_prompt_map": {"reflective safety vest": "safety_vest"},
+            },
+        ],
+    }
+
+    prompt_map = flow._annotation_prompt_map_from_spec(spec, labels)
+    prompts = preparation._annotation_prompts_for_sam3(
+        labels,
+        list(prompt_map),
+        prompt_map,
+        flow._spec_intent_items(spec),
+    )
+    effective_map = preparation._prompt_label_map_for_sam3(labels, prompts, prompt_map)
+
+    assert prompt_map == {
+        "person": "person",
+        "reflective safety vest": "safety_vest",
+        "safety vest": "safety_vest",
+    }
+    assert prompts == list(prompt_map)
+    assert effective_map == prompt_map
+    assert not {"background", "scene", "road"}.intersection(prompts)
+
+
+def test_conflicting_declared_prompt_is_removed_instead_of_overwritten() -> None:
+    flow = _load_yolo_training_flow_module()
+    labels = ["person", "safety_vest"]
+    spec = {
+        "labels": labels,
+        "intent_items": [
+            {
+                "label": "person",
+                "training_labels": ["person"],
+                "sam3_prompt_map": {"person": "person"},
+            },
+            {
+                "label": "safety_vest",
+                "training_labels": ["safety_vest"],
+                "sam3_prompt_map": {"person": "safety_vest"},
+            },
+        ],
+    }
+
+    prompt_map = flow._annotation_prompt_map_from_spec(spec, labels)
+
+    assert prompt_map == {
+        "person": "person",
+        "safety vest": "safety_vest",
+    }
+
+
+def test_prompt_that_mentions_multiple_training_labels_is_rejected() -> None:
+    flow = _load_yolo_training_flow_module()
+    labels = ["person", "face", "shoes"]
+    spec = {
+        "labels": labels,
+        "intent_items": [
+            {
+                "label": "face",
+                "training_labels": ["face"],
+                "sam3_prompt_map": {
+                    "face": "face",
+                    "visible face and shoes": "face",
+                },
+            },
+            {
+                "label": "shoes",
+                "training_labels": ["shoes"],
+                "sam3_prompt_map": {"shoes": "shoes"},
+            },
+        ],
+    }
+
+    prompt_map = flow._annotation_prompt_map_from_spec(spec, labels)
+
+    assert prompt_map == {
+        "face": "face",
+        "shoes": "shoes",
+        "person": "person",
+    }
+
+
 def test_yolo_training_flow_extracts_one_message_training_spec() -> None:
     module = _load_yolo_training_flow_module()
     text = (

@@ -667,8 +667,16 @@ def _annotation_prompts_for_sam3(
 ) -> List[str]:
     prompts = _dedupe_text([str(item).strip() for item in (annotation_prompts or []) if str(item).strip()])
     prompt_map = {str(prompt).strip(): str(label).strip() for prompt, label in (prompt_label_map or {}).items() if str(prompt).strip() and str(label).strip()}
+    class_names = _dedupe_text(labels)
+    validated_prompts = [
+        prompt
+        for prompt, label in prompt_map.items()
+        if label in class_names
+    ]
+    if validated_prompts:
+        return _dedupe_text(validated_prompts)
     selected: List[str] = []
-    for label in _dedupe_text(labels):
+    for label in class_names:
         selected.extend(_best_annotation_prompts_for_label(label, labels, prompts, prompt_map, intent_items or []))
     return _dedupe_text(selected or prompts or labels)
 
@@ -854,9 +862,9 @@ def _visual_prompts_from_intent_items(items: List[Dict[str, Any]]) -> List[str]:
                 values.append(primary)
             keys = ("sam3_prompts",)
         elif _is_entity_interaction_item(item):
-            keys = ("sam3_prompts", "observable_entities", "training_labels")
+            keys = ("sam3_prompts", "training_labels")
         else:
-            keys = ("sam3_prompts", "visual_states", "observable_entities", "annotation_prompts")
+            keys = ("sam3_prompts", "visual_states", "annotation_prompts")
         for key in keys:
             raw = item.get(key)
             if isinstance(raw, list):
@@ -875,7 +883,7 @@ def _entity_interaction_prompts_for_label(label: str, items: List[Dict[str, Any]
     for item in items:
         if not _is_entity_interaction_item(item):
             continue
-        for key in ("observable_entities", "training_labels", "sam3_prompts", "annotation_prompts"):
+        for key in ("training_labels", "sam3_prompts", "annotation_prompts"):
             raw = item.get(key)
             if not isinstance(raw, list):
                 continue
@@ -894,30 +902,7 @@ def _is_entity_interaction_item(item: Dict[str, Any]) -> bool:
         return False
     if task_type in {"entity_interaction", "object_interaction", "person_object_interaction"}:
         return True
-    strategy = str(item.get("annotation_strategy") or "").strip().lower()
-    if strategy in {"constrained_target", "requires_review", "candidate_and_verify"}:
-        return False
-    if task_type in {
-        "behavior_detection",
-        "behavior",
-        "behaviour",
-        "action",
-        "activity",
-        "state_detection",
-        "state",
-        "status",
-        "anomaly_detection",
-    }:
-        return False
-    labels: List[str] = []
-    if isinstance(item.get("training_labels"), list):
-        labels.extend(str(value).strip() for value in item.get("training_labels", []) if str(value).strip())
-    if isinstance(item.get("observable_entities"), list):
-        labels.extend(str(value).strip() for value in item.get("observable_entities", []) if str(value).strip())
-    labels = _dedupe_text(labels)
-    normalized = {_label_lookup_key(value) for value in labels}
-    auxiliary = {value for value in normalized if value and value != "person" and "person" not in value}
-    return bool("person" in normalized and auxiliary)
+    return False
 
 
 def _is_person_attribute_item(item: Dict[str, Any]) -> bool:
@@ -1134,16 +1119,13 @@ def _prompt_label_map_for_sam3(labels: List[str], prompts: List[str], prompt_lab
         label_text = str(label or "").strip()
         if prompt_text and label_text in class_names:
             result[prompt_text] = label_text
-    if len(class_names) == 1:
-        for prompt in prompts:
-            result.setdefault(prompt, class_names[0])
     for prompt in prompts:
         mapped = _best_sam3_prompt_mapped_label(prompt, class_names)
         if mapped:
             result.setdefault(prompt, mapped)
     for label in class_names:
-        result.setdefault(_label_to_sam3_prompt(label), label)
-        result.setdefault(label, label)
+        fallback_prompt = _label_to_sam3_prompt(label) or label
+        result.setdefault(fallback_prompt, label)
     return result
 
 

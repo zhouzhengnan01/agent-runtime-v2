@@ -12,7 +12,7 @@ from typing import Any, Iterator
 
 
 ACTIVE_HTTP_TRAINING_STATUSES = {"queued", "running", "cancelling"}
-TERMINAL_HTTP_TRAINING_STATUSES = {"completed", "failed", "cancelled"}
+TERMINAL_HTTP_TRAINING_STATUSES = {"completed", "failed", "cancelled", "queue_rejected"}
 SERVICE_INSTANCE_ENV = "JETLINKS_SERVICE_INSTANCE_ID"
 SERVICE_INSTANCE_NAME = "service_instance.json"
 SERVICE_INSTANCE_LOCK_NAME = "service_instance.lock"
@@ -90,6 +90,42 @@ def reject_http_training_job_request(
         _write_json(path, payload)
 
 
+def mark_http_training_job_request_duplicate(
+    thread_id: str,
+    request_id: str,
+    *,
+    existing_job_id: str,
+    existing_run_id: str | None = None,
+) -> None:
+    path = _job_marker_path(thread_id)
+    with _job_marker_lock(thread_id):
+        payload = _read_json(path) or _base_job_marker(thread_id)
+        stats = _request_stats(payload)
+        history = _job_history(payload)
+        entry = next((item for item in reversed(history) if item.get("request_id") == request_id), None)
+        if entry is None:
+            return
+        if entry.get("status") == "received":
+            stats["pending_count"] = max(0, stats["pending_count"] - 1)
+            stats["duplicate_count"] += 1
+        entry.update(
+            {
+                "accepted": True,
+                "duplicate": True,
+                "created_job": False,
+                "http_status": 200,
+                "reason": "Training job already exists for this thread.",
+                "job_id": existing_job_id,
+                "existing_job_id": existing_job_id,
+                "run_id": existing_run_id,
+                "status": "returned_existing",
+                "decided_at": utc_now(),
+            }
+        )
+        payload["updated_at"] = utc_now()
+        _write_json(path, payload)
+
+
 def write_http_training_job_marker(
     thread_id: str,
     record: dict[str, Any],
@@ -112,6 +148,9 @@ def write_http_training_job_marker(
             "run_id": record.get("run_id"),
             "error": record.get("error"),
             "result": record.get("result"),
+            "queue_status": record.get("queue_status"),
+            "queue_position": record.get("queue_position"),
+            "queued_at": record.get("queued_at"),
             "request_stats": previous.get("request_stats") if isinstance(previous.get("request_stats"), dict) else {},
             "job_history": previous.get("job_history") if isinstance(previous.get("job_history"), list) else [],
             "updated_at": utc_now(),
@@ -135,7 +174,14 @@ def update_http_training_job_marker(thread_id: str, **updates: Any) -> None:
         payload = _read_json(path)
         if not payload:
             payload = _base_job_marker(thread_id)
-        payload.update({key: value for key, value in updates.items() if value is not None})
+        nullable_fields = {"queue_position", "queued_at", "completed_at"}
+        payload.update(
+            {
+                key: value
+                for key, value in updates.items()
+                if value is not None or key in nullable_fields
+            }
+        )
         # A successful write means the current runtime instance has adopted the job.
         payload["service_instance_id"] = current_service_instance_id()
         payload["thread_id"] = thread_id
@@ -190,6 +236,7 @@ def _base_job_marker(thread_id: str) -> dict[str, Any]:
             "received_count": 0,
             "accepted_count": 0,
             "rejected_count": 0,
+            "duplicate_count": 0,
             "pending_count": 0,
             "last_received_at": None,
         },
@@ -205,6 +252,7 @@ def _request_stats(payload: dict[str, Any]) -> dict[str, Any]:
         "received_count": _non_negative_int(stats.get("received_count")),
         "accepted_count": _non_negative_int(stats.get("accepted_count")),
         "rejected_count": _non_negative_int(stats.get("rejected_count")),
+        "duplicate_count": _non_negative_int(stats.get("duplicate_count")),
         "pending_count": _non_negative_int(stats.get("pending_count")),
         "last_received_at": stats.get("last_received_at"),
     }
@@ -257,7 +305,15 @@ def _sync_current_job_history(payload: dict[str, Any]) -> None:
     if not job_id:
         return
     history = _job_history(payload)
-    entry = next((item for item in reversed(history) if str(item.get("job_id") or "") == job_id), None)
+    entry = next(
+        (
+            item
+            for item in reversed(history)
+            if str(item.get("job_id") or "") == job_id
+            and not bool(item.get("duplicate"))
+        ),
+        None,
+    )
     if entry is None:
         return
     for key in ("status", "run_id", "started_at", "completed_at", "error"):

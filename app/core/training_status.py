@@ -16,6 +16,7 @@ from app.core.http_training_jobs import (
     TERMINAL_HTTP_TRAINING_STATUSES,
     read_current_http_training_job_marker,
 )
+from app.core.training_queue import training_queue
 from app.core.training_annotation_previews import build_original_annotation_resources
 from app.core.training_artifact_updates import training_status_artifact_paths
 from app.schemas import ChatEvent
@@ -476,6 +477,7 @@ def build_training_task_status(thread_id: str, run_id: str | None = None) -> dic
             "latest_run_id": None,
             "current_run_id": None,
             "updated_at": updated_at,
+            "queue": training_queue.snapshot(),
             "thread_task_status": _build_thread_task_status(job_marker),
             "task_snapshot": {
                 "schema": "jetlinks-training-task-snapshot.v1",
@@ -515,6 +517,7 @@ def build_training_task_status(thread_id: str, run_id: str | None = None) -> dic
         "latest_run_id": task_snapshot.get("latest_run_id"),
         "current_run_id": task_snapshot.get("current_run_id"),
         "updated_at": task_snapshot.get("updated_at"),
+        "queue": training_queue.snapshot(),
         "thread_task_status": thread_task_status,
         "task_snapshot": task_snapshot,
     }
@@ -526,6 +529,18 @@ def _build_thread_task_status(
     fallback_status: str = "",
 ) -> dict[str, Any]:
     job_status = str(marker.get("status") or "").strip() if marker else ""
+    thread_id = str(marker.get("thread_id") or "").strip() if marker else ""
+    live_queue_state = training_queue.thread_state(thread_id) if thread_id else None
+    queue_status = (
+        live_queue_state.get("queue_status")
+        if isinstance(live_queue_state, dict)
+        else marker.get("queue_status") if marker else None
+    )
+    queue_position = (
+        live_queue_state.get("queue_position")
+        if isinstance(live_queue_state, dict)
+        else marker.get("queue_position") if marker else None
+    )
     has_active_job = job_status in ACTIVE_HTTP_TRAINING_STATUSES
     if has_active_job:
         status = "queued" if job_status == "queued" else "running"
@@ -537,7 +552,7 @@ def _build_thread_task_status(
         normalized_fallback = fallback_status.strip()
         status = "running" if normalized_fallback == "cancelling" else normalized_fallback or None
         lifecycle = "active" if status in {"queued", "running"} else "terminal"
-    return {
+    result = {
         "schema": "jetlinks-training-thread-status.v1",
         "status": status,
         "lifecycle": lifecycle,
@@ -545,6 +560,10 @@ def _build_thread_task_status(
         "active_job_id": marker.get("job_id") if has_active_job and marker else None,
         "active_job_status": status if has_active_job else None,
     }
+    if queue_status is not None:
+        result["queue_status"] = queue_status
+        result["queue_position"] = queue_position
+    return result
 
 
 def build_training_stream_status(thread_id: str, run_id: str | None = None) -> dict[str, Any]:
@@ -1169,6 +1188,9 @@ def _is_training_completed(training: dict[str, Any]) -> bool:
 
 def _resource_status(run_dir: Path, backend: str) -> dict[str, Any]:
     selected_device = _selected_device(run_dir)
+    accelerator_reservation = _read_json(
+        run_dir / "deimv2_training_run" / "accelerator_state.json"
+    )
     return {
         "timestamp": utc_now(),
         "selected_device": selected_device,
@@ -1177,6 +1199,10 @@ def _resource_status(run_dir: Path, backend: str) -> dict[str, Any]:
         "npu": _npu_smi_status(),
         "host": _host_status(),
         "backend": backend,
+        "accelerator_reservation": accelerator_reservation or {
+            "status": "pending",
+            "cpu_fallback": False,
+        },
     }
 
 

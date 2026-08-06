@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.core.http_training_jobs import (
+    mark_http_training_job_request_duplicate,
     record_http_training_job_request,
     reject_http_training_job_request,
     update_http_training_job_marker,
@@ -120,3 +121,64 @@ def test_new_job_preserves_previous_request_audit(tmp_path: Path, monkeypatch) -
     assert marker["request_stats"]["rejected_count"] == 0
     assert [item["job_id"] for item in marker["job_history"]] == ["job-1", "job-2"]
     assert [item["run_id"] for item in marker["job_history"]] == ["run-deimv2-1", "run-deimv2-2"]
+
+
+def test_duplicate_request_is_counted_without_accepting_or_rejecting_new_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    thread_id = "duplicate-audit-thread"
+    monkeypatch.chdir(tmp_path)
+
+    first_request = record_http_training_job_request(thread_id)
+    write_http_training_job_marker(
+        thread_id,
+        {
+            "job_id": "job-existing",
+            "thread_id": thread_id,
+            "agent_name": "default",
+            "status": "running",
+            "created_at": "2026-08-04T00:00:00Z",
+            "run_id": "run-existing",
+        },
+        request_id=first_request,
+    )
+    duplicate_request = record_http_training_job_request(thread_id)
+
+    mark_http_training_job_request_duplicate(
+        thread_id,
+        duplicate_request,
+        existing_job_id="job-existing",
+        existing_run_id="run-existing",
+    )
+
+    marker = _marker(tmp_path, thread_id)
+    stats = marker["request_stats"]
+    duplicate = marker["job_history"][-1]
+    assert stats == {
+        "received_count": 2,
+        "accepted_count": 1,
+        "rejected_count": 0,
+        "duplicate_count": 1,
+        "pending_count": 0,
+        "last_received_at": stats["last_received_at"],
+    }
+    assert duplicate["accepted"] is True
+    assert duplicate["duplicate"] is True
+    assert duplicate["created_job"] is False
+    assert duplicate["http_status"] == 200
+    assert duplicate["status"] == "returned_existing"
+    assert duplicate["existing_job_id"] == "job-existing"
+    assert duplicate["run_id"] == "run-existing"
+
+    update_http_training_job_marker(
+        thread_id,
+        status="completed",
+        completed_at="2026-08-04T01:00:00Z",
+        run_id="run-existing",
+    )
+    updated_history = _marker(tmp_path, thread_id)["job_history"]
+
+    assert updated_history[0]["status"] == "completed"
+    assert updated_history[1]["status"] == "returned_existing"
+    assert updated_history[1]["duplicate"] is True

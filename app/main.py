@@ -52,6 +52,11 @@ def _configure_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    configured_workers = str(os.getenv("APP_WORKERS", "1") or "1").strip()
+    if configured_workers != "1":
+        raise RuntimeError(
+            "HTTP training queue requires single-worker mode. Set APP_WORKERS=1."
+        )
     logger.info(
         "runtime startup begin title=%s version=%s pid=%s python=%s executable=%s cwd=%s",
         app.title,
@@ -74,6 +79,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         logger.info("runtime shutdown begin")
+        queue_shutdown = await training.shutdown_training_queue()
+        logger.info("http training queue stopped state=%s", queue_shutdown)
         await cron.scheduler.stop()
         logger.info("cron scheduler stopped")
 

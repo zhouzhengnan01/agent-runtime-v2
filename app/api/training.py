@@ -20,6 +20,7 @@ from app.core.http_training_jobs import (
     ACTIVE_HTTP_TRAINING_STATUSES,
     current_service_instance_id,
     list_http_training_job_markers,
+    mark_http_training_job_request_duplicate,
     read_current_http_training_job_marker,
     record_http_training_job_request,
     reject_http_training_job_request,
@@ -27,7 +28,7 @@ from app.core.http_training_jobs import (
     write_http_training_job_marker,
 )
 from app.core.runtime import default_container
-from app.core.runtime.health_state import ReviewSlot
+from app.core.training_queue import training_queue
 from app.core.training_artifact_updates import build_training_artifact_session_updates
 from app.core.training_status import (
     build_training_status,
@@ -90,11 +91,27 @@ class TrainingJobRecord(BaseModel):
     status_url: str
     artifacts_url: str
     result: dict[str, Any] | None = None
+    queue_status: str | None = None
+    queue_position: int | None = None
+    queued_at: str | None = None
+    queue: dict[str, Any] = Field(default_factory=dict)
 
 
 _jobs_lock = asyncio.Lock()
 _jobs_by_thread: dict[str, dict[str, Any]] = {}
 _jobs_by_id: dict[str, dict[str, Any]] = {}
+_queue_shutting_down = False
+
+
+class _HttpTrainingSlot:
+    async def __aenter__(self) -> "_HttpTrainingSlot":
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    def cancel(self) -> None:
+        return None
 
 
 @router.get("/status/{thread_id}/runs")
@@ -121,6 +138,11 @@ async def get_training_status(thread_id: str, run_id: str | None = Query(default
 async def create_training_job(request: TrainingJobRequest) -> dict[str, object]:
     thread_id = _normalize_thread_id(request.thread_id)
     request_id = record_http_training_job_request(thread_id)
+    async with _jobs_lock:
+        existing = _jobs_by_thread.get(thread_id)
+        if _is_active_training_job(existing):
+            return _return_existing_training_job(thread_id, request_id, existing)
+
     agent_name = (request.agent_name or "default").strip() or "default"
     content = (request.content or request.prompt or "").strip()
     if not content:
@@ -184,28 +206,43 @@ async def create_training_job(request: TrainingJobRequest) -> dict[str, object]:
         "artifacts_url": f"/api/artifacts/{thread_id}",
         "result": None,
         "task": None,
+        "queue_status": None,
+        "queue_position": None,
+        "queued_at": None,
+        "_agent": agent,
+        "_chat_request": chat_request,
     }
 
     async with _jobs_lock:
         existing = _jobs_by_thread.get(thread_id)
-        if existing and existing.get("status") in {"queued", "running", "cancelling"}:
-            reason = f"Training job already active for thread_id={thread_id}. Cancel it or use another thread_id."
+        if _is_active_training_job(existing):
+            return _return_existing_training_job(thread_id, request_id, existing)
+        admission = training_queue.admit(record)
+        _jobs_by_thread[thread_id] = record
+        _jobs_by_id[job_id] = record
+        if admission == "queue_rejected":
+            reason = "Training queue is full."
+            record["status"] = "queue_rejected"
+            record["completed_at"] = now
+            record["error"] = reason
+            record["result"] = {
+                "status": "queue_rejected",
+                "thread_id": thread_id,
+                "job_id": job_id,
+                "error": reason,
+            }
             reject_http_training_job_request(
                 thread_id,
                 request_id,
-                http_status=409,
+                http_status=200,
                 reason=reason,
             )
-            raise HTTPException(
-                status_code=409,
-                detail=reason,
-            )
-        _jobs_by_thread[thread_id] = record
-        _jobs_by_id[job_id] = record
-        write_http_training_job_marker(thread_id, record, request_id=request_id)
+            write_http_training_job_marker(thread_id, record)
+        else:
+            write_http_training_job_marker(thread_id, record, request_id=request_id)
 
-    task = asyncio.create_task(_run_training_job(record, agent, chat_request), name=f"training-job-{job_id}")
-    record["task"] = task
+    if record["queue_status"] == "running":
+        _start_training_record(record)
     return _public_job_record(record)
 
 
@@ -233,8 +270,29 @@ async def cancel_training_job(thread_id: str) -> dict[str, object]:
             _jobs_by_id[str(record["job_id"])] = record
             fallback_record = True
         status = str(record.get("status") or "")
-        if status in {"completed", "failed", "cancelled"}:
+        if status in {"completed", "failed", "cancelled", "queue_rejected"}:
             return {"cancelled": False, "reason": f"job already {status}", "job": _public_job_record(record)}
+        if training_queue.cancel_waiting(str(record["job_id"])):
+            record["status"] = "cancelled"
+            record["queue_status"] = "cancelled"
+            record["completed_at"] = _utc_now()
+            record["error"] = "Queued training job cancelled by HTTP request."
+            record["result"] = _cancelled_http_job_result(normalized, record)
+            update_http_training_job_marker(
+                normalized,
+                status="cancelled",
+                completed_at=record["completed_at"],
+                error=record["error"],
+                result=record["result"],
+                queue_status="cancelled",
+                queue_position=None,
+            )
+            return {
+                "cancelled": True,
+                "job": _public_job_record(record),
+                "fallback": fallback_record,
+                "terminated_processes": [],
+            }
         record["status"] = "cancelling"
         record["completed_at"] = None
         task = record.get("task")
@@ -251,7 +309,7 @@ async def cancel_training_job(thread_id: str) -> dict[str, object]:
     if isinstance(task, asyncio.Task) and not task.done():
         task.cancel()
     terminated_processes = _terminate_training_processes(normalized, str(record.get("run_id") or ""))
-    if isinstance(review_slot, ReviewSlot):
+    if isinstance(review_slot, _HttpTrainingSlot):
         review_slot.cancel()
     if isinstance(task, asyncio.Task):
         try:
@@ -311,6 +369,48 @@ async def cancel_training_job(thread_id: str) -> dict[str, object]:
     }
 
 
+def _start_training_record(record: dict[str, Any]) -> None:
+    if _queue_shutting_down:
+        return
+    agent = record.get("_agent")
+    chat_request = record.get("_chat_request")
+    if agent is None or not isinstance(chat_request, ChatRequest):
+        return
+    record["queue_status"] = "running"
+    record["queue_position"] = None
+    update_http_training_job_marker(
+        str(record["thread_id"]),
+        queue_status="running",
+        queue_position=None,
+    )
+    task = asyncio.create_task(
+        _run_training_job(record, agent, chat_request),
+        name=f"training-job-{record['job_id']}",
+    )
+    record["task"] = task
+
+
+async def _release_queue_slot_and_promote(record: dict[str, Any]) -> None:
+    promoted = training_queue.finish(
+        str(record["job_id"]),
+        promote=not _queue_shutting_down,
+    )
+    record["queue_status"] = "finished"
+    update_http_training_job_marker(
+        str(record["thread_id"]),
+        queue_status="finished",
+        queue_position=None,
+    )
+    for queued_record in promoted:
+        update_http_training_job_marker(
+            str(queued_record["thread_id"]),
+            status="queued",
+            queue_status="running",
+            queue_position=None,
+        )
+        _start_training_record(queued_record)
+
+
 async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatRequest) -> None:
     thread_id = str(record["thread_id"])
     job_id = str(record["job_id"])
@@ -321,7 +421,7 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
     last_status_sent = 0.0
     final_result: AgentRunResult | None = None
     final_reply_sent = False
-    review_slot = ReviewSlot()
+    review_slot = _HttpTrainingSlot()
     record["review_slot"] = review_slot
     try:
         async with review_slot:
@@ -468,6 +568,7 @@ async def _run_training_job(record: dict[str, Any], agent: Any, request: ChatReq
             await asyncio.gather(status_task, return_exceptions=True)
         record.pop("review_slot", None)
         record["completed_at"] = _utc_now()
+        await _release_queue_slot_and_promote(record)
 
 
 def _build_runtime_options(request: TrainingJobRequest, thread_id: str) -> RuntimeOptions:
@@ -591,7 +692,38 @@ def _public_job_record(record: dict[str, Any]) -> dict[str, object]:
         status_url=str(record["status_url"]),
         artifacts_url=str(record["artifacts_url"]),
         result=record.get("result"),
+        queue_status=record.get("queue_status"),
+        queue_position=record.get("queue_position"),
+        queued_at=record.get("queued_at"),
+        queue=training_queue.job_snapshot(record),
     ).model_dump()
+
+
+def _is_active_training_job(record: dict[str, Any] | None) -> bool:
+    return bool(record and str(record.get("status") or "") in {"queued", "running", "cancelling"})
+
+
+def _return_existing_training_job(
+    thread_id: str,
+    request_id: str,
+    record: dict[str, Any],
+) -> dict[str, object]:
+    mark_http_training_job_request_duplicate(
+        thread_id,
+        request_id,
+        existing_job_id=str(record.get("job_id") or ""),
+        existing_run_id=str(record.get("run_id") or "") or None,
+    )
+    payload = _public_job_record(record)
+    payload.update(
+        {
+            "existing_job": True,
+            "request_action": "returned_existing",
+            "request_parameters_applied": False,
+            "message": "Training job already exists for this thread.",
+        }
+    )
+    return payload
 
 
 def _cancelled_http_job_result(thread_id: str, record: dict[str, Any]) -> dict[str, Any]:
@@ -721,60 +853,52 @@ def _matching_training_processes(
 
 
 def reconcile_http_training_jobs_after_restart() -> dict[str, Any]:
+    global _queue_shutting_down
+    _queue_shutting_down = False
+    training_queue.clear()
     current_instance = current_service_instance_id()
     reconciled: list[dict[str, Any]] = []
     for marker in list_http_training_job_markers(require_active=True):
         previous_instance = str(marker.get("service_instance_id") or "")
-        if previous_instance == current_instance:
-            continue
         thread_id = str(marker.get("thread_id") or "").strip()
         run_id = str(marker.get("run_id") or "").strip()
         if not thread_id:
             continue
-        process_ids, _ = _matching_training_processes(thread_id, run_id)
-        if process_ids:
-            update_http_training_job_marker(thread_id, status=str(marker.get("status") or "running"), run_id=run_id)
-            reconciled.append(
-                {
-                    "thread_id": thread_id,
-                    "run_id": run_id or None,
-                    "action": "adopted",
-                    "process_ids": sorted(process_ids),
-                    "previous_service_instance_id": previous_instance or None,
-                }
-            )
-            continue
-
+        terminated_processes = _terminate_training_processes(thread_id, run_id)
         now = _utc_now()
-        error = "Training job interrupted because the runtime service restarted and no matching training process is running."
+        error = "Training job cancelled because the runtime service restarted and cleared the in-memory queue."
         result = AgentRunResult(
             agent=str(marker.get("agent_name") or "default"),
             thread_id=thread_id,
             status="failed",
             reply=error,
             metadata={
-                "phase": "service_restart_interrupted",
-                "status": "failed",
+                "phase": "runtime_restart_queue_cleared",
+                "status": "cancelled",
+                "cancelled": True,
                 "job_id": marker.get("job_id"),
                 "run_id": run_id or None,
                 "previous_service_instance_id": previous_instance or None,
+                "terminated_processes": terminated_processes,
             },
         ).model_dump()
         update_http_training_job_marker(
             thread_id,
-            status="failed",
+            status="cancelled",
             completed_at=now,
             run_id=run_id or None,
             error=error,
             result=result,
+            queue_status="cancelled",
+            queue_position=None,
         )
-        _mark_run_progress_cancelled(thread_id, run_id, status="failed", message=error)
+        _mark_run_progress_cancelled(thread_id, run_id, status="cancelled", message=error)
         reconciled.append(
             {
                 "thread_id": thread_id,
                 "run_id": run_id or None,
-                "action": "failed",
-                "process_ids": [],
+                "action": "cancelled",
+                "process_ids": terminated_processes,
                 "previous_service_instance_id": previous_instance or None,
             }
         )
@@ -782,6 +906,70 @@ def reconcile_http_training_jobs_after_restart() -> dict[str, Any]:
         "service_instance_id": current_instance,
         "reconciled_count": len(reconciled),
         "jobs": reconciled,
+    }
+
+
+async def shutdown_training_queue() -> dict[str, Any]:
+    global _queue_shutting_down
+    _queue_shutting_down = True
+    running, waiting = training_queue.clear()
+    now = _utc_now()
+    for record in waiting:
+        record["status"] = "cancelled"
+        record["queue_status"] = "cancelled"
+        record["completed_at"] = now
+        record["error"] = "Queued training job cancelled because the runtime service is stopping."
+        record["result"] = _cancelled_http_job_result(str(record["thread_id"]), record)
+        update_http_training_job_marker(
+            str(record["thread_id"]),
+            status="cancelled",
+            queue_status="cancelled",
+            queue_position=None,
+            completed_at=now,
+            error=record["error"],
+            result=record["result"],
+        )
+
+    tasks: list[asyncio.Task[Any]] = []
+    terminated: dict[str, list[int]] = {}
+    for record in running:
+        thread_id = str(record["thread_id"])
+        runtime.session_manager.cancel_active_turn(thread_id)
+        task = record.get("task")
+        if isinstance(task, asyncio.Task) and not task.done():
+            task.cancel()
+            tasks.append(task)
+        terminated[thread_id] = _terminate_training_processes(thread_id, str(record.get("run_id") or ""))
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    stopped_at = _utc_now()
+    for record in running:
+        thread_id = str(record["thread_id"])
+        record["status"] = "cancelled"
+        record["queue_status"] = "cancelled"
+        record["completed_at"] = stopped_at
+        record["error"] = "Training job cancelled because the runtime service is stopping."
+        record["result"] = _cancelled_http_job_result(thread_id, record)
+        update_http_training_job_marker(
+            thread_id,
+            status="cancelled",
+            queue_status="cancelled",
+            queue_position=None,
+            completed_at=stopped_at,
+            run_id=record.get("run_id"),
+            error=record["error"],
+            result=record["result"],
+        )
+        _mark_run_progress_cancelled(
+            thread_id,
+            str(record.get("run_id") or ""),
+            status="cancelled",
+            message=record["error"],
+        )
+    return {
+        "cancelled_running": len(running),
+        "cleared_waiting": len(waiting),
+        "terminated_processes": terminated,
     }
 
 

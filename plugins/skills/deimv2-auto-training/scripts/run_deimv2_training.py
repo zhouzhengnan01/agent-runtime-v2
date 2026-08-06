@@ -1170,18 +1170,59 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     training = spec.get("training") if isinstance(spec.get("training"), dict) else {}
     prefix = python_prefix(training)
     detected = detect_target_hardware(prefix)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    accelerator_state_path = work_dir / "accelerator_state.json"
+    poll_seconds = max(
+        0.2,
+        float(os.getenv("JETLINKS_DEVICE_RESERVATION_POLL_SECONDS", "2") or "2"),
+    )
+    if str(training.get("device") or "auto").strip().lower() in {"cpu", "none"}:
+        raise RuntimeError("CPU training is disabled for managed DEIMv2 jobs.")
     # 先选设备再生成检测器配置，因为 CUDA/NPU/CPU 的 batch、workers
     # 等默认值不同。
-    device_reservation = reserve_training_device(
-        requested=training.get("device"),
-        backend="deimv2",
-        model_variant=training.get("model_variant"),
-        batch=training.get("batch"),
-        img_size=training.get("img_size") or training.get("imgsz"),
-        project_root=PROJECT_ROOT,
-        min_free_memory_mb=training.get("min_free_memory_mb") or training.get("required_free_memory_mb"),
-        max_gpu_utilization=training.get("max_gpu_utilization"),
-    )
+    while True:
+        try:
+            device_reservation = reserve_training_device(
+                requested=training.get("device"),
+                backend="deimv2",
+                model_variant=training.get("model_variant"),
+                batch=training.get("batch"),
+                img_size=training.get("img_size") or training.get("imgsz"),
+                project_root=PROJECT_ROOT,
+                min_free_memory_mb=training.get("min_free_memory_mb") or training.get("required_free_memory_mb"),
+                max_gpu_utilization=training.get("max_gpu_utilization"),
+                allow_cpu=False,
+            )
+            if device_reservation.accelerator == "cpu":
+                raise RuntimeError("CPU training is disabled for managed DEIMv2 jobs.")
+            accelerator_state_path.write_text(
+                json.dumps(
+                    {
+                        "status": "reserved",
+                        "updated_at": time.time(),
+                        "device": device_reservation.to_dict(),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            break
+        except RuntimeError as exc:
+            accelerator_state_path.write_text(
+                json.dumps(
+                    {
+                        "status": "waiting",
+                        "updated_at": time.time(),
+                        "reason": str(exc),
+                        "cpu_fallback": False,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            time.sleep(poll_seconds)
     hardware = device_reservation.accelerator
     detected["device_selection"] = device_reservation.to_dict()
     detected["selected"] = hardware
@@ -1195,7 +1236,6 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     assert backbone is not None
     tuning = resolve_tuning_checkpoint(deim_root, training)
     epochs = int(training.get("epochs") or 10)
-    work_dir.mkdir(parents=True, exist_ok=True)
     config_hash = hashlib.sha1(str(work_dir).encode("utf-8")).hexdigest()[:12]
     configs_dir = work_dir / "configs" if work_dir.drive == deim_root.drive else deim_root / "outputs" / "codex-generated-configs" / config_hash
     run_dir = work_dir / "runs"
@@ -1204,43 +1244,57 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
 
     stages: list[dict[str, Any]] = []
 
-    for stage, count in [("train", epochs)]:
-        output_dir = run_dir / stage
-        config = write_runtime_configs(
-            configs_dir=configs_dir,
-            template=template,
-            dataset_root=dataset_root,
-            output_dir=output_dir,
-            training=training,
-            hardware=hardware,
-            epochs=count,
-            backbone_checkpoint=backbone,
-            stage=stage,
+    try:
+        for stage, count in [("train", epochs)]:
+            output_dir = run_dir / stage
+            config = write_runtime_configs(
+                configs_dir=configs_dir,
+                template=template,
+                dataset_root=dataset_root,
+                output_dir=output_dir,
+                training=training,
+                hardware=hardware,
+                epochs=count,
+                backbone_checkpoint=backbone,
+                stage=stage,
+            )
+            cmd = training_command(prefix, deim_root, config, hardware, tuning, device_reservation.runtime_device)
+            stage_result: dict[str, Any] = {
+                "stage": stage,
+                "epochs": count,
+                "config": str(config),
+                "output_dir": str(output_dir),
+                "command": cmd,
+                "device_selection": device_reservation.to_dict(),
+            }
+            stages.append(stage_result)
+            if dry_run:
+                stage_result["returncode"] = 0
+                continue
+            log_path = logs_dir / f"{stage}.log"
+            env = os.environ.copy()
+            # Expose only the selected physical accelerator to the child process.
+            env.update(device_reservation.env)
+            with log_path.open("w", encoding="utf-8") as log:
+                proc = subprocess.run(cmd, cwd=str(deim_root), stdout=log, stderr=subprocess.STDOUT, text=True, env=env)
+            stage_result["returncode"] = proc.returncode
+            stage_result["log"] = str(log_path)
+            if proc.returncode != 0:
+                raise RuntimeError(f"DEIMv2 {stage} failed. See {log_path}")
+    finally:
+        device_reservation.release()
+        accelerator_state_path.write_text(
+            json.dumps(
+                {
+                    "status": "released",
+                    "updated_at": time.time(),
+                    "device": device_reservation.to_dict(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
         )
-        cmd = training_command(prefix, deim_root, config, hardware, tuning, device_reservation.runtime_device)
-        stage_result: dict[str, Any] = {
-            "stage": stage,
-            "epochs": count,
-            "config": str(config),
-            "output_dir": str(output_dir),
-            "command": cmd,
-            "device_selection": device_reservation.to_dict(),
-        }
-        stages.append(stage_result)
-        if dry_run:
-            stage_result["returncode"] = 0
-            continue
-        log_path = logs_dir / f"{stage}.log"
-        env = os.environ.copy()
-        # CUDA 下只把选中的物理 GPU 暴露给 DEIMv2。
-        # 官方 train.py 仍可按默认 cuda:0 逻辑运行。
-        env.update(device_reservation.env)
-        with log_path.open("w", encoding="utf-8") as log:
-            proc = subprocess.run(cmd, cwd=str(deim_root), stdout=log, stderr=subprocess.STDOUT, text=True, env=env)
-        stage_result["returncode"] = proc.returncode
-        stage_result["log"] = str(log_path)
-        if proc.returncode != 0:
-            raise RuntimeError(f"DEIMv2 {stage} failed. See {log_path}")
 
     best_checkpoint = find_checkpoint(run_dir)
     onnx_export: dict[str, Any] = {"enabled": bool_from_any(training.get("export_onnx"), False), "status": "skipped"}
@@ -1290,7 +1344,6 @@ def run_training(spec: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     (work_dir / "training_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     compatible_summary = build_yolo_compatible_run_summary(summary, dataset_root, work_dir, run_dir)
     (work_dir / "run_summary.json").write_text(json.dumps(compatible_summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    device_reservation.release()
     return summary
 
 

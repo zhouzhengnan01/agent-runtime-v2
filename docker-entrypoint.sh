@@ -15,7 +15,7 @@ mkdir -p \
   "${JETLINKS_AGENT_STATIC_UPLOAD_DIR}"
 
 if [ "$#" -eq 0 ]; then
-  set -- python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "${APP_WORKERS:-4}" --log-level "${APP_LOG_LEVEL:-info}"
+  set -- python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers "${APP_WORKERS:-1}" --log-level "${APP_LOG_LEVEL:-info}"
 fi
 
 exec "$@"

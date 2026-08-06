@@ -369,7 +369,7 @@ def test_cancel_training_job_adopts_previous_service_instance(tmp_path: Path, mo
     assert marker["service_instance_id"] == training.current_service_instance_id()
 
 
-def test_restart_reconciliation_fails_orphan_without_process(tmp_path: Path, monkeypatch) -> None:
+def test_restart_reconciliation_cancels_orphan_without_process(tmp_path: Path, monkeypatch) -> None:
     thread_id = "restart-orphan-thread"
     run_id = "run-deimv2-restart-orphan"
     run_dir = tmp_path / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs" / run_id
@@ -410,16 +410,16 @@ def test_restart_reconciliation_fails_orphan_without_process(tmp_path: Path, mon
     marker = json.loads(marker_path.read_text(encoding="utf-8"))
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert recovery["reconciled_count"] == 1
-    assert recovery["jobs"][0]["action"] == "failed"
-    assert marker["status"] == "failed"
+    assert recovery["jobs"][0]["action"] == "cancelled"
+    assert marker["status"] == "cancelled"
     assert marker["service_instance_id"] == training.current_service_instance_id()
-    assert marker["result"]["metadata"]["phase"] == "service_restart_interrupted"
-    assert state["status"] == "failed"
-    assert state["phase"] == "failed"
+    assert marker["result"]["metadata"]["phase"] == "runtime_restart_queue_cleared"
+    assert state["status"] == "cancelled"
+    assert state["phase"] == "cancelled"
     assert state["completed_at"]
 
 
-def test_restart_reconciliation_adopts_orphan_with_live_process(tmp_path: Path, monkeypatch) -> None:
+def test_restart_reconciliation_terminates_orphan_with_live_process(tmp_path: Path, monkeypatch) -> None:
     thread_id = "restart-live-thread"
     run_id = "run-deimv2-restart-live"
     run_dir = tmp_path / ".runtime" / "threads" / thread_id / "outputs" / "yolo_training_flow" / "runs" / run_id
@@ -439,15 +439,15 @@ def test_restart_reconciliation_adopts_orphan_with_live_process(tmp_path: Path, 
     marker = json.loads(marker_path.read_text(encoding="utf-8"))
     marker["service_instance_id"] = "svc-stopped"
     marker_path.write_text(json.dumps(marker), encoding="utf-8")
-    monkeypatch.setattr(training, "_matching_training_processes", lambda *_args: ({4321}, {4321: (1, "train")}))
+    monkeypatch.setattr(training, "_terminate_training_processes", lambda *_args: [4321])
 
     recovery = training.reconcile_http_training_jobs_after_restart()
 
     marker = json.loads(marker_path.read_text(encoding="utf-8"))
     assert recovery["reconciled_count"] == 1
-    assert recovery["jobs"][0]["action"] == "adopted"
+    assert recovery["jobs"][0]["action"] == "cancelled"
     assert recovery["jobs"][0]["process_ids"] == [4321]
-    assert marker["status"] == "running"
+    assert marker["status"] == "cancelled"
     assert marker["service_instance_id"] == training.current_service_instance_id()
 
 

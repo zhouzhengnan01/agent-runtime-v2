@@ -1865,6 +1865,7 @@ def _generate_model_managed_yolo_training_intent_spec(
         return {}
     system_prompt = (
         _intent_semantic_planning_contract("YOLO")
+        + _explicit_annotation_label_contract(user_text)
         +
         "use_synthetic_generation 布尔值，表示是否请求合成数据；"
         "generation_prompt 字符串；"
@@ -1942,6 +1943,7 @@ def _generate_model_managed_training_intent_spec(
         return {}
     system_prompt = (
         _intent_semantic_planning_contract("DEIMv2 DINOv3")
+        + _explicit_annotation_label_contract(user_text)
         +
         "use_synthetic_generation 布尔值，表示是否请求合成数据；"
         "generation_prompt 字符串。用户包含多个检测目标时必须全部解析。"
@@ -3200,12 +3202,11 @@ _BEHAVIOR_INTENT_RULES: tuple[dict[str, Any], ...] = (
 def _ensure_intent_labels(spec: dict[str, Any], user_text: str) -> dict[str, Any]:
     merged = dict(spec or {})
     explicit_labels = _normalize_detection_labels(_extract_annotation_labels(user_text))
-    if explicit_labels:
-        merged["labels"] = explicit_labels
-        merged = _apply_behavior_intent_guard(merged, user_text, preserve_explicit_labels=True)
-        _align_spec_text_with_labels(merged, explicit_labels)
-        return merged
-
+    annotation_intent_labels = (
+        _labels_from_intent_items(_spec_intent_items(merged))
+        if re.search(r"标注意图\s*[:：=]", user_text or "")
+        else []
+    )
     current_labels = _spec_string_list(merged, "labels")
     normalized_current = _normalize_detection_labels(current_labels)
     inferred_labels = _infer_labels_from_training_intent(user_text)
@@ -3217,7 +3218,23 @@ def _ensure_intent_labels(spec: dict[str, Any], user_text: str) -> dict[str, Any
         merged["labels"] = inferred_labels
     elif normalized_current:
         merged["labels"] = normalized_current
-    merged = _apply_behavior_intent_guard(merged, user_text)
+    if annotation_intent_labels or explicit_labels:
+        candidate_labels = _dedupe_detection_labels([
+            *_spec_string_list(merged, "labels"),
+            *annotation_intent_labels,
+        ])
+        if explicit_labels:
+            candidate_labels = [
+                label
+                for label in candidate_labels
+                if not _label_is_shadowed_by_explicit_label(label, explicit_labels)
+            ]
+        merged["labels"] = _dedupe_detection_labels([*candidate_labels, *explicit_labels])
+    merged = _apply_behavior_intent_guard(
+        merged,
+        user_text,
+        preserve_explicit_labels=bool(annotation_intent_labels or explicit_labels),
+    )
     merged = _apply_smoking_entity_annotation_policy(merged, user_text)
     _align_spec_text_with_labels(merged, _spec_string_list(merged, "labels"))
     return merged
@@ -3736,9 +3753,7 @@ def _labels_from_intent_items(items: list[dict[str, Any]]) -> list[str]:
 def _annotation_prompts_from_intent_items(items: list[dict[str, Any]]) -> list[str]:
     prompts: list[str] = []
     for item in items:
-        raw_prompts = item.get("sam3_prompt_map", {}).keys() if _is_entity_interaction_intent_item(item) else None
-        if not raw_prompts and _is_entity_interaction_intent_item(item):
-            raw_prompts = item.get("observable_entities")
+        raw_prompts = item.get("sam3_prompt_map", {}).keys()
         if not raw_prompts:
             raw_prompts = _intent_sam3_prompts(item)
         if raw_prompts and not isinstance(raw_prompts, str):
@@ -3775,6 +3790,7 @@ def _annotation_prompt_map_from_spec(spec: dict[str, Any], labels: list[str]) ->
         return {}
     class_set = {label.lower() for label in class_names}
     prompt_map: dict[str, str] = {}
+    conflicting_prompts: set[str] = set()
     for item in _spec_intent_items(spec):
         business_label = _normalize_detection_labels([str(item.get("label") or "")])
         if not business_label:
@@ -3790,23 +3806,29 @@ def _annotation_prompt_map_from_spec(spec: dict[str, Any], labels: list[str]) ->
                 continue
             if _intent_prompt_is_forbidden(item, str(prompt)):
                 continue
-            prompt_map[str(prompt).strip()] = normalized_label[0]
-        if _is_entity_interaction_intent_item(item):
-            raw_prompts = item.get("observable_entities") if isinstance(item.get("observable_entities"), list) else []
-            if not raw_prompts:
-                raw_prompts = item.get("training_labels") if isinstance(item.get("training_labels"), list) else []
-            prompts = [*raw_prompts]
-        else:
-            prompts = _intent_sam3_prompts(item)
-            if not _intent_is_constrained_target(item):
-                prompts = [*prompts, _label_to_annotation_prompt(business_label[0])]
+            if _prompt_mentions_other_training_label(str(prompt), normalized_label[0], class_names):
+                continue
+            _add_validated_prompt_mapping(
+                prompt_map,
+                conflicting_prompts,
+                str(prompt),
+                normalized_label[0],
+            )
+        prompts = _intent_sam3_prompts(item)
+        if not declared_prompt_map and not _intent_is_constrained_target(item):
+            prompts = [*prompts, _label_to_annotation_prompt(business_label[0])]
         for prompt in prompts:
             text = str(prompt or "").strip()
-            if not text or _intent_prompt_is_forbidden(item, text):
+            if not text or text.lower() in conflicting_prompts or _intent_prompt_is_forbidden(item, text):
                 continue
             prompt_label = _best_prompt_mapped_label(text, mapped_labels)
-            if prompt_label:
-                prompt_map[text] = prompt_label
+            if prompt_label and not _prompt_mentions_other_training_label(text, prompt_label, class_names):
+                _add_validated_prompt_mapping(
+                    prompt_map,
+                    conflicting_prompts,
+                    text,
+                    prompt_label,
+                )
     top_level_prompts = _spec_string_list(spec, "annotation_prompts")
     if len(class_names) == 1:
         constrained_items = [
@@ -3818,7 +3840,14 @@ def _annotation_prompt_map_from_spec(spec: dict[str, Any], labels: list[str]) ->
         for prompt in top_level_prompts:
             if constrained_items and any(_intent_prompt_is_forbidden(item, prompt) for item in constrained_items):
                 continue
-            prompt_map.setdefault(prompt, class_names[0])
+            prompt_label = _best_prompt_mapped_label(prompt, class_names)
+            if prompt_label and not _prompt_mentions_other_training_label(prompt, prompt_label, class_names):
+                _add_validated_prompt_mapping(
+                    prompt_map,
+                    conflicting_prompts,
+                    prompt,
+                    prompt_label,
+                )
     for label in class_names:
         related_items = [
             item
@@ -3827,17 +3856,57 @@ def _annotation_prompt_map_from_spec(spec: dict[str, Any], labels: list[str]) ->
         ]
         if any(_intent_is_constrained_target(item) for item in related_items):
             continue
-        prompt_map.setdefault(_label_to_annotation_prompt(label), label)
-        prompt_map.setdefault(label, label)
+        fallback_prompt = _label_to_annotation_prompt(label) or label
+        prompt_map.setdefault(fallback_prompt, label)
     return prompt_map
+
+
+def _add_validated_prompt_mapping(
+    prompt_map: dict[str, str],
+    conflicting_prompts: set[str],
+    prompt: str,
+    label: str,
+) -> None:
+    prompt_text = str(prompt or "").strip()
+    label_text = str(label or "").strip()
+    prompt_key = prompt_text.lower()
+    if not prompt_text or not label_text or prompt_key in conflicting_prompts:
+        return
+    existing_key = next((key for key in prompt_map if key.lower() == prompt_key), "")
+    if existing_key and prompt_map[existing_key] != label_text:
+        prompt_map.pop(existing_key, None)
+        conflicting_prompts.add(prompt_key)
+        return
+    if not existing_key:
+        prompt_map[prompt_text] = label_text
+
+
+def _prompt_mentions_other_training_label(prompt: str, mapped_label: str, class_names: list[str]) -> bool:
+    prompt_tokens = {
+        token
+        for token in re.split(r"[^a-z0-9]+", str(prompt or "").lower())
+        if token
+    }
+    mapped_key = _label_lookup_key(mapped_label)
+    if not prompt_tokens or not mapped_key:
+        return False
+    for label in class_names:
+        if _label_lookup_key(label) == mapped_key:
+            continue
+        label_tokens = {
+            token
+            for token in re.split(r"[^a-z0-9]+", _label_to_annotation_prompt(label).lower())
+            if token
+        }
+        if label_tokens and label_tokens.issubset(prompt_tokens):
+            return True
+    return False
 
 
 def _best_prompt_mapped_label(prompt: str, labels: list[str]) -> str:
     normalized_labels = _normalize_detection_labels(labels)
     if not normalized_labels:
         return ""
-    if len(normalized_labels) == 1:
-        return normalized_labels[0]
     prompt_key = _label_lookup_key(prompt)
     prompt_canonical = _normalize_detection_labels([prompt])
     if prompt_canonical:
@@ -3849,6 +3918,20 @@ def _best_prompt_mapped_label(prompt: str, labels: list[str]) -> str:
         if _looks_related_prompt(prompt, label):
             return label
     return ""
+
+
+def _explicit_annotation_label_contract(user_text: str) -> str:
+    labels = _normalize_detection_labels(_extract_annotation_labels(user_text))
+    if not labels:
+        return ""
+    label_text = ", ".join(labels)
+    return (
+        f"用户通过 label 显式指定的标注类别为：{label_text}。"
+        "这些名称是不可改名的规范 training_labels，必须全部包含在顶层 labels 和对应 intent_items.training_labels 中；"
+        "对于语义相同的概念必须使用这里的规范名称，不得另建同义类别。"
+        "训练意图中明确存在、但不与这些类别语义重复的其他目标可以继续保留。"
+        "sam3_prompt_map 的值只能来自最终 labels，observable_entities 仅用于场景理解，绝不能作为 SAM3 prompt。"
+    )
 
 
 def _looks_related_prompt(prompt: str, label: str) -> bool:
@@ -3983,6 +4066,25 @@ def _normalize_detection_labels(labels: list[str] | tuple[str, ...]) -> list[str
         if clean_label and not _is_generic_detection_label(clean_label):
             normalized.append(clean_label)
     return _dedupe_detection_labels([label for label in normalized if _is_yolo_safe_label(label)])
+
+
+def _label_is_shadowed_by_explicit_label(label: str, explicit_labels: list[str]) -> bool:
+    label_key = _label_lookup_key(label)
+    if not label_key or label_key in {_label_lookup_key(item) for item in explicit_labels}:
+        return False
+    label_tokens = [token for token in label_key.split("_") if token]
+    if not label_tokens:
+        return False
+    label_head = label_tokens[-1]
+    generic_heads = {"person", "object", "target", "item", "entity"}
+    if label_head in generic_heads:
+        return False
+    return any(
+        explicit_tokens
+        and explicit_tokens[-1] == label_head
+        for explicit in explicit_labels
+        if (explicit_tokens := [token for token in _label_lookup_key(explicit).split("_") if token])
+    )
 
 
 def _labels_are_generic(labels: list[str]) -> bool:
@@ -4977,6 +5079,7 @@ def _extract_annotation_labels(user_text: str) -> list[str]:
     )
     if not raw:
         return []
+    raw = re.split(r"[\r\n。.!！？?]+", raw, maxsplit=1)[0]
     raw = re.split(
         r"\s+(?:conda_env_name|model|epochs|imgsz|batch|device|workers|patience|dataset\.split\.)\s*[:=]",
         raw,

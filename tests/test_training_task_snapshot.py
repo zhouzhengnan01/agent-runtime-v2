@@ -293,3 +293,19 @@ def test_thread_task_status_uses_latest_run_instead_of_idle() -> None:
         "active_job_id": None,
         "active_job_status": None,
     }
+
+
+def test_thread_task_status_exposes_waiting_queue_position() -> None:
+    status = training_status._build_thread_task_status(
+        {
+            "thread_id": "queued-thread",
+            "job_id": "job-queued",
+            "status": "queued",
+            "queue_status": "waiting",
+            "queue_position": 4,
+        }
+    )
+
+    assert status["status"] == "queued"
+    assert status["queue_status"] == "waiting"
+    assert status["queue_position"] == 4

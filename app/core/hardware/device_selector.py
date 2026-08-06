@@ -9,12 +9,19 @@ import shutil
 import subprocess
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 
 LOCK_STALE_SECONDS = int(os.environ.get("JETLINKS_DEVICE_LOCK_STALE_SECONDS", str(24 * 60 * 60)))
+DEVICE_MEMORY_SAFETY_MB = max(0, int(os.environ.get("JETLINKS_DEVICE_MEMORY_SAFETY_MB", "2048") or "2048"))
 
 
 @dataclass
@@ -217,16 +224,27 @@ def _select_candidate(
     evaluated: list[DeviceCandidate] = []
     for candidate in filtered:
         candidate = DeviceCandidate(**candidate.to_dict())
-        lock_path = _lock_path(lock_dir, candidate.accelerator, candidate.index)
-        # 这里使用进程级锁，而不是依赖深度学习框架内部状态。
-        # 这样可以避免两个 ACP 训练请求同时选中同一张看起来空闲的卡；
-        # 过期锁会在下面自动清理。
-        if _lock_is_live(lock_path):
+        reserved_mb = _reserved_memory_mb(lock_dir, candidate.accelerator, candidate.index)
+        logical_free_mb = None
+        if candidate.total_mb is not None:
+            logical_free_mb = max(0, candidate.total_mb - reserved_mb - DEVICE_MEMORY_SAFETY_MB)
+        effective_free_mb = candidate.free_mb
+        if logical_free_mb is not None:
+            effective_free_mb = (
+                min(effective_free_mb, logical_free_mb)
+                if effective_free_mb is not None
+                else logical_free_mb
+            )
+        candidate.free_mb = effective_free_mb
+        if candidate.total_mb is None and effective_free_mb is None:
             candidate.available = False
-            candidate.reason = f"device is reserved by {lock_path}"
-        elif candidate.free_mb is not None and candidate.free_mb < required_free_mb:
+            candidate.reason = "accelerator memory telemetry is unavailable"
+        elif effective_free_mb is not None and effective_free_mb < required_free_mb:
             candidate.available = False
-            candidate.reason = f"free memory {candidate.free_mb} MB is below required {required_free_mb} MB"
+            candidate.reason = (
+                f"shared free memory {effective_free_mb} MB is below required {required_free_mb} MB "
+                f"(reserved={reserved_mb} MB, safety={DEVICE_MEMORY_SAFETY_MB} MB)"
+            )
         elif (
             not explicit
             and candidate.utilization is not None
@@ -265,7 +283,7 @@ def _try_reserve(
 ) -> TrainingDeviceReservation | None:
     token = uuid.uuid4().hex
     lock_dir.mkdir(parents=True, exist_ok=True)
-    path = _lock_path(lock_dir, candidate.accelerator, candidate.index)
+    path = _lease_path(lock_dir, candidate.accelerator, candidate.index, token)
     payload = {
         "token": token,
         "pid": os.getpid(),
@@ -273,13 +291,18 @@ def _try_reserve(
         "accelerator": candidate.accelerator,
         "index": candidate.index,
         "hostname": platform.node(),
+        "required_free_mb": required_free_mb,
     }
-    try:
-        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return None
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    with _allocator_lock(lock_dir):
+        reserved_mb = _reserved_memory_mb(lock_dir, candidate.accelerator, candidate.index)
+        if candidate.total_mb is not None:
+            logical_free_mb = max(
+                0,
+                candidate.total_mb - reserved_mb - DEVICE_MEMORY_SAFETY_MB,
+            )
+            if logical_free_mb < required_free_mb:
+                return None
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if candidate.accelerator == "cuda":
         # 将选中的物理 GPU 映射为进程内的本地 device 0。
@@ -539,8 +562,52 @@ def _is_explicit_device(requested: str) -> bool:
     return bool(requested and requested not in {"auto", "gpu", "cuda:auto", "npu:auto"})
 
 
-def _lock_path(lock_dir: Path, accelerator: str, index: int) -> Path:
-    return lock_dir / f"{accelerator}-{index}.lock"
+def _lease_path(lock_dir: Path, accelerator: str, index: int, token: str) -> Path:
+    return lock_dir / f"{accelerator}-{index}-{token}.lease.json"
+
+
+def _lease_paths(lock_dir: Path, accelerator: str, index: int) -> list[Path]:
+    if not lock_dir.is_dir():
+        return []
+    return list(lock_dir.glob(f"{accelerator}-{index}-*.lease.json"))
+
+
+def _reserved_memory_mb(lock_dir: Path, accelerator: str, index: int) -> int:
+    reserved = 0
+    for path in _lease_paths(lock_dir, accelerator, index):
+        if not _lock_is_live(path):
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            reserved += max(0, int(payload.get("required_free_mb") or 0))
+        except Exception:
+            _unlink_quietly(path)
+    return reserved
+
+
+@contextmanager
+def _allocator_lock(lock_dir: Path):
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    path = lock_dir / "allocator.lock"
+    with path.open("a+b") as lock_fp:
+        if os.name == "nt":
+            lock_fp.seek(0)
+            if not lock_fp.read(1):
+                lock_fp.seek(0)
+                lock_fp.write(b"\0")
+                lock_fp.flush()
+            lock_fp.seek(0)
+            msvcrt.locking(lock_fp.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock_fp.seek(0)
+                msvcrt.locking(lock_fp.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
 
 
 def _lock_is_live(path: Path) -> bool:
